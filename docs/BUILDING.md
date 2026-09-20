@@ -6,11 +6,11 @@
 - Gradle 9.6.0
 - Android Gradle Plugin 9.4.1
 - Android SDK 37
-- Android Build Tools 36.0.0 or newer compatible tooling
+- Android Build Tools 37.0.0
 
 ## Last.fm API key
 
-GoneSmart uses a Last.fm application API key for public recommendation requests. It does not use or package a Last.fm shared secret.
+GoneSmart uses a Last.fm application API key for `track.getSimilar` recommendation requests. That endpoint requires an API key but not Last.fm user authentication. GoneSmart does not use or package a Last.fm shared secret. Use a key registered for the GoneSmart application and review Last.fm's current API Terms before publishing a public build.
 
 For local builds, add the key to `local.properties`:
 
