@@ -211,7 +211,7 @@ More detail: [docs/FAQ.md](docs/FAQ.md).
 
 ## Last.fm API key handling
 
-GoneSmart uses the public `track.getSimilar` style of Last.fm lookup and does **not** use or ship a Last.fm shared secret. The application API key is supplied at build time:
+GoneSmart uses Last.fm's `track.getSimilar` endpoint. That endpoint requires an **API key** but does **not** require Last.fm user authentication. GoneSmart does **not** use or ship a Last.fm shared secret. The application API key is supplied at build time:
 
 - Local builds: put `LASTFM_API_KEY=...` in `local.properties`.
 - GitHub releases: store the key as the repository secret `LASTFM_API_KEY`.
@@ -219,7 +219,7 @@ GoneSmart uses the public `track.getSimilar` style of Last.fm lookup and does **
 
 A client-side application API key can ultimately be extracted from an APK; using a GitHub secret prevents accidental source-control disclosure, not reverse engineering of the installed client. If Last.fm changes its client-key policy, GoneSmart should revisit this setup before the next release.
 
-Last.fm requires API users to follow its [API Terms of Service](https://www.last.fm/api/tos), including attribution. GoneSmart credits and links Last.fm here and in the companion app.
+The API key should belong to a registered Last.fm API application for GoneSmart. Last.fm's current [API Terms of Service](https://www.last.fm/api/tos) require attribution and contain additional restrictions around public/commercial use; review the current terms before distributing a public build. GoneSmart credits and links Last.fm here and in the companion app. More provider notes are in [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 ---
 
