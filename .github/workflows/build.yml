@@ -43,6 +43,9 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Build release APK (unsigned smoke test)
+        run: ./gradlew :app:assembleRelease --stacktrace
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
