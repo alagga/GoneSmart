@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and FAQ
+    url: https://github.com/alagga/GoneSmart#installation
+    about: Check the README and FAQ before opening an issue.

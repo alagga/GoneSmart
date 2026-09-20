@@ -1,0 +1,123 @@
+name: Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      GONESMART_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      GONESMART_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      GONESMART_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LASTFM_API_KEY" || { echo "Missing repository secret: LASTFM_API_KEY"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "Missing repository secret: ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "$GONESMART_KEYSTORE_PASSWORD" || { echo "Missing repository secret: ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$GONESMART_KEY_ALIAS" || { echo "Missing repository secret: ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "$GONESMART_KEY_PASSWORD" || { echo "Missing repository secret: ANDROID_KEY_PASSWORD"; exit 1; }
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+
+      - name: Restore release keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="$RUNNER_TEMP/gonesmart-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          echo "GONESMART_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build signed release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n1)
+          test -n "$VERSION" || { echo "Could not determine versionName"; exit 1; }
+          TAG="v$VERSION"
+          APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
+          APK_NAME="GoneSmart-$TAG.apk"
+          test -f "$APK_SOURCE" || { echo "Release APK not found at $APK_SOURCE"; exit 1; }
+          cp "$APK_SOURCE" "$APK_NAME"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "apk=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag when started manually
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "GoneSmart $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          APK="${{ steps.meta.outputs.apk }}"
+          TITLE="GoneSmart $TAG"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
+          else
+            EXTRA=()
+            if [ "$PRERELEASE" = "true" ]; then
+              EXTRA+=(--prerelease)
+            fi
+            gh release create "$TAG" "$APK" --title "$TITLE" --notes-file RELEASE_NOTES.md "${EXTRA[@]}"
+          fi

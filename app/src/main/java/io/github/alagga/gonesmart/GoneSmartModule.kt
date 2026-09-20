@@ -1,0 +1,3631 @@
+package io.github.alagga.gonesmart
+
+import android.app.Activity
+import android.content.SharedPreferences
+import android.os.SystemClock
+import android.util.Log
+import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
+import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
+import java.lang.reflect.Field
+import java.lang.reflect.Method
+import java.util.ArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+class GoneSmartModule : XposedModule() {
+
+    companion object {
+
+        private const val TAG =
+            "GoneSmart"
+
+        private const val GMMP_PACKAGE =
+            "gonemad.gmmp"
+
+        private const val MAX_RECORDING_MATCHES_TO_TRY =
+            5
+
+        private const val LASTFM_RESULT_LIMIT =
+            50
+
+        private const val BROAD_LASTFM_RESULT_LIMIT =
+            150
+
+        private const val BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES =
+            8
+
+        private const val BROAD_LISTENBRAINZ_IDENTITIES_TO_USE =
+            3
+
+        private const val MERGED_RESULTS_TO_LOG =
+            20
+
+        private const val LOCAL_RESULTS_TO_LOG =
+            20
+
+        private const val SMART_PREPARE_TIMEOUT_SECONDS =
+            60L
+
+        private const val RECENT_DUPLICATE_HISTORY_LIMIT =
+            8
+
+        private const val STARTUP_PREWARM_STATUS_DELAY_MS =
+            700L
+
+        private const val STARTUP_PREWARM_MAX_ATTEMPTS =
+            20
+
+        private const val STARTUP_PREWARM_RETRY_DELAY_MS =
+            400L
+
+        /*
+         * Weak local results are worse than waiting online.
+         * Build 33's Rock test selected Mood with a score around
+         * 0.24 simply because only three local matches existed.
+         */
+        private const val MIN_POOL_RECOMMENDATION_SCORE =
+            0.35
+
+        private const val MIN_POOL_LOCAL_MATCH_SCORE =
+            0.90
+
+        private const val ENABLE_SMART_SELECTION_TEST =
+            true
+
+        private val CUSTOM_NUMBERED_EDIT_SUFFIX_REGEX =
+            Regex(
+                pattern =
+                    """(?i)\s*[\(\[]\s*edit\s*\d*\s*[\)\]]\s*$"""
+            )
+    }
+
+    @Volatile
+    private var options =
+        GoneSmartOptions()
+
+    private var remoteSettingsPreferences:
+            SharedPreferences? =
+        null
+
+    private val remoteSettingsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { preferences, key ->
+
+            val previous =
+                options
+
+            options =
+                GoneSmartOptions.fromPreferences(
+                    preferences
+                )
+
+            if (
+                key !=
+                GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES
+            ) {
+
+                pipelineGeneration
+                    .incrementAndGet()
+
+                recommendationPool
+                    .reset(
+                        newSessionId = -1L,
+                        newTargetSize = 1
+                    )
+            }
+
+            if (
+                previous.enabled &&
+                !options.enabled
+            ) {
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.NONE
+                    )
+
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_NONE,
+                    message = "GoneSmart disabled. GMMP Auto-DJ is selecting tracks normally.",
+                    appendEvent = true
+                )
+
+            } else if (
+                options.enabled
+            ) {
+
+                updatePlayerBadgeReadiness(
+                    appendRuntimeEvent =
+                        !previous.enabled
+                )
+            }
+
+            Log.i(
+                TAG,
+                "GoneSmart settings updated | key=$key | options=$options"
+            )
+        }
+
+    private val queueReader =
+        GmmpQueueReader()
+
+    private val queueSessionTracker =
+        QueueSessionTracker()
+
+    private val seedSelector =
+        SeedSelector(
+            historyLimit = 3,
+            upcomingLimit = 2,
+            maxTotalSeeds = 5
+        )
+
+    private val listenBrainzClient =
+        ListenBrainzClient()
+
+    private val lastFmClient =
+        LastFmClient(
+            apiKey =
+                BuildConfig.LASTFM_API_KEY
+        )
+
+    private val artistCatalog =
+        GmmpArtistCatalog()
+
+    private val trackInputResolver =
+        TrackInputResolver()
+
+    private val metadataNormalizer =
+        TrackMetadataNormalizer(
+            knownAmpersandArtistsProvider = {
+
+                artistCatalog
+                    .getKnownAmpersandArtists()
+            }
+        )
+
+    private val matchSelector =
+        ListenBrainzMatchSelector(
+            metadataNormalizer =
+                metadataNormalizer
+        )
+
+    private val recommendationAggregator =
+        RecommendationAggregator(
+            metadataNormalizer =
+                metadataNormalizer
+        )
+
+    private val gmmpLibraryReader =
+        GmmpLibraryReader()
+
+    private val localLibraryMatcher =
+        LocalLibraryMatcher(
+            metadataNormalizer =
+                metadataNormalizer,
+
+            trackInputResolver =
+                trackInputResolver
+        )
+
+    private val localArtistFallbackMatcher =
+        LocalArtistFallbackMatcher()
+
+    private val trackFamilyKeyBuilder =
+        TrackFamilyKeyBuilder(
+            metadataNormalizer =
+                metadataNormalizer,
+
+            trackInputResolver =
+                trackInputResolver
+        )
+
+    private val localPreferenceRanker =
+        LocalPreferenceRanker(
+            trackFamilyKeyBuilder =
+                trackFamilyKeyBuilder
+        )
+
+    private val networkStateReader =
+        NetworkStateReader()
+
+    private val gmmpAutoDjSettingsReader =
+        GmmpAutoDjSettingsReader()
+
+    private val statusNotifier =
+        GoneSmartStatusNotifier()
+
+    private val runtimeReporter =
+        GoneSmartRuntimeReporter()
+
+    private val playerBadgeController =
+        PlayerAutoDjBadgeController()
+
+    private val recommendationPool =
+        SessionRecommendationPool()
+
+    private val autoDjSelectionWindow =
+        ThreadLocal<SelectionWindowContext?>()
+
+    /*
+     * One provider pipeline at a time is intentional. Network
+     * requests and full recommendation aggregation are the
+     * expensive part; serializing them avoids duplicate work and
+     * keeps resource usage predictable.
+     */
+    private val pipelineExecutor =
+        Executors.newSingleThreadExecutor()
+
+    private val startupExecutor =
+        Executors.newSingleThreadExecutor()
+
+    private val poolFillLock =
+        Any()
+
+    @Volatile
+    private var activePoolFillFuture:
+            Future<Boolean>? =
+        null
+
+    @Volatile
+    private var activePoolFillSessionId =
+        -1L
+
+    private val pipelineGeneration =
+        AtomicLong(
+            0L
+        )
+
+    private val startupPrewarmStarted =
+        AtomicBoolean(
+            false
+        )
+
+    private val startupPrewarmRunning =
+        AtomicBoolean(
+            false
+        )
+
+    private val shownSessionNotices =
+        java.util.concurrent.ConcurrentHashMap
+            .newKeySet<String>()
+
+    override fun onModuleLoaded(
+        param: ModuleLoadedParam
+    ) {
+
+        Log.i(
+            TAG,
+            "GoneSmart module loaded"
+        )
+
+        log(
+            Log.INFO,
+            TAG,
+            "GoneSmart module loaded"
+        )
+    }
+
+    override fun onPackageReady(
+        param: PackageReadyParam
+    ) {
+
+        if (
+            !param.isFirstPackage
+        ) {
+
+            return
+        }
+
+        if (
+            param.packageName !=
+            GMMP_PACKAGE
+        ) {
+
+            return
+        }
+
+        initializeRemoteSettings()
+
+        Log.i(
+            TAG,
+            "GoneMAD Music Player detected - Build 45"
+        )
+
+        runtimeReporter.report(
+            mode = GoneSmartRuntimeContract.MODE_NONE,
+            message = "GoneSmart Build 45 loaded in GoneMAD Music Player.",
+            appendEvent = true
+        )
+
+        Log.i(
+            TAG,
+            "Last.fm configured = " +
+                lastFmClient.isConfigured()
+        )
+
+        Log.i(
+            TAG,
+            "GoneSmart options = $options"
+        )
+
+        log(
+            Log.INFO,
+            TAG,
+            "GoneMAD Music Player detected - Build 45"
+        )
+
+        try {
+
+            installAutoDjRefillHook(
+                param
+            )
+
+            installAutoDjSelectionHook(
+                param
+            )
+
+            try {
+
+                installPlayerBadgeHook(
+                    param
+                )
+
+            } catch (playerBadgeHookError: Throwable) {
+
+                Log.w(
+                    TAG,
+                    "Player badge hook could not be installed",
+                    playerBadgeHookError
+                )
+            }
+
+            try {
+
+                installStartupPrewarmHook(
+                    param
+                )
+
+            } catch (prewarmHookError: Throwable) {
+
+                Log.w(
+                    TAG,
+                    "Startup cache prewarm hook could not be installed",
+                    prewarmHookError
+                )
+            }
+
+            Log.i(
+                TAG,
+                "All GoneSmart core hooks installed successfully"
+            )
+
+        } catch (t: Throwable) {
+
+            Log.e(
+                TAG,
+                "Failed to install GoneSmart hooks",
+                t
+            )
+        }
+    }
+
+    private fun initializeRemoteSettings() {
+
+        try {
+
+            val preferences =
+                getRemotePreferences(
+                    GoneSmartSettingsKeys.GROUP
+                )
+
+            remoteSettingsPreferences
+                ?.unregisterOnSharedPreferenceChangeListener(
+                    remoteSettingsListener
+                )
+
+            remoteSettingsPreferences =
+                preferences
+
+            options =
+                GoneSmartOptions.fromPreferences(
+                    preferences
+                )
+
+            preferences.registerOnSharedPreferenceChangeListener(
+                remoteSettingsListener
+            )
+
+            Log.i(
+                TAG,
+                "Remote GoneSmart settings connected"
+            )
+
+        } catch (throwable: Throwable) {
+
+            options =
+                GoneSmartOptions()
+
+            Log.w(
+                TAG,
+                "Remote GoneSmart settings unavailable; using defaults",
+                throwable
+            )
+        }
+    }
+
+    private fun installPlayerBadgeHook(
+        param: PackageReadyParam
+    ) {
+
+        val activityClass =
+            param.classLoader.loadClass(
+                "gonemad.gmmp.ui.main.MainActivity"
+            )
+
+        val resumeMethod =
+            findNoArgMethod(
+                type = activityClass,
+                name = "onResume"
+            )
+
+        resumeMethod.isAccessible =
+            true
+
+        hook(
+            resumeMethod
+        ).intercept { chain ->
+
+            val result =
+                chain.proceed()
+
+            val activity =
+                chain.getThisObject()
+                    as? Activity
+
+            if (
+                activity != null
+            ) {
+
+                playerBadgeController
+                    .attach(
+                        activity
+                    )
+
+                updatePlayerBadgeReadiness(
+                    appendRuntimeEvent = false
+                )
+            }
+
+            result
+        }
+
+        Log.i(
+            TAG,
+            "Player Auto-DJ badge hook installed successfully"
+        )
+    }
+
+    private fun installStartupPrewarmHook(
+        param: PackageReadyParam
+    ) {
+
+        val autoDjClass =
+            param.classLoader.loadClass(
+                "qr"
+            )
+
+        val constructor =
+            autoDjClass
+                .declaredConstructors
+                .firstOrNull {
+                    it.parameterTypes.size ==
+                        2
+                }
+                ?: throw NoSuchMethodException(
+                    "qr constructor with 2 parameters"
+                )
+
+        constructor.isAccessible =
+            true
+
+        hook(
+            constructor
+        ).intercept { chain ->
+
+            val result =
+                chain.proceed()
+
+            chain
+                .getThisObject()
+                ?.let { autoDjInstance ->
+
+                    startStartupPrewarm(
+                        autoDjInstance
+                    )
+                }
+
+            result
+        }
+
+        Log.i(
+            TAG,
+            "Startup cache prewarm hook installed successfully"
+        )
+    }
+
+    private fun startStartupPrewarm(
+        autoDjInstance: Any
+    ) {
+
+        if (
+            !options.enabled
+        ) {
+
+            return
+        }
+
+        if (
+            !startupPrewarmStarted.compareAndSet(
+                false,
+                true
+            )
+        ) {
+
+            return
+        }
+
+        startupPrewarmRunning.set(
+            true
+        )
+
+        val startedAt =
+            SystemClock.elapsedRealtime()
+
+        statusNotifier.showDelayed(
+            message =
+                "Preparing GoneSmart cache… This may take a moment.",
+            delayMs =
+                STARTUP_PREWARM_STATUS_DELAY_MS,
+            shouldShow = {
+                startupPrewarmRunning.get()
+            }
+        )
+
+        startupExecutor.execute {
+
+            var success =
+                false
+
+            try {
+
+                for (
+                    attempt in
+                    1..STARTUP_PREWARM_MAX_ATTEMPTS
+                ) {
+
+                    if (
+                        !isAutoDjLibraryReady(
+                            autoDjInstance
+                        )
+                    ) {
+
+                        Thread.sleep(
+                            STARTUP_PREWARM_RETRY_DELAY_MS
+                        )
+
+                        continue
+                    }
+
+                    try {
+
+                        artistCatalog.ensureLoaded(
+                            autoDjInstance
+                        )
+
+                        val library =
+                            gmmpLibraryReader
+                                .read(
+                                    autoDjInstance
+                                )
+
+                        if (
+                            library.isEmpty()
+                        ) {
+
+                            Thread.sleep(
+                                STARTUP_PREWARM_RETRY_DELAY_MS
+                            )
+
+                            continue
+                        }
+
+                        val preparationResult =
+                            localLibraryMatcher
+                                .prepareLibrary(
+                                    library
+                                )
+
+                        Log.i(
+                            TAG,
+                            "STARTUP PREWARM READY | " +
+                                "library=${library.size} | " +
+                                "index=$preparationResult"
+                        )
+
+                        success =
+                            true
+
+                        break
+
+                    } catch (t: Throwable) {
+
+                        Log.w(
+                            TAG,
+                            "Startup prewarm attempt $attempt failed",
+                            t
+                        )
+
+                        Thread.sleep(
+                            STARTUP_PREWARM_RETRY_DELAY_MS
+                        )
+                    }
+                }
+
+            } finally {
+
+                startupPrewarmRunning.set(
+                    false
+                )
+
+                val elapsedMs =
+                    SystemClock.elapsedRealtime() -
+                        startedAt
+
+                if (
+                    success &&
+                    elapsedMs >=
+                    STARTUP_PREWARM_STATUS_DELAY_MS
+                ) {
+
+                    statusNotifier.show(
+                        "GoneSmart cache ready."
+                    )
+                }
+
+                if (
+                    !success
+                ) {
+
+                    startupPrewarmStarted.set(
+                        false
+                    )
+
+                    Log.w(
+                        TAG,
+                        "STARTUP PREWARM NOT READY | " +
+                            "will retry on demand"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun isAutoDjLibraryReady(
+        autoDjInstance: Any
+    ): Boolean {
+
+        return try {
+
+            val trackDaoField =
+                findField(
+                    type = autoDjInstance.javaClass,
+                    name = "r"
+                )
+
+            trackDaoField.isAccessible =
+                true
+
+            trackDaoField.get(
+                autoDjInstance
+            ) != null
+
+        } catch (
+            _: Throwable
+        ) {
+
+            false
+        }
+    }
+
+    private fun installAutoDjRefillHook(
+        param: PackageReadyParam
+    ) {
+
+        val autoDjClass =
+            param.classLoader.loadClass(
+                "qr"
+            )
+
+        val refillMethod =
+            autoDjClass.getDeclaredMethod(
+                "z",
+                Integer.TYPE
+            )
+
+        refillMethod.isAccessible =
+            true
+
+        hook(
+            refillMethod
+        ).intercept { chain ->
+
+            val requestedTracks =
+                (chain.getArg(
+                    0
+                ) as? Int)
+                    ?.coerceAtLeast(
+                        1
+                    )
+                    ?: 1
+
+            val autoDjInstance =
+                chain.getThisObject()
+
+            Log.i(
+                TAG,
+                "========================================"
+            )
+
+            Log.i(
+                TAG,
+                "Auto-DJ requested $requestedTracks track(s)"
+            )
+
+            if (
+                autoDjInstance == null
+            ) {
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | Auto-DJ instance unavailable"
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                Log.i(
+                    TAG,
+                    "========================================"
+                )
+
+                return@intercept null
+            }
+
+            if (
+                !options.enabled
+            ) {
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.NONE
+                    )
+
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_NONE,
+                    message = "GoneSmart disabled. GMMP Auto-DJ is selecting tracks normally.",
+                    appendEvent = false
+                )
+
+                return@intercept chain.proceed()
+            }
+
+            if (
+                !startupPrewarmStarted.get()
+            ) {
+
+                startStartupPrewarm(
+                    autoDjInstance
+                )
+            }
+
+            val beforeContext =
+                queueReader.read(
+                    autoDjInstance
+                )
+
+            if (
+                beforeContext == null
+            ) {
+
+                val state =
+                    networkStateReader
+                        .getState()
+
+                if (
+                    state ==
+                    GoneSmartNetworkState.OFFLINE
+                ) {
+
+                    Log.i(
+                        TAG,
+                        "SMART DJ OFFLINE FALLBACK | " +
+                            "queue context unavailable - using native GMMP Auto-DJ"
+                    )
+
+                    playerBadgeController
+                        .setMode(
+                            PlayerAutoDjBadgeController.Mode.FALLBACK
+                        )
+
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                        message = "Offline: using GMMP Auto-DJ fallback.",
+                        appendEvent = true
+                    )
+
+                    return@intercept chain.proceed()
+                }
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | " +
+                        "queue context unavailable; native online fallback disabled"
+                )
+
+                Log.i(
+                    TAG,
+                    "========================================"
+                )
+
+                return@intercept null
+            }
+
+            val session =
+                queueSessionTracker
+                    .observe(
+                        beforeContext
+                    )
+
+            logQueueSession(
+                session
+            )
+
+            val gmmpSettings =
+                gmmpAutoDjSettingsReader
+                    .read()
+
+            val poolSizing =
+                gmmpAutoDjSettingsReader
+                    .calculatePoolSizing(
+                        gmmpSettings
+                    )
+
+            if (
+                session.isNewSession ||
+                !recommendationPool.isForSession(
+                    session.sessionId
+                )
+            ) {
+
+                resetRecommendationPoolForSession(
+                    session = session,
+                    sizing = poolSizing
+                )
+
+            } else {
+
+                recommendationPool
+                    .configureTarget(
+                        expectedSessionId = session.sessionId,
+                        newTargetSize = poolSizing.targetSize
+                    )
+            }
+
+            Log.i(
+                TAG,
+                "GMMP AUTO-DJ SETTINGS | " +
+                    "initial=${gmmpSettings.initialQueueSize} | " +
+                    "upcoming=${gmmpSettings.upcomingTrackCount} | " +
+                    "source=${gmmpSettings.source} | " +
+                    "poolTarget=${poolSizing.targetSize} | " +
+                    "lowWater=${poolSizing.lowWaterMark}"
+            )
+
+            val queueTrackIds =
+                beforeContext
+                    .items
+                    .map {
+                        it.track.id
+                    }
+                    .toSet()
+
+            val networkState =
+                networkStateReader
+                    .getState()
+
+            Log.i(
+                TAG,
+                "NETWORK STATE = $networkState"
+            )
+
+            val poolAlreadyReady =
+                recommendationPool
+                    .hasEnough(
+                        expectedSessionId = session.sessionId,
+                        count = requestedTracks,
+                        excludedTrackIds = queueTrackIds
+                    )
+
+            updatePlayerBadgeReadiness(
+                networkStateOverride = networkState,
+                poolAvailableOverride = poolAlreadyReady,
+                appendRuntimeEvent = false
+            )
+
+            if (
+                !poolAlreadyReady &&
+                networkState ==
+                GoneSmartNetworkState.OFFLINE
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ OFFLINE FALLBACK | " +
+                        "current session has no usable cached tracks - " +
+                        "using native GMMP Auto-DJ"
+                )
+
+                showSessionNoticeOnce(
+                    sessionId = session.sessionId,
+                    noticeKey = "offline-native-fallback",
+                    message = "GoneSmart is offline. Using GMMP Auto-DJ fallback."
+                )
+
+                autoDjSelectionWindow.set(
+                    null
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                    message = "Offline: using GMMP Auto-DJ fallback for the current queue.",
+                    appendEvent = true
+                )
+
+                val result =
+                    chain.proceed()
+
+                val afterContext =
+                    queueReader.read(
+                        autoDjInstance
+                    )
+
+                if (
+                    afterContext != null
+                ) {
+
+                    queueSessionTracker
+                        .commitGeneratedAdditions(
+                            beforeContext = beforeContext,
+                            afterContext = afterContext,
+                            origin = QueueEntryOrigin.NATIVE_AUTO_DJ
+                        )
+
+                    logAddedTracks(
+                        beforeContext = beforeContext,
+                        afterContext = afterContext
+                    )
+                }
+
+                Log.i(
+                    TAG,
+                    "========================================"
+                )
+
+                return@intercept result
+            }
+
+            val seeds =
+                seedSelector
+                    .select(
+                        session = session
+                    )
+
+            logSeeds(
+                seeds
+            )
+
+            if (
+                !poolAlreadyReady &&
+                seeds.isEmpty()
+            ) {
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | " +
+                        "no usable current-session seeds"
+                )
+
+                showSessionNoticeOnce(
+                    sessionId = session.sessionId,
+                    noticeKey = "no-seeds",
+                    message = "GoneSmart could not build a recommendation context for this queue."
+                )
+
+                Log.i(
+                    TAG,
+                    "========================================"
+                )
+
+                return@intercept null
+            }
+
+            val poolReady =
+                if (
+                    poolAlreadyReady
+                ) {
+
+                    Log.i(
+                        TAG,
+                        "SMART DJ POOL HIT | " +
+                            recommendationPool.describe(
+                                session.sessionId
+                            )
+                    )
+
+                    true
+
+                } else {
+
+                    ensureRecommendationPoolReady(
+                        seeds = seeds,
+                        autoDjInstance = autoDjInstance,
+                        queueContext = beforeContext,
+                        session = session,
+                        sizing = poolSizing,
+                        requestedTracks = requestedTracks
+                    )
+                }
+
+            if (
+                !poolReady
+            ) {
+
+                val stateAfterFailure =
+                    networkStateReader
+                        .getState()
+
+                val shouldUseNativeFallback =
+                    stateAfterFailure ==
+                        GoneSmartNetworkState.OFFLINE ||
+                        options.fallbackToNativeAutoDjWhenNoSuitableTracks
+
+                if (
+                    shouldUseNativeFallback
+                ) {
+
+                    val offline =
+                        stateAfterFailure ==
+                            GoneSmartNetworkState.OFFLINE
+
+                    val reason =
+                        if (offline) {
+                            "connection unavailable while preparing recommendations"
+                        } else {
+                            "no sufficiently good GoneSmart library matches"
+                        }
+
+                    Log.i(
+                        TAG,
+                        "SMART DJ NATIVE FALLBACK | $reason"
+                    )
+
+                    showSessionNoticeOnce(
+                        sessionId = session.sessionId,
+                        noticeKey = if (offline) {
+                            "offline-native-fallback"
+                        } else {
+                            "no-matches-native-fallback"
+                        },
+                        message = if (offline) {
+                            "GoneSmart is offline. Using GMMP Auto-DJ fallback."
+                        } else {
+                            "GoneSmart found no suitable library matches. Using GMMP Auto-DJ fallback."
+                        }
+                    )
+
+                    autoDjSelectionWindow.set(
+                        null
+                    )
+
+                    playerBadgeController
+                        .setMode(
+                            PlayerAutoDjBadgeController.Mode.FALLBACK
+                        )
+
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                        message = if (offline) {
+                            "Offline: using GMMP Auto-DJ fallback."
+                        } else {
+                            "No suitable GoneSmart match: using GMMP Auto-DJ fallback."
+                        },
+                        appendEvent = true
+                    )
+
+                    val result =
+                        chain.proceed()
+
+                    val afterContext =
+                        queueReader.read(
+                            autoDjInstance
+                        )
+
+                    if (
+                        afterContext != null
+                    ) {
+
+                        queueSessionTracker
+                            .commitGeneratedAdditions(
+                                beforeContext = beforeContext,
+                                afterContext = afterContext,
+                                origin = QueueEntryOrigin.NATIVE_AUTO_DJ
+                            )
+
+                        logAddedTracks(
+                            beforeContext = beforeContext,
+                            afterContext = afterContext
+                        )
+                    }
+
+                    Log.i(
+                        TAG,
+                        "========================================"
+                    )
+
+                    return@intercept result
+                }
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | " +
+                        "no sufficiently good GoneSmart selection available; " +
+                        "native online fallback disabled by GoneSmart settings"
+                )
+
+                showSessionNoticeOnce(
+                    sessionId = session.sessionId,
+                    noticeKey = "no-matches-stopped",
+                    message = "GoneSmart found no suitable tracks in your library. Auto-DJ stopped."
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_STOPPED,
+                    message = "GoneSmart found no suitable local tracks and fallback is disabled.",
+                    appendEvent = true
+                )
+
+                Log.i(
+                    TAG,
+                    "========================================"
+                )
+
+                return@intercept null
+            }
+
+            val result =
+                try {
+
+                    autoDjSelectionWindow.set(
+                        SelectionWindowContext(
+                            sessionId = session.sessionId,
+                            excludedTrackIds = queueTrackIds
+                        )
+                    )
+
+                    chain.proceed()
+
+                } finally {
+
+                    autoDjSelectionWindow.set(
+                        null
+                    )
+                }
+
+            val afterContext =
+                queueReader.read(
+                    autoDjInstance
+                )
+
+            if (
+                afterContext != null
+            ) {
+
+                queueSessionTracker
+                    .commitGeneratedAdditions(
+                        beforeContext = beforeContext,
+                        afterContext = afterContext,
+                        origin = QueueEntryOrigin.GONESMART
+                    )
+
+                logAddedTracks(
+                    beforeContext = beforeContext,
+                    afterContext = afterContext
+                )
+
+                val updatedSession =
+                    queueSessionTracker
+                        .observe(
+                            afterContext
+                        )
+
+                maybeScheduleBackgroundPoolRefill(
+                    autoDjInstance = autoDjInstance,
+                    queueContext = afterContext,
+                    session = updatedSession,
+                    sizing = poolSizing
+                )
+            }
+
+            Log.i(
+                TAG,
+                "SMART DJ POOL STATE | " +
+                    recommendationPool.describe(
+                        session.sessionId
+                    )
+            )
+
+            Log.i(
+                TAG,
+                "========================================"
+            )
+
+            result
+        }
+
+        Log.i(
+            TAG,
+            "Auto-DJ refill hook installed successfully"
+        )
+    }
+
+    private fun installAutoDjSelectionHook(
+        param: PackageReadyParam
+    ) {
+
+        val autoDjDaoClass =
+            param.classLoader.loadClass(
+                "kr"
+            )
+
+        val selectionMethod =
+            autoDjDaoClass.getDeclaredMethod(
+                "F1",
+                Integer.TYPE
+            )
+
+        selectionMethod.isAccessible =
+            true
+
+        hook(
+            selectionMethod
+        ).intercept { chain ->
+
+            val requestedTracks =
+                chain.getArg(
+                    0
+                ) as? Int ?: -1
+
+            val nativeResult =
+                chain.proceed()
+
+            val selectionContext =
+                autoDjSelectionWindow.get()
+
+            if (
+                !ENABLE_SMART_SELECTION_TEST ||
+                selectionContext == null
+            ) {
+
+                return@intercept nativeResult
+            }
+
+            val rows =
+                nativeResult as? List<*>
+
+            if (
+                rows.isNullOrEmpty()
+            ) {
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | GMMP returned no Auto-DJ rows"
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                return@intercept ArrayList<Any>()
+            }
+
+            val desiredCount =
+                if (
+                    requestedTracks > 0
+                ) {
+
+                    minOf(
+                        requestedTracks,
+                        rows.size
+                    )
+
+                } else {
+
+                    rows.size
+                }
+
+            val smartTrackIds =
+                recommendationPool
+                    .peek(
+                        expectedSessionId = selectionContext.sessionId,
+                        count = desiredCount,
+                        excludedTrackIds = selectionContext.excludedTrackIds
+                    )
+
+            if (
+                smartTrackIds.size <
+                desiredCount
+            ) {
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | " +
+                        "needed=$desiredCount | " +
+                        "poolAvailable=${smartTrackIds.size}"
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                return@intercept ArrayList<Any>()
+            }
+
+            var appliedCount =
+                0
+
+            smartTrackIds
+                .forEachIndexed { index, trackId ->
+
+                    val row =
+                        rows[
+                            index
+                        ]
+                            ?: return@forEachIndexed
+
+                    try {
+
+                        setAutoDjTrackId(
+                            row = row,
+                            trackId = trackId
+                        )
+
+                        appliedCount +=
+                            1
+
+                        Log.i(
+                            TAG,
+                            "SMART DJ SELECT | " +
+                                "slot=${index + 1} | " +
+                                "trackId=$trackId"
+                        )
+
+                    } catch (t: Throwable) {
+
+                        Log.e(
+                            TAG,
+                            "Failed to replace Auto-DJ row " +
+                                "at slot ${index + 1}",
+                            t
+                        )
+                    }
+                }
+
+            if (
+                appliedCount !=
+                desiredCount
+            ) {
+
+                Log.w(
+                    TAG,
+                    "SMART DJ SUPPRESSED | " +
+                        "replacement incomplete " +
+                        "($appliedCount/$desiredCount)"
+                )
+
+                playerBadgeController
+                    .setMode(
+                        PlayerAutoDjBadgeController.Mode.FALLBACK
+                    )
+
+                return@intercept ArrayList<Any>()
+            }
+
+            recommendationPool
+                .commitSelected(
+                    expectedSessionId = selectionContext.sessionId,
+                    selectedTrackIds = smartTrackIds
+                )
+
+            Log.i(
+                TAG,
+                "SMART DJ APPLIED | " +
+                    "$appliedCount/$desiredCount track(s) replaced | " +
+                    recommendationPool.describe(
+                        selectionContext.sessionId
+                    )
+            )
+
+            playerBadgeController
+                .setMode(
+                    PlayerAutoDjBadgeController.Mode.SMART
+                )
+
+            runtimeReporter.report(
+                mode = GoneSmartRuntimeContract.MODE_SMART,
+                message = "GoneSmart selected $appliedCount track(s) from the current session pool.",
+                appendEvent = true
+            )
+
+            nativeResult
+        }
+
+        Log.i(
+            TAG,
+            "Auto-DJ selection hook installed successfully"
+        )
+    }
+
+    private fun updatePlayerBadgeReadiness(
+        networkStateOverride: GoneSmartNetworkState? = null,
+        poolAvailableOverride: Boolean? = null,
+        appendRuntimeEvent: Boolean = false
+    ) {
+
+        if (
+            !options.enabled
+        ) {
+
+            playerBadgeController
+                .setMode(
+                    PlayerAutoDjBadgeController.Mode.NONE
+                )
+
+            return
+        }
+
+        val networkState =
+            networkStateOverride
+                ?: networkStateReader
+                    .getState()
+
+        val cachedPoolAvailable =
+            poolAvailableOverride
+                ?: recommendationPool
+                    .hasAnyPending()
+
+        val ready =
+            networkState == GoneSmartNetworkState.ONLINE ||
+                cachedPoolAvailable
+
+        playerBadgeController
+            .setMode(
+                if (ready) {
+                    PlayerAutoDjBadgeController.Mode.SMART
+                } else {
+                    PlayerAutoDjBadgeController.Mode.FALLBACK
+                }
+            )
+
+        runtimeReporter.report(
+            mode = if (ready) {
+                GoneSmartRuntimeContract.MODE_SMART
+            } else {
+                GoneSmartRuntimeContract.MODE_STOPPED
+            },
+            message = if (ready) {
+                "GoneSmart enabled and ready."
+            } else {
+                "GoneSmart enabled, but no network or cached session pool is currently available."
+            },
+            appendEvent = appendRuntimeEvent
+        )
+    }
+
+    private fun resetRecommendationPoolForSession(
+        session: QueueSessionSnapshot,
+        sizing: SmartPoolSizing
+    ) {
+
+        pipelineGeneration
+            .incrementAndGet()
+
+        synchronized(
+            poolFillLock
+        ) {
+
+            activePoolFillFuture
+                ?.cancel(
+                    true
+                )
+
+            activePoolFillFuture =
+                null
+
+            activePoolFillSessionId =
+                -1L
+        }
+
+        recommendationPool
+            .reset(
+                newSessionId = session.sessionId,
+                newTargetSize = sizing.targetSize
+            )
+
+        Log.i(
+            TAG,
+            "SMART DJ POOL RESET | " +
+                "session=${session.sessionId} | " +
+                "target=${sizing.targetSize}"
+        )
+    }
+
+    private fun ensureRecommendationPoolReady(
+        seeds: List<RecommendationSeed>,
+        autoDjInstance: Any,
+        queueContext: QueueContext,
+        session: QueueSessionSnapshot,
+        sizing: SmartPoolSizing,
+        requestedTracks: Int
+    ): Boolean {
+
+        val queueTrackIds =
+            queueContext
+                .items
+                .map {
+                    it.track.id
+                }
+                .toSet()
+
+        if (
+            recommendationPool
+                .hasEnough(
+                    expectedSessionId = session.sessionId,
+                    count = requestedTracks,
+                    excludedTrackIds = queueTrackIds
+                )
+        ) {
+
+            return true
+        }
+
+        val future =
+            startPoolFill(
+                seeds = seeds,
+                autoDjInstance = autoDjInstance,
+                queueContext = queueContext,
+                session = session,
+                sizing = sizing,
+                background = false
+            )
+
+        Log.i(
+            TAG,
+            "SMART DJ WAIT | " +
+                "pool empty/insufficient - preparing session pool"
+        )
+
+        return try {
+
+            future.get(
+                SMART_PREPARE_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS
+            )
+
+            val ready =
+                recommendationPool
+                    .hasEnough(
+                        expectedSessionId = session.sessionId,
+                        count = requestedTracks,
+                        excludedTrackIds = queueTrackIds
+                    )
+
+            Log.i(
+                TAG,
+                "SMART DJ WAIT END | ready=$ready | " +
+                    recommendationPool.describe(
+                        session.sessionId
+                    )
+            )
+
+            ready
+
+        } catch (timeoutException: TimeoutException) {
+
+            pipelineGeneration
+                .incrementAndGet()
+
+            future.cancel(
+                true
+            )
+
+            Log.w(
+                TAG,
+                "SMART DJ WAIT TIMEOUT | native online fallback disabled"
+            )
+
+            false
+
+        } catch (throwable: Throwable) {
+
+            Log.e(
+                TAG,
+                "SMART DJ pool preparation failed; " +
+                    "native online fallback disabled",
+                throwable
+            )
+
+            false
+        }
+    }
+
+    private fun maybeScheduleBackgroundPoolRefill(
+        autoDjInstance: Any,
+        queueContext: QueueContext,
+        session: QueueSessionSnapshot,
+        sizing: SmartPoolSizing
+    ) {
+
+        if (
+            networkStateReader
+                .getState() !=
+            GoneSmartNetworkState.ONLINE
+        ) {
+
+            return
+        }
+
+        if (
+            !recommendationPool
+                .shouldRefill(
+                    expectedSessionId = session.sessionId,
+                    sizing = sizing
+                )
+        ) {
+
+            return
+        }
+
+        val seeds =
+            seedSelector
+                .select(
+                    session = session
+                )
+
+        if (
+            seeds.isEmpty()
+        ) {
+
+            return
+        }
+
+        Log.i(
+            TAG,
+            "SMART DJ BACKGROUND REFILL | " +
+                recommendationPool.describe(
+                    session.sessionId
+                )
+        )
+
+        startPoolFill(
+            seeds = seeds,
+            autoDjInstance = autoDjInstance,
+            queueContext = queueContext,
+            session = session,
+            sizing = sizing,
+            background = true
+        )
+    }
+
+    private fun startPoolFill(
+        seeds: List<RecommendationSeed>,
+        autoDjInstance: Any,
+        queueContext: QueueContext,
+        session: QueueSessionSnapshot,
+        sizing: SmartPoolSizing,
+        background: Boolean
+    ): Future<Boolean> {
+
+        synchronized(
+            poolFillLock
+        ) {
+
+            val existing =
+                activePoolFillFuture
+
+            if (
+                existing != null &&
+                !existing.isDone &&
+                activePoolFillSessionId ==
+                session.sessionId
+            ) {
+
+                return existing
+            }
+
+            val generation =
+                pipelineGeneration
+                    .get()
+
+            recommendationPool
+                .markRefillAttempt(
+                    session.sessionId
+                )
+
+            val future =
+                pipelineExecutor
+                    .submit<Boolean> {
+
+                        val candidateTrackIds =
+                            runRecommendationPipeline(
+                                seeds = seeds,
+                                autoDjInstance = autoDjInstance,
+                                queueContext = queueContext,
+                                session = session,
+                                generation = generation,
+                                targetPoolSize = sizing.targetSize
+                            )
+
+                        if (
+                            generation !=
+                            pipelineGeneration.get()
+                        ) {
+
+                            Log.i(
+                                TAG,
+                                "SMART DJ POOL FILL DISCARDED | stale generation"
+                            )
+
+                            return@submit false
+                        }
+
+                        val added =
+                            recommendationPool
+                                .mergeCandidates(
+                                    expectedSessionId = session.sessionId,
+                                    candidateTrackIds = candidateTrackIds,
+                                    newTargetSize = sizing.targetSize
+                                )
+
+                        Log.i(
+                            TAG,
+                            "SMART DJ POOL FILL END | " +
+                                "background=$background | " +
+                                "candidates=${candidateTrackIds.size} | " +
+                                "added=$added | " +
+                                recommendationPool.describe(
+                                    session.sessionId
+                                )
+                        )
+
+                        added > 0
+                    }
+
+            activePoolFillFuture =
+                future
+
+            activePoolFillSessionId =
+                session.sessionId
+
+            return future
+        }
+    }
+
+    private fun runRecommendationPipeline(
+        seeds: List<RecommendationSeed>,
+        autoDjInstance: Any,
+        queueContext: QueueContext,
+        session: QueueSessionSnapshot,
+        generation: Long,
+        targetPoolSize: Int
+    ): List<Long> {
+
+        return try {
+
+            artistCatalog.ensureLoaded(
+                autoDjInstance
+            )
+
+            Log.i(
+                TAG,
+                "========== GONESMART AGGREGATION START =========="
+            )
+
+            val rawContributions =
+                mutableListOf<RawRecommendationContribution>()
+
+            seeds.forEachIndexed { seedIndex, seed ->
+
+                val seedNumber =
+                    seedIndex + 1
+
+                val resolvedInput =
+                    trackInputResolver
+                        .resolve(
+                            seed.track
+                        )
+
+                if (
+                    resolvedInput.source !=
+                    TrackInputSource.TAGS
+                ) {
+
+                    Log.i(
+                        TAG,
+                        "GS INPUT FALLBACK $seedNumber | " +
+                            "source=${resolvedInput.source} | " +
+                            "rawArtist=${seed.track.artist} | " +
+                            "rawTitle=${seed.track.title} | " +
+                            "resolvedArtist=${resolvedInput.track.artist} | " +
+                            "resolvedTitle=${resolvedInput.track.title}"
+                    )
+                }
+
+                val metadata =
+                    metadataNormalizer
+                        .normalize(
+                            resolvedInput.track
+                        )
+
+                logNormalizedMetadata(
+                    seedNumber = seedNumber,
+                    metadata = metadata
+                )
+
+                if (
+                    metadata.searchArtist.isBlank() ||
+                    metadata.searchTitle.isBlank()
+                ) {
+
+                    return@forEachIndexed
+                }
+
+                var seedContributions =
+                    collectSeedContributions(
+                        seedNumber = seedNumber,
+                        seed = seed,
+                        metadata = metadata
+                    )
+
+                if (
+                    seedContributions.isEmpty() &&
+                    resolvedInput.source !=
+                    TrackInputSource.TAGS
+                ) {
+
+                    val providerFallbackTrack =
+                        buildProviderFallbackTrack(
+                            resolvedInput.track
+                        )
+
+                    if (
+                        providerFallbackTrack != null
+                    ) {
+
+                        val fallbackMetadata =
+                            metadataNormalizer
+                                .normalize(
+                                    providerFallbackTrack
+                                )
+
+                        if (
+                            fallbackMetadata.searchArtist.isNotBlank() &&
+                            fallbackMetadata.searchTitle.isNotBlank()
+                        ) {
+
+                            Log.i(
+                                TAG,
+                                "GS PROVIDER TITLE FALLBACK $seedNumber | " +
+                                    "artist=${fallbackMetadata.searchArtist} | " +
+                                    "title=${fallbackMetadata.searchTitle}"
+                            )
+
+                            seedContributions =
+                                collectSeedContributions(
+                                    seedNumber = seedNumber,
+                                    seed = seed,
+                                    metadata = fallbackMetadata
+                                )
+                        }
+                    }
+                }
+
+                rawContributions +=
+                    seedContributions
+            }
+
+            if (
+                generation !=
+                pipelineGeneration.get()
+            ) {
+
+                return emptyList()
+            }
+
+            var broadSearchPerformed =
+                false
+
+            var merged =
+                recommendationAggregator
+                    .aggregate(
+                        rawContributions
+                    )
+
+            logMergedRecommendations(
+                merged
+            )
+
+            if (
+                merged.isEmpty()
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ BROAD SEARCH START | " +
+                        "reason=no-external-recommendations | " +
+                        "seeds=${seeds.size}"
+                )
+
+                broadSearchPerformed =
+                    true
+
+                val broadContributions =
+                    collectBroadSeedContributions(
+                        seeds = seeds
+                    )
+
+                if (
+                    generation !=
+                    pipelineGeneration.get()
+                ) {
+
+                    return emptyList()
+                }
+
+                merged =
+                    recommendationAggregator
+                        .aggregate(
+                            broadContributions
+                        )
+
+                Log.i(
+                    TAG,
+                    "SMART DJ BROAD SEARCH EXTERNAL END | " +
+                        "broadContributions=${broadContributions.size} | " +
+                        "merged=${merged.size}"
+                )
+
+                logMergedRecommendations(
+                    merged
+                )
+            }
+
+            if (
+                merged.isEmpty()
+            ) {
+
+                Log.w(
+                    TAG,
+                    "SMART DJ PIPELINE | no external recommendations after broad search"
+                )
+
+                return emptyList()
+            }
+
+            val library =
+                gmmpLibraryReader
+                    .read(
+                        autoDjInstance
+                    )
+
+            Log.i(
+                TAG,
+                "LOCAL LIBRARY TRACK COUNT = " +
+                    library.size
+            )
+
+            if (
+                library.isEmpty()
+            ) {
+
+                return emptyList()
+            }
+
+            val poolSeenTrackIds =
+                recommendationPool
+                    .allSeenTrackIds(
+                        session.sessionId
+                    )
+
+            val excludedTrackIds =
+                buildSet {
+
+                    addAll(
+                        queueContext
+                            .items
+                            .map {
+                                it.track.id
+                            }
+                    )
+
+                    addAll(
+                        poolSeenTrackIds
+                    )
+                }
+
+            var activeRecommendations =
+                merged
+
+            var directLocalMatches =
+                localLibraryMatcher
+                    .match(
+                        recommendations = activeRecommendations,
+                        library = library,
+                        excludedTrackIds = excludedTrackIds
+                    )
+
+            /*
+             * External services recommend tracks globally, but the user can
+             * only play files that exist in the local GMMP library. When the
+             * exact recommended recordings are missing, expand cautiously to
+             * other local songs by strongly recommended artists and by the
+             * current session's seed artists. This is intentionally a lower-
+             * scored fallback and therefore cannot outrank a strong exact
+             * track match.
+             *
+             * The artist fallback also understands acronym identities such as
+             * "Machine Gun Kelly" <-> "MGK".
+             */
+            var artistFallbackMatches =
+                if (
+                    directLocalMatches.size <
+                    targetPoolSize
+                ) {
+
+                    localArtistFallbackMatcher
+                        .match(
+                            recommendations = activeRecommendations,
+                            seeds = seeds,
+                            library = library,
+                            excludedTrackIds = excludedTrackIds,
+                            maxResults =
+                                targetPoolSize * 2
+                        )
+
+                } else {
+
+                    emptyList()
+                }
+
+            var rawLocalMatches =
+                directLocalMatches +
+                    artistFallbackMatches
+
+            Log.i(
+                TAG,
+                "LOCAL MATCH COMBINED | " +
+                    "direct=${directLocalMatches.size} | " +
+                    "artistFallback=${artistFallbackMatches.size} | " +
+                    "total=${rawLocalMatches.size}"
+            )
+
+            /*
+             * Build 45: exactly one broader provider round is allowed, and
+             * only when the normal provider round produced recommendations
+             * but not a single local-library candidate (including the local
+             * artist fallback). This keeps the common case cheap while giving
+             * sparse/local libraries one additional chance.
+             *
+             * The seed cap remains unchanged. The broad round widens only the
+             * provider result breadth: Last.fm asks for more similar tracks,
+             * while ListenBrainz may use several accepted recording identities
+             * instead of stopping after the first useful one.
+             */
+            if (
+                rawLocalMatches.isEmpty() &&
+                !broadSearchPerformed
+            ) {
+
+                broadSearchPerformed =
+                    true
+
+                Log.i(
+                    TAG,
+                    "SMART DJ BROAD SEARCH START | " +
+                        "reason=no-local-matches | " +
+                        "initialRecommendations=${merged.size} | " +
+                        "seeds=${seeds.size}"
+                )
+
+                val broadContributions =
+                    collectBroadSeedContributions(
+                        seeds = seeds
+                    )
+
+                if (
+                    generation !=
+                    pipelineGeneration.get()
+                ) {
+
+                    return emptyList()
+                }
+
+                if (
+                    broadContributions.isNotEmpty()
+                ) {
+
+                    val broadMerged =
+                        recommendationAggregator
+                            .aggregate(
+                                rawContributions +
+                                    broadContributions
+                            )
+
+                    if (
+                        broadMerged.isNotEmpty()
+                    ) {
+
+                        activeRecommendations =
+                            broadMerged
+
+                        directLocalMatches =
+                            localLibraryMatcher
+                                .match(
+                                    recommendations = activeRecommendations,
+                                    library = library,
+                                    excludedTrackIds = excludedTrackIds
+                                )
+
+                        artistFallbackMatches =
+                            if (
+                                directLocalMatches.size <
+                                targetPoolSize
+                            ) {
+
+                                localArtistFallbackMatcher
+                                    .match(
+                                        recommendations = activeRecommendations,
+                                        seeds = seeds,
+                                        library = library,
+                                        excludedTrackIds = excludedTrackIds,
+                                        maxResults =
+                                            targetPoolSize * 2
+                                    )
+
+                            } else {
+
+                                emptyList()
+                            }
+
+                        rawLocalMatches =
+                            directLocalMatches +
+                                artistFallbackMatches
+
+                        Log.i(
+                            TAG,
+                            "SMART DJ BROAD SEARCH END | " +
+                                "broadContributions=${broadContributions.size} | " +
+                                "merged=${activeRecommendations.size} | " +
+                                "direct=${directLocalMatches.size} | " +
+                                "artistFallback=${artistFallbackMatches.size} | " +
+                                "totalLocal=${rawLocalMatches.size}"
+                        )
+                    }
+                }
+
+                if (
+                    rawLocalMatches.isEmpty()
+                ) {
+
+                    Log.i(
+                        TAG,
+                        "SMART DJ BROAD SEARCH EXHAUSTED | no local matches"
+                    )
+                }
+            }
+
+            val duplicateContextTracks =
+                buildDuplicateContextTracks(
+                    session = session,
+                    library = library,
+                    additionalTrackIds = poolSeenTrackIds
+                )
+
+            val currentOptions =
+                options
+
+            val ratingProfile =
+                localPreferenceRanker
+                    .ratingThresholdProfile(
+                        seeds = seeds,
+                        library = library,
+                        options = currentOptions
+                    )
+
+            val rankedLocalMatches =
+                localPreferenceRanker
+                    .rank(
+                        matches = rawLocalMatches,
+                        library = library,
+                        seeds = seeds,
+                        duplicateContextTracks = duplicateContextTracks,
+                        options = currentOptions
+                    )
+
+            var qualityMatches =
+                applyPoolQualityGate(
+                    matches = rankedLocalMatches,
+                    targetPoolSize = targetPoolSize,
+                    mode = "rating"
+                )
+
+            if (
+                qualityMatches.isEmpty() &&
+                ratingProfile.active &&
+                currentOptions.fallbackWithoutRatingRestrictions
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ RATING FALLBACK START | " +
+                        "minimum=${formatScore(ratingProfile.minimumRatingStars)} | " +
+                        "smartMedian=${ratingProfile.smartMedianRatingStars?.let { formatScore(it) } ?: "off"} | " +
+                        "effective=${formatScore(ratingProfile.effectiveRatingStars)}"
+                )
+
+                val fallbackOptions =
+                    currentOptions.copy(
+                        minimumRatingStars = 0.0,
+                        smartRatingEnabled = false
+                    )
+
+                val fallbackRankedMatches =
+                    localPreferenceRanker
+                        .rank(
+                            matches = rawLocalMatches,
+                            library = library,
+                            seeds = seeds,
+                            duplicateContextTracks = duplicateContextTracks,
+                            options = fallbackOptions
+                        )
+
+                val fallbackQualityMatches =
+                    applyPoolQualityGate(
+                        matches = fallbackRankedMatches,
+                        targetPoolSize = targetPoolSize,
+                        mode = "rating-fallback"
+                    )
+
+                if (
+                    fallbackQualityMatches.isNotEmpty()
+                ) {
+
+                    qualityMatches =
+                        fallbackQualityMatches
+
+                    Log.i(
+                        TAG,
+                        "SMART DJ RATING FALLBACK APPLIED | " +
+                            "accepted=${qualityMatches.size}"
+                    )
+
+                    showSessionNoticeOnce(
+                        sessionId = session.sessionId,
+                        noticeKey = "rating-fallback",
+                        message = "No suitable tracks met the current rating rules. GoneSmart is temporarily ignoring Minimum Rating and Smart Rating for this recommendation pool."
+                    )
+
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_SMART,
+                        message = "Rating fallback active: Minimum Rating and Smart Rating were ignored for the current recommendation pool.",
+                        appendEvent = true
+                    )
+                }
+            }
+
+            logLocalRecommendations(
+                qualityMatches
+            )
+
+            if (
+                generation !=
+                pipelineGeneration.get()
+            ) {
+
+                return emptyList()
+            }
+
+            qualityMatches
+                .map {
+                    it.track.id
+                }
+                .distinct()
+
+        } catch (throwable: Throwable) {
+
+            Log.e(
+                TAG,
+                "Recommendation aggregation failed",
+                throwable
+            )
+
+            emptyList()
+
+        } finally {
+
+            Log.i(
+                TAG,
+                "========== GONESMART AGGREGATION END =========="
+            )
+        }
+    }
+
+    private fun applyPoolQualityGate(
+        matches: List<LocalRecommendationMatch>,
+        targetPoolSize: Int,
+        mode: String
+    ): List<LocalRecommendationMatch> {
+
+        val accepted =
+            matches
+                .filter { match ->
+
+                    match.finalScore >=
+                        MIN_POOL_RECOMMENDATION_SCORE &&
+                        match.matchScore >=
+                        MIN_POOL_LOCAL_MATCH_SCORE
+                }
+                .take(
+                    targetPoolSize
+                )
+
+        Log.i(
+            TAG,
+            "SMART DJ QUALITY GATE | " +
+                "mode=$mode | " +
+                "input=${matches.size} | " +
+                "accepted=${accepted.size} | " +
+                "minRecommendation=$MIN_POOL_RECOMMENDATION_SCORE | " +
+                "minLocalMatch=$MIN_POOL_LOCAL_MATCH_SCORE"
+        )
+
+        return accepted
+    }
+
+    private fun buildDuplicateContextTracks(
+        session: QueueSessionSnapshot,
+        library: List<GmmpLibraryTrack>,
+        additionalTrackIds: Set<Long>
+    ): List<TrackInfo> {
+
+        val result =
+            mutableListOf<TrackInfo>()
+
+        session
+            .currentItem
+            ?.let {
+                result +=
+                    it.track
+            }
+
+        session
+            .pastItems
+            .sortedByDescending {
+                it.queuePosition
+            }
+            .take(
+                RECENT_DUPLICATE_HISTORY_LIMIT
+            )
+            .forEach {
+                result +=
+                    it.track
+            }
+
+        session
+            .upcomingItems
+            .forEach {
+                result +=
+                    it.track
+            }
+
+        result +=
+            session.userAnchorTracks
+
+        result +=
+            session.recentGeneratedTracks
+
+        if (
+            additionalTrackIds.isNotEmpty()
+        ) {
+
+            library
+                .asSequence()
+                .filter {
+                    it.track.id in
+                        additionalTrackIds
+                }
+                .forEach {
+                    result +=
+                        it.track
+                }
+        }
+
+        return result
+            .distinctBy {
+                it.id
+            }
+    }
+
+    private fun setAutoDjTrackId(
+        row: Any,
+        trackId: Long
+    ) {
+
+        val field =
+            findField(
+                type = row.javaClass,
+                name = "a"
+            )
+
+        field.isAccessible =
+            true
+
+        when (
+            field.type
+        ) {
+
+            java.lang.Long.TYPE -> {
+
+                field.setLong(
+                    row,
+                    trackId
+                )
+            }
+
+            java.lang.Integer.TYPE -> {
+
+                field.setInt(
+                    row,
+                    trackId.toInt()
+                )
+            }
+
+            else -> {
+
+                field.set(
+                    row,
+                    trackId
+                )
+            }
+        }
+    }
+
+    private fun collectSeedContributions(
+        seedNumber: Int,
+        seed: RecommendationSeed,
+        metadata: NormalizedTrackMetadata,
+        broadSearch: Boolean = false
+    ): List<RawRecommendationContribution> {
+
+        val result =
+            mutableListOf<RawRecommendationContribution>()
+
+        result +=
+            collectListenBrainzContributions(
+                seedNumber = seedNumber,
+                seed = seed,
+                metadata = metadata,
+                broadSearch = broadSearch
+            )
+
+        result +=
+            collectLastFmContributions(
+                seedNumber = seedNumber,
+                seed = seed,
+                metadata = metadata,
+                broadSearch = broadSearch
+            )
+
+        return result
+    }
+
+    private fun collectBroadSeedContributions(
+        seeds: List<RecommendationSeed>
+    ): List<RawRecommendationContribution> {
+
+        val result =
+            mutableListOf<RawRecommendationContribution>()
+
+        seeds.forEachIndexed { seedIndex, seed ->
+
+            val seedNumber =
+                seedIndex + 1
+
+            val resolvedInput =
+                trackInputResolver
+                    .resolve(
+                        seed.track
+                    )
+
+            val metadata =
+                metadataNormalizer
+                    .normalize(
+                        resolvedInput.track
+                    )
+
+            if (
+                metadata.searchArtist.isBlank() ||
+                metadata.searchTitle.isBlank()
+            ) {
+
+                return@forEachIndexed
+            }
+
+            var contributions =
+                collectSeedContributions(
+                    seedNumber = seedNumber,
+                    seed = seed,
+                    metadata = metadata,
+                    broadSearch = true
+                )
+
+            if (
+                contributions.isEmpty() &&
+                resolvedInput.source !=
+                TrackInputSource.TAGS
+            ) {
+
+                val providerFallbackTrack =
+                    buildProviderFallbackTrack(
+                        resolvedInput.track
+                    )
+
+                if (
+                    providerFallbackTrack != null
+                ) {
+
+                    val fallbackMetadata =
+                        metadataNormalizer
+                            .normalize(
+                                providerFallbackTrack
+                            )
+
+                    if (
+                        fallbackMetadata.searchArtist.isNotBlank() &&
+                        fallbackMetadata.searchTitle.isNotBlank()
+                    ) {
+
+                        contributions =
+                            collectSeedContributions(
+                                seedNumber = seedNumber,
+                                seed = seed,
+                                metadata = fallbackMetadata,
+                                broadSearch = true
+                            )
+                    }
+                }
+            }
+
+            result +=
+                contributions
+        }
+
+        return result
+    }
+
+    private fun buildProviderFallbackTrack(
+        track: TrackInfo
+    ): TrackInfo? {
+
+        val title =
+            track.title
+                ?.trim()
+                .orEmpty()
+
+        if (
+            title.isBlank()
+        ) {
+
+            return null
+        }
+
+        val fallbackTitle =
+            CUSTOM_NUMBERED_EDIT_SUFFIX_REGEX
+                .replace(
+                    title,
+                    ""
+                )
+                .trim()
+
+        if (
+            fallbackTitle.isBlank() ||
+            fallbackTitle ==
+            title
+        ) {
+
+            return null
+        }
+
+        return track.copy(
+            title = fallbackTitle
+        )
+    }
+
+    private fun collectListenBrainzContributions(
+        seedNumber: Int,
+        seed: RecommendationSeed,
+        metadata: NormalizedTrackMetadata,
+        broadSearch: Boolean = false
+    ): List<RawRecommendationContribution> {
+
+        val broadListenBrainzContributions =
+            mutableListOf<RawRecommendationContribution>()
+
+        var broadListenBrainzIdentityCount =
+            0
+
+        try {
+
+            val matches =
+                listenBrainzClient
+                    .searchRecording(
+                        artist = metadata.searchArtist,
+                        title = metadata.searchTitle
+                    )
+
+            val evaluations =
+                matchSelector
+                    .evaluateAll(
+                        localMetadata = metadata,
+                        matches = matches
+                    )
+                    .filter {
+                        it.accepted
+                    }
+                    .take(
+                        if (
+                            broadSearch
+                        ) {
+
+                            BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES
+
+                        } else {
+
+                            MAX_RECORDING_MATCHES_TO_TRY
+                        }
+                    )
+
+            for (
+                evaluation in
+                evaluations
+            ) {
+
+                val similar =
+                    try {
+
+                        listenBrainzClient
+                            .getSimilarRecordings(
+                                evaluation
+                                    .match
+                                    .recordingMbid
+                            )
+
+                    } catch (t: Throwable) {
+
+                        emptyList()
+                    }
+
+                if (
+                    similar.isEmpty()
+                ) {
+
+                    continue
+                }
+
+                val highestScore =
+                    similar
+                        .maxOfOrNull {
+                            it.score
+                        }
+                        ?.takeIf {
+                            it > 0.0
+                        }
+                        ?: 1.0
+
+                val seedWeight =
+                    seedWeight(
+                        seed
+                    )
+
+                Log.i(
+                    TAG,
+                    (
+                        if (
+                            broadSearch
+                        ) {
+
+                            "LB BROAD CONTRIBUTIONS seed=$seedNumber | "
+
+                        } else {
+
+                            "LB CONTRIBUTIONS seed=$seedNumber | "
+                        }
+                    ) +
+                        "results=${similar.size} | " +
+                        "identityConfidence=" +
+                        formatScore(
+                            evaluation.totalScore
+                        )
+                )
+
+                val mapped =
+                    similar
+                        .map { item ->
+
+                            val normalizedSimilarity =
+                                (
+                                    item.score /
+                                        highestScore
+                                    )
+                                    .coerceIn(
+                                        0.0,
+                                        1.0
+                                    )
+
+                            RawRecommendationContribution(
+                                provider =
+                                    RecommendationProvider
+                                        .LISTENBRAINZ,
+
+                                seed = seed,
+
+                                artist =
+                                    item.artistName,
+
+                                title =
+                                    item.recordingName,
+
+                                mbid =
+                                    item.recordingMbid,
+
+                                providerSimilarity =
+                                    normalizedSimilarity,
+
+                                seedWeight =
+                                    seedWeight,
+
+                                identityConfidence =
+                                    evaluation.totalScore
+                                        .coerceIn(
+                                            0.0,
+                                            1.0
+                                        )
+                            )
+                        }
+
+                if (
+                    !broadSearch
+                ) {
+
+                    return mapped
+                }
+
+                broadListenBrainzContributions +=
+                    mapped
+
+                broadListenBrainzIdentityCount +=
+                    1
+
+                if (
+                    broadListenBrainzIdentityCount >=
+                    BROAD_LISTENBRAINZ_IDENTITIES_TO_USE
+                ) {
+
+                    break
+                }
+            }
+
+            if (
+                broadSearch &&
+                broadListenBrainzContributions.isNotEmpty()
+            ) {
+
+                return broadListenBrainzContributions
+                    .distinctBy { contribution ->
+                        Triple(
+                            contribution.artist,
+                            contribution.title,
+                            contribution.mbid
+                        )
+                    }
+            }
+
+        } catch (t: Throwable) {
+
+            Log.w(
+                TAG,
+                "ListenBrainz contribution collection failed " +
+                    "for seed $seedNumber",
+                t
+            )
+        }
+
+        return emptyList()
+    }
+
+    private fun collectLastFmContributions(
+        seedNumber: Int,
+        seed: RecommendationSeed,
+        metadata: NormalizedTrackMetadata,
+        broadSearch: Boolean = false
+    ): List<RawRecommendationContribution> {
+
+        if (
+            !lastFmClient.isConfigured()
+        ) {
+
+            return emptyList()
+        }
+
+        val queryCandidates =
+            buildLastFmQueryCandidates(
+                metadata
+            )
+
+        val testedIdentityKeys =
+            mutableSetOf<String>()
+
+        for (
+            candidate in
+            queryCandidates
+        ) {
+
+            val identity =
+                try {
+
+                    lastFmClient
+                        .resolveTrack(
+                            artist = candidate.artist,
+                            title = candidate.title
+                        )
+
+                } catch (t: Throwable) {
+
+                    null
+                }
+                    ?: continue
+
+            val identityKey =
+                buildLastFmIdentityKey(
+                    identity
+                )
+
+            if (
+                identityKey in
+                testedIdentityKeys
+            ) {
+
+                continue
+            }
+
+            testedIdentityKeys +=
+                identityKey
+
+            val similar =
+                try {
+
+                    lastFmClient
+                        .getSimilarTracks(
+                            identity = identity,
+                            limit =
+                                if (
+                                    broadSearch
+                                ) {
+
+                                    BROAD_LASTFM_RESULT_LIMIT
+
+                                } else {
+
+                                    LASTFM_RESULT_LIMIT
+                                }
+                        )
+
+                } catch (t: Throwable) {
+
+                    emptyList()
+                }
+
+            if (
+                similar.isEmpty()
+            ) {
+
+                continue
+            }
+
+            val identityConfidence =
+                lastFmIdentityConfidence(
+                    metadata = metadata,
+                    candidate = candidate
+                )
+
+            val seedWeight =
+                seedWeight(
+                    seed
+                )
+
+            Log.i(
+                TAG,
+                (
+                    if (
+                        broadSearch
+                    ) {
+
+                        "LASTFM BROAD CONTRIBUTIONS seed=$seedNumber | "
+
+                    } else {
+
+                        "LASTFM CONTRIBUTIONS seed=$seedNumber | "
+                    }
+                ) +
+                    "results=${similar.size} | " +
+                    "identityConfidence=" +
+                    formatScore(
+                        identityConfidence
+                    ) +
+                    " | source=${candidate.artist} - " +
+                    candidate.title
+            )
+
+            return similar
+                .map { item ->
+
+                    RawRecommendationContribution(
+                        provider =
+                            RecommendationProvider
+                                .LASTFM,
+
+                        seed = seed,
+
+                        artist =
+                            item.artistName,
+
+                        title =
+                            item.trackName,
+
+                        mbid =
+                            item.mbid,
+
+                        providerSimilarity =
+                            item.match
+                                .coerceIn(
+                                    0.0,
+                                    1.0
+                                ),
+
+                        seedWeight =
+                            seedWeight,
+
+                        identityConfidence =
+                            identityConfidence
+                    )
+                }
+        }
+
+        return emptyList()
+    }
+
+    private fun seedWeight(
+        seed: RecommendationSeed
+    ): Double {
+
+        val baseWeight =
+            when (
+                seed.type
+            ) {
+
+                SeedType.CURRENT ->
+                    1.0
+
+                SeedType.HISTORY ->
+                    when (
+                        seed.recency
+                    ) {
+
+                        1 -> 0.85
+                        2 -> 0.72
+                        3 -> 0.60
+                        else -> 0.50
+                    }
+
+                SeedType.UPCOMING ->
+                    when (
+                        seed.recency
+                    ) {
+
+                        1 -> 0.75
+                        else -> 0.65
+                    }
+
+                SeedType.ANCHOR ->
+                    0.85
+
+                SeedType.GENERATED ->
+                    1.0
+            }
+
+        return (
+            baseWeight *
+                seed.weightMultiplier
+            )
+            .coerceIn(
+                0.0,
+                1.0
+            )
+    }
+
+    private fun lastFmIdentityConfidence(
+        metadata: NormalizedTrackMetadata,
+        candidate: LastFmQueryCandidate
+    ): Double {
+
+        val exactTitle =
+            metadataNormalizer
+                .comparisonKey(
+                    candidate.title
+                ) ==
+                metadataNormalizer
+                    .comparisonKey(
+                        metadata.searchTitle
+                    )
+
+        return if (
+            exactTitle
+        ) {
+
+            1.0
+
+        } else {
+
+            0.75
+        }
+    }
+
+    private fun buildLastFmQueryCandidates(
+        metadata: NormalizedTrackMetadata
+    ): List<LastFmQueryCandidate> {
+
+        val remixKeys =
+            metadata
+                .remixArtists
+                .map {
+                    metadataNormalizer
+                        .comparisonKey(
+                            it
+                        )
+                }
+                .toSet()
+
+        val coreArtists =
+            metadata
+                .artists
+                .filter { artist ->
+
+                    metadataNormalizer
+                        .comparisonKey(
+                            artist
+                        ) !in
+                        remixKeys
+                }
+                .ifEmpty {
+                    metadata.artists
+                }
+
+        val artistCandidates =
+            linkedSetOf<String>()
+
+        val primaryArtist =
+            coreArtists
+                .firstOrNull()
+                ?.trim()
+                .orEmpty()
+
+        if (
+            primaryArtist.isNotBlank()
+        ) {
+
+            artistCandidates +=
+                primaryArtist
+        }
+
+        if (
+            coreArtists.size > 1
+        ) {
+
+            artistCandidates +=
+                coreArtists
+                    .joinToString(
+                        " & "
+                    )
+        }
+
+        if (
+            primaryArtist.isNotBlank() &&
+            metadata.featuredArtists.isNotEmpty()
+        ) {
+
+            val featured =
+                metadata
+                    .featuredArtists
+                    .joinToString(
+                        " & "
+                    )
+
+            artistCandidates +=
+                "$primaryArtist feat. $featured"
+
+            if (
+                coreArtists.size > 1
+            ) {
+
+                artistCandidates +=
+                    coreArtists
+                        .joinToString(
+                            " & "
+                        ) +
+                        " feat. " +
+                        featured
+            }
+        }
+
+        val titleCandidates =
+            linkedSetOf<String>()
+
+        if (
+            metadata.searchTitle.isNotBlank()
+        ) {
+
+            titleCandidates +=
+                metadata.searchTitle
+        }
+
+        if (
+            metadata.baseTitle.isNotBlank()
+        ) {
+
+            titleCandidates +=
+                metadata.baseTitle
+        }
+
+        val result =
+            mutableListOf<LastFmQueryCandidate>()
+
+        artistCandidates
+            .forEach { artist ->
+
+                titleCandidates
+                    .forEach { title ->
+
+                        result +=
+                            LastFmQueryCandidate(
+                                artist = artist,
+                                title = title
+                            )
+                    }
+            }
+
+        return result
+            .distinctBy {
+
+                metadataNormalizer
+                    .comparisonKey(
+                        it.artist
+                    ) +
+                    "|" +
+                    metadataNormalizer
+                        .comparisonKey(
+                            it.title
+                        )
+            }
+    }
+
+    private fun buildLastFmIdentityKey(
+        identity: LastFmTrackIdentity
+    ): String {
+
+        if (
+            !identity.mbid.isNullOrBlank()
+        ) {
+
+            return "mbid:" +
+                identity.mbid
+                    .lowercase(
+                        java.util.Locale.ROOT
+                    )
+        }
+
+        return "text:" +
+            metadataNormalizer
+                .comparisonKey(
+                    identity.artistName
+                ) +
+            "|" +
+            metadataNormalizer
+                .comparisonKey(
+                    identity.trackName
+                )
+    }
+
+    private fun logQueueSession(
+        session: QueueSessionSnapshot
+    ) {
+
+        Log.i(
+            TAG,
+            "QUEUE SESSION | " +
+                "id=${session.sessionId} | " +
+                "new=${session.isNewSession} | " +
+                "reason=${session.reason} | " +
+                "items=${session.sessionItems.size} | " +
+                "past=${session.pastItems.size} | " +
+                "upcoming=${session.upcomingItems.size} | " +
+                "manualUpcoming=${session.manualUpcomingItems.size} | " +
+                "userAnchors=${session.userAnchorTracks.size} | " +
+                "generatedContext=${session.recentGeneratedTracks.size}"
+        )
+    }
+
+    private fun logMergedRecommendations(
+        candidates: List<RecommendationCandidate>
+    ) {
+
+        Log.i(
+            TAG,
+            "========== MERGED RECOMMENDATIONS START =========="
+        )
+
+        Log.i(
+            TAG,
+            "MERGED CANDIDATE COUNT = " +
+                candidates.size
+        )
+
+        candidates
+            .take(
+                MERGED_RESULTS_TO_LOG
+            )
+            .forEachIndexed { index, candidate ->
+
+                val providers =
+                    candidate
+                        .contributions
+                        .map {
+                            it.provider
+                        }
+                        .distinct()
+
+                val seeds =
+                    candidate
+                        .contributions
+                        .map {
+                            it.seed.track.id
+                        }
+                        .distinct()
+
+                Log.i(
+                    TAG,
+                    "MERGED ${index + 1} | " +
+                        "score=${formatScore(candidate.totalScore)} | " +
+                        "artist=${candidate.artist} | " +
+                        "title=${candidate.title} | " +
+                        "providers=$providers | " +
+                        "seedIds=$seeds | " +
+                        "contributions=" +
+                        candidate.contributions.size
+                )
+            }
+
+        Log.i(
+            TAG,
+            "========== MERGED RECOMMENDATIONS END =========="
+        )
+    }
+
+    private fun logLocalRecommendations(
+        matches: List<LocalRecommendationMatch>
+    ) {
+
+        Log.i(
+            TAG,
+            "========== LOCAL RECOMMENDATIONS START =========="
+        )
+
+        Log.i(
+            TAG,
+            "LOCAL MATCH COUNT = " +
+                matches.size
+        )
+
+        matches
+            .take(
+                LOCAL_RESULTS_TO_LOG
+            )
+            .forEachIndexed { index, match ->
+
+                Log.i(
+                    TAG,
+                    "LOCAL ${index + 1} | " +
+                        "rankingScore=${formatScore(match.rankingScore)} | " +
+                        "baseScore=${formatScore(match.finalScore)} | " +
+                        "matchScore=${formatScore(match.matchScore)} | " +
+                        "titleScore=${formatScore(match.titleScore)} | " +
+                        "artistScore=${formatScore(match.artistScore)} | " +
+                        "versionScore=${formatScore(match.versionScore)} | " +
+                        "preferenceMultiplier=${formatScore(match.preferenceMultiplier)} | " +
+                        "rating=${match.ratingStars ?: "unrated"} | " +
+                        "year=${match.libraryTrack.year} | " +
+                        "trackId=${match.track.id} | " +
+                        "localArtist=${match.track.artist} | " +
+                        "localTitle=${match.track.title} | " +
+                        "candidateArtist=${match.recommendation.artist} | " +
+                        "candidateTitle=${match.recommendation.title}"
+                )
+            }
+
+        Log.i(
+            TAG,
+            "========== LOCAL RECOMMENDATIONS END =========="
+        )
+    }
+
+    private fun logNormalizedMetadata(
+        seedNumber: Int,
+        metadata: NormalizedTrackMetadata
+    ) {
+
+        Log.i(
+            TAG,
+            "GS NORMALIZED $seedNumber | " +
+                "confidence=${metadata.confidence} | " +
+                "artists=${metadata.artists} | " +
+                "featured=${metadata.featuredArtists} | " +
+                "remixArtists=${metadata.remixArtists} | " +
+                "baseTitle=${metadata.baseTitle} | " +
+                "versionType=${metadata.versionType} | " +
+                "versionLabel=${metadata.versionLabel} | " +
+                "searchArtist=${metadata.searchArtist} | " +
+                "searchTitle=${metadata.searchTitle}"
+        )
+    }
+
+    private fun formatScore(
+        score: Double
+    ): String {
+
+        return String.format(
+            java.util.Locale.US,
+            "%.3f",
+            score
+        )
+    }
+
+    private fun logSeeds(
+        seeds: List<RecommendationSeed>
+    ) {
+
+        Log.i(
+            TAG,
+            "========== GONESMART SEEDS START =========="
+        )
+
+        seeds.forEachIndexed { index, seed ->
+
+            Log.i(
+                TAG,
+                "SEED ${index + 1} | " +
+                    "type=${seed.type} | " +
+                    "recency=${seed.recency} | " +
+                    "weight=${formatScore(seedWeight(seed))} | " +
+                    "trackId=${seed.track.id} | " +
+                    "artist=${seed.track.artist} | " +
+                    "title=${seed.track.title}"
+            )
+        }
+
+        Log.i(
+            TAG,
+            "========== GONESMART SEEDS END =========="
+        )
+    }
+
+    private fun logAddedTracks(
+        beforeContext: QueueContext,
+        afterContext: QueueContext
+    ) {
+
+        val previousEntryIds =
+            beforeContext
+                .items
+                .map {
+                    it.queueEntryId
+                }
+                .toSet()
+
+        val addedTracks =
+            afterContext
+                .items
+                .filter {
+                    it.queueEntryId !in
+                        previousEntryIds
+                }
+
+        Log.i(
+            TAG,
+            "GMMP added ${addedTracks.size} track(s)"
+        )
+
+        addedTracks.forEach { item ->
+
+            Log.i(
+                TAG,
+                "GMMP ADDED | " +
+                    "position=${item.queuePosition} | " +
+                    "trackId=${item.track.id} | " +
+                    "artist=${item.track.artist} | " +
+                    "title=${item.track.title}"
+            )
+        }
+    }
+
+    private fun showSessionNoticeOnce(
+        sessionId: Long,
+        noticeKey: String,
+        message: String
+    ) {
+
+        if (
+            !options.showStatusMessages
+        ) {
+
+            return
+        }
+
+        val uniqueKey =
+            "$sessionId:$noticeKey"
+
+        if (
+            shownSessionNotices.add(
+                uniqueKey
+            )
+        ) {
+
+            statusNotifier.show(
+                message
+            )
+        }
+    }
+
+    private fun findNoArgMethod(
+        type: Class<*>,
+        name: String
+    ): Method {
+
+        var current:
+                Class<*>? =
+            type
+
+        while (
+            current != null
+        ) {
+
+            try {
+
+                return current
+                    .getDeclaredMethod(
+                        name
+                    )
+
+            } catch (
+                _: NoSuchMethodException
+            ) {
+
+                current =
+                    current.superclass
+            }
+        }
+
+        throw NoSuchMethodException(
+            "$name() in ${type.name}"
+        )
+    }
+
+    private fun findField(
+        type: Class<*>,
+        name: String
+    ): Field {
+
+        var current:
+                Class<*>? =
+            type
+
+        while (
+            current != null
+        ) {
+
+            try {
+
+                return current
+                    .getDeclaredField(
+                        name
+                    )
+
+            } catch (
+                _: NoSuchFieldException
+            ) {
+
+                current =
+                    current.superclass
+            }
+        }
+
+        throw NoSuchFieldException(
+            "${type.name}.$name"
+        )
+    }
+
+    private data class SelectionWindowContext(
+        val sessionId: Long,
+        val excludedTrackIds: Set<Long>
+    )
+
+    private data class LastFmQueryCandidate(
+        val artist: String,
+        val title: String
+    )
+}

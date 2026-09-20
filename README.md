@@ -1,23 +1,283 @@
-# GoneSmart
+<div align="center">
+  <img src="assets/logo.png" alt="GoneSmart" width="120" />
+  <h1>GoneSmart</h1>
+  <p>Smarter Auto-DJ recommendations for GoneMAD Music Player, matched against the music you actually keep in your local library.</p>
 
-GoneSmart is an Android extension for GoneMAD Music Player that adds smart features missing from the original application.
+  <p>
+    <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/alagga/GoneSmart?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
+    <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/alagga/GoneSmart/total?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/alagga/GoneSmart?style=for-the-badge&color=5f57b8&labelColor=151419"/></a>
+  </p>
 
-## Status
+  <p>
+    <a href="#what-is-gonesmart">What is it</a> •
+    <a href="#features">Features</a> •
+    <a href="#how-it-works">How it works</a> •
+    <a href="#compatibility">Compatibility</a> •
+    <a href="#installation">Installation</a> •
+    <a href="#faq">FAQ</a> •
+    <a href="#building">Building</a>
+  </p>
+</div>
 
-GoneSmart is currently under active development. The first major feature being developed is a smarter Auto-DJ that uses the local music library together with external recommendation services.
+---
 
-## Project goals
+## What is GoneSmart?
 
-- Integrate naturally with GoneMAD Music Player instead of replacing its playback and queue handling.
-- Use GMMP's own runtime data and internal APIs where practical.
-- Support robust matching of real-world music metadata, including remixes, edits, featured artists, collaborations, and older/inconsistent tags.
-- Keep the architecture open to multiple recommendation providers.
-- Investigate rootless operation through LSPatch or a comparable approach in addition to LSPosed support.
+GoneSmart is a modern libxposed module and companion app for [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/). It leaves GMMP in charge of playback, queue management and Auto-DJ timing, but replaces the actual **Auto-DJ track selection** with session-aware recommendations.
 
-## Development status
+GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
 
-Work in progress. APIs, architecture, and installation steps may change while the project is being developed.
+The project is designed around the way real music libraries look in practice: remixes, radio edits, extended mixes, featured artists, inconsistent tags, filename fallbacks and alternate artist spellings are all part of the matching problem.
+
+> [!NOTE]
+> GoneSmart is an independent project. It is not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.
+
+---
+
+## Features
+
+<details open>
+<summary><b>✨ Smart Auto-DJ</b></summary>
+
+<br/>
+
+| Feature | What it does |
+|---|---|
+| Session-aware recommendations | Uses the current and recent user-selected tracks as musical context |
+| Multiple providers | Combines ListenBrainz and Last.fm instead of relying on one source |
+| Local-library matching | Only selects tracks that actually exist in your GMMP library |
+| Recommendation pool | Prepares multiple tracks at once so every Auto-DJ refill does not require another network round |
+| Broad second pass | If the normal search finds zero usable local candidates, exactly one wider provider search is attempted |
+| Artist fallback | Can use another local track from a strongly related/seed artist when the exact recommended recording is unavailable |
+| Drift control | User-selected session context stays stronger than GoneSmart's own previous picks |
+| Native fallback | Can hand selection back to regular GMMP Auto-DJ when smart selection cannot supply a track |
+
+</details>
+
+<details>
+<summary><b>🎚️ Matching and ranking controls</b></summary>
+
+<br/>
+
+| Feature | What it does |
+|---|---|
+| Minimum rating | Hard 0–5 star minimum in 0.5-star steps |
+| Smart rating | Uses the median rating of the current recommendation context as a dynamic minimum |
+| Rating fallback | If hard rating limits eliminate everything, optionally retry once without Minimum/Smart rating |
+| Prefer higher-rated matches | Uses ratings as a small ranking bonus after hard filters |
+| Exclude 0.5-star tracks | Completely blocks half-star tracks, including during Rating fallback |
+| Match current music era | Gives a modest bonus to music from a similar release period |
+| Favor recently added tracks | Uses GMMP's date-added signal when the current session is also recent |
+| Prefer studio over live | Can penalize live versions unless the session itself is live-oriented |
+| Version duplicate prevention | Prevents Original/Radio/Extended/Club versions of the same song family from appearing back-to-back |
+
+</details>
+
+<details>
+<summary><b>🎧 GMMP integration</b></summary>
+
+<br/>
+
+| Feature | What it does |
+|---|---|
+| Native queue lifecycle | GMMP still decides when Auto-DJ needs another track |
+| Dynamic pool sizing | Internal pool sizing follows GMMP's Auto-DJ queue settings without mirroring the visible queue 1:1 |
+| Player indicator | A sparkle overlays GMMP's Auto-DJ headphones icon: green = ready, red = fallback/problem, none = Auto-DJ inactive |
+| Offline behavior | A valid pool can continue offline, but a new queue never reuses the previous session's pool |
+| Restart GMMP | Companion-app shortcut to force-stop and relaunch GMMP when hooks need a clean restart |
+
+</details>
+
+<details>
+<summary><b>🧰 Companion app</b></summary>
+
+<br/>
+
+| Feature | What it does |
+|---|---|
+| Module status | Shows whether the Xposed service and GMMP target process are available |
+| Live settings | Recommendation settings are pushed to the running target without a normal restart |
+| Runtime logs | Keeps a compact high-level GoneSmart event log inside the app |
+| Compatibility status | Shows the installed GMMP version and the currently tested version |
+| Built-in FAQ | Explains providers, rating rules, pool behavior, indicator states and fallback behavior |
+
+</details>
+
+---
+
+## How it works
+
+1. **GMMP asks for Auto-DJ tracks.** GoneSmart hooks that selection point but leaves the rest of GMMP's queue logic intact.
+2. **GoneSmart builds session context.** Up to five representative seed tracks are used for provider requests, with the current/recent tracks weighted most strongly.
+3. **ListenBrainz + Last.fm are queried.** Their similar-track signals are normalized and merged.
+4. **Everything is matched locally.** Exact track matches are preferred; carefully limited local artist fallbacks can fill gaps.
+5. **Local preferences are applied.** Ratings, era, date added, live/studio preference and song-family duplicate rules adjust or filter candidates.
+6. **A local pool is created.** GMMP can take multiple future selections from it without repeating the full network pipeline for every song.
+7. **If nothing local matches, GoneSmart broadens once.** The second pass asks for a wider provider result set, then stops. It does not loop indefinitely.
+
+### Recommendation providers
+
+- **[ListenBrainz](https://listenbrainz.org/)** — MusicBrainz-backed recording lookup and similar-recording datasets.
+- **[Last.fm](https://www.last.fm/)** — similar-track data via the Last.fm API.
+
+GoneSmart sends seed metadata needed for recommendation lookups. The full GMMP library stays on-device and is matched locally.
+
+---
+
+## Compatibility
+
+| | |
+|---|---|
+| **Latest tested GMMP version** | `4.2.0` |
+| **Android** | Android 8.0+ (`minSdk 26`) |
+| **Module API** | libxposed API `102` |
+| **Rooted framework** | [JingMatrix Vector](https://github.com/JingMatrix/Vector) `v2.2+` recommended |
+| **No-root path** | [JingMatrix LSPatch](https://github.com/JingMatrix/LSPatch) `v1.2` — experimental / less tested |
+| **Target package** | `gonemad.gmmp` |
+
+GoneSmart currently hooks obfuscated GMMP internals. That means a future GMMP update can change the classes or methods GoneSmart expects even if the public GMMP UI looks unchanged. Versions other than the tested one should be treated as unverified until checked.
+
+---
+
+## Installation
+
+Download the latest GoneSmart APK from [**Releases**](https://github.com/alagga/GoneSmart/releases/latest), then use the path that matches your setup.
+
+### Rooted — Vector / modern LSPosed
+
+> GoneSmart targets **libxposed API 102**. [Vector v2.2](https://github.com/JingMatrix/Vector/releases/tag/v2.2) introduced API 102 support and is the recommended rooted setup.
+
+1. Install the GoneSmart APK.
+2. Install/enable Vector using its official instructions for your root setup.
+3. Open the Vector/LSPosed manager and enable **GoneSmart**.
+4. Scope GoneSmart to **GoneMAD Music Player** (`gonemad.gmmp`).
+5. Force stop GMMP and open it again.
+6. Open the GoneSmart companion app and confirm that the module/target status is active.
+7. In GMMP, enable its normal **Auto-DJ** playback mode. GoneSmart takes over the track-selection part while Auto-DJ is active.
+
+### No root — LSPatch (experimental)
+
+> [!WARNING]
+> LSPatch support is an **experimental path** for GoneSmart and is not yet validated as thoroughly as Vector. Patching changes the target APK signature and can affect app updates, licensing or other integrity checks. Only patch an APK you are allowed to modify and keep a backup of your original setup.
+
+1. Install GoneSmart.
+2. Install [JingMatrix LSPatch v1.2](https://github.com/JingMatrix/LSPatch/releases/tag/v1.2).
+3. In LSPatch, patch your GMMP APK / installed app using **Local Patch Mode** and **Inject loader dex**.
+4. Install the patched GMMP APK produced by LSPatch.
+5. In LSPatch → Manage → GMMP → Modules, enable GoneSmart for the patched GMMP instance.
+6. Open the GoneSmart companion app, then force stop/reopen GMMP if needed.
+7. Enable normal GMMP Auto-DJ and verify the GoneSmart player indicator.
+
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more detail.
+
+---
+
+## Player indicator
+
+When GMMP is in Auto-DJ mode, GoneSmart adds a small sparkle to the headphones/playback-mode icon:
+
+- 🟢 **Green sparkle** — GoneSmart is ready for the current session, either online or with a still-valid cached pool.
+- 🔴 **Red sparkle** — GoneSmart cannot currently provide smart selection, an error/no-match condition occurred, or regular GMMP Auto-DJ fallback is active.
+- **No sparkle** — GoneSmart is disabled, or GMMP is using Normal/Shuffle instead of Auto-DJ.
+
+The indicator intentionally reflects the state relevant to Auto-DJ selection; it does not continuously poll every possible future network failure before GMMP needs another track.
+
+---
+
+## FAQ
+
+**Does GoneSmart upload my music library?**  
+No. Provider requests use the seed metadata needed to find similar music. Matching against your GMMP library happens locally on the device.
+
+**Why only five provider seeds instead of the whole queue?**  
+A small representative seed set keeps requests bounded and reacts better to recent musical direction. The wider session can still influence local context and ranking without multiplying network requests.
+
+**What happens if no recommended track exists locally?**  
+GoneSmart performs one broader provider search. If that still produces no usable local candidate, configured rating/native fallbacks take over.
+
+**Why did GoneSmart ignore my rating limit once?**  
+If **Rating fallback** is enabled, GoneSmart may retry the same candidates without Minimum/Smart rating when those hard thresholds would otherwise leave nothing. `Exclude 0.5-star tracks` remains active.
+
+**Does changing a setting require restarting GMMP?**  
+Normally no. Recommendation-affecting settings invalidate the current pool and apply to the next refill. Restart GMMP is mainly for hook/module updates or troubleshooting.
+
+**Does GoneSmart work offline?**  
+A valid pool from the current session can continue offline. A brand-new queue never inherits an old pool. Once no suitable cached track remains, native GMMP fallback can take over if enabled.
+
+More detail: [docs/FAQ.md](docs/FAQ.md).
+
+---
+
+## Last.fm API key handling
+
+GoneSmart uses the public `track.getSimilar` style of Last.fm lookup and does **not** use or ship a Last.fm shared secret. The application API key is supplied at build time:
+
+- Local builds: put `LASTFM_API_KEY=...` in `local.properties`.
+- GitHub releases: store the key as the repository secret `LASTFM_API_KEY`.
+- Never commit `local.properties`, a shared secret, keystores or signing passwords.
+
+A client-side application API key can ultimately be extracted from an APK; using a GitHub secret prevents accidental source-control disclosure, not reverse engineering of the installed client. If Last.fm changes its client-key policy, GoneSmart should revisit this setup before the next release.
+
+Last.fm requires API users to follow its [API Terms of Service](https://www.last.fm/api/tos), including attribution. GoneSmart credits and links Last.fm here and in the companion app.
+
+---
+
+## Building
+
+The project currently targets:
+
+- Android Gradle Plugin `9.4.1`
+- Gradle `9.6.0`
+- JDK `17`
+- compile/target SDK `37`
+- libxposed API/service `102.0.0`
+
+Create a local `local.properties` in the repository root:
+
+```properties
+sdk.dir=/path/to/Android/Sdk
+LASTFM_API_KEY=your_lastfm_api_key
+```
+
+Then build with Android Studio or:
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+Release signing can be supplied through `keystore.properties` locally or the environment variables documented in [docs/BUILDING.md](docs/BUILDING.md).
+
+---
+
+## Releases and CI
+
+- Normal pushes/PRs run the GitHub build workflow.
+- The **Release APK** workflow builds a signed release APK and publishes/updates the matching `v<versionName>` GitHub Release.
+- Release builds expect the Last.fm API-key secret plus Android signing secrets. See [docs/BUILDING.md](docs/BUILDING.md).
+- The current release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+---
+
+## Contributing
+
+Bug reports, reproducible compatibility findings and focused pull requests are welcome.
+
+- Found a bug? Open a [bug report](https://github.com/alagga/GoneSmart/issues/new/choose).
+- Have an idea? Open a [feature request](https://github.com/alagga/GoneSmart/issues/new/choose).
+- Testing another GMMP/Vector/LSPatch version? Include exact version numbers and relevant GoneSmart logs.
+
+Please do not include API keys, keystores, account data or other secrets in issues or logs.
+
+---
 
 ## License
 
-GoneSmart is licensed under the MIT License. See [LICENSE](LICENSE).
+GoneSmart is licensed under the [MIT License](LICENSE).
+
+---
+
+<div align="center">
+  <sub>Built for local music libraries and GMMP Auto-DJ.</sub><br/>
+  <sub>Not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.</sub>
+</div>

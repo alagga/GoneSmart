@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible GoneSmart problem
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve GoneSmart. Please remove API keys, passwords and private data from logs before posting.
+  - type: input
+    id: gonesmart
+    attributes:
+      label: GoneSmart version
+      placeholder: 0.3.2
+    validations:
+      required: true
+  - type: input
+    id: gmmp
+    attributes:
+      label: GoneMAD Music Player version
+      placeholder: 4.2.0
+    validations:
+      required: true
+  - type: input
+    id: framework
+    attributes:
+      label: Framework
+      description: Vector/LSPosed or LSPatch, including version
+      placeholder: Vector 2.2
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version / device
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: Tell us exactly what you did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: GoneSmart logs
+      description: Paste relevant in-app or Logcat lines. Remove secrets/private data.
+      render: text
