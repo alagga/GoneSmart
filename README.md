@@ -255,6 +255,7 @@ Release signing can be supplied through `keystore.properties` locally or the env
 - Normal pushes/PRs run the GitHub build workflow.
 - The **Release APK** workflow builds a signed release APK and publishes/updates the matching `v<versionName>` GitHub Release.
 - Release builds expect the Last.fm API-key secret plus Android signing secrets. See [docs/BUILDING.md](docs/BUILDING.md).
+- Maintainer workflow, stable releases and prereleases are documented in [docs/RELEASING.md](docs/RELEASING.md).
 - The current release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
