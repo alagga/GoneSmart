@@ -5,6 +5,7 @@
 
   <p>
     <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/alagga/GoneSmart?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
+    <a href="https://github.com/alagga/GoneSmart/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/alagga/GoneSmart/build.yml?branch=main&style=for-the-badge&logo=githubactions&label=build&color=5f57b8&labelColor=151419"/></a>
     <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/alagga/GoneSmart/total?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/alagga/GoneSmart?style=for-the-badge&color=5f57b8&labelColor=151419"/></a>
   </p>
