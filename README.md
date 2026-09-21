@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/logo.png" alt="GoneSmart" width="120" />
   <h1>GoneSmart</h1>
-  <p>Smarter Auto-DJ recommendations for GoneMAD Music Player, matched against the music you actually keep in your local library.</p>
+  <p>Smart extensions for GoneMAD Music Player — currently focused on a session-aware Auto-DJ that works with the music you actually keep in your local library.</p>
 
   <p>
     <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/alagga/GoneSmart?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
@@ -14,10 +14,11 @@
     <a href="#what-is-gonesmart">What is it</a> •
     <a href="#features">Features</a> •
     <a href="#how-it-works">How it works</a> •
+    <a href="#tech-stack--architecture">Tech stack</a> •
     <a href="#compatibility">Compatibility</a> •
     <a href="#installation">Installation</a> •
     <a href="#faq">FAQ</a> •
-    <a href="#building">Building</a>
+    <a href="#credits">Credits</a>
   </p>
 </div>
 
@@ -25,11 +26,13 @@
 
 ## What is GoneSmart?
 
-GoneSmart is a modern libxposed module and companion app for [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/). It leaves GMMP in charge of playback, queue management and Auto-DJ timing, but replaces the actual **Auto-DJ track selection** with session-aware recommendations.
+GoneSmart is a modern libxposed module and companion app that extends [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/) with **smart and quality-of-life features**. The current main focus — and the first major feature — is **Smart Auto-DJ**: GMMP stays in charge of playback, queue management and Auto-DJ timing, while GoneSmart replaces the actual track-selection step with session-aware recommendations.
 
-GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
+The project is intentionally broader than Auto-DJ. Future releases can add more smart library, queue and workflow extensions around GMMP without changing the core idea: keep GMMP as the player, and add the features that are missing around it.
 
-The project is designed around the way real music libraries look in practice: remixes, radio edits, extended mixes, featured artists, inconsistent tags, filename fallbacks and alternate artist spellings are all part of the matching problem.
+For Smart Auto-DJ, GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
+
+The matching pipeline is currently **especially tuned for electronic-music libraries**, where Original / Radio Edit / Extended Mix / Club Mix / Remix variants, featured artists, aliases and inconsistent release naming are common. GoneSmart is not limited to electronic music, though — matching feedback and real-world examples from rock, metal, hip-hop, pop, classical and other libraries are very welcome through [feature requests](https://github.com/alagga/GoneSmart/issues/new/choose).
 
 > [!NOTE]
 > GoneSmart is an independent project. It is not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.
@@ -43,6 +46,8 @@ The project is designed around the way real music libraries look in practice: re
 
 <br/>
 
+### Recommendation pipeline
+
 | Feature | What it does |
 |---|---|
 | Session-aware recommendations | Uses the current and recent user-selected tracks as musical context |
@@ -54,12 +59,7 @@ The project is designed around the way real music libraries look in practice: re
 | Drift control | User-selected session context stays stronger than GoneSmart's own previous picks |
 | Native fallback | Can hand selection back to regular GMMP Auto-DJ when smart selection cannot supply a track |
 
-</details>
-
-<details>
-<summary><b>🎚️ Matching and ranking controls</b></summary>
-
-<br/>
+### Matching and ranking controls
 
 | Feature | What it does |
 |---|---|
@@ -72,6 +72,8 @@ The project is designed around the way real music libraries look in practice: re
 | Favor recently added tracks | Uses GMMP's date-added signal when the current session is also recent |
 | Prefer studio over live | Can penalize live versions unless the session itself is live-oriented |
 | Version duplicate prevention | Prevents Original/Radio/Extended/Club versions of the same song family from appearing back-to-back |
+
+> The current metadata/version heuristics are particularly tuned for electronic music. If another genre exposes bad matches or missing normalization rules, please open a feature request with a few representative artist/title examples.
 
 </details>
 
@@ -123,6 +125,26 @@ The project is designed around the way real music libraries look in practice: re
 - **[Last.fm](https://www.last.fm/)** — similar-track data via the Last.fm API.
 
 GoneSmart sends seed metadata needed for recommendation lookups. The full GMMP library stays on-device and is matched locally.
+
+---
+
+## Tech stack & architecture
+
+| Area | Current implementation |
+|---|---|
+| **Primary language** | Kotlin |
+| **Platform** | Native Android app + libxposed module |
+| **Hooking API** | libxposed API 102 |
+| **UI** | AndroidX AppCompat + Material Components |
+| **Build system** | Gradle Kotlin DSL / Android Gradle Plugin |
+| **Recommendation providers** | ListenBrainz + Last.fm over HTTP/JSON |
+| **Local selection** | GMMP queue/library readers, metadata normalization, local matching and preference ranking |
+| **State/settings** | Session-aware recommendation pool + libxposed remote preferences |
+| **CI / releases** | GitHub Actions, signed APK release workflow |
+
+At runtime, the module is loaded into GMMP's process and hooks the Auto-DJ selection path. The companion app stays separate and handles settings, status, logs and user-facing controls. Provider responses are treated only as recommendation signals; the final playable track is resolved locally against GMMP.
+
+A more detailed component overview lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -266,10 +288,38 @@ Release signing can be supplied through `keystore.properties` locally or the env
 Bug reports, reproducible compatibility findings and focused pull requests are welcome.
 
 - Found a bug? Open a [bug report](https://github.com/alagga/GoneSmart/issues/new/choose).
-- Have an idea? Open a [feature request](https://github.com/alagga/GoneSmart/issues/new/choose).
+- Have an idea or a smart GMMP feature that would fit GoneSmart? Open a [feature request](https://github.com/alagga/GoneSmart/issues/new/choose).
 - Testing another GMMP/Vector/LSPatch version? Include exact version numbers and relevant GoneSmart logs.
+- Using a non-electronic library? Genre-specific matching feedback is particularly useful. Include a few representative artist/title/version examples and what you expected GoneSmart to treat as equivalent or different.
 
 Please do not include API keys, keystores, account data or other secrets in issues or logs.
+
+---
+
+## Credits
+
+<div align="center">
+
+### Maintainer
+
+<a href="https://github.com/alagga">
+  <img src="https://github.com/alagga.png" width="80" alt="alagga" style="border-radius:50%"/><br/>
+  <b>alagga</b>
+</a>
+
+</div>
+
+GoneSmart builds on and integrates with work from the wider Android and music-metadata ecosystem:
+
+- **[GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/)** by GoneMAD Software — the player GoneSmart extends.
+- **[libxposed / Vector](https://github.com/JingMatrix/Vector)** and **[LSPatch](https://github.com/JingMatrix/LSPatch)** — module/runtime infrastructure.
+- **[ListenBrainz](https://listenbrainz.org/)** / **[MetaBrainz](https://metabrainz.org/)** / **[MusicBrainz](https://musicbrainz.org/)** — open music metadata and recommendation infrastructure.
+- **[Last.fm](https://www.last.fm/)** — similar-track recommendation data used by Smart Auto-DJ.
+- **OpenAI ChatGPT** — used as an AI coding assistant for implementation support, debugging, code review and documentation.
+
+GoneSmart is an **AI-assisted coding project**, not an autonomous one: product direction, requirements, testing, compatibility decisions and releases are driven by the maintainer.
+
+See [CREDITS.md](CREDITS.md) for the longer attribution/acknowledgement list.
 
 ---
 
@@ -280,6 +330,6 @@ GoneSmart is licensed under the [MIT License](LICENSE).
 ---
 
 <div align="center">
-  <sub>Built for local music libraries and GMMP Auto-DJ.</sub><br/>
+  <sub>Smart extensions for local music libraries and GoneMAD Music Player.</sub><br/>
   <sub>Not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.</sub>
 </div>
