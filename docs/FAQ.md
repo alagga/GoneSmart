@@ -1,12 +1,20 @@
 # GoneSmart FAQ
 
-## What does GoneSmart replace?
+## Is GoneSmart only an Auto-DJ project?
 
-Only GMMP Auto-DJ's track-selection step. GMMP continues to control playback, the queue and when Auto-DJ requests more songs.
+No. GoneSmart is meant to extend GMMP with smart and quality-of-life features in general. Smart Auto-DJ is the current main focus and the first major feature.
+
+Within Smart Auto-DJ, GoneSmart replaces only GMMP's track-selection step. GMMP continues to control playback, the queue and when Auto-DJ requests more songs.
 
 ## Where do recommendations come from?
 
 GoneSmart combines similar-music data from ListenBrainz and Last.fm, then matches those suggestions against the local GMMP database. The providers do not decide which file is played; the final selection must be a local GMMP track.
+
+## Is Smart Auto-DJ only for electronic music?
+
+No, but the current matching heuristics are especially tuned for electronic-music libraries. That is where naming differences such as Original Mix, Radio Edit, Extended Mix, Club Mix, Remix, Rework, Edit, featured artists and multi-artist credits show up particularly often.
+
+Other genres should work too. If rock, metal, hip-hop, pop, classical or another library exposes bad matching behavior, please open a feature request with a few representative artist/title/version examples and explain which tracks should or should not be treated as the same song family.
 
 ## How many queue tracks are used?
 
