@@ -244,6 +244,9 @@ class GoneSmartModule : XposedModule() {
     private val playerBadgeController =
         PlayerAutoDjBadgeController()
 
+    private val playlistController =
+        PlaylistMultiSelectController()
+
     private val recommendationPool =
         SessionRecommendationPool()
 
@@ -398,16 +401,15 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
-            // Debug builds only: inspect GMMP's playlist picker without
-            // changing click handlers or writing playlist data.
+            // Isolated to debug builds until native multi-add is tested.
             if (BuildConfig.DEBUG) {
                 try {
-                    installPlaylistDiagnosticHooks(param)
-                } catch (diagnosticError: Throwable) {
+                    installPlaylistMultiSelectHooks(param)
+                } catch (playlistHookError: Throwable) {
                     Log.w(
                         TAG,
-                        "Playlist diagnostics unavailable; native picker unaffected",
-                        diagnosticError
+                        "Experimental playlist hooks unavailable; native picker unaffected",
+                        playlistHookError
                     )
                 }
             }
@@ -428,380 +430,151 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * Temporary instrumentation for the upcoming multi-playlist feature.
-     *
-     * Verified against the user's GMMP 4.2.0 APK:
-     * bo3.k2() -> native playlist FAB
-     * bo3.D1() -> native playlist RecyclerView
-     *
-     * All hooks call the native method exactly once. Diagnostics never
-     * intercept clicks, alter selections, or write playlist data.
+     * Debug-only experimental multi-destination playlist picker for GMMP 4.2.0.
+     * Hooks only native picker methods and the three verified UI callbacks.
+     * The native io3 handler performs all actual playlist writes.
      */
-    private fun installPlaylistDiagnosticHooks(
+    private fun installPlaylistMultiSelectHooks(
         param: PackageReadyParam
     ) {
-        val pickerClass =
-            param.classLoader.loadClass("bo3")
+        val pickerClass = param.classLoader.loadClass("bo3")
 
-        val pickerMethods = listOf(
-            "k2", "D1", "E2", "I3",
-            "N3", "O3", "P0", "P3", "n1"
-        )
-
-        for (name in pickerMethods) {
+        listOf("I3", "k2", "D1").forEach { name ->
             val method = pickerClass.declaredMethods
-                .firstOrNull { it.name == name }
-                ?: continue
+                .firstOrNull {
+                    it.name == name && it.parameterCount == 0
+                } ?: throw NoSuchMethodException("bo3.$name()")
 
             method.isAccessible = true
-
             hook(method).intercept { chain ->
-                if (name != "k2" && name != "D1") {
-                    val args = (0 until method.parameterCount)
-                        .joinToString(", ") { index ->
-                            when (val value = chain.getArg(index)) {
-                                null -> "null"
-                                is Boolean, is Int -> value.toString()
-                                is List<*> -> "List(size=${value.size})"
-                                else -> value.javaClass.name
-                            }
-                        }
-
-                    PlaylistDiagnosticReporter.event(
-                        "PICKER CALL | bo3.$name($args)"
+                if (name == "I3") {
+                    playlistController.beginPicker(
+                        chain.getThisObject()
                     )
                 }
 
                 val result = chain.proceed()
-
                 try {
                     when (name) {
-                        "k2" -> {
-                            (result as? android.view.View)?.let {
-                                PlaylistDiagnosticReporter.observeFab(it)
-                            }
+                        "k2" -> (result as? android.view.View)?.let {
+                            playlistController.onFabFound(it)
                         }
-                        "D1" -> {
-                            (result as? android.view.View)?.let {
-                                PlaylistDiagnosticReporter.observeList(it)
-                            }
-                        }
-                        "N3", "O3" -> {
-                            PlaylistDiagnosticReporter.event(
-                                "PICKER RESULT | bo3.$name -> " +
-                                    (result?.javaClass?.name ?: "null")
-                            )
+                        "D1" -> (result as? android.view.View)?.let {
+                            playlistController.onListFound(it)
                         }
                     }
-                } catch (reportError: Throwable) {
-                    Log.w(
-                        TAG,
-                        "Playlist diagnostic report failed for bo3.$name",
-                        reportError
-                    )
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Playlist $name observer failed", error)
                 }
-
                 result
             }
-
-            PlaylistDiagnosticReporter.event(
-                "HOOK READY | bo3.$name"
-            )
         }
 
-        val presenterClass =
-            param.classLoader.loadClass("go3")
-
-        presenterClass.declaredMethods
+        // go3.y2() constructs this native handler using the original
+        // source selection (ho3). Capture it during picker startup.
+        val handlerClass = param.classLoader.loadClass("io3")
+        val nativeConstructor = handlerClass.declaredConstructors
             .firstOrNull {
-                it.name == "y2" && it.parameterCount == 0
+                it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0].name == "ho3" &&
+                    it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            } ?: throw NoSuchMethodException("io3(ho3, boolean)")
+
+        nativeConstructor.isAccessible = true
+        hook(nativeConstructor).intercept { chain ->
+            val result = chain.proceed()
+            playlistController.onNativeHandler(
+                chain.getThisObject()
+            )
+            result
+        }
+
+        val clickClass = param.classLoader.loadClass("xj5\$a")
+        val clickMethod = clickClass.getDeclaredMethod(
+            "onClick",
+            android.view.View::class.java
+        )
+        clickMethod.isAccessible = true
+        hook(clickMethod).intercept { chain ->
+            val view = chain.getArg(0) as? android.view.View
+            val intercepted = runCatching {
+                playlistController.onClick(view)
+            }.getOrElse { error ->
+                Log.e(TAG, "Playlist click interception failed", error)
+                false
             }
-            ?.let { method ->
-                method.isAccessible = true
 
-                hook(method).intercept { chain ->
-                    PlaylistDiagnosticReporter.event(
-                        "PRESENTER CALL | go3.y2() | refresh playlist list"
-                    )
+            if (intercepted) null else chain.proceed()
+        }
 
+        val longClickClass = param.classLoader.loadClass("rk5\$a")
+        val longClickMethod = longClickClass.getDeclaredMethod(
+            "onLongClick",
+            android.view.View::class.java
+        )
+        longClickMethod.isAccessible = true
+        hook(longClickMethod).intercept { chain ->
+            val view = chain.getArg(0) as? android.view.View
+            val intercepted = runCatching {
+                playlistController.onLongClick(view)
+            }.getOrElse { error ->
+                Log.e(TAG, "Playlist long-click interception failed", error)
+                false
+            }
+
+            if (intercepted) true else chain.proceed()
+        }
+
+        // The native FAB normally disappears while scrolling. Suppress
+        // its hide animation only while GoneSmart multi-select is active.
+        runCatching {
+            val fabClass = param.classLoader.loadClass(
+                "com.google.android.material.floatingactionbutton.FloatingActionButton"
+            )
+            fabClass.declaredMethods
+                .filter {
+                    it.name == "hide" &&
+                        it.returnType == Void.TYPE
+                }
+                .forEach { method ->
+                    method.isAccessible = true
+                    hook(method).intercept { chain ->
+                        if (
+                            playlistController.shouldBlockFabHide(
+                                chain.getThisObject()
+                            )
+                        ) {
+                            null
+                        } else {
+                            chain.proceed()
+                        }
+                    }
+                }
+        }.onFailure { error ->
+            Log.w(TAG, "FAB hide hook unavailable; layout pin remains", error)
+        }
+
+        runCatching {
+            val backClass = param.classLoader.loadClass(
+                "androidx.activity.OnBackPressedDispatcher"
+            )
+            val backMethod = backClass.getDeclaredMethod("onBackPressed")
+            backMethod.isAccessible = true
+            hook(backMethod).intercept { chain ->
+                if (playlistController.consumeBack()) {
+                    null
+                } else {
                     chain.proceed()
                 }
-
-                PlaylistDiagnosticReporter.event(
-                    "HOOK READY | go3.y2"
-                )
             }
-
-        installPlaylistListenerDiagnosticHooks(
-            param
-        )
-
-        PlaylistDiagnosticReporter.event(
-            "DIAGNOSTICS READY | Add-to-Playlist picker (debug only)"
-        )
-    }
-
-    private fun installPlaylistListenerDiagnosticHooks(
-        param: PackageReadyParam
-    ) {
-        val listenerClasses =
-            listOf(
-                "xj5\$a" to "CLICK",
-                "rk5\$a" to "LONG_CLICK"
-            )
-
-        listenerClasses.forEach { (className, label) ->
-            val listenerClass =
-                param.classLoader.loadClass(
-                    className
-                )
-
-            PlaylistDiagnosticReporter.describeClass(
-                listenerClass
-            )
-
-            listenerClass.declaredMethods
-                .filter { method ->
-                    method.parameterCount == 1 &&
-                        android.view.View::class.java
-                            .isAssignableFrom(
-                                method.parameterTypes[0]
-                            )
-                }
-                .forEach { method ->
-                    method.isAccessible = true
-
-                    hook(method).intercept { chain ->
-                        val view =
-                            chain.getArg(0)
-                                as? android.view.View
-
-                        val listener =
-                            chain.getThisObject()
-
-                        PlaylistDiagnosticReporter.event(
-                            "$label CALL | " +
-                                "$className.${method.name} | " +
-                                "view=" +
-                                PlaylistDiagnosticReporter.describeView(
-                                    view
-                                ) +
-                                " | listenerFields=" +
-                                PlaylistDiagnosticReporter.describeObjectFields(
-                                    listener
-                                ) +
-                                " | fieldDetails=" +
-                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
-                                    listener
-                                )
-                        )
-
-                        val result =
-                            chain.proceed()
-
-                        PlaylistDiagnosticReporter.event(
-                            "$label RESULT | " +
-                                "$className.${method.name} -> " +
-                                PlaylistDiagnosticReporter.describeValue(
-                                    result
-                                )
-                        )
-
-                        result
-                    }
-
-                    PlaylistDiagnosticReporter.event(
-                        "HOOK READY | $className.${method.name}"
-                    )
-                }
+        }.onFailure { error ->
+            Log.w(TAG, "Playlist back-gesture hook unavailable", error)
         }
 
-        installPlaylistCallbackDiagnostics(
-            param
+        Log.i(
+            "GoneSmartPlaylist",
+            "MULTI READY | experimental native playlist picker (debug build)"
         )
-    }
-
-    private fun installPlaylistCallbackDiagnostics(
-        param: PackageReadyParam
-    ) {
-        val callbackClassName =
-            "ve3\$a"
-
-        val callbackClass =
-            param.classLoader.loadClass(
-                callbackClassName
-            )
-
-        PlaylistDiagnosticReporter.describeClass(
-            callbackClass
-        )
-
-        callbackClass.declaredMethods
-            .filterNot { it.isSynthetic }
-            .filter { it.parameterCount <= 4 }
-            .forEach { method ->
-                method.isAccessible = true
-
-                hook(method).intercept { chain ->
-                    val receiver =
-                        chain.getThisObject()
-
-                    val target =
-                        PlaylistDiagnosticReporter.firstFieldValue(
-                            receiver
-                        )
-
-                    val isPlaylistRowAction =
-                        target?.javaClass?.name == "zw\$a" ||
-                            target?.javaClass?.name == "zw\$b"
-
-                    val args =
-                        (0 until method.parameterCount)
-                            .joinToString(", ") { index ->
-                                "arg$index=" +
-                                    if (isPlaylistRowAction) {
-                                        PlaylistDiagnosticReporter.describeValueDeep(
-                                            chain.getArg(index)
-                                        )
-                                    } else {
-                                        PlaylistDiagnosticReporter.describeValue(
-                                            chain.getArg(index)
-                                        )
-                                    }
-                            }
-
-                    if (isPlaylistRowAction) {
-                        PlaylistDiagnosticReporter.event(
-                            "PLAYLIST ROW ACTION | target=" +
-                                PlaylistDiagnosticReporter.describeValueDeep(
-                                    target
-                                ) +
-                                " | callback=" +
-                                "$callbackClassName.${method.name}($args)"
-                        )
-                    } else {
-                        PlaylistDiagnosticReporter.event(
-                            "PLAYLIST CALLBACK CALL | " +
-                                "$callbackClassName.${method.name}($args)" +
-                                " | receiverFields=" +
-                                PlaylistDiagnosticReporter.describeObjectFields(
-                                    receiver
-                                ) +
-                                " | fieldDetails=" +
-                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
-                                    receiver
-                                )
-                        )
-                    }
-                    val result =
-                        chain.proceed()
-
-                    PlaylistDiagnosticReporter.event(
-                        "PLAYLIST CALLBACK RESULT | " +
-                            "$callbackClassName.${method.name} -> " +
-                            PlaylistDiagnosticReporter.describeValue(
-                                result
-                            )
-                    )
-
-                    result
-                }
-
-                PlaylistDiagnosticReporter.event(
-                    "HOOK READY | $callbackClassName.${method.name}"
-                )
-            }
-
-        runCatching {
-            PlaylistDiagnosticReporter.describeClass(
-                param.classLoader.loadClass(
-                    "fe"
-                )
-            )
-        }
-
-        installPlaylistActionDiagnostics(
-            param
-        )
-    }
-
-    private fun installPlaylistActionDiagnostics(
-        param: PackageReadyParam
-    ) {
-        listOf(
-            "zw\$a",
-            "zw\$b"
-        ).forEach { className ->
-            val type =
-                param.classLoader.loadClass(
-                    className
-                )
-
-            PlaylistDiagnosticReporter.describeClass(
-                type
-            )
-
-            type.declaredMethods
-                .filterNot { it.isSynthetic }
-                .filter { method ->
-                    method.parameterTypes.any { it.name == "uf5" }
-                }
-                .forEach { method ->
-                    method.isAccessible = true
-
-                    hook(method).intercept { chain ->
-                        val args =
-                            (0 until method.parameterCount)
-                                .joinToString(", ") { index ->
-                                    "arg$index=" +
-                                        PlaylistDiagnosticReporter.describeValueDeep(
-                                            chain.getArg(index)
-                                        )
-                                }
-
-                        val receiver =
-                            chain.getThisObject()
-
-                        PlaylistDiagnosticReporter.event(
-                            "PLAYLIST ACTION CALL | " +
-                                "$className.${method.name}($args)" +
-                                " | receiver=" +
-                                PlaylistDiagnosticReporter.describeObjectFields(
-                                    receiver
-                                ) +
-                                " | receiverDeep=" +
-                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
-                                    receiver
-                                )
-                        )
-
-                        val result =
-                            chain.proceed()
-
-                        PlaylistDiagnosticReporter.event(
-                            "PLAYLIST ACTION RESULT | " +
-                                "$className.${method.name} -> " +
-                                PlaylistDiagnosticReporter.describeValueDeep(
-                                    result
-                                )
-                        )
-
-                        result
-                    }
-
-                    PlaylistDiagnosticReporter.event(
-                        "HOOK READY | $className.${method.name}"
-                    )
-                }
-        }
-
-        runCatching {
-            PlaylistDiagnosticReporter.describeClass(
-                param.classLoader.loadClass(
-                    "uf5"
-                )
-            )
-        }
     }
 
     private fun initializeRemoteSettings() {
