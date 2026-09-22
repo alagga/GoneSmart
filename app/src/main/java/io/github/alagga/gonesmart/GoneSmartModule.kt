@@ -694,6 +694,89 @@ class GoneSmartModule : XposedModule() {
                 )
             )
         }
+
+        installPlaylistActionDiagnostics(
+            param
+        )
+    }
+
+    private fun installPlaylistActionDiagnostics(
+        param: PackageReadyParam
+    ) {
+        listOf(
+            "zw\$a",
+            "zw\$b"
+        ).forEach { className ->
+            val type =
+                param.classLoader.loadClass(
+                    className
+                )
+
+            PlaylistDiagnosticReporter.describeClass(
+                type
+            )
+
+            type.declaredMethods
+                .filterNot { it.isSynthetic }
+                .filter { method ->
+                    method.parameterTypes.any { it.name == "uf5" }
+                }
+                .forEach { method ->
+                    method.isAccessible = true
+
+                    hook(method).intercept { chain ->
+                        val args =
+                            (0 until method.parameterCount)
+                                .joinToString(", ") { index ->
+                                    "arg$index=" +
+                                        PlaylistDiagnosticReporter.describeValueDeep(
+                                            chain.getArg(index)
+                                        )
+                                }
+
+                        val receiver =
+                            chain.getThisObject()
+
+                        PlaylistDiagnosticReporter.event(
+                            "PLAYLIST ACTION CALL | " +
+                                "$className.${method.name}($args)" +
+                                " | receiver=" +
+                                PlaylistDiagnosticReporter.describeObjectFields(
+                                    receiver
+                                ) +
+                                " | receiverDeep=" +
+                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
+                                    receiver
+                                )
+                        )
+
+                        val result =
+                            chain.proceed()
+
+                        PlaylistDiagnosticReporter.event(
+                            "PLAYLIST ACTION RESULT | " +
+                                "$className.${method.name} -> " +
+                                PlaylistDiagnosticReporter.describeValueDeep(
+                                    result
+                                )
+                        )
+
+                        result
+                    }
+
+                    PlaylistDiagnosticReporter.event(
+                        "HOOK READY | $className.${method.name}"
+                    )
+                }
+        }
+
+        runCatching {
+            PlaylistDiagnosticReporter.describeClass(
+                param.classLoader.loadClass(
+                    "uf5"
+                )
+            )
+        }
     }
 
     private fun initializeRemoteSettings() {
