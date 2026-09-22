@@ -36,9 +36,9 @@ internal class PlaylistMultiSelectController {
 
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        // Keep GoneSmart's accent on the sparkle only. Row highlights use
-        // GMMP's live dynamic/fixed accent color instead.
-        private const val GONESMART_LILAC = 0xFFA39AFF.toInt()
+        // Only used before GMMP exposes a native theme color. The live
+        // Aesthetic colorAccent drives the sparkle during multi-selection.
+        private const val FALLBACK_LILAC = 0xFFA39AFF.toInt()
         private const val OLD_CHECK_TAG = "gonesmart_playlist_check_v1"
     }
 
@@ -51,6 +51,7 @@ internal class PlaylistMultiSelectController {
         var dispatchHolder: Any? = null
         var fabIconSaved = false
         var sparkle: PlayerAutoDjBadgeController.SparkleBadgeDrawable? = null
+        var sparkleColor: Int? = null
         // A foreground overlay preserves GMMP's native row background and
         // ripple. Recycled RecyclerView rows get their overlays re-keyed by
         // the CURRENT bound playlist path on every bind and layout.
@@ -716,6 +717,7 @@ internal class PlaylistMultiSelectController {
             session.lastBarColor = null
             tintSelectionBar(session)
             refreshVisibleRows(session)
+            updateSparkleColor(session)
         }
     }
 
@@ -856,20 +858,84 @@ internal class PlaylistMultiSelectController {
         }
 
         fab.imageTintList = null
-        // The checkmark stays clean and white. Reuse the EXACT renderer
-        // used on the Auto-DJ button as a separately overlaid lilac badge.
         fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
         if (session.sparkle == null) {
+            val color = currentSparkleColor(session, fab)
+            session.sparkleColor = color
+            // The primary star is BELOW the tick, while the small star
+            // remains near its tip. Auto-DJ retains the original geometry.
             val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
-                GONESMART_LILAC,
-                scale = 2f
+                color,
+                scale = 2f,
+                playlistPlacement = true
             )
             session.sparkle = sparkle
             fab.overlay.add(sparkle)
+        } else {
+            updateSparkleColor(session)
         }
         fab.contentDescription =
             "GoneSmart: Zu ${session.selectedPaths.size} Playlists hinzufügen"
         pinFab(session)
+    }
+
+    /**
+     * Use GMMP's *other* native palette slot, colorAccent, rather than
+     * reusing colorPrimary for both the FAB/selection and the sparkle.
+     * All three colors are subscribed to Aesthetic updates in this session.
+     */
+    private fun currentSparkleColor(session: Session, view: View): Int {
+        val accent = session.liveAccent
+            ?: session.nativeAccentAttr.takeIf { it != 0 }
+                ?.let { themeColor(view, it) }
+
+        // When colorAccent happens to equal the FAB color, prefer the
+        // alternative native colorPrimary if it is visibly different.
+        val background = session.liveFabAccent
+            ?: (session.fab as?
+                com.google.android.material.floatingactionbutton.FloatingActionButton)
+                ?.backgroundTintList?.defaultColor
+
+        if (accent != null) {
+            val other = session.livePrimary
+            if (background != null &&
+                colorDistance(accent, background) < 34f &&
+                other != null &&
+                colorDistance(other, background) >
+                    colorDistance(accent, background) + 22f
+            ) {
+                return other
+            }
+            return accent
+        }
+
+        return session.livePrimary
+            ?: session.liveFabAccent
+            ?: FALLBACK_LILAC
+    }
+
+    private fun colorDistance(a: Int, b: Int): Float {
+        val red = Color.red(a) - Color.red(b)
+        val green = Color.green(a) - Color.green(b)
+        val blue = Color.blue(a) - Color.blue(b)
+        return kotlin.math.sqrt(
+            (red * red + green * green + blue * blue).toFloat()
+        )
+    }
+
+    private fun updateSparkleColor(session: Session) {
+        val fab = session.fab ?: return
+        val sparkle = session.sparkle ?: return
+        val current = currentSparkleColor(session, fab)
+        if (session.sparkleColor == current) return
+        session.sparkleColor = current
+        sparkle.updateColor(current)
+        Log.i(
+            TAG,
+            "MULTI SPARKLE | dynamic color=#" +
+                Integer.toHexString(current)
+        )
+        fab.invalidate()
     }
 
     private fun pinFab(session: Session) {
@@ -1197,10 +1263,14 @@ internal class PlaylistMultiSelectController {
         // the reference first so its destroy callback does not recurse.
         val actionMode = session.selectionBar
         session.selectionBar = null
-        actionMode?.finish()
-        if (session.barBackgroundSaved) {
-            session.barView?.background = session.originalBarBackground
+        // The saved background dates from selection START. After a track
+        // change it contains the PREVIOUS album-art color and briefly
+        // flashes during ActionMode's exit animation if restored here.
+        // Keep the live GMMP color through the dismissal instead.
+        session.barView?.let { bar ->
+            bar.background = ColorDrawable(gmmpPrimary(session, bar))
         }
+        actionMode?.finish()
         session.barView = null
         session.originalBarBackground = null
         session.barBackgroundSaved = false
@@ -1216,6 +1286,7 @@ internal class PlaylistMultiSelectController {
         val fab = session.fab as? ImageView
         session.sparkle?.let { badge -> fab?.overlay?.remove(badge) }
         session.sparkle = null
+        session.sparkleColor = null
         if (fab != null && session.fabIconSaved) {
             fab.setImageDrawable(session.originalIcon)
             // Aesthetic/Material may apply the original white plus via
