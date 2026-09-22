@@ -249,6 +249,91 @@ internal object PlaylistDiagnosticReporter {
         }
     }
 
+    fun describeClass(type: Class<*>) {
+        val methods =
+            type.declaredMethods
+                .filterNot { it.isSynthetic }
+                .joinToString(
+                    prefix = "[",
+                    postfix = "]"
+                ) { method ->
+                    method.name +
+                        "(" +
+                        method.parameterTypes.joinToString(",") { it.name } +
+                        "):" +
+                        method.returnType.name
+                }
+
+        val fields =
+            type.declaredFields
+                .filterNot { it.isSynthetic }
+                .joinToString(
+                    prefix = "[",
+                    postfix = "]"
+                ) { field ->
+                    field.name + ":" + field.type.name
+                }
+
+        Log.i(
+            TAG,
+            "CLASS INFO | ${type.name} | methods=$methods | fields=$fields"
+        )
+    }
+
+    fun describeObjectFieldDetails(instance: Any?): String {
+        if (instance == null) {
+            return "null"
+        }
+
+        return runCatching {
+            instance.javaClass.declaredFields
+                .filterNot { it.isSynthetic }
+                .take(8)
+                .joinToString(
+                    prefix = "[",
+                    postfix = "]"
+                ) { field ->
+                    field.isAccessible = true
+                    val value = field.get(instance)
+                    val rendered =
+                        if (
+                            value != null &&
+                            value !is String &&
+                            value !is Number &&
+                            value !is Boolean &&
+                            value !is Char &&
+                            value !is View &&
+                            value.javaClass.name.length <= 12
+                        ) {
+                            describeObjectFields(value)
+                        } else {
+                            describeValue(value)
+                        }
+                    field.name + "=" + rendered
+                }
+        }.getOrElse {
+            "[unavailable]"
+        }
+    }
+
+    fun describeValue(value: Any?): String {
+        return when (value) {
+            null -> "null"
+            is String -> "\"$value\""
+            is Number,
+            is Boolean,
+            is Char -> value.toString()
+            is View -> describeView(value)
+            is Collection<*> ->
+                value.javaClass.name + "(size=" + value.size + ")"
+            else ->
+                value.javaClass.name + "@" +
+                    Integer.toHexString(
+                        System.identityHashCode(value)
+                    )
+        }
+    }
+
     private fun resourceName(view: View): String {
         if (view.id == View.NO_ID) {
             return "no-id"
