@@ -525,6 +525,39 @@ class GoneSmartModule : XposedModule() {
             if (intercepted) true else chain.proceed()
         }
 
+        // GMMP reuses PlaylistAdd row views while scrolling. Refresh the
+        // tint AFTER a native bind so no selected background can leak onto
+        // an unrelated playlist occupying the same RecyclerView holder.
+        runCatching {
+            val adapterClass = param.classLoader.loadClass("zn3")
+            val bindMethods = adapterClass.declaredMethods.filter { method ->
+                method.name == "N0" && method.parameterCount >= 1
+            }
+            bindMethods.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    val holder = (0 until method.parameterCount)
+                        .map { index -> chain.getArg(index) }
+                        .firstOrNull { it?.javaClass?.name == "jo3" }
+                    if (holder != null) {
+                        playlistController.onRowBound(holder)
+                    }
+                    result
+                }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI ROW BIND | native zn3.N0 hooks=${bindMethods.size}"
+            )
+        }.onFailure { error ->
+            Log.w(
+                TAG,
+                "Native row-bind hook unavailable; scroll observer remains active",
+                error
+            )
+        }
+
         // The native FAB normally disappears while scrolling. Suppress
         // its hide animation only while GoneSmart multi-select is active.
         runCatching {
