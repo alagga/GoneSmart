@@ -556,6 +556,10 @@ class GoneSmartModule : XposedModule() {
                     className
                 )
 
+            PlaylistDiagnosticReporter.describeClass(
+                listenerClass
+            )
+
             listenerClass.declaredMethods
                 .filter { method ->
                     method.parameterCount == 1 &&
@@ -585,6 +589,10 @@ class GoneSmartModule : XposedModule() {
                                 " | listenerFields=" +
                                 PlaylistDiagnosticReporter.describeObjectFields(
                                     listener
+                                ) +
+                                " | fieldDetails=" +
+                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
+                                    listener
                                 )
                         )
 
@@ -594,7 +602,9 @@ class GoneSmartModule : XposedModule() {
                         PlaylistDiagnosticReporter.event(
                             "$label RESULT | " +
                                 "$className.${method.name} -> " +
-                                (result?.toString() ?: "null")
+                                PlaylistDiagnosticReporter.describeValue(
+                                    result
+                                )
                         )
 
                         result
@@ -604,6 +614,85 @@ class GoneSmartModule : XposedModule() {
                         "HOOK READY | $className.${method.name}"
                     )
                 }
+        }
+
+        installPlaylistCallbackDiagnostics(
+            param
+        )
+    }
+
+    private fun installPlaylistCallbackDiagnostics(
+        param: PackageReadyParam
+    ) {
+        val callbackClassName =
+            "ve3\$a"
+
+        val callbackClass =
+            param.classLoader.loadClass(
+                callbackClassName
+            )
+
+        PlaylistDiagnosticReporter.describeClass(
+            callbackClass
+        )
+
+        callbackClass.declaredMethods
+            .filterNot { it.isSynthetic }
+            .filter { it.parameterCount <= 4 }
+            .forEach { method ->
+                method.isAccessible = true
+
+                hook(method).intercept { chain ->
+                    val args =
+                        (0 until method.parameterCount)
+                            .joinToString(", ") { index ->
+                                "arg$index=" +
+                                    PlaylistDiagnosticReporter.describeValue(
+                                        chain.getArg(index)
+                                    )
+                            }
+
+                    val receiver =
+                        chain.getThisObject()
+
+                    PlaylistDiagnosticReporter.event(
+                        "PLAYLIST CALLBACK CALL | " +
+                            "$callbackClassName.${method.name}($args)" +
+                            " | receiverFields=" +
+                            PlaylistDiagnosticReporter.describeObjectFields(
+                                receiver
+                            ) +
+                            " | fieldDetails=" +
+                            PlaylistDiagnosticReporter.describeObjectFieldDetails(
+                                receiver
+                            )
+                    )
+
+                    val result =
+                        chain.proceed()
+
+                    PlaylistDiagnosticReporter.event(
+                        "PLAYLIST CALLBACK RESULT | " +
+                            "$callbackClassName.${method.name} -> " +
+                            PlaylistDiagnosticReporter.describeValue(
+                                result
+                            )
+                    )
+
+                    result
+                }
+
+                PlaylistDiagnosticReporter.event(
+                    "HOOK READY | $callbackClassName.${method.name}"
+                )
+            }
+
+        runCatching {
+            PlaylistDiagnosticReporter.describeClass(
+                param.classLoader.loadClass(
+                    "fe"
+                )
+            )
         }
     }
 
