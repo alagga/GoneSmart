@@ -58,6 +58,8 @@ internal class PlaylistMultiSelectController {
         var lastLoggedAccent: Int? = null
         var livePrimary: Int? = null
         var liveAccent: Int? = null
+        var liveFabAccent: Int? = null
+        var fabPaletteSubscribed = false
         var nativeTheme: Any? = null
         var nativeAccentAttr: Int = 0
         var nativePrimaryAttr: Int = 0
@@ -97,6 +99,9 @@ internal class PlaylistMultiSelectController {
 
         session.fab = fab
         Log.i(TAG, "MULTI FAB | attached")
+        if (session.nativeTheme != null) {
+            observeNativeFabColor(session)
+        }
         if (session.selectedPaths.isNotEmpty()) {
             enableFab(session)
         }
@@ -520,6 +525,7 @@ internal class PlaylistMultiSelectController {
                 session.themePreferences = preferences
                 session.themePreferenceListener = listener
             }
+            observeNativeFabColor(session)
             Log.i(
                 TAG,
                 "MULTI PALETTE | native Aesthetic subscription active" +
@@ -530,6 +536,108 @@ internal class PlaylistMultiSelectController {
                 TAG,
                 "MULTI PALETTE | Aesthetic observer unavailable; using live FAB tint",
                 error
+            )
+        }
+    }
+
+    /**
+     * AestheticFab has a special gmDynamicColor attribute. The player's
+     * album-art theme may update this *named* color without changing the
+     * conventional colorPrimary / colorAccent attributes immediately.
+     * Subscribe to the same observable the native picker FAB itself uses,
+     * so our queue-style selection cannot get stuck on an old color.
+     */
+    private fun observeNativeFabColor(session: Session) {
+        if (session.fabPaletteSubscribed) return
+        val fab = session.fab ?: return
+        val theme = session.nativeTheme ?: return
+        val list = session.list ?: return
+        val loader = session.fragment.javaClass.classLoader ?: return
+
+        runCatching {
+            val getter = generateSequence(fab.javaClass) {
+                it.superclass
+            }.mapNotNull { klass ->
+                klass.declaredMethods.firstOrNull {
+                    it.name == "getColorValue" && it.parameterCount == 0
+                }
+            }.firstOrNull() ?: return
+
+            getter.isAccessible = true
+            val rawColorValue = getter.invoke(fab) as? String
+                ?: return
+            val accentAttr = session.nativeAccentAttr
+            if (accentAttr == 0) return
+
+            val fallback = theme.javaClass.getDeclaredMethod(
+                "b",
+                Int::class.javaPrimitiveType
+            ).apply {
+                isAccessible = true
+            }.invoke(theme, accentAttr) ?: return
+
+            // The obfuscated utility oy0.h(theme, rawAttr, fallback)
+            // is precisely the path used by AestheticFab.onAttachedToWindow.
+            val utility = loader.loadClass("oy0")
+            val observableMethod = utility.declaredMethods.first {
+                it.name == "h" &&
+                    it.parameterCount == 3 &&
+                    it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
+                    it.parameterTypes[1] == String::class.java
+            }.apply { isAccessible = true }
+            val observable = observableMethod.invoke(
+                null,
+                theme,
+                rawColorValue,
+                fallback
+            ) ?: return
+
+            val observerType = loader.loadClass("nf3")
+            val observer = Proxy.newProxyInstance(
+                observerType.classLoader,
+                arrayOf(observerType)
+            ) { _, method, args ->
+                when (method.name) {
+                    "a" -> {
+                        val next = args?.firstOrNull() as? Number
+                        if (next != null) {
+                            list.post {
+                                if (active === session) {
+                                    receiveNativePalette(
+                                        session,
+                                        "fab",
+                                        next.toInt()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    "c" -> args?.firstOrNull()?.let {
+                        session.themeDisposables.add(it)
+                    }
+                    "onError" -> Log.w(
+                        TAG,
+                        "MULTI PALETTE | native FAB observer error",
+                        args?.firstOrNull() as? Throwable
+                    )
+                }
+                null
+            }
+            session.themeObservers.add(observer)
+            observable.javaClass.getMethod("b", observerType)
+                .invoke(observable, observer)
+            session.fabPaletteSubscribed = true
+            Log.i(
+                TAG,
+                "MULTI PALETTE | observing native FAB dynamic color" +
+                    " | rawAttribute=$rawColorValue"
+            )
+        }.onFailure {
+            Log.w(
+                TAG,
+                "MULTI PALETTE | no native FAB color observable; " +
+                    "using Aesthetic primary/accent",
+                it
             )
         }
     }
@@ -563,17 +671,17 @@ internal class PlaylistMultiSelectController {
         color: Int
     ) {
         if (Color.alpha(color) < 200) return
-        val previous = if (name == "primary") {
-            session.livePrimary
-        } else {
-            session.liveAccent
+        val previous = when (name) {
+            "primary" -> session.livePrimary
+            "fab" -> session.liveFabAccent
+            else -> session.liveAccent
         }
         if (previous == color) return
 
-        if (name == "primary") {
-            session.livePrimary = color
-        } else {
-            session.liveAccent = color
+        when (name) {
+            "primary" -> session.livePrimary = color
+            "fab" -> session.liveFabAccent = color
+            else -> session.liveAccent = color
         }
         Log.i(
             TAG,
@@ -605,6 +713,7 @@ internal class PlaylistMultiSelectController {
         session.themeDisposables.clear()
         session.themeObservers.clear()
         session.nativeTheme = null
+        session.fabPaletteSubscribed = false
     }
 
     private fun updateSelectionBar(session: Session) {
@@ -769,14 +878,15 @@ internal class PlaylistMultiSelectController {
      * fallbacks for fixed/custom themes or a currently untinted FAB.
      */
     private fun gmmpPrimary(session: Session, view: View): Int =
-        session.livePrimary ?: session.liveAccent ?: gmmpAccent(
-            session,
-            view
-        )
+        session.liveFabAccent
+            ?: session.livePrimary
+            ?: session.liveAccent
+            ?: gmmpAccent(session, view)
 
     private fun gmmpAccent(session: Session, view: View): Int {
         // Aesthetic's observable value is the real GMMP accent, even
         // when a new cover updates it while this picker remains open.
+        session.liveFabAccent?.let { return it }
         session.liveAccent?.let { return it }
         val fab = session.fab as? com.google.android.material.floatingactionbutton.FloatingActionButton
         val liveFabColor = fab?.backgroundTintList?.let { tint ->
