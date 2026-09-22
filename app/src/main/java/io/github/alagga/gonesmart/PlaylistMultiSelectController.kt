@@ -555,7 +555,7 @@ internal class PlaylistMultiSelectController {
         val loader = session.fragment.javaClass.classLoader ?: return
 
         runCatching {
-            val getter = generateSequence(fab.javaClass) {
+            val getter = generateSequence<Class<*>>(fab.javaClass) {
                 it.superclass
             }.mapNotNull { klass ->
                 klass.declaredMethods.firstOrNull {
