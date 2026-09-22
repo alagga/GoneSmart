@@ -532,9 +532,79 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
+        installPlaylistListenerDiagnosticHooks(
+            param
+        )
+
         PlaylistDiagnosticReporter.event(
             "DIAGNOSTICS READY | Add-to-Playlist picker (debug only)"
         )
+    }
+
+    private fun installPlaylistListenerDiagnosticHooks(
+        param: PackageReadyParam
+    ) {
+        val listenerClasses =
+            listOf(
+                "xj5\$a" to "CLICK",
+                "rk5\$a" to "LONG_CLICK"
+            )
+
+        listenerClasses.forEach { (className, label) ->
+            val listenerClass =
+                param.classLoader.loadClass(
+                    className
+                )
+
+            listenerClass.declaredMethods
+                .filter { method ->
+                    method.parameterCount == 1 &&
+                        android.view.View::class.java
+                            .isAssignableFrom(
+                                method.parameterTypes[0]
+                            )
+                }
+                .forEach { method ->
+                    method.isAccessible = true
+
+                    hook(method).intercept { chain ->
+                        val view =
+                            chain.getArg(0)
+                                as? android.view.View
+
+                        val listener =
+                            chain.getThisObject()
+
+                        PlaylistDiagnosticReporter.event(
+                            "$label CALL | " +
+                                "$className.${method.name} | " +
+                                "view=" +
+                                PlaylistDiagnosticReporter.describeView(
+                                    view
+                                ) +
+                                " | listenerFields=" +
+                                PlaylistDiagnosticReporter.describeObjectFields(
+                                    listener
+                                )
+                        )
+
+                        val result =
+                            chain.proceed()
+
+                        PlaylistDiagnosticReporter.event(
+                            "$label RESULT | " +
+                                "$className.${method.name} -> " +
+                                (result?.toString() ?: "null")
+                        )
+
+                        result
+                    }
+
+                    PlaylistDiagnosticReporter.event(
+                        "HOOK READY | $className.${method.name}"
+                    )
+                }
+        }
     }
 
     private fun initializeRemoteSettings() {
