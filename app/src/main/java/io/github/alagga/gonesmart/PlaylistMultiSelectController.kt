@@ -84,6 +84,76 @@ internal class PlaylistMultiSelectController {
 
     private var active: Session? = null
 
+    /*
+     * Native io3.r() publishes a j83 "close the add-to-playlist picker"
+     * event after EACH successful destination. The host activity handles
+     * every j83 by navigating back. A multi-add must publish it exactly
+     * once, even though each playlist still uses the native add handler.
+     *
+     * io3.r creates a jd(mode=4) callback for every destination. Tag only
+     * callbacks constructed during our reflective native dispatch; wrap
+     * their execution with a thread-local scope and suppress duplicate j83
+     * emissions from that scope. Ordinary GMMP playlist adds and unrelated
+     * navigation remain completely untouched.
+     *
+     * The callback registry outlives the picker session because the FIRST
+     * j83 can detach its fragment before later Rx callbacks finish.
+     */
+    private class NativeNavigationBatch {
+        var closeEventSent = false
+    }
+
+    private val navigationLock = Any()
+    private val nativeCallbacks = WeakHashMap<Any, NativeNavigationBatch>()
+    private val constructingNativeCallback = ThreadLocal<NativeNavigationBatch?>()
+    private val runningNativeCallback = ThreadLocal<NativeNavigationBatch?>()
+
+    fun onNativeResultCallbackConstructed(callback: Any?, mode: Any?) {
+        if (callback == null || (mode as? Number)?.toInt() != 4) return
+        val batch = constructingNativeCallback.get() ?: return
+        synchronized(navigationLock) {
+            nativeCallbacks[callback] = batch
+        }
+        Log.i(TAG, "MULTI NAV | native playlist result callback registered")
+    }
+
+    fun aroundNativeResultCallback(
+        callback: Any?,
+        proceed: () -> Any?
+    ): Any? {
+        val batch = synchronized(navigationLock) {
+            nativeCallbacks.remove(callback)
+        } ?: return proceed()
+
+        val previous = runningNativeCallback.get()
+        runningNativeCallback.set(batch)
+        try {
+            return proceed()
+        } finally {
+            if (previous == null) {
+                runningNativeCallback.remove()
+            } else {
+                runningNativeCallback.set(previous)
+            }
+        }
+    }
+
+    fun shouldSuppressNativeCloseEvent(event: Any?): Boolean {
+        if (event?.javaClass?.name != "j83") return false
+        val batch = runningNativeCallback.get() ?: return false
+
+        return synchronized(navigationLock) {
+            if (!batch.closeEventSent) {
+                batch.closeEventSent = true
+                Log.i(TAG, "MULTI NAV | first native close event allowed")
+                false
+            } else {
+                Log.i(TAG, "MULTI NAV | duplicate native close event suppressed")
+                true
+            }
+        }
+    }
+
     fun beginPicker(fragment: Any?) {
         if (fragment == null) return
         if (active?.fragment === fragment) return
@@ -1209,15 +1279,35 @@ internal class PlaylistMultiSelectController {
         // selected model, call the native handler, then restore it.
         // Never retain recycled view objects as destination identity.
         val originalModel = modelField.get(holder)
+        // One batch spans every destination, but only the native completion
+        // callback is allowed to dismiss the picker, and only once.
+        val navigationBatch = if (targets.size > 1) {
+            NativeNavigationBatch()
+        } else {
+            null
+        }
         session.submitting = true
         var accepted = 0
         try {
             for (model in targets) {
                 val path = modelPath(model) ?: continue
                 modelField.set(holder, model)
-                val dispatched =
+
+                val previous = constructingNativeCallback.get()
+                if (navigationBatch != null) {
+                    constructingNativeCallback.set(navigationBatch)
+                }
+                val dispatched = try {
                     addMethod.invoke(handler, fab.context, holder) as? Boolean
                         ?: false
+                } finally {
+                    if (previous == null) {
+                        constructingNativeCallback.remove()
+                    } else {
+                        constructingNativeCallback.set(previous)
+                    }
+                }
+
                 Log.i(
                     TAG,
                     "MULTI NATIVE ADD | destination=$path | " +
