@@ -40,6 +40,7 @@ internal class PlaylistMultiSelectController {
         var list: ViewGroup? = null
         var nativeHandler: Any? = null
         val selectedPaths = linkedSetOf<String>()
+        var fabIconSaved = false
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
@@ -234,14 +235,15 @@ internal class PlaylistMultiSelectController {
     private fun enableFab(session: Session) {
         val fab = session.fab as? ImageView ?: return
 
-        if (session.originalIcon == null) {
+        if (!session.fabIconSaved) {
+            session.fabIconSaved = true
             session.originalIcon = fab.drawable
             session.originalTint = fab.imageTintList
             session.originalDescription = fab.contentDescription
         }
 
         fab.imageTintList = null
-        fab.setImageDrawable(MultiConfirmDrawable())
+        fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
         fab.contentDescription =
             "GoneSmart: Zu ${session.selectedPaths.size} Playlists hinzufügen"
         pinFab(session)
@@ -409,12 +411,13 @@ internal class PlaylistMultiSelectController {
         session.selectedPaths.clear()
 
         val fab = session.fab as? ImageView
-        if (fab != null && session.originalIcon != null) {
+        if (fab != null && session.fabIconSaved) {
             fab.setImageDrawable(session.originalIcon)
             fab.imageTintList = session.originalTint
             fab.contentDescription = session.originalDescription
         }
 
+        session.fabIconSaved = false
         session.originalIcon = null
         session.originalTint = null
         session.originalDescription = null
@@ -451,7 +454,12 @@ internal class PlaylistMultiSelectController {
         Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     }
 
-    private class MultiConfirmDrawable : Drawable() {
+    private class MultiConfirmDrawable(
+        private val iconSizePx: Int
+    ) : Drawable() {
+        override fun getIntrinsicWidth(): Int = iconSizePx
+        override fun getIntrinsicHeight(): Int = iconSizePx
+
         private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 3.4f
