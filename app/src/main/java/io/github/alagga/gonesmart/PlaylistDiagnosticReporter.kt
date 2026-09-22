@@ -316,6 +316,46 @@ internal object PlaylistDiagnosticReporter {
         }
     }
 
+    fun describeValueDeep(value: Any?): String {
+        if (value == null) {
+            return "null"
+        }
+
+        val simple = describeValue(value)
+
+        if (
+            value is String ||
+            value is Number ||
+            value is Boolean ||
+            value is Char ||
+            value is View ||
+            value is Collection<*>
+        ) {
+            return simple
+        }
+
+        val fields =
+            runCatching {
+                value.javaClass.declaredFields
+                    .filterNot { it.isSynthetic }
+                    .take(12)
+                    .joinToString(
+                        prefix = "[",
+                        postfix = "]"
+                    ) { field ->
+                        field.isAccessible = true
+                        field.name + "=" +
+                            describeValue(
+                                field.get(value)
+                            )
+                    }
+            }.getOrElse {
+                "[unavailable]"
+            }
+
+        return "$simple fields=$fields"
+    }
+
     fun describeValue(value: Any?): String {
         return when (value) {
             null -> "null"
