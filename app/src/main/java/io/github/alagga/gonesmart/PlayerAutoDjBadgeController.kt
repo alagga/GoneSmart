@@ -666,8 +666,9 @@ class PlayerAutoDjBadgeController {
     }
 
     internal class SparkleBadgeDrawable(
-        private val badgeColor: Int,
-        private val scale: Float = 1f
+        private var badgeColor: Int,
+        private val scale: Float = 1f,
+        private val playlistPlacement: Boolean = false
     ) : Drawable() {
 
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -688,6 +689,19 @@ class PlayerAutoDjBadgeController {
         private var drawableAlpha = 255
         private var currentColorFilter: android.graphics.ColorFilter? = null
 
+        /**
+         * GMMP can change colorAccent without recreating the playlist FAB.
+         * Update the existing overlay in place so its position, bounds,
+         * and click handling remain unchanged during a track transition.
+         */
+        fun updateColor(color: Int) {
+            if (badgeColor == color) return
+            badgeColor = color
+            fillPaint.color = color
+            highlightPaint.color = lighten(color, 0.58f)
+            invalidateSelf()
+        }
+
         override fun draw(canvas: Canvas) {
             val size = min(bounds.width(), bounds.height()).toFloat()
             if (size <= 0f) return
@@ -705,9 +719,19 @@ class PlayerAutoDjBadgeController {
             // same glow and curved sparkle geometry.
             val badgeScale = scale.coerceIn(0.5f, 2.0f)
             val radius = size * 0.105f * badgeScale
-            val offset = if (badgeScale > 1.2f) 0.14f else 0.17f
-            val cx = centerX + size * offset
-            val cy = centerY - size * offset
+            // On the playlist FAB, the large star belongs below and to
+            // the right of the white tick, instead of covering its stroke.
+            // The secondary small star remains close to the tick's tip.
+            val cx = if (playlistPlacement) {
+                bounds.left + size * 0.75f
+            } else {
+                centerX + size * (if (badgeScale > 1.2f) 0.14f else 0.17f)
+            }
+            val cy = if (playlistPlacement) {
+                bounds.top + size * 0.76f
+            } else {
+                centerY - size * (if (badgeScale > 1.2f) 0.14f else 0.17f)
+            }
 
             val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.FILL
@@ -759,8 +783,10 @@ class PlayerAutoDjBadgeController {
             /* A restrained secondary sparkle adds depth without clutter. */
             drawCurvedSparkle(
                 canvas = canvas,
-                cx = cx - radius * 0.88f,
-                cy = cy + radius * 0.88f,
+                cx = cx - radius *
+                    (if (playlistPlacement) 0.62f else 0.88f),
+                cy = cy + radius *
+                    (if (playlistPlacement) -1.2f else 0.88f),
                 radius = radius * 0.38f,
                 paint = highlightPaint
             )
