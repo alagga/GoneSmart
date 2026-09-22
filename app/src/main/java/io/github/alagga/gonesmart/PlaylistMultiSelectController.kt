@@ -425,7 +425,7 @@ internal class PlaylistMultiSelectController {
                 ?: throw ClassNotFoundException("GMMP class loader")
             val theme = runCatching {
                 val companion = loader.loadClass(
-                    "com.afollestad.aesthetic.a\\$a"
+                    "com.afollestad.aesthetic.a\$a"
                 )
                 companion.getDeclaredMethod("c").apply {
                     isAccessible = true
