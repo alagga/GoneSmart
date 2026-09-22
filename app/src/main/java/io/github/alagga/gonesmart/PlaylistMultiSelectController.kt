@@ -7,23 +7,23 @@ import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
 import android.util.Log
-import android.view.Gravity
+import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.TextView
 import android.widget.Toast
 import java.lang.reflect.Method
+import java.util.WeakHashMap
 
 /**
  * Experimental GMMP 4.2.0 integration, enabled only in GoneSmart debug builds.
  *
- * Uses the native playlist adapter (zn3 / bw), native jo3 playlist items and
- * native io3.r(Context, ie0) addition handler. Never writes .m3u files.
+ * Uses native jo3 view holders and xn3 models, and dispatches additions
+ * through the native io3.r(Context, ie0) handler. Never writes .m3u files.
  *
  * One picker session owns its state. All methods run on GMMP's UI thread.
  */
@@ -31,8 +31,10 @@ internal class PlaylistMultiSelectController {
 
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        private const val PINK = 0xFFFF4DA6.toInt()
-        private const val CHECK_TAG = "gonesmart_playlist_check_v1"
+        // Keep GoneSmart's accent on the sparkle only. Row highlights use
+        // GMMP's live dynamic/fixed accent color instead.
+        private const val GONESMART_LILAC = 0xFFA39AFF.toInt()
+        private const val OLD_CHECK_TAG = "gonesmart_playlist_check_v1"
     }
 
     private class Session(val fragment: Any) {
@@ -43,6 +45,10 @@ internal class PlaylistMultiSelectController {
         val selectedModels = linkedMapOf<String, Any>()
         var dispatchHolder: Any? = null
         var fabIconSaved = false
+        var sparkle: PlayerAutoDjBadgeController.SparkleBadgeDrawable? = null
+        val originalRowBackgrounds = WeakHashMap<View, Drawable?>()
+        val appliedRowBackgrounds = WeakHashMap<View, ColorDrawable>()
+        var lastLoggedAccent: Int? = null
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
@@ -100,6 +106,18 @@ internal class PlaylistMultiSelectController {
                     pinFab(session)
                 }
             }
+            observer.addOnScrollChangedListener {
+                if (active === session && session.selectedPaths.isNotEmpty()) {
+                    // RecyclerView reuses row views; refresh AFTER the native
+                    // adapter has rebound them to their new playlist models.
+                    group.post {
+                        if (active === session) {
+                            refreshVisibleRows(session)
+                            pinFab(session)
+                        }
+                    }
+                }
+            }
         }
 
         Log.i(TAG, "MULTI LIST | attached")
@@ -134,9 +152,7 @@ internal class PlaylistMultiSelectController {
 
         session.dispatchHolder = item
         session.selectedModels[path] = model
-        // The adapter exposes t23 groups, not jo3 view holders. Their
-        // r() lists provide the stable models used for destination checks.
-        adapterItems(session.list!!, trace = true)
+        // Paths, never reused row Views or adapter positions, own selection.
 
         if (session.selectedPaths.add(path)) {
             Log.i(TAG, "MULTI SELECT | added=$path")
@@ -358,7 +374,16 @@ internal class PlaylistMultiSelectController {
         }
 
         fab.imageTintList = null
+        // The checkmark stays clean and white. Reuse the EXACT renderer
+        // used on the Auto-DJ button as a separately overlaid lilac badge.
         fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
+        if (session.sparkle == null) {
+            val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
+                GONESMART_LILAC
+            )
+            session.sparkle = sparkle
+            fab.overlay.add(sparkle)
+        }
         fab.contentDescription =
             "GoneSmart: Zu ${session.selectedPaths.size} Playlists hinzufügen"
         pinFab(session)
@@ -378,46 +403,170 @@ internal class PlaylistMultiSelectController {
             fab.alpha = 1f
             fab.translationY = 0f
         }
+
+        session.sparkle?.setBounds(0, 0, fab.width, fab.height)
+        fab.invalidate()
     }
 
+    /**
+     * The row palette deliberately comes from GMMP, not GoneSmart. The
+     * native FAB is the most reliable live source when the Aesthetic theme
+     * derives its palette from the current album art. Theme attributes are
+     * fallbacks for fixed/custom themes or a currently untinted FAB.
+     */
+    private fun gmmpAccent(session: Session, view: View): Int {
+        val fab = session.fab as? com.google.android.material.floatingactionbutton.FloatingActionButton
+        val liveFabColor = fab?.backgroundTintList?.let { tint ->
+            tint.getColorForState(fab.drawableState, tint.defaultColor)
+        }?.takeIf { Color.alpha(it) >= 200 }
+
+        if (liveFabColor != null) return liveFabColor
+
+        val resources = view.context.resources
+        val packageName = view.context.packageName
+        val appAccent = resources.getIdentifier(
+            "colorAccent", "attr", packageName
+        )
+        val appPrimary = resources.getIdentifier(
+            "colorPrimary", "attr", packageName
+        )
+        for (attr in intArrayOf(
+            appAccent,
+            android.R.attr.colorAccent,
+            appPrimary
+        )) {
+            val resolved = if (attr != 0) themeColor(view, attr) else null
+            if (resolved != null && Color.alpha(resolved) >= 200) {
+                return resolved
+            }
+        }
+
+        // Only an ultimate fallback: the normal path reads GMMP's runtime
+        // color. Never tint playlist selection with GoneSmart lilac.
+        return 0xFF36A8BE.toInt()
+    }
+
+    private fun themeColor(view: View, attr: Int): Int? {
+        val value = TypedValue()
+        if (!view.context.theme.resolveAttribute(attr, value, true)) {
+            return null
+        }
+        if (value.type in TypedValue.TYPE_FIRST_COLOR_INT..
+            TypedValue.TYPE_LAST_COLOR_INT
+        ) {
+            return value.data
+        }
+        return if (value.resourceId != 0) {
+            runCatching { view.context.getColor(value.resourceId) }
+                .getOrNull()
+        } else {
+            null
+        }
+    }
+
+    private fun selectionColor(
+        session: Session,
+        row: View
+    ): Int {
+        val accent = gmmpAccent(session, row)
+        val original = session.originalRowBackgrounds[row]
+        val rowColor = (original as? ColorDrawable)?.color
+            ?.takeIf { Color.alpha(it) == 255 }
+        val background = rowColor
+            ?: themeColor(row, android.R.attr.colorBackground)
+            ?: Color.BLACK
+
+        val color = blend(background, accent, 0.48f)
+        if (session.lastLoggedAccent != accent) {
+            session.lastLoggedAccent = accent
+            Log.i(
+                TAG,
+                "MULTI STYLE | live GMMP accent=#" +
+                    Integer.toHexString(accent) +
+                    " | rowHighlight=#" +
+                    Integer.toHexString(color)
+            )
+        }
+        return color
+    }
+
+    private fun blend(base: Int, accent: Int, ratio: Float): Int {
+        val rest = 1f - ratio
+        return Color.rgb(
+            (Color.red(base) * rest + Color.red(accent) * ratio).toInt(),
+            (Color.green(base) * rest + Color.green(accent) * ratio).toInt(),
+            (Color.blue(base) * rest + Color.blue(accent) * ratio).toInt()
+        )
+    }
+
+    /** A recycled row is always painted from its CURRENT bound xn3 path. */
     private fun refreshVisibleRows(session: Session) {
         val list = session.list ?: return
         for (index in 0 until list.childCount) {
             val row = list.getChildAt(index) as? FrameLayout ?: continue
             val holder = getPlaylistItem(session, row)
-            val path = holder?.let(::playlistPath)
-            val selected = path != null && path in session.selectedPaths
+            refreshRow(session, row, holder)
+        }
+    }
 
-            var marker = row.findViewWithTag<TextView>(CHECK_TAG)
-            if (marker == null && selected) {
-                marker = TextView(row.context).apply {
-                    tag = CHECK_TAG
-                    text = "✓"
-                    textSize = 18f
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(PINK)
-                    }
-                    isClickable = false
-                    isFocusable = false
-                    importantForAccessibility =
-                        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    /**
+     * Called after GMMP's native adapter rebinds a holder, in addition to
+     * layout/scroll callbacks. This prevents old highlight state leaking
+     * onto unrelated playlists during RecyclerView view recycling.
+     */
+    fun onRowBound(holder: Any?) {
+        val session = active ?: return
+        if (session.selectedPaths.isEmpty() &&
+            session.originalRowBackgrounds.isEmpty()
+        ) return
+        if (holder?.javaClass?.name != "jo3") return
+
+        val row = runCatching {
+            holder.javaClass.getField("itemView").get(holder) as? FrameLayout
+        }.getOrNull() ?: return
+
+        if (row.parent === session.list) {
+            refreshRow(session, row, holder)
+        } else {
+            row.post {
+                if (active === session && row.parent === session.list) {
+                    refreshRow(session, row, holder)
                 }
-
-                val size = dp(row, 28f)
-                val params = FrameLayout.LayoutParams(
-                    size,
-                    size,
-                    Gravity.END or Gravity.CENTER_VERTICAL
-                )
-                params.marginEnd = dp(row, 14f)
-                row.addView(marker, params)
             }
+        }
+    }
 
-            marker?.visibility =
-                if (selected) View.VISIBLE else View.GONE
+    private fun refreshRow(
+        session: Session,
+        row: FrameLayout,
+        holder: Any?
+    ) {
+        // Remove artifacts left by the previous experimental implementation.
+        val oldMarker = row.findViewWithTag<View>(OLD_CHECK_TAG)
+        if (oldMarker != null && oldMarker.parent === row) {
+            row.removeView(oldMarker)
+        }
+
+        val path = holder?.let(::playlistPath)
+        val selected = path != null && path in session.selectedPaths
+
+        if (selected) {
+            if (!session.originalRowBackgrounds.containsKey(row)) {
+                session.originalRowBackgrounds[row] = row.background
+            }
+            val color = selectionColor(session, row)
+            val previous = session.appliedRowBackgrounds[row]
+            if (previous == null ||
+                previous.color != color ||
+                row.background !== previous
+            ) {
+                val highlight = ColorDrawable(color)
+                session.appliedRowBackgrounds[row] = highlight
+                row.background = highlight
+            }
+        } else if (session.originalRowBackgrounds.containsKey(row)) {
+            row.background = session.originalRowBackgrounds.remove(row)
+            session.appliedRowBackgrounds.remove(row)
         }
     }
 
@@ -547,7 +696,17 @@ internal class PlaylistMultiSelectController {
         session.selectedModels.clear()
         session.dispatchHolder = null
 
+        // Restore every row we ever tinted in this session, including rows
+        // now off screen or recycled to a different playlist.
+        session.originalRowBackgrounds.toList().forEach { (row, original) ->
+            row.background = original
+        }
+        session.originalRowBackgrounds.clear()
+        session.appliedRowBackgrounds.clear()
+
         val fab = session.fab as? ImageView
+        session.sparkle?.let { badge -> fab?.overlay?.remove(badge) }
+        session.sparkle = null
         if (fab != null && session.fabIconSaved) {
             fab.setImageDrawable(session.originalIcon)
             fab.imageTintList = session.originalTint
@@ -624,12 +783,8 @@ internal class PlaylistMultiSelectController {
                 stroke
             )
 
-            stroke.color = PINK
-            stroke.strokeWidth = w * 0.09f
-            val sx = x + w * 0.83f
-            val sy = y + h * 0.13f
-            canvas.drawLine(sx, sy - h * 0.11f, sx, sy + h * 0.11f, stroke)
-            canvas.drawLine(sx - w * 0.11f, sy, sx + w * 0.11f, sy, stroke)
+        // The shared Auto-DJ badge renderer draws the lilac sparkle as
+        // a separate overlay in the top-right corner of the native FAB.
         }
 
         override fun setAlpha(alpha: Int) {
