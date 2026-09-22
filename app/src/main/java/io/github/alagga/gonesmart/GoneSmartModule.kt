@@ -398,6 +398,20 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
+            // Debug builds only: inspect GMMP's playlist picker without
+            // changing click handlers or writing playlist data.
+            if (BuildConfig.DEBUG) {
+                try {
+                    installPlaylistDiagnosticHooks(param)
+                } catch (diagnosticError: Throwable) {
+                    Log.w(
+                        TAG,
+                        "Playlist diagnostics unavailable; native picker unaffected",
+                        diagnosticError
+                    )
+                }
+            }
+
             Log.i(
                 TAG,
                 "All GoneSmart core hooks installed successfully"
@@ -411,6 +425,116 @@ class GoneSmartModule : XposedModule() {
                 t
             )
         }
+    }
+
+    /**
+     * Temporary instrumentation for the upcoming multi-playlist feature.
+     *
+     * Verified against the user's GMMP 4.2.0 APK:
+     * bo3.k2() -> native playlist FAB
+     * bo3.D1() -> native playlist RecyclerView
+     *
+     * All hooks call the native method exactly once. Diagnostics never
+     * intercept clicks, alter selections, or write playlist data.
+     */
+    private fun installPlaylistDiagnosticHooks(
+        param: PackageReadyParam
+    ) {
+        val pickerClass =
+            param.classLoader.loadClass("bo3")
+
+        val pickerMethods = listOf(
+            "k2", "D1", "E2", "I3",
+            "N3", "O3", "P0", "P3", "n1"
+        )
+
+        for (name in pickerMethods) {
+            val method = pickerClass.declaredMethods
+                .firstOrNull { it.name == name }
+                ?: continue
+
+            method.isAccessible = true
+
+            hook(method).intercept { chain ->
+                if (name != "k2" && name != "D1") {
+                    val args = (0 until method.parameterCount)
+                        .joinToString(", ") { index ->
+                            when (val value = chain.getArg(index)) {
+                                null -> "null"
+                                is Boolean, is Int -> value.toString()
+                                is List<*> -> "List(size=${value.size})"
+                                else -> value.javaClass.name
+                            }
+                        }
+
+                    PlaylistDiagnosticReporter.event(
+                        "PICKER CALL | bo3.$name($args)"
+                    )
+                }
+
+                val result = chain.proceed()
+
+                try {
+                    when (name) {
+                        "k2" -> {
+                            (result as? android.view.View)?.let {
+                                PlaylistDiagnosticReporter.observeFab(it)
+                            }
+                        }
+                        "D1" -> {
+                            (result as? android.view.View)?.let {
+                                PlaylistDiagnosticReporter.observeList(it)
+                            }
+                        }
+                        "N3", "O3" -> {
+                            PlaylistDiagnosticReporter.event(
+                                "PICKER RESULT | bo3.$name -> " +
+                                    (result?.javaClass?.name ?: "null")
+                            )
+                        }
+                    }
+                } catch (reportError: Throwable) {
+                    Log.w(
+                        TAG,
+                        "Playlist diagnostic report failed for bo3.$name",
+                        reportError
+                    )
+                }
+
+                result
+            }
+
+            PlaylistDiagnosticReporter.event(
+                "HOOK READY | bo3.$name"
+            )
+        }
+
+        val presenterClass =
+            param.classLoader.loadClass("go3")
+
+        presenterClass.declaredMethods
+            .firstOrNull {
+                it.name == "y2" && it.parameterCount == 0
+            }
+            ?.let { method ->
+                method.isAccessible = true
+
+                hook(method).intercept { chain ->
+                    PlaylistDiagnosticReporter.event(
+                        "PRESENTER CALL | go3.y2() | refresh playlist list"
+                    )
+
+                    chain.proceed()
+                }
+
+                PlaylistDiagnosticReporter.event(
+                    "HOOK READY | go3.y2"
+                )
+            }
+
+        PlaylistDiagnosticReporter.event(
+            "DIAGNOSTICS READY | Add-to-Playlist picker (debug only)"
+        )
     }
 
     private fun initializeRemoteSettings() {
