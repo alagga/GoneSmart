@@ -643,31 +643,56 @@ class GoneSmartModule : XposedModule() {
                 method.isAccessible = true
 
                 hook(method).intercept { chain ->
+                    val receiver =
+                        chain.getThisObject()
+
+                    val target =
+                        PlaylistDiagnosticReporter.firstFieldValue(
+                            receiver
+                        )
+
+                    val isPlaylistRowAction =
+                        target?.javaClass?.name == "zw\$a" ||
+                            target?.javaClass?.name == "zw\$b"
+
                     val args =
                         (0 until method.parameterCount)
                             .joinToString(", ") { index ->
                                 "arg$index=" +
-                                    PlaylistDiagnosticReporter.describeValue(
-                                        chain.getArg(index)
-                                    )
+                                    if (isPlaylistRowAction) {
+                                        PlaylistDiagnosticReporter.describeValueDeep(
+                                            chain.getArg(index)
+                                        )
+                                    } else {
+                                        PlaylistDiagnosticReporter.describeValue(
+                                            chain.getArg(index)
+                                        )
+                                    }
                             }
 
-                    val receiver =
-                        chain.getThisObject()
-
-                    PlaylistDiagnosticReporter.event(
-                        "PLAYLIST CALLBACK CALL | " +
-                            "$callbackClassName.${method.name}($args)" +
-                            " | receiverFields=" +
-                            PlaylistDiagnosticReporter.describeObjectFields(
-                                receiver
-                            ) +
-                            " | fieldDetails=" +
-                            PlaylistDiagnosticReporter.describeObjectFieldDetails(
-                                receiver
-                            )
-                    )
-
+                    if (isPlaylistRowAction) {
+                        PlaylistDiagnosticReporter.event(
+                            "PLAYLIST ROW ACTION | target=" +
+                                PlaylistDiagnosticReporter.describeValueDeep(
+                                    target
+                                ) +
+                                " | callback=" +
+                                "$callbackClassName.${method.name}($args)"
+                        )
+                    } else {
+                        PlaylistDiagnosticReporter.event(
+                            "PLAYLIST CALLBACK CALL | " +
+                                "$callbackClassName.${method.name}($args)" +
+                                " | receiverFields=" +
+                                PlaylistDiagnosticReporter.describeObjectFields(
+                                    receiver
+                                ) +
+                                " | fieldDetails=" +
+                                PlaylistDiagnosticReporter.describeObjectFieldDetails(
+                                    receiver
+                                )
+                        )
+                    }
                     val result =
                         chain.proceed()
 
