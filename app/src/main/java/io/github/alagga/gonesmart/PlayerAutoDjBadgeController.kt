@@ -665,7 +665,7 @@ class PlayerAutoDjBadgeController {
         return String.format(java.util.Locale.US, "%.3f", value)
     }
 
-    private class SparkleBadgeDrawable(
+    internal class SparkleBadgeDrawable(
         private val badgeColor: Int
     ) : Drawable() {
 
