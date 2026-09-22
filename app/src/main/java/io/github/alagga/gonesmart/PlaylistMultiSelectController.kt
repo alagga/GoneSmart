@@ -116,9 +116,18 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onLongClick(view: View?): Boolean {
-        val session = visibleSession() ?: return false
-        val item = getPlaylistItem(session, view) ?: return false
-        val path = playlistPath(item) ?: return false
+        Log.i(
+            TAG,
+            "MULTI LONG | received | view=" +
+                (view?.javaClass?.name ?: "null") +
+                " | parent=" +
+                (view?.parent?.javaClass?.name ?: "null")
+        )
+
+        val session = visibleSession(trace = true) ?: return false
+        val item = getPlaylistItem(session, view, trace = true)
+            ?: return false
+        val path = playlistPath(item, trace = true) ?: return false
 
         if (session.selectedPaths.add(path)) {
             Log.i(TAG, "MULTI SELECT | added=$path")
@@ -175,60 +184,198 @@ internal class PlaylistMultiSelectController {
             session.list?.isAttachedToWindow == true
     }
 
-    private fun visibleSession(): Session? {
-        val session = active ?: return null
-        val list = session.list ?: return null
-        val fab = session.fab ?: return null
-
-        if (!list.isAttachedToWindow || !fab.isAttachedToWindow) {
+    private fun visibleSession(trace: Boolean = false): Session? {
+        val session = active
+        if (session == null) {
+            if (trace) Log.w(TAG, "MULTI LONG STOP | no active picker")
             return null
         }
 
-        if (list.rootView !== fab.rootView) return null
+        val list = session.list
+        val fab = session.fab
+        if (list == null || fab == null) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | missing views | list=${list != null}" +
+                        " | fab=${fab != null}"
+                )
+            }
+            return null
+        }
+
+        if (!list.isAttachedToWindow || !fab.isAttachedToWindow) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | detached | list=${list.isAttachedToWindow}" +
+                        " | fab=${fab.isAttachedToWindow}"
+                )
+            }
+            return null
+        }
+
+        if (list.rootView !== fab.rootView) {
+            if (trace) Log.w(TAG, "MULTI LONG STOP | list/FAB roots differ")
+            return null
+        }
+
+        if (trace) Log.i(TAG, "MULTI LONG | visible session OK")
         return session
     }
 
     private fun getPlaylistItem(
         session: Session,
-        view: View?
+        view: View?,
+        trace: Boolean = false
     ): Any? {
         val list = session.list ?: return null
-        if (view !is FrameLayout || view.parent !== list) return null
+        if (view !is FrameLayout || view.parent !== list) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | row mismatch | frame=${view is FrameLayout}" +
+                        " | directChild=${view?.parent === list}"
+                )
+            }
+            return null
+        }
 
         val position = runCatching {
             list.javaClass
                 .getMethod("getChildAdapterPosition", View::class.java)
                 .invoke(list, view) as? Int
-        }.getOrNull() ?: return null
+        }.onFailure { error ->
+            if (trace) Log.w(TAG, "MULTI LONG STOP | adapter position failed", error)
+        }.getOrNull()
 
-        return adapterItems(list)
-            .getOrNull(position)
-            ?.takeIf { it.javaClass.name == "jo3" }
+        if (position == null || position < 0) {
+            if (trace) Log.w(TAG, "MULTI LONG STOP | invalid position=$position")
+            return null
+        }
+
+        val items = adapterItems(list, trace)
+        val item = items.getOrNull(position)
+        if (trace) {
+            Log.i(
+                TAG,
+                "MULTI LONG | position=$position | items=${items.size}" +
+                    " | itemType=${item?.javaClass?.name ?: "null"}"
+            )
+        }
+
+        if (item?.javaClass?.name != "jo3") {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | expected jo3; actual=" +
+                        (item?.javaClass?.name ?: "null")
+                )
+            }
+            return null
+        }
+
+        return item
     }
 
-    private fun adapterItems(list: ViewGroup): List<Any> {
+    private fun adapterItems(
+        list: ViewGroup,
+        trace: Boolean = false
+    ): List<Any> {
         return runCatching {
             val adapter = list.javaClass.getMethod("getAdapter")
-                .invoke(list) ?: return emptyList()
+                .invoke(list)
+            if (adapter == null) {
+                if (trace) Log.w(TAG, "MULTI LONG STOP | native adapter missing")
+                return emptyList()
+            }
+
+            if (trace) {
+                Log.i(
+                    TAG,
+                    "MULTI LONG | adapter=${adapter.javaClass.name}" +
+                        " | parent=${adapter.javaClass.superclass?.name}"
+                )
+            }
+
+            val method = adapter.javaClass.getMethod("i0")
             @Suppress("UNCHECKED_CAST")
-            (adapter.javaClass.getMethod("i0")
-                .invoke(adapter) as? List<Any>)
-                .orEmpty()
+            val items = (method.invoke(adapter) as? List<Any>).orEmpty()
+            if (trace) {
+                Log.i(
+                    TAG,
+                    "MULTI LONG | i0 result count=${items.size}" +
+                        " | firstType=${items.firstOrNull()?.javaClass?.name}"
+                )
+            }
+            items
+        }.onFailure { error ->
+            if (trace) {
+                Log.w(TAG, "MULTI LONG STOP | adapter i0 lookup failed", error)
+                val adapter = runCatching {
+                    list.javaClass.getMethod("getAdapter").invoke(list)
+                }.getOrNull()
+                if (adapter != null) {
+                    val hierarchy = generateSequence(adapter.javaClass) {
+                        it.superclass
+                    }.take(4).joinToString(" -> ") { klass ->
+                        klass.simpleName + ":" +
+                            klass.declaredMethods
+                                .filter { it.parameterCount == 0 }
+                                .take(16)
+                                .joinToString(",") { it.name }
+                    }
+                    Log.i(TAG, "MULTI LONG | adapter methods=$hierarchy")
+                }
+            }
         }.getOrDefault(emptyList())
     }
 
-    private fun playlistPath(item: Any): String? {
+    private fun playlistPath(
+        item: Any,
+        trace: Boolean = false
+    ): String? {
         if (item.javaClass.name != "jo3") return null
 
         return runCatching {
             val modelField = item.javaClass.getDeclaredField("A")
             modelField.isAccessible = true
-            val model = modelField.get(item) ?: return null
+            val model = modelField.get(item)
+            if (model == null) {
+                if (trace) Log.w(TAG, "MULTI LONG STOP | jo3.A is null")
+                return null
+            }
+
+            if (trace) {
+                Log.i(
+                    TAG,
+                    "MULTI LONG | model type=${model.javaClass.name}" +
+                        " | fields=" +
+                        model.javaClass.declaredFields
+                            .take(16)
+                            .joinToString(",") { it.name + ":" + it.type.simpleName }
+                )
+            }
 
             val pathField = model.javaClass.getDeclaredField("q")
             pathField.isAccessible = true
-            (pathField.get(model) as? String)
+            val path = (pathField.get(model) as? String)
                 ?.takeIf { it.isNotBlank() }
+            if (trace && path == null) {
+                Log.w(TAG, "MULTI LONG STOP | model.q missing or blank")
+            }
+            path
+        }.onFailure { error ->
+            if (trace) {
+                Log.w(TAG, "MULTI LONG STOP | playlist path lookup failed", error)
+                Log.i(
+                    TAG,
+                    "MULTI LONG | jo3 fields=" +
+                        item.javaClass.declaredFields
+                            .take(20)
+                            .joinToString(",") { it.name + ":" + it.type.simpleName }
+                )
+            }
         }.getOrNull()
     }
 
