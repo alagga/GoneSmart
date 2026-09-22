@@ -9,6 +9,8 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.util.Log
 import android.util.TypedValue
 import android.view.ActionMode
@@ -49,8 +51,10 @@ internal class PlaylistMultiSelectController {
         var dispatchHolder: Any? = null
         var fabIconSaved = false
         var sparkle: PlayerAutoDjBadgeController.SparkleBadgeDrawable? = null
-        val originalRowBackgrounds = WeakHashMap<View, Drawable?>()
-        val appliedRowBackgrounds = WeakHashMap<View, ColorDrawable>()
+        // A foreground overlay preserves GMMP's native row background and
+        // ripple. Recycled RecyclerView rows get their overlays re-keyed by
+        // the CURRENT bound playlist path on every bind and layout.
+        val appliedRowOverlays = WeakHashMap<View, ColorDrawable>()
         var lastLoggedAccent: Int? = null
         var selectionBar: ActionMode? = null
         var selectionBarUnavailableLogged = false
@@ -487,7 +491,12 @@ internal class PlaylistMultiSelectController {
 
         if (!session.fabIconSaved) {
             session.fabIconSaved = true
-            session.originalIcon = fab.drawable
+            // Clone the native plus before changing the FAB tint. Otherwise
+            // clearing the tint for the white confirm glyph can mutate the
+            // very drawable we intend to restore on cancellation.
+            session.originalIcon = fab.drawable?.constantState
+                ?.newDrawable(fab.resources)?.mutate()
+                ?: fab.drawable
             session.originalTint = fab.imageTintList
             session.originalDescription = fab.contentDescription
         }
@@ -498,7 +507,8 @@ internal class PlaylistMultiSelectController {
         fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
         if (session.sparkle == null) {
             val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
-                GONESMART_LILAC
+                GONESMART_LILAC,
+                scale = 2f
             )
             session.sparkle = sparkle
             fab.overlay.add(sparkle)
@@ -586,39 +596,78 @@ internal class PlaylistMultiSelectController {
         }
     }
 
-    private fun selectionColor(
-        session: Session,
-        row: View
-    ): Int {
-        val accent = gmmpAccent(session, row)
-        val original = session.originalRowBackgrounds[row]
-        val rowColor = (original as? ColorDrawable)?.color
-            ?.takeIf { Color.alpha(it) == 255 }
-        val background = rowColor
-            ?: themeColor(row, android.R.attr.colorBackground)
-            ?: Color.BLACK
+    /**
+     * GMMP's own rvHighlightOverlay is used for native row press feedback.
+     * Prefer its live pressed-state color when exposed by the current
+     * Aesthetic theme, rather than approximating the current accent with a
+     * hard-coded blend of the row's existing background.
+     */
+    private fun nativePressedHighlight(row: FrameLayout): Int? {
+        val id = row.resources.getIdentifier(
+            "rvHighlightOverlay",
+            "id",
+            row.context.packageName
+        )
+        if (id == 0) return null
+        val overlay = row.findViewById<View>(id) ?: return null
+        val pressed = intArrayOf(android.R.attr.state_pressed)
+        val tint = overlay.backgroundTintList?.let {
+            it.getColorForState(pressed, it.defaultColor)
+        }
+        if (tint != null && Color.alpha(tint) > 0) return tint
 
-        val color = blend(background, accent, 0.48f)
-        if (session.lastLoggedAccent != accent) {
-            session.lastLoggedAccent = accent
+        val drawable = overlay.background ?: return null
+        val nativeColor = when (drawable) {
+            is ColorDrawable -> drawable.color
+            is GradientDrawable -> drawable.color?.let {
+                it.getColorForState(pressed, it.defaultColor)
+            }
+            is RippleDrawable -> drawable.color?.let {
+                it.getColorForState(pressed, it.defaultColor)
+            }
+            else -> null
+        }
+        return nativeColor?.takeIf { Color.alpha(it) > 0 }
+    }
+
+    private fun selectionOverlayColor(
+        session: Session,
+        row: FrameLayout
+    ): Int {
+        val native = nativePressedHighlight(row)
+        val fallback = gmmpAccent(session, row)
+        val color = when {
+            native == null -> Color.argb(
+                128,
+                Color.red(fallback),
+                Color.green(fallback),
+                Color.blue(fallback)
+            )
+            // Opaque pressed-state colors need an alpha to match GMMP's
+            // translucent queue-selection treatment on dark surfaces.
+            Color.alpha(native) > 220 -> Color.argb(
+                128,
+                Color.red(native),
+                Color.green(native),
+                Color.blue(native)
+            )
+            else -> native
+        }
+
+        if (session.lastLoggedAccent != color) {
+            session.lastLoggedAccent = color
             Log.i(
                 TAG,
-                "MULTI STYLE | live GMMP accent=#" +
-                    Integer.toHexString(accent) +
-                    " | rowHighlight=#" +
+                "MULTI STYLE | origin=" +
+                    (if (native != null) "native-rvHighlightOverlay"
+                        else "live-gmmp-theme") +
+                    " | gmmpAccent=#" +
+                    Integer.toHexString(fallback) +
+                    " | overlay=#" +
                     Integer.toHexString(color)
             )
         }
         return color
-    }
-
-    private fun blend(base: Int, accent: Int, ratio: Float): Int {
-        val rest = 1f - ratio
-        return Color.rgb(
-            (Color.red(base) * rest + Color.red(accent) * ratio).toInt(),
-            (Color.green(base) * rest + Color.green(accent) * ratio).toInt(),
-            (Color.blue(base) * rest + Color.blue(accent) * ratio).toInt()
-        )
     }
 
     /** A recycled row is always painted from its CURRENT bound xn3 path. */
@@ -639,7 +688,7 @@ internal class PlaylistMultiSelectController {
     fun onRowBound(holder: Any?) {
         val session = active ?: return
         if (session.selectedPaths.isEmpty() &&
-            session.originalRowBackgrounds.isEmpty()
+            session.appliedRowOverlays.isEmpty()
         ) return
         if (holder?.javaClass?.name != "jo3") return
 
@@ -673,22 +722,22 @@ internal class PlaylistMultiSelectController {
         val selected = path != null && path in session.selectedPaths
 
         if (selected) {
-            if (!session.originalRowBackgrounds.containsKey(row)) {
-                session.originalRowBackgrounds[row] = row.background
+            val color = selectionOverlayColor(session, row)
+            var overlay = session.appliedRowOverlays[row]
+            if (overlay == null) {
+                overlay = ColorDrawable(color)
+                session.appliedRowOverlays[row] = overlay
+                row.overlay.add(overlay)
+            } else if (overlay.color != color) {
+                overlay.color = color
             }
-            val color = selectionColor(session, row)
-            val previous = session.appliedRowBackgrounds[row]
-            if (previous == null ||
-                previous.color != color ||
-                row.background !== previous
-            ) {
-                val highlight = ColorDrawable(color)
-                session.appliedRowBackgrounds[row] = highlight
-                row.background = highlight
+            // A single FrameLayout is rebound to many playlists while
+            // scrolling; always resize its tint to the current row bounds.
+            overlay.setBounds(0, 0, row.width, row.height)
+        } else {
+            session.appliedRowOverlays.remove(row)?.let {
+                row.overlay.remove(it)
             }
-        } else if (session.originalRowBackgrounds.containsKey(row)) {
-            row.background = session.originalRowBackgrounds.remove(row)
-            session.appliedRowBackgrounds.remove(row)
         }
     }
 
@@ -831,20 +880,24 @@ internal class PlaylistMultiSelectController {
         session.barBackgroundSaved = false
         session.lastBarColor = null
 
-        // Restore every row we ever tinted in this session, including rows
-        // now off screen or recycled to a different playlist.
-        session.originalRowBackgrounds.toList().forEach { (row, original) ->
-            row.background = original
+        // Remove transient foreground overlays from ALL previously tinted
+        // views, including those now recycled or detached from the list.
+        session.appliedRowOverlays.toList().forEach { (row, overlay) ->
+            row.overlay.remove(overlay)
         }
-        session.originalRowBackgrounds.clear()
-        session.appliedRowBackgrounds.clear()
+        session.appliedRowOverlays.clear()
 
         val fab = session.fab as? ImageView
         session.sparkle?.let { badge -> fab?.overlay?.remove(badge) }
         session.sparkle = null
         if (fab != null && session.fabIconSaved) {
             fab.setImageDrawable(session.originalIcon)
+            // Aesthetic/Material may apply the original white plus via
+            // drawable color filtering, leaving imageTintList null. After
+            // going into confirm mode it then resolves to black unless
+            // we explicitly restore the original visible icon color.
             fab.imageTintList = session.originalTint
+                ?: ColorStateList.valueOf(Color.WHITE)
             fab.contentDescription = session.originalDescription
         }
 
