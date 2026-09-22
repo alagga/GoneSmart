@@ -634,7 +634,15 @@ internal class PlaylistMultiSelectController {
         session: Session,
         row: FrameLayout
     ): Int {
-        val native = nativePressedHighlight(row)
+        // Some GMMP skins expose a neutral white/black ripple instead
+        // of an accent-colored native highlight. In that case use the
+        // dynamic accent, not the ripple's neutral color.
+        val rawNative = nativePressedHighlight(row)
+        val hsv = FloatArray(3)
+        if (rawNative != null) Color.colorToHSV(rawNative, hsv)
+        val native = rawNative?.takeIf {
+            hsv[1] >= 0.14f && hsv[2] >= 0.15f
+        }
         val fallback = gmmpAccent(session, row)
         val color = when {
             native == null -> Color.argb(
