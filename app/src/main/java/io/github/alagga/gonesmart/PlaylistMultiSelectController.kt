@@ -40,6 +40,8 @@ internal class PlaylistMultiSelectController {
         var list: ViewGroup? = null
         var nativeHandler: Any? = null
         val selectedPaths = linkedSetOf<String>()
+        val selectedModels = linkedMapOf<String, Any>()
+        var dispatchHolder: Any? = null
         var fabIconSaved = false
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
@@ -128,6 +130,13 @@ internal class PlaylistMultiSelectController {
         val item = getPlaylistItem(session, view, trace = true)
             ?: return false
         val path = playlistPath(item, trace = true) ?: return false
+        val model = holderModel(item) ?: return false
+
+        session.dispatchHolder = item
+        session.selectedModels[path] = model
+        // The adapter exposes t23 groups, not jo3 view holders. Their
+        // r() lists provide the stable models used for destination checks.
+        adapterItems(session.list!!, trace = true)
 
         if (session.selectedPaths.add(path)) {
             Log.i(TAG, "MULTI SELECT | added=$path")
@@ -150,11 +159,15 @@ internal class PlaylistMultiSelectController {
 
         val item = getPlaylistItem(session, view) ?: return false
         val path = playlistPath(item) ?: return false
+        val model = holderModel(item) ?: return false
 
+        session.dispatchHolder = item
         if (!session.selectedPaths.add(path)) {
             session.selectedPaths.remove(path)
+            session.selectedModels.remove(path)
             Log.i(TAG, "MULTI SELECT | removed=$path")
         } else {
+            session.selectedModels[path] = model
             Log.i(TAG, "MULTI SELECT | added=$path")
         }
 
@@ -231,103 +244,86 @@ internal class PlaylistMultiSelectController {
     ): Any? {
         val list = session.list ?: return null
         if (view !is FrameLayout || view.parent !== list) {
-            if (trace) {
-                Log.w(
-                    TAG,
-                    "MULTI LONG STOP | row mismatch | frame=${view is FrameLayout}" +
-                        " | directChild=${view?.parent === list}"
-                )
-            }
+            if (trace) Log.w(TAG, "MULTI LONG STOP | not a picker row")
             return null
         }
 
-        val position = runCatching {
+        // bw.i0() returns t23 groups, not jo3 row holders. Ask the
+        // RecyclerView for the real, currently bound view holder.
+        val holder = runCatching {
             list.javaClass
-                .getMethod("getChildAdapterPosition", View::class.java)
-                .invoke(list, view) as? Int
+                .getMethod("getChildViewHolder", View::class.java)
+                .invoke(list, view)
         }.onFailure { error ->
-            if (trace) Log.w(TAG, "MULTI LONG STOP | adapter position failed", error)
+            if (trace) Log.w(TAG, "MULTI LONG STOP | holder lookup failed", error)
         }.getOrNull()
 
-        if (position == null || position < 0) {
-            if (trace) Log.w(TAG, "MULTI LONG STOP | invalid position=$position")
-            return null
-        }
-
-        val items = adapterItems(list, trace)
-        val item = items.getOrNull(position)
         if (trace) {
             Log.i(
                 TAG,
-                "MULTI LONG | position=$position | items=${items.size}" +
-                    " | itemType=${item?.javaClass?.name ?: "null"}"
+                "MULTI LONG | rowHolder=${holder?.javaClass?.name ?: "null"}"
             )
         }
-
-        if (item?.javaClass?.name != "jo3") {
-            if (trace) {
-                Log.w(
-                    TAG,
-                    "MULTI LONG STOP | expected jo3; actual=" +
-                        (item?.javaClass?.name ?: "null")
-                )
-            }
+        if (holder?.javaClass?.name != "jo3") {
+            if (trace) Log.w(TAG, "MULTI LONG STOP | expected jo3 holder")
             return null
         }
-
-        return item
+        return holder
     }
+
+    private fun holderModel(holder: Any): Any? =
+        runCatching {
+            holder.javaClass.getDeclaredField("A").apply {
+                isAccessible = true
+            }.get(holder)?.takeIf { it.javaClass.name == "xn3" }
+        }.getOrNull()
+
+    private fun modelPath(model: Any): String? =
+        runCatching {
+            model.javaClass.getDeclaredField("q").apply {
+                isAccessible = true
+            }.get(model) as? String
+        }.getOrNull()?.takeIf { it.isNotBlank() }
 
     private fun adapterItems(
         list: ViewGroup,
         trace: Boolean = false
     ): List<Any> {
         return runCatching {
-            val adapter = list.javaClass.getMethod("getAdapter")
-                .invoke(list)
-            if (adapter == null) {
-                if (trace) Log.w(TAG, "MULTI LONG STOP | native adapter missing")
-                return emptyList()
-            }
-
-            if (trace) {
-                Log.i(
-                    TAG,
-                    "MULTI LONG | adapter=${adapter.javaClass.name}" +
-                        " | parent=${adapter.javaClass.superclass?.name}"
-                )
-            }
-
-            val method = adapter.javaClass.getMethod("i0")
-            @Suppress("UNCHECKED_CAST")
-            val items = (method.invoke(adapter) as? List<Any>).orEmpty()
-            if (trace) {
-                Log.i(
-                    TAG,
-                    "MULTI LONG | i0 result count=${items.size}" +
-                        " | firstType=${items.firstOrNull()?.javaClass?.name}"
-                )
-            }
-            items
-        }.onFailure { error ->
-            if (trace) {
-                Log.w(TAG, "MULTI LONG STOP | adapter i0 lookup failed", error)
-                val adapter = runCatching {
-                    list.javaClass.getMethod("getAdapter").invoke(list)
-                }.getOrNull()
-                if (adapter != null) {
-                    val hierarchy = generateSequence(adapter.javaClass) {
-                        it.superclass
-                    }.take(4).joinToString(" -> ") { klass ->
-                        klass.simpleName + ":" +
-                            klass.declaredMethods
-                                .filter { it.parameterCount == 0 }
-                                .take(16)
-                                .joinToString(",") { it.name }
-                    }
-                    Log.i(TAG, "MULTI LONG | adapter methods=$hierarchy")
+            val adapter = list.javaClass
+                .getMethod("getAdapter").invoke(list)
+                ?: return emptyList()
+            val groups = adapter.javaClass
+                .getMethod("i0").invoke(adapter) as? List<*>
+                ?: return emptyList()
+            val models = groups.flatMap { group ->
+                if (group?.javaClass?.name != "t23") {
+                    emptyList()
+                } else {
+                    val entries = group.javaClass
+                        .getMethod("r").invoke(group) as? List<*>
+                    entries.orEmpty().filterNotNull()
+                        .filter { it.javaClass.name == "xn3" }
                 }
             }
+            if (trace) {
+                Log.i(
+                    TAG,
+                    "MULTI LONG | adapterGroups=${groups.size}" +
+                        " | playlistModels=${models.size}" +
+                        " | firstGroupEntries=" +
+                        groups.firstOrNull()?.let { group ->
+                            runCatching {
+                                val entries = group.javaClass
+                                    .getMethod("r").invoke(group) as? List<*>
+                                entries?.take(3)?.map { it?.javaClass?.name }
+                            }.getOrNull()
+                        }
+                )
+            }
+            models
+        }.onFailure { error ->
+            if (trace) Log.w(TAG, "MULTI LONG | adapter model lookup failed", error)
         }.getOrDefault(emptyList())
     }
 
@@ -335,48 +331,20 @@ internal class PlaylistMultiSelectController {
         item: Any,
         trace: Boolean = false
     ): String? {
-        if (item.javaClass.name != "jo3") return null
-
-        return runCatching {
-            val modelField = item.javaClass.getDeclaredField("A")
-            modelField.isAccessible = true
-            val model = modelField.get(item)
-            if (model == null) {
-                if (trace) Log.w(TAG, "MULTI LONG STOP | jo3.A is null")
-                return null
-            }
-
-            if (trace) {
-                Log.i(
-                    TAG,
-                    "MULTI LONG | model type=${model.javaClass.name}" +
-                        " | fields=" +
-                        model.javaClass.declaredFields
-                            .take(16)
-                            .joinToString(",") { it.name + ":" + it.type.simpleName }
-                )
-            }
-
-            val pathField = model.javaClass.getDeclaredField("q")
-            pathField.isAccessible = true
-            val path = (pathField.get(model) as? String)
-                ?.takeIf { it.isNotBlank() }
-            if (trace && path == null) {
-                Log.w(TAG, "MULTI LONG STOP | model.q missing or blank")
-            }
-            path
-        }.onFailure { error ->
-            if (trace) {
-                Log.w(TAG, "MULTI LONG STOP | playlist path lookup failed", error)
-                Log.i(
-                    TAG,
-                    "MULTI LONG | jo3 fields=" +
-                        item.javaClass.declaredFields
-                            .take(20)
-                            .joinToString(",") { it.name + ":" + it.type.simpleName }
-                )
-            }
-        }.getOrNull()
+        val model = holderModel(item)
+        if (model == null) {
+            if (trace) Log.w(TAG, "MULTI LONG STOP | jo3.A model unavailable")
+            return null
+        }
+        val path = modelPath(model)
+        if (trace) {
+            Log.i(
+                TAG,
+                "MULTI LONG | model=${model.javaClass.name}" +
+                    " | pathAvailable=${path != null}"
+            )
+        }
+        return path
     }
 
     private fun enableFab(session: Session) {
@@ -414,17 +382,10 @@ internal class PlaylistMultiSelectController {
 
     private fun refreshVisibleRows(session: Session) {
         val list = session.list ?: return
-        val items = adapterItems(list)
-
         for (index in 0 until list.childCount) {
             val row = list.getChildAt(index) as? FrameLayout ?: continue
-            val position = runCatching {
-                list.javaClass
-                    .getMethod("getChildAdapterPosition", View::class.java)
-                    .invoke(list, row) as? Int
-            }.getOrNull() ?: continue
-
-            val path = items.getOrNull(position)?.let(::playlistPath)
+            val holder = getPlaylistItem(session, row)
+            val path = holder?.let(::playlistPath)
             val selected = path != null && path in session.selectedPaths
 
             var marker = row.findViewWithTag<TextView>(CHECK_TAG)
@@ -480,17 +441,38 @@ internal class PlaylistMultiSelectController {
             return
         }
 
-        // Re-resolve paths against the current native list so that deleted
-        // or reordered playlists cannot be dispatched by stale row objects.
-        val byPath = adapterItems(list).mapNotNull { item ->
-            playlistPath(item)?.let { path -> path to item }
+        // bw.i0() yields t23 groups. The groups' r() lists contain
+        // xn3 playlist models. Re-resolve by stable native playlist path.
+        val currentModels = adapterItems(list)
+        val byPath = currentModels.mapNotNull { model ->
+            modelPath(model)?.let { path -> path to model }
         }.toMap()
-
-        val targets = session.selectedPaths.mapNotNull(byPath::get)
+        val targets = session.selectedPaths.mapNotNull { path ->
+            if (currentModels.isEmpty()) {
+                // Only fall back when the adapter cannot expose models;
+                // captured models still have their original native path.
+                session.selectedModels[path]
+                    ?.takeIf { modelPath(it) == path }
+            } else {
+                byPath[path]
+            }
+        }
         if (targets.size != session.selectedPaths.size) {
             warn(fab.context, "Playlistliste geändert – bitte neu auswählen")
             Log.w(TAG, "MULTI CONFIRM | stale destination detected")
             exitSelection(session)
+            return
+        }
+
+        val holder = session.dispatchHolder
+        val modelField = runCatching {
+            holder?.javaClass?.getDeclaredField("A")?.also {
+                it.isAccessible = true
+            }
+        }.getOrNull()
+        if (holder?.javaClass?.name != "jo3" || modelField == null) {
+            warn(fab.context, "GMMP-Playlistzeile nicht verfügbar")
+            Log.w(TAG, "MULTI CONFIRM | jo3 dispatch holder missing")
             return
         }
 
@@ -510,26 +492,32 @@ internal class PlaylistMultiSelectController {
             return
         }
 
+        // GMMP io3.r(Context, ie0) accepts a jo3 view holder but reads
+        // only jo3.A -> xn3.q synchronously. Temporarily switch A to each
+        // selected model, call the native handler, then restore it.
+        // Never retain recycled view objects as destination identity.
+        val originalModel = modelField.get(holder)
         session.submitting = true
         var accepted = 0
         try {
-            for (item in targets) {
-                val path = playlistPath(item) ?: continue
+            for (model in targets) {
+                val path = modelPath(model) ?: continue
+                modelField.set(holder, model)
                 val dispatched =
-                    addMethod.invoke(handler, fab.context, item) as? Boolean
+                    addMethod.invoke(handler, fab.context, holder) as? Boolean
                         ?: false
-
                 Log.i(
                     TAG,
                     "MULTI NATIVE ADD | destination=$path | " +
                         "accepted=$dispatched | sourceCount=$sourceCount"
                 )
-
                 if (dispatched) accepted++
             }
         } catch (error: Throwable) {
             Log.e(TAG, "MULTI CONFIRM | native dispatch failed", error)
         } finally {
+            runCatching { modelField.set(holder, originalModel) }
+                .onFailure { Log.e(TAG, "MULTI CONFIRM | holder restore failed", it) }
             // A retry after partial dispatch could duplicate tracks.
             exitSelection(session)
             session.submitting = false
@@ -556,6 +544,8 @@ internal class PlaylistMultiSelectController {
 
     private fun exitSelection(session: Session) {
         session.selectedPaths.clear()
+        session.selectedModels.clear()
+        session.dispatchHolder = null
 
         val fab = session.fab as? ImageView
         if (fab != null && session.fabIconSaved) {
