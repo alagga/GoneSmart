@@ -196,6 +196,59 @@ internal object PlaylistDiagnosticReporter {
         }
     }
 
+    fun describeView(view: View?): String {
+        if (view == null) {
+            return "null"
+        }
+
+        val parent =
+            view.parent
+
+        return (
+            view.javaClass.name +
+                "(id=" + resourceName(view) +
+                ", shown=" + view.isShown +
+                ", parent=" +
+                (parent?.javaClass?.name ?: "none") +
+                ")"
+            )
+    }
+
+    fun describeObjectFields(instance: Any?): String {
+        if (instance == null) {
+            return "null"
+        }
+
+        return runCatching {
+            instance.javaClass.declaredFields
+                .filterNot { it.isSynthetic }
+                .take(12)
+                .joinToString(
+                    prefix = "[",
+                    postfix = "]"
+                ) { field ->
+                    field.isAccessible = true
+                    val value =
+                        field.get(instance)
+
+                    val rendered =
+                        when (value) {
+                            null -> "null"
+                            is String,
+                            is Number,
+                            is Boolean,
+                            is Char -> value.toString()
+                            is View -> describeView(value)
+                            else -> value.javaClass.name
+                        }
+
+                    field.name + "=" + rendered
+                }
+        }.getOrElse {
+            "[unavailable]"
+        }
+    }
+
     private fun resourceName(view: View): String {
         if (view.id == View.NO_ID) {
             return "no-id"
