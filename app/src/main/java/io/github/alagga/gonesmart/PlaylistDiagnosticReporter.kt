@@ -316,6 +316,21 @@ internal object PlaylistDiagnosticReporter {
         }
     }
 
+    fun firstFieldValue(instance: Any?): Any? {
+        if (instance == null) {
+            return null
+        }
+
+        return runCatching {
+            instance.javaClass.declaredFields
+                .firstOrNull { !it.isSynthetic }
+                ?.let { field ->
+                    field.isAccessible = true
+                    field.get(instance)
+                }
+        }.getOrNull()
+    }
+
     fun describeValueDeep(value: Any?): String {
         if (value == null) {
             return "null"
