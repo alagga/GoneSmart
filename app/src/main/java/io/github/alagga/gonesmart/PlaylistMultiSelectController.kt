@@ -11,6 +11,9 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.util.Log
 import android.util.TypedValue
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -49,6 +52,12 @@ internal class PlaylistMultiSelectController {
         val originalRowBackgrounds = WeakHashMap<View, Drawable?>()
         val appliedRowBackgrounds = WeakHashMap<View, ColorDrawable>()
         var lastLoggedAccent: Int? = null
+        var selectionBar: ActionMode? = null
+        var selectionBarUnavailableLogged = false
+        var barView: View? = null
+        var originalBarBackground: Drawable? = null
+        var barBackgroundSaved = false
+        var lastBarColor: Int? = null
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
@@ -159,6 +168,7 @@ internal class PlaylistMultiSelectController {
         }
 
         enableFab(session)
+        updateSelectionBar(session)
         refreshVisibleRows(session)
         return true
     }
@@ -191,6 +201,7 @@ internal class PlaylistMultiSelectController {
             exitSelection(session)
         } else {
             enableFab(session)
+            updateSelectionBar(session)
             refreshVisibleRows(session)
         }
 
@@ -363,6 +374,114 @@ internal class PlaylistMultiSelectController {
         return path
     }
 
+    /**
+     * An Android primary contextual action bar lives in the picker window,
+     * mirroring GMMP's own queue-selection UI: back arrow plus selection
+     * count. Starting it on the RecyclerView (not the host Activity) avoids
+     * replacing an unrelated ActionMode under a dialog.
+     *
+     * If this GMMP screen does not support ActionMode, selection and FAB
+     * continue normally; no native toolbar is replaced.
+     */
+    private fun updateSelectionBar(session: Session) {
+        if (session.selectedPaths.isEmpty()) return
+
+        if (session.selectionBar == null) {
+            val list = session.list ?: return
+            val callback = object : ActionMode.Callback {
+                override fun onCreateActionMode(
+                    mode: ActionMode,
+                    menu: Menu
+                ): Boolean {
+                    mode.title =
+                        "${session.selectedPaths.size} ausgewählt"
+                    return true
+                }
+
+                override fun onPrepareActionMode(
+                    mode: ActionMode,
+                    menu: Menu
+                ): Boolean = false
+
+                override fun onActionItemClicked(
+                    mode: ActionMode,
+                    item: MenuItem
+                ): Boolean = false
+
+                override fun onDestroyActionMode(mode: ActionMode) {
+                    if (session.selectionBar === mode) {
+                        session.selectionBar = null
+                        if (active === session &&
+                            session.selectedPaths.isNotEmpty()
+                        ) {
+                            // Native ActionMode's own back arrow cancels
+                            // selection, but must keep the playlist picker.
+                            exitSelection(session)
+                        }
+                    }
+                }
+            }
+
+            session.selectionBar = runCatching {
+                list.startActionMode(callback, ActionMode.TYPE_PRIMARY)
+            }.onFailure { error ->
+                Log.w(TAG, "MULTI BAR | contextual action mode failed", error)
+            }.getOrNull()
+
+            if (session.selectionBar == null) {
+                if (!session.selectionBarUnavailableLogged) {
+                    session.selectionBarUnavailableLogged = true
+                    Log.w(TAG, "MULTI BAR | unsupported in picker window")
+                }
+                return
+            }
+            Log.i(TAG, "MULTI BAR | native contextual bar started")
+            list.post {
+                if (active === session && session.selectionBar != null) {
+                    tintSelectionBar(session)
+                }
+            }
+        }
+
+        session.selectionBar?.title =
+            "${session.selectedPaths.size} ausgewählt"
+        tintSelectionBar(session)
+    }
+
+    private fun tintSelectionBar(session: Session) {
+        if (session.selectionBar == null) return
+        val root = session.list?.rootView ?: return
+        val bar = session.barView
+            ?: findContextBar(root)
+            ?: return
+        if (!session.barBackgroundSaved) {
+            session.barView = bar
+            session.originalBarBackground = bar.background
+            session.barBackgroundSaved = true
+        }
+
+        val accent = gmmpAccent(session, bar)
+        if (session.lastBarColor != accent ||
+            (bar.background as? ColorDrawable)?.color != accent
+        ) {
+            session.lastBarColor = accent
+            bar.background = ColorDrawable(accent)
+        }
+    }
+
+    private fun findContextBar(root: View): View? {
+        if (resourceName(root) == "action_mode_bar" &&
+            root.visibility == View.VISIBLE
+        ) return root
+
+        val children = root as? ViewGroup ?: return null
+        for (index in 0 until children.childCount) {
+            val found = findContextBar(children.getChildAt(index))
+            if (found != null) return found
+        }
+        return null
+    }
+
     private fun enableFab(session: Session) {
         val fab = session.fab as? ImageView ?: return
 
@@ -405,6 +524,9 @@ internal class PlaylistMultiSelectController {
         }
 
         session.sparkle?.setBounds(0, 0, fab.width, fab.height)
+        if (session.selectionBar != null) {
+            tintSelectionBar(session)
+        }
         fab.invalidate()
     }
 
@@ -695,6 +817,19 @@ internal class PlaylistMultiSelectController {
         session.selectedPaths.clear()
         session.selectedModels.clear()
         session.dispatchHolder = null
+
+        // Finish our contextual bar without dismissing the picker. Clear
+        // the reference first so its destroy callback does not recurse.
+        val actionMode = session.selectionBar
+        session.selectionBar = null
+        actionMode?.finish()
+        if (session.barBackgroundSaved) {
+            session.barView?.background = session.originalBarBackground
+        }
+        session.barView = null
+        session.originalBarBackground = null
+        session.barBackgroundSaved = false
+        session.lastBarColor = null
 
         // Restore every row we ever tinted in this session, including rows
         // now off screen or recycled to a different playlist.
