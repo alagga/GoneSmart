@@ -666,7 +666,8 @@ class PlayerAutoDjBadgeController {
     }
 
     internal class SparkleBadgeDrawable(
-        private val badgeColor: Int
+        private val badgeColor: Int,
+        private val scale: Float = 1f
     ) : Drawable() {
 
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -699,9 +700,14 @@ class PlayerAutoDjBadgeController {
              * headphones glyph. The soft radial halo gives separation from
              * light/dark album-art themes without a cheap-looking black edge.
              */
-            val radius = size * 0.105f
-            val cx = centerX + size * 0.17f
-            val cy = centerY - size * 0.17f
+            // Queue/Auto-DJ keeps its original scale. The playlist
+            // confirmation FAB requests a larger badge using the exact
+            // same glow and curved sparkle geometry.
+            val badgeScale = scale.coerceIn(0.5f, 2.0f)
+            val radius = size * 0.105f * badgeScale
+            val offset = if (badgeScale > 1.2f) 0.14f else 0.17f
+            val cx = centerX + size * offset
+            val cy = centerY - size * offset
 
             val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.FILL
