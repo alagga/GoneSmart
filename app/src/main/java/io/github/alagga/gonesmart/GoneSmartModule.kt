@@ -489,6 +489,71 @@ class GoneSmartModule : XposedModule() {
             result
         }
 
+        // GMMP io3.r() builds one jd(mode=4) completion callback per
+        // playlist. Each successful callback posts j83 to the activity,
+        // whose onEvent(j83) navigates back once. Scope ONLY callbacks
+        // created by our multi-add and forward that event once per batch.
+        // Regular one-playlist adds and unrelated back actions are unchanged.
+        runCatching {
+            val callbackClass = param.classLoader.loadClass("jd")
+            val nativeCallbackConstructor =
+                callbackClass.declaredConstructors.first {
+                    it.parameterTypes.size == 3 &&
+                        it.parameterTypes[0] == Int::class.javaPrimitiveType
+                }.apply { isAccessible = true }
+
+            hook(nativeCallbackConstructor).intercept { chain ->
+                val result = chain.proceed()
+                playlistController.onNativeResultCallbackConstructed(
+                    chain.getThisObject(),
+                    chain.getArg(0)
+                )
+                result
+            }
+
+            val invoke = callbackClass.getDeclaredMethod(
+                "invoke",
+                Any::class.java
+            ).apply { isAccessible = true }
+
+            hook(invoke).intercept { chain ->
+                playlistController.aroundNativeResultCallback(
+                    chain.getThisObject()
+                ) {
+                    chain.proceed()
+                }
+            }
+
+            val eventBusClass = param.classLoader.loadClass("f2")
+            val emitEvent = eventBusClass.getDeclaredMethod(
+                "b",
+                Any::class.java
+            ).apply { isAccessible = true }
+
+            hook(emitEvent).intercept { chain ->
+                if (
+                    playlistController.shouldSuppressNativeCloseEvent(
+                        chain.getArg(0)
+                    )
+                ) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI NAV READY | one native j83 close event per batch"
+            )
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "Playlist native navigation guard unavailable",
+                error
+            )
+        }
+
         val clickClass = param.classLoader.loadClass("xj5\$a")
         val clickMethod = clickClass.getDeclaredMethod(
             "onClick",
