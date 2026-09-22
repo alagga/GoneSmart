@@ -10,7 +10,6 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
 import android.util.Log
 import android.util.TypedValue
 import android.view.ActionMode
@@ -617,15 +616,15 @@ internal class PlaylistMultiSelectController {
         if (tint != null && Color.alpha(tint) > 0) return tint
 
         val drawable = overlay.background ?: return null
-        val nativeColor = when (drawable) {
-            is ColorDrawable -> drawable.color
-            is GradientDrawable -> drawable.color?.let {
-                it.getColorForState(pressed, it.defaultColor)
-            }
-            is RippleDrawable -> drawable.color?.let {
-                it.getColorForState(pressed, it.defaultColor)
-            }
-            else -> null
+        val nativeColor: Int? = if (drawable is ColorDrawable) {
+            drawable.color
+        } else if (drawable is GradientDrawable) {
+            val stateColors: ColorStateList? = drawable.color
+            stateColors?.getColorForState(pressed, stateColors.defaultColor)
+        } else {
+            // RippleDrawable's color accessor is device/API dependent.
+            // Its pressed-state tint is already handled above.
+            null
         }
         return nativeColor?.takeIf { Color.alpha(it) > 0 }
     }
