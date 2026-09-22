@@ -1,6 +1,7 @@
 package io.github.alagga.gonesmart
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
@@ -9,7 +10,6 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
 import android.util.Log
 import android.util.TypedValue
 import android.view.ActionMode
@@ -21,6 +21,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
 import java.lang.reflect.Method
+import java.lang.reflect.Proxy
 import java.util.WeakHashMap
 
 /**
@@ -55,6 +56,17 @@ internal class PlaylistMultiSelectController {
         // the CURRENT bound playlist path on every bind and layout.
         val appliedRowOverlays = WeakHashMap<View, ColorDrawable>()
         var lastLoggedAccent: Int? = null
+        var livePrimary: Int? = null
+        var liveAccent: Int? = null
+        var nativeTheme: Any? = null
+        var nativeAccentAttr: Int = 0
+        var nativePrimaryAttr: Int = 0
+        var themePreferences: SharedPreferences? = null
+        var themePreferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+        val themeDisposables = mutableListOf<Any>()
+        // Rx observers must have strong references while the picker lives.
+        val themeObservers = mutableListOf<Any>()
+        var themeInitialized = false
         var selectionBar: ActionMode? = null
         var selectionBarUnavailableLogged = false
         var barView: View? = null
@@ -132,6 +144,7 @@ internal class PlaylistMultiSelectController {
             }
         }
 
+        observeNativeGmmpPalette(session)
         Log.i(TAG, "MULTI LIST | attached")
     }
 
@@ -386,6 +399,214 @@ internal class PlaylistMultiSelectController {
      * If this GMMP screen does not support ActionMode, selection and FAB
      * continue normally; no native toolbar is replaced.
      */
+    /**
+     * GMMP 4.2.0 bundles Aesthetic under its obfuscated runtime name
+     * com.afollestad.aesthetic.a. The native Aesthetic attribute Observable
+     * emits every time GMMP changes its theme, including album-art-derived
+     * dynamic colors. Reflection keeps these third-party classes out of the
+     * GoneSmart compile-time dependency graph.
+     *
+     * This is the authoritative color source. A static Android theme attr
+     * and the FAB tint are only fallback paths if GMMP changes internals.
+     */
+    private fun observeNativeGmmpPalette(session: Session) {
+        if (session.themeInitialized) return
+        session.themeInitialized = true
+        val list = session.list ?: return
+        val resources = list.resources
+        val pkg = list.context.packageName
+        val accentAttr = resources.getIdentifier("colorAccent", "attr", pkg)
+        val primaryAttr = resources.getIdentifier("colorPrimary", "attr", pkg)
+        session.nativeAccentAttr = accentAttr
+        session.nativePrimaryAttr = primaryAttr
+
+        runCatching {
+            val loader = session.fragment.javaClass.classLoader
+                ?: throw ClassNotFoundException("GMMP class loader")
+            val theme = runCatching {
+                val companion = loader.loadClass(
+                    "com.afollestad.aesthetic.a\\$a"
+                )
+                companion.getDeclaredMethod("c").apply {
+                    isAccessible = true
+                }.invoke(null)
+            }.getOrElse {
+                val klass = loader.loadClass(
+                    "com.afollestad.aesthetic.Aesthetic"
+                )
+                klass.getDeclaredMethod("get").apply {
+                    isAccessible = true
+                }.invoke(null)
+            } ?: throw IllegalStateException("Aesthetic not attached")
+
+            session.nativeTheme = theme
+            val themeClass = theme.javaClass
+
+            // Synchronous initialization prevents a stale/default color
+            // from being displayed during the first frame of multi-mode.
+            updateCurrentNativePalette(session)
+
+            // Native Aesthetic palette observables notify while the
+            // currently playing track or the user's custom theme changes.
+            val observerType = loader.loadClass("nf3")
+            val observeAttribute = themeClass.getDeclaredMethod(
+                "b",
+                Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+
+            for ((name, attributeId) in listOf(
+                "primary" to primaryAttr,
+                "accent" to accentAttr
+            )) {
+                if (attributeId == 0) continue
+                val observer = Proxy.newProxyInstance(
+                    observerType.classLoader,
+                    arrayOf(observerType)
+                ) { _, method, args ->
+                    when (method.name) {
+                        // GMMP's obfuscated RxJava Observer.onNext(Object).
+                        "a" -> {
+                            val color = args?.firstOrNull() as? Number
+                            if (color != null) {
+                                list.post {
+                                    if (active === session) {
+                                        receiveNativePalette(
+                                            session,
+                                            name,
+                                            color.toInt()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        // Observer.onSubscribe(Disposable).
+                        "c" -> {
+                            args?.firstOrNull()?.let {
+                                session.themeDisposables.add(it)
+                            }
+                        }
+                        "onError" -> Log.w(
+                            TAG,
+                            "MULTI PALETTE | $name observer error",
+                            args?.firstOrNull() as? Throwable
+                        )
+                    }
+                    null
+                }
+                session.themeObservers.add(observer)
+                val observable = observeAttribute.invoke(theme, attributeId)
+                    ?: continue
+                observable.javaClass
+                    .getMethod("b", observerType)
+                    .invoke(observable, observer)
+            }
+
+            // A secondary change notification protects against future
+            // updates that GMMP writes to Aesthetic's preferences without
+            // emitting an attribute Observable.
+            val preferences = themeClass.getDeclaredMethod("k").apply {
+                isAccessible = true
+            }.invoke(theme) as? SharedPreferences
+            if (preferences != null) {
+                val listener =
+                    SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+                        list.post {
+                            if (active === session) {
+                                updateCurrentNativePalette(session)
+                            }
+                        }
+                    }
+                preferences.registerOnSharedPreferenceChangeListener(listener)
+                session.themePreferences = preferences
+                session.themePreferenceListener = listener
+            }
+            Log.i(
+                TAG,
+                "MULTI PALETTE | native Aesthetic subscription active" +
+                    " | primaryAttr=$primaryAttr | accentAttr=$accentAttr"
+            )
+        }.onFailure { error ->
+            Log.w(
+                TAG,
+                "MULTI PALETTE | Aesthetic observer unavailable; using live FAB tint",
+                error
+            )
+        }
+    }
+
+    private fun updateCurrentNativePalette(session: Session) {
+        val theme = session.nativeTheme ?: return
+        val getter = theme.javaClass.declaredMethods.firstOrNull {
+            it.name == "e" &&
+                it.parameterCount == 1 &&
+                it.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                it.returnType == Int::class.javaPrimitiveType
+        }?.apply { isAccessible = true } ?: return
+
+        if (session.nativePrimaryAttr != 0) {
+            (getter.invoke(theme, session.nativePrimaryAttr) as? Number)
+                ?.toInt()?.let {
+                    receiveNativePalette(session, "primary", it)
+                }
+        }
+        if (session.nativeAccentAttr != 0) {
+            (getter.invoke(theme, session.nativeAccentAttr) as? Number)
+                ?.toInt()?.let {
+                    receiveNativePalette(session, "accent", it)
+                }
+        }
+    }
+
+    private fun receiveNativePalette(
+        session: Session,
+        name: String,
+        color: Int
+    ) {
+        if (Color.alpha(color) < 200) return
+        val previous = if (name == "primary") {
+            session.livePrimary
+        } else {
+            session.liveAccent
+        }
+        if (previous == color) return
+
+        if (name == "primary") {
+            session.livePrimary = color
+        } else {
+            session.liveAccent = color
+        }
+        Log.i(
+            TAG,
+            "MULTI PALETTE | native $name=#" +
+                Integer.toHexString(color)
+        )
+        if (active === session && session.selectedPaths.isNotEmpty()) {
+            session.lastLoggedAccent = null
+            session.lastBarColor = null
+            tintSelectionBar(session)
+            refreshVisibleRows(session)
+        }
+    }
+
+    private fun stopNativeGmmpPalette(session: Session) {
+        val prefs = session.themePreferences
+        val listener = session.themePreferenceListener
+        if (prefs != null && listener != null) {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+        session.themePreferenceListener = null
+        session.themePreferences = null
+        session.themeDisposables.forEach { subscription ->
+            runCatching {
+                // GMMP's obfuscated RxJava Disposable.dispose().
+                subscription.javaClass.getMethod("b").invoke(subscription)
+            }
+        }
+        session.themeDisposables.clear()
+        session.themeObservers.clear()
+        session.nativeTheme = null
+    }
+
     private fun updateSelectionBar(session: Session) {
         if (session.selectedPaths.isEmpty()) return
 
@@ -463,7 +684,9 @@ internal class PlaylistMultiSelectController {
             session.barBackgroundSaved = true
         }
 
-        val accent = gmmpAccent(session, bar)
+        // Native queue ActionMode uses the live colorPrimary, not a
+        // one-time snapshot of the playlist FAB's background tint.
+        val accent = gmmpPrimary(session, bar)
         if (session.lastBarColor != accent ||
             (bar.background as? ColorDrawable)?.color != accent
         ) {
@@ -545,7 +768,16 @@ internal class PlaylistMultiSelectController {
      * derives its palette from the current album art. Theme attributes are
      * fallbacks for fixed/custom themes or a currently untinted FAB.
      */
+    private fun gmmpPrimary(session: Session, view: View): Int =
+        session.livePrimary ?: session.liveAccent ?: gmmpAccent(
+            session,
+            view
+        )
+
     private fun gmmpAccent(session: Session, view: View): Int {
+        // Aesthetic's observable value is the real GMMP accent, even
+        // when a new cover updates it while this picker remains open.
+        session.liveAccent?.let { return it }
         val fab = session.fab as? com.google.android.material.floatingactionbutton.FloatingActionButton
         val liveFabColor = fab?.backgroundTintList?.let { tint ->
             tint.getColorForState(fab.drawableState, tint.defaultColor)
@@ -601,76 +833,30 @@ internal class PlaylistMultiSelectController {
      * Aesthetic theme, rather than approximating the current accent with a
      * hard-coded blend of the row's existing background.
      */
-    private fun nativePressedHighlight(row: FrameLayout): Int? {
-        val id = row.resources.getIdentifier(
-            "rvHighlightOverlay",
-            "id",
-            row.context.packageName
-        )
-        if (id == 0) return null
-        val overlay = row.findViewById<View>(id) ?: return null
-        val pressed = intArrayOf(android.R.attr.state_pressed)
-        val tint = overlay.backgroundTintList?.let {
-            it.getColorForState(pressed, it.defaultColor)
-        }
-        if (tint != null && Color.alpha(tint) > 0) return tint
-
-        val drawable = overlay.background ?: return null
-        val nativeColor: Int? = if (drawable is ColorDrawable) {
-            drawable.color
-        } else if (drawable is GradientDrawable) {
-            val stateColors: ColorStateList? = drawable.color
-            stateColors?.getColorForState(pressed, stateColors.defaultColor)
-        } else {
-            // RippleDrawable's color accessor is device/API dependent.
-            // Its pressed-state tint is already handled above.
-            null
-        }
-        return nativeColor?.takeIf { Color.alpha(it) > 0 }
-    }
-
+    /**
+     * Match the queue's tinted selection rows: overlay the live native
+     * dynamic primary/selection color on the ordinary GMMP row background.
+     * Using the current Observable rather than a cached pressed drawable
+     * ensures cover-driven theme changes immediately recolor the selection.
+     */
     private fun selectionOverlayColor(
         session: Session,
         row: FrameLayout
     ): Int {
-        // Some GMMP skins expose a neutral white/black ripple instead
-        // of an accent-colored native highlight. In that case use the
-        // dynamic accent, not the ripple's neutral color.
-        val rawNative = nativePressedHighlight(row)
-        val hsv = FloatArray(3)
-        if (rawNative != null) Color.colorToHSV(rawNative, hsv)
-        val native = rawNative?.takeIf {
-            hsv[1] >= 0.14f && hsv[2] >= 0.15f
-        }
-        val fallback = gmmpAccent(session, row)
-        val color = when {
-            native == null -> Color.argb(
-                128,
-                Color.red(fallback),
-                Color.green(fallback),
-                Color.blue(fallback)
-            )
-            // Opaque pressed-state colors need an alpha to match GMMP's
-            // translucent queue-selection treatment on dark surfaces.
-            Color.alpha(native) > 220 -> Color.argb(
-                128,
-                Color.red(native),
-                Color.green(native),
-                Color.blue(native)
-            )
-            else -> native
-        }
-
-        if (session.lastLoggedAccent != color) {
-            session.lastLoggedAccent = color
+        val accent = gmmpPrimary(session, row)
+        val color = Color.argb(
+            128,
+            Color.red(accent),
+            Color.green(accent),
+            Color.blue(accent)
+        )
+        if (session.lastLoggedAccent != accent) {
+            session.lastLoggedAccent = accent
             Log.i(
                 TAG,
-                "MULTI STYLE | origin=" +
-                    (if (native != null) "native-rvHighlightOverlay"
-                        else "live-gmmp-theme") +
-                    " | gmmpAccent=#" +
-                    Integer.toHexString(fallback) +
-                    " | overlay=#" +
+                "MULTI STYLE | native dynamic primary=#" +
+                    Integer.toHexString(accent) +
+                    " | row overlay=#" +
                     Integer.toHexString(color)
             )
         }
@@ -917,7 +1103,10 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun reset() {
-        active?.let(::exitSelection)
+        active?.let { session ->
+            exitSelection(session)
+            stopNativeGmmpPalette(session)
+        }
         active = null
     }
 
