@@ -566,6 +566,29 @@ internal class PlaylistMultiSelectController {
             getter.isAccessible = true
             val rawColorValue = getter.invoke(fab) as? String
                 ?: return
+
+            // A regular static FAB color must not override the genuinely
+            // dynamic primary observable (otherwise selection freezes on
+            // whatever accent was active when the picker opened).
+            val dynamicField = generateSequence<Class<*>>(fab.javaClass) {
+                it.superclass
+            }.mapNotNull { klass ->
+                klass.declaredFields.firstOrNull {
+                    it.name == "dynamicColorValue"
+                }
+            }.firstOrNull()
+            dynamicField?.isAccessible = true
+            val dynamicAttribute = dynamicField?.get(fab) as? String
+            if (dynamicAttribute.isNullOrBlank() ||
+                dynamicAttribute != rawColorValue
+            ) {
+                Log.i(
+                    TAG,
+                    "MULTI PALETTE | FAB has no active dynamic color; " +
+                        "following GMMP primary/accent observables"
+                )
+                return
+            }
             val accentAttr = session.nativeAccentAttr
             if (accentAttr == 0) return
 
