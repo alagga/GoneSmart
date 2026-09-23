@@ -12,7 +12,7 @@ GoneSmart injects a preview action into three independently controlled GMMP menu
 | Playlists (row three-dot menu) | `menu_gm_context_playlist_list` | Directly **below Shuffle** |
 | Smart Playlists (row three-dot menu) | `menu_gm_context_smart` | Directly **below Shuffle** |
 
-The playlist and smart-playlist actions use GMMP's *currently localized* native Play title, a custom pair of **two thick parallel up/down arrows** (drawn to match the menu text weight), and GoneSmart's full-size **two-star lilac sparkle**. The queue action uses GMMP's localized Queue title with the same arrows and sparkle. Both icons are centered without increasing native menu row height. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
+The playlist and smart-playlist actions use GMMP's *currently localized* native Play title, a custom pair of **two moderately weighted parallel up/down arrows** (approximately matching the native menu letter-stem width), and GoneSmart's full-size **two-star lilac sparkle**. The queue action uses GMMP's localized Queue title with the same arrows and sparkle. Both icons are centered without increasing native menu row height. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
 
 ### First phone test
 
@@ -22,7 +22,8 @@ The playlist and smart-playlist actions use GMMP's *currently localized* native 
 4. **Test 2: Playlist.** Open the three-dot menu of an ordinary playlist. Verify that Play + bold paired arrows + lilac sparkle follows Shuffle without increasing row height; tap it. Logcat should print `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN` for `PLAYLIST`. It must **not log a flip plan for the old queue**.
 5. **Test 3: Smart Playlist.** Open a Smart Playlist three-dot menu, verify the same placement and normal row height, then tap it. Look for `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN` for `SMART`.
 6. All three entries are still a **safe preview**. Tapping them logs diagnostics and shows a preview toast; **no track is reordered and no playlist starts playing** in this build.
-7. Send Logcat lines filtered by `GoneSmartFlip`, especially `FLIP MENU`, `FLIP CLICK`, `FLIP NATIVE API`, `FLIP QUEUE`, `FLIP PLAN`, `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN`. The test ordering is always **Queue → Playlist → Smart Playlist**, so consecutive click logs identify their source.
+7. Send Logcat lines filtered by `GoneSmartFlip`, especially `FLIP MENU`, `FLIP CLICK`, `FLIP NATIVE API`, `FLIP QUEUE`, `FLIP PLAN`, `FLIP TARGET`, `FLIP TARGET TYPES`, **`FLIP POPUP SOURCE`, `FLIP POPUP TYPES`** and `FLIP PLAY PLAN`. The test ordering is always **Queue → Playlist → Smart Playlist**, so consecutive click logs identify their source.
+8. **Optional, after those three tests:** in a disposable five-track queue, manually drag one song from the first position to the fourth. Send the resulting **`FLIP NATIVE MOVE`** line, which observes GMMP's own `ex3.K(int,int)` invocation. This is a passive hook: GoneSmart does not move any tracks itself.
 
 Prefer a disposable five-track queue for the first test. The native model can contain thousands of tracks and we will not experiment on a large queue.
 
@@ -35,7 +36,7 @@ The GMMP 4.2.0 APK exposes the following native resources and classes:
 - The queue is `ex3`; its DAO is `ex3.r` (`tx3`, runtime implementation `xx3`).
 - `tx3.H1()` returns the native `ey3` queue entries, whose `a`, `b`, `c`, and `d` fields represent visible position, song ID, shuffle position, and unique queue-entry ID respectively.
 - Queue playback's current position is available through `ex3.D()`.
-- Candidate native mutations include `ex3.K(Int,Int)` (reorder), `xx3.O0(List)` (DAO update), and `ex3.b2(Int)` (current position), but **their complete semantics and event ordering still require validation**. Never manipulate `.m3u` files or update GMMP's database directly.
+- Runtime logs confirm that `ex3.K(int,int):void`, `xx3.O0(List):void` and `ex3.b2(int):void` exist. We have not established `K`'s argument direction or safe playback-state semantics; the next build passively logs calls while you manually reorder a test queue. Both playlist menus currently route through generic `android.widget.PopupMenu$1` callbacks; new `FLIP POPUP SOURCE` diagnostics inspect the wrapped listener and anchor's **types only** to help identify GMMP's original clicked playlist. Never manipulate `.m3u` files or update GMMP's database directly.
 
 ## Phase 2: safe queue reordering
 
