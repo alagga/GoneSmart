@@ -571,11 +571,62 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "Flip native move observer unavailable", it)
         }
 
+        // Playlist and Smart Playlist both use MusicService.w1(action=0)
+        // to replace the queue with a fully resolved list of native rm3
+        // tracks. Invoke GMMP's normal Play listener on the selected row,
+        // then reverse THAT list synchronously at its native entry point,
+        // before any queue reset or first-track playback can occur.
+        runCatching {
+            val serviceClass = param.classLoader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val playListMethod = serviceClass.getDeclaredMethod(
+                "w1",
+                Int::class.javaPrimitiveType,
+                Any::class.java,
+                List::class.java
+            ).apply { isAccessible = true }
+            hook(playListMethod).intercept { chain ->
+                val originalList = chain.getArg(2) as? List<*>
+                val reversed = queueFlipController
+                    .consumeReversePlaylistForNativePlay(
+                        chain.getArg(0) as? Int,
+                        originalList
+                    )
+                if (reversed == null) {
+                    chain.proceed()
+                } else {
+                    // The hook framework does not expose an argument
+                    // setter. Re-enter the original native method with a
+                    // new List while our pending request is already
+                    // consumed; the nested hook proceeds normally.
+                    Log.i(
+                        "GoneSmartFlip",
+                        "FLIP SERVICE | native action=0 | " +
+                            "originalCount=${originalList?.size} | " +
+                            "reversedCount=${reversed.size}"
+                    )
+                    playListMethod.invoke(
+                        chain.getThisObject(),
+                        chain.getArg(0),
+                        chain.getArg(1),
+                        reversed
+                    )
+                }
+            }
+            Log.i(
+                "GoneSmartFlip",
+                "FLIP PLAY HOOK READY | MusicService.w1 native reversed list"
+            )
+        }.onFailure { error ->
+            Log.e(TAG, "Flip native Playlist Play hook unavailable", error)
+        }
+
         Log.i(
             "GoneSmartFlip",
             "FLIP READY | menuInflaters=$installed | " +
                 "enabled=${options.flipQueueEnabled} | " +
-                "phase=non-destructive diagnostics"
+                "phase=native-flip"
         )
     }
 
