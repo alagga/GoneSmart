@@ -533,6 +533,13 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
         container.addView(settingGroup(listOf(
             SettingSpec(
+                GoneSmartSettingsKeys.KEY_TRACK_MIX,
+                "♫",
+                "Track Mix",
+                "Play any song and start a fresh Auto-DJ mix based on it.",
+                COLOR_ACCENT
+            ),
+            SettingSpec(
                 GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
                 "⇵",
                 "Flip queue / Play flipped",
@@ -621,7 +628,9 @@ class MainActivity : AppCompatActivity() {
                 "GoneSmart plays that song, keeps it as the only initial queue " +
                 "entry, switches GMMP to Auto-DJ and fills the queue to your " +
                 "configured Initial Size with recommended local tracks. " +
-                "Choosing Track Mix also enables Smart DJ if it was off."
+                "Choosing Track Mix also enables Smart DJ if it was off. " +
+                "Turn Track Mix on or off in the UI tab. Completed mixes " +
+                "show one confirmation; errors appear separately."
         ))
 
         container.addView(verticalGap(12))
@@ -937,6 +946,7 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
         setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
