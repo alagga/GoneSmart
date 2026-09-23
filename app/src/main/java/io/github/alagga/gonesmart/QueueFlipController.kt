@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
+import android.view.View
 import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
@@ -227,6 +228,18 @@ internal class QueueFlipController {
         val clickListener = play?.let { field(it, "mClickListener") }
         val menuCallback = field(menu, "mCallback")
         val menuInfo = play?.menuInfo
+        // Both list menus use android.widget.PopupMenu$1 as a generic
+        // wrapper. Its this$0 field holds the actual PopupMenu, which in
+        // turn retains GMMP's original OnMenuItemClickListener and anchor.
+        // Their types and captured field types identify the originating
+        // playlist selection without starting playback or logging titles.
+        val popup = menuCallback?.let { field(it, "this$0") }
+        val originalListener = popup?.let {
+            field(it, "mMenuItemClickListener")
+                ?: field(it, "mOnMenuItemClickListener")
+        }
+        val anchor = popup?.let { field(it, "mAnchor") as? View }
+        val anchorTag = anchor?.tag
 
         fun capturedTypes(target: Any?): String {
             if (target == null) return "none"
@@ -257,6 +270,22 @@ internal class QueueFlipController {
         )
         Log.i(
             TAG,
+            "FLIP POPUP SOURCE | kind=$kind | " +
+                "popup=${popup?.javaClass?.name ?: "none"} | " +
+                "gmmpListener=${originalListener?.javaClass?.name ?: "none"} | " +
+                "anchor=${anchor?.javaClass?.name ?: "none"} | " +
+                "anchorId=${anchor?.id ?: -1} | " +
+                "anchorParent=${anchor?.parent?.javaClass?.name ?: "none"} | " +
+                "anchorTag=${anchorTag?.javaClass?.name ?: "none"}"
+        )
+        Log.i(
+            TAG,
+            "FLIP POPUP TYPES | kind=$kind | " +
+                "listenerCaptured=${capturedTypes(originalListener)} | " +
+                "anchorTagCaptured=${capturedTypes(anchorTag)}"
+        )
+        Log.i(
+            TAG,
             "FLIP PLAY PLAN | kind=$kind | " +
                 "reverse=ALL | startAt=ORIGINAL_LAST | " +
                 "status=AWAITING_NATIVE_PLAYLIST_LOAD | writes=0"
@@ -269,6 +298,21 @@ internal class QueueFlipController {
      * ey3.b is song ID and ey3.d is the unique queue entry ID.
      * We only READ and log a few entries, even for very long queues.
      */
+    /**
+     * Passive observer for GMMP's own queue reorder calls. A user can
+     * manually drag a single queue item in a five-track test queue to
+     * identify the argument direction of ex3.K(int, int). This observer
+     * never invokes K and cannot alter the native reorder operation.
+     */
+    fun onNativeQueueMoveObserved(arg0: Int?, arg1: Int?) {
+        if (!enabled) return
+        Log.i(
+            TAG,
+            "FLIP NATIVE MOVE | arg0=$arg0 | arg1=$arg1 | " +
+                "origin=GMMP | GoneSmartWrites=0"
+        )
+    }
+
     private fun logNativeQueueSnapshot() {
         val queue = nativeQueue?.get()
         if (queue == null) {
@@ -425,9 +469,10 @@ internal class QueueFlipController {
     }
 
     /**
-     * Custom heavy ↑↓ pair instead of the hairline Unicode ⇵ glyph.
-     * The shafts and arrowheads use the same stroke and rounded joins
-     * for a clear, bold silhouette at native menu text size.
+     * Two distinct ↑↓ arrows with stems between the earlier thin
+     * version and the overly heavy 3.8 dp version. Derive thickness
+     * from the native menu text size to approach the stem of its "L".
+     * Their ReplacementSpan leaves GMMP's row height unchanged.
      * Font metrics remain unchanged, as they do for the sparkle.
      */
     private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
@@ -455,17 +500,17 @@ internal class QueueFlipController {
             val metrics = paint.fontMetricsInt
             val centerY = y + (metrics.ascent + metrics.descent) / 2f
             val halfHeight = 9f * density
-            val head = 4.6f * density
+            val head = 4.3f * density
             val leftX = x + 6.5f * density
             val rightX = x + 19.5f * density
             val arrowPaint = Paint(paint).apply {
                 style = Paint.Style.STROKE
-                // Previous 2.3 dp strokes looked much thinner than the
-                // adjacent menu labels. Use a bold 3.8 dp shaft/arrowhead
-                // and scale with accessibility font size if needed.
-                strokeWidth = max(3.8f * density, paint.textSize * 0.22f)
-                strokeCap = Paint.Cap.ROUND
-                strokeJoin = Paint.Join.ROUND
+                // 2.3 dp looked too thin; 3.8 dp looked too heavy.
+                // Approximate the vertical stroke of the surrounding
+                // regular text, including larger accessibility font sizes.
+                strokeWidth = max(2.65f * density, paint.textSize * 0.16f)
+                strokeCap = Paint.Cap.BUTT
+                strokeJoin = Paint.Join.MITER
             }
 
             // Left arrow points up.
