@@ -32,72 +32,118 @@ class TrackMixPlanTest {
         }
     }
 
-    @Test fun usesActualGmmpGermanAndEnglishTrackNouns() {
+    @Test fun combinesOnlyNativeGmmpTrackAndAutoDjWordsInAllLanguages() {
         assertEquals(
-            "Titel-Mix",
+            "Titel Auto-DJ",
             TrackMixPlan.localizedMenuLabel("de", "Titel", "Auto-DJ")
         )
         assertEquals(
-            "Track Mix",
+            "Track Auto-DJ",
             TrackMixPlan.localizedMenuLabel("en", "Track", "Auto-DJ")
         )
-    }
-
-    @Test fun usesFullyNativeNounsForOtherGmmpLanguages() {
         assertEquals(
-            "Piste · Auto-DJ",
-            TrackMixPlan.localizedMenuLabel("fr", "Piste", "Auto-DJ")
+            "Piste DJ automatique",
+            TrackMixPlan.localizedMenuLabel("fr", "Piste", "DJ automatique")
         )
         assertEquals(
-            "トラック · オートDJ",
+            "トラック オートDJ",
             TrackMixPlan.localizedMenuLabel("ja", "トラック", "オートDJ")
         )
     }
 
-    @Test fun fallsBackSafelyIfGmmpStringIsUnavailable() {
+    @Test fun neverInventsATranslationWhenNativeWordIsMissing() {
         assertEquals(
-            "Titel-Mix",
+            "Titel Auto-DJ",
             TrackMixPlan.localizedMenuLabel("de", null, null)
         )
         assertEquals(
-            "Track Mix",
+            "Track Auto-DJ",
             TrackMixPlan.localizedMenuLabel("en", null, null)
         )
         assertEquals(
-            "Auto-DJ",
-            TrackMixPlan.localizedMenuLabel("fr", "", "Auto-DJ")
+            "DJ automatique",
+            TrackMixPlan.localizedMenuLabel(
+                "fr", null, "DJ automatique"
+            )
         )
         assertEquals(
-            "Piste · Auto-DJ",
+            "Piste Auto-DJ",
             TrackMixPlan.localizedMenuLabel("fr", "Piste", null)
-        )
-        assertEquals(
-            "Auto-DJ",
-            TrackMixPlan.localizedMenuLabel("fr", null, null)
         )
     }
 
-    @Test fun confirmsGermanAndEnglishButUsesNativeLabelsForOtherLanguages() {
+    @Test fun confirmsWithNativeStartedWhenPresentAndSafeFallbackOtherwise() {
         assertEquals(
-            "Titel-Mix gestartet",
-            TrackMixPlan.localizedStartedMessage("de", "Titel-Mix", null)
-        )
-        assertEquals(
-            "Track Mix started",
-            TrackMixPlan.localizedStartedMessage("en", "Track Mix", null)
-        )
-        assertEquals(
-            "Piste · Auto-DJ ✓",
+            "Titel Auto-DJ gestartet",
             TrackMixPlan.localizedStartedMessage(
-                "fr", "Piste · Auto-DJ", null
+                "de", "Titel Auto-DJ", "gestartet"
             )
         )
         assertEquals(
-            "Piste · Auto-DJ · Démarré",
+            "Track Auto-DJ started",
             TrackMixPlan.localizedStartedMessage(
-                "fr", "Piste · Auto-DJ", "Démarré"
+                "en", "Track Auto-DJ", null
             )
         )
+        assertEquals(
+            "Piste DJ automatique démarré",
+            TrackMixPlan.localizedStartedMessage(
+                "fr", "Piste DJ automatique", "démarré"
+            )
+        )
+        assertEquals(
+            "トラック オートDJ ✓",
+            TrackMixPlan.localizedStartedMessage(
+                "ja", "トラック オートDJ", null
+            )
+        )
+    }
+
+    @Test fun nativeIsolationRemovesHistoryAndUpcomingByUniqueEntryId() {
+        val entries = listOf(
+            TrackMixPlan.NativeQueueEntry(11, 101, 1),
+            TrackMixPlan.NativeQueueEntry(12, 102, 2),
+            TrackMixPlan.NativeQueueEntry(13, 103, 3),
+            TrackMixPlan.NativeQueueEntry(14, 104, 4)
+        )
+        val plan = TrackMixPlan.planNativeIsolation(
+            entries, currentPosition = 3, selectedTrackId = 103
+        )
+        assertEquals(13L, plan.selectedEntryId)
+        assertEquals(3, plan.originalPosition)
+        assertEquals(listOf(11L, 12L, 14L), plan.removeEntryIds)
+    }
+
+    @Test fun nativeIsolationPreservesExactDuplicateSongOccurrence() {
+        val entries = listOf(
+            TrackMixPlan.NativeQueueEntry(11, 101, 1),
+            TrackMixPlan.NativeQueueEntry(12, 101, 2),
+            TrackMixPlan.NativeQueueEntry(13, 101, 3)
+        )
+        val plan = TrackMixPlan.planNativeIsolation(
+            entries, currentPosition = 2, selectedTrackId = 101
+        )
+        assertEquals(12L, plan.selectedEntryId)
+        assertEquals(listOf(11L, 13L), plan.removeEntryIds)
+    }
+
+    @Test fun nativeIsolationRejectsWrongTrackOrAmbiguousQueue() {
+        val entries = listOf(
+            TrackMixPlan.NativeQueueEntry(11, 101, 1),
+            TrackMixPlan.NativeQueueEntry(12, 102, 2)
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixPlan.planNativeIsolation(entries, 2, 103)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            TrackMixPlan.planNativeIsolation(entries, 5, 102)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixPlan.planNativeIsolation(
+                listOf(entries[0], entries[0].copy(position = 2)),
+                1, 101
+            )
+        }
     }
 
     @Test fun clearedSeedMayAlreadyHaveNewAutoDjTracks() {
