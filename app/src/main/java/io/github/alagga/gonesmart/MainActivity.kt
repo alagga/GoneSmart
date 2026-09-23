@@ -549,6 +549,12 @@ class MainActivity : AppCompatActivity() {
     private fun buildLogsPage(): View {
         val container = pageContainer()
         container.addView(pageTitle("Logs"))
+        container.addView(textView(
+            "Activity from Smart DJ, multi-playlist selection and Flip Queue.",
+            14f,
+            COLOR_TEXT_SECONDARY
+        ))
+        container.addView(verticalGap(14))
 
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -588,7 +594,8 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "This in-app log intentionally stores only high-level GoneSmart events. Detailed debugging remains available in Logcat with the tag GoneSmart.",
+            "Shows recent activity from all GoneSmart features. For detailed " +
+                "diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist or GoneSmartFlip.",
             13f,
             COLOR_MUTED
         ))
@@ -1094,9 +1101,13 @@ class MainActivity : AppCompatActivity() {
         if (!::logTextView.isInitialized) return
         val text = GoneSmartEventStore.logText(this)
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
-        logCountText.text = "${lines.size} lines"
+        val summary = GoneSmartEventStore.summary(this)
+        logCountText.text =
+            "${summary.total} events • Smart DJ ${summary.smartDj} • " +
+                "Playlists ${summary.playlists} • Flip ${summary.flip}" +
+                if (summary.other > 0) " • Other ${summary.other}" else ""
         logTextView.text = if (lines.isEmpty()) {
-            "No runtime events yet."
+            "No events yet. Activity will appear here as you use GoneSmart."
         } else {
             lines.joinToString("\n")
         }
