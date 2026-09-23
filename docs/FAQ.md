@@ -78,15 +78,23 @@ The selected rows and action bar follow GMMP's dynamic colors. GoneSmart reuses 
 
 Yes. Multi-playlist selection has its own switch and works when Smart DJ is turned off, provided the module is enabled for GMMP.
 
-## How does Track Mix work, and can I turn it off?
+## How does Track Auto-DJ work, and can I turn it off?
 
-**Track Mix** appears after **Play next** in an individual song's three-dot menu. It starts that song, keeps it as the first entry of a fresh queue, enables Smart DJ if necessary and lets GMMP Auto-DJ fill the queue to its configured Initial Size. Turn this feature on or off independently under **GoneSmart → UI → Track Mix**. It is enabled by default for existing users.
+**Track Auto-DJ** appears after **Play next** in an individual song's three-dot menu. It starts that song, keeps it as the first entry of a fresh queue, enables Smart DJ if necessary and lets GMMP Auto-DJ fill the queue to its configured Initial Size. Turn this feature on or off independently under **GoneSmart → UI → Track Auto-DJ**. It is enabled by default for existing users.
 
-After a successful, verified mix, GoneSmart displays just **one short confirmation**. GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed status UI—are suppressed only during the bounded Track Mix startup window. A genuine error still produces one warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers that refill, can retry native queue clearing up to three bounded attempts, and verifies that the newly selected song is preserved before filling the new mix.
+After a successful, verified mix, GoneSmart displays just **one short confirmation**. GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed status UI—are suppressed only during the bounded Track Auto-DJ startup window. A genuine error still produces one warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers further old-session refills, then atomically removes the other native queue entries by their unique queue IDs. No repeated asynchronous queue-clearing commands are needed; the selected song and native playback pointer are verified before filling.
 
-## Is “Track Mix” localized in every GMMP language?
+## Is “Track Auto-DJ” localized in every GMMP language?
 
-There is no native GMMP translation for GoneSmart's newly invented **Mix** feature name. In German its label is **Titel-Mix** and in English **Track Mix**. In other player languages, GoneSmart combines GMMP's existing translated **track** and **Auto-DJ** words instead of showing a misleading English-only command. The same native-language approach is used for the confirmation, with a universal checkmark when the native player has no suitable translated “started” string. This avoids maintaining a separate translation catalog for each language, but it is **not** a professionally translated “Mix” word in every locale.
+Yes, the feature name is composed of the two **existing native GMMP
+translations** for *track* and *Auto-DJ*, separated by a normal space.
+German is **Titel Auto-DJ** and English is **Track Auto-DJ**. Other
+languages use their own GMMP strings instead of a separately invented
+translation for *Mix*. If GMMP provides a translated *started* string,
+GoneSmart uses it for the sole success confirmation; otherwise it
+appends a language-neutral checkmark. The companion UI reads the
+installed GMMP's strings where available; an explicit in-player
+language override is always honored inside GMMP's own context menus.
 
 ## How are GoneSmart updates handled?
 
