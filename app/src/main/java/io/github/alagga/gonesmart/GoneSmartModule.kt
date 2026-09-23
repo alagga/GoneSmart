@@ -433,6 +433,12 @@ class GoneSmartModule : XposedModule() {
                 try {
                     playlistController.setEnabled(options.multiPlaylistEnabled)
                     installPlaylistMultiSelectHooks(param)
+                    if (options.multiPlaylistEnabled) {
+                        runtimeReporter.reportEvent(
+                            GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                            "Multi-playlist selection is available."
+                        )
+                    }
                 } catch (playlistHookError: Throwable) {
                     Log.w(
                         TAG,
@@ -559,34 +565,6 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "Flip queue capture hooks unavailable", it)
         }
 
-        // Read-only native instrumentation: when the user manually drags
-        // a queue item, capture ex3.K(from?, to?) argument order.
-        // We never call K ourselves in this diagnostic build.
-        runCatching {
-            val queueClass = param.classLoader.loadClass("ex3")
-            val nativeReorder = queueClass.getDeclaredMethod(
-                "K",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType
-            ).apply { isAccessible = true }
-            hook(nativeReorder).intercept { chain ->
-                val first = chain.getArg(0) as? Int
-                val second = chain.getArg(1) as? Int
-                val result = chain.proceed()
-                queueFlipController.onNativeQueueMoveObserved(
-                    first,
-                    second
-                )
-                result
-            }
-            Log.i(
-                "GoneSmartFlip",
-                "FLIP MOVE OBSERVER READY | ex3.K(int,int) passive"
-            )
-        }.onFailure {
-            Log.w(TAG, "Flip native move observer unavailable", it)
-        }
-
         // Playlist and Smart Playlist both use MusicService.w1(action=0)
         // to replace the queue with a fully resolved list of native rm3
         // tracks. Invoke GMMP's normal Play listener on the selected row,
@@ -651,6 +629,12 @@ class GoneSmartModule : XposedModule() {
                 "enabled=${options.flipQueueEnabled} | " +
                 "phase=native-flip"
         )
+        if (options.flipQueueEnabled) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Flip Queue and reverse playlist playback are available."
+            )
+        }
     }
 
     /**
