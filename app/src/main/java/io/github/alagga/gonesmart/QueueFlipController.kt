@@ -1,15 +1,20 @@
 package io.github.alagga.gonesmart
 
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.text.SpannableString
 import android.text.Spanned
-import android.text.style.ImageSpan
+import android.text.style.ReplacementSpan
 import android.util.Log
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
 import android.widget.Toast
 import java.lang.ref.WeakReference
+import java.util.concurrent.Executors
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Phase 1: opt-in, NON-DESTRUCTIVE integration diagnostics for GMMP 4.2.0.
@@ -34,6 +39,16 @@ internal class QueueFlipController {
         private const val PLAYLIST_DETAIL_MENU = "menu_gm_context_playlist"
         private const val SMART_MENU = "menu_gm_context_smart"
     }
+
+    // GMMP's Room queue DAO explicitly rejects database reads on
+    // Android's main thread. Keep all diagnostic snapshots off the UI
+    // thread without altering any native playback state.
+    private val diagnosticsExecutor =
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task, "GoneSmartFlipDiagnostics").apply {
+                isDaemon = true
+            }
+        }
 
     @Volatile
     private var enabled = false
@@ -176,7 +191,9 @@ internal class QueueFlipController {
                 "nativePlay=${if (nativePlayId != 0)
                     menu.findItem(nativePlayId)?.title else null}"
         )
-        logNativeQueueSnapshot()
+        diagnosticsExecutor.execute {
+            logNativeQueueSnapshot()
+        }
 
         // Phase 1 intentionally does not invoke a native Play item.
         // Doing so before a matching queue-change callback is identified
@@ -300,26 +317,81 @@ internal class QueueFlipController {
     }
 
     private fun brandedMenuTitle(context: Context, label: String): CharSequence {
-        // Both GMMP menu implementations (platform + AppCompat) render
-        // MenuItem.title in a TextView, so a drawable span works where
-        // ordinary MenuItem icons are normally hidden by overflow popups.
-        val pixelSize = (context.resources.displayMetrics.density * 28f)
-            .toInt().coerceAtLeast(22)
-        val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
-            0xFFA39AFF.toInt(), // same default GoneSmart lilac as our picker
+        // An ImageSpan with 28 dp bounds enlarged the platform popup row.
+        // ReplacementSpan reserves horizontal space only; it NEVER changes
+        // the TextView's FontMetricsInt. Drawing within the existing font
+        // line box keeps native GMMP menu row height and centers our exact
+        // lilac two-star Auto-DJ badge next to the label.
+        val badge = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
+            0xFFA39AFF.toInt(),
             scale = 1.85f
-        ).apply {
-            setBounds(0, 0, pixelSize, pixelSize)
-        }
+        )
         val text = SpannableString("$label  \uFFFC")
         val index = text.length - 1
         text.setSpan(
-            ImageSpan(sparkle, ImageSpan.ALIGN_BOTTOM),
+            BaselineCenteredSparkleSpan(context, badge),
             index,
             index + 1,
             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
         return text
+    }
+
+    /**
+     * Unlike ImageSpan, ReplacementSpan never expands font ascenders,
+     * descenders or line spacing. The lilac main star and the smaller
+     * pale star share GMMP's natural text baseline for every font scale.
+     */
+    private class BaselineCenteredSparkleSpan(
+        context: Context,
+        private val badge: PlayerAutoDjBadgeController.SparkleBadgeDrawable
+    ) : ReplacementSpan() {
+        private val density = context.resources.displayMetrics.density
+
+        private fun badgeSize(paint: Paint): Int {
+            val metrics = paint.fontMetricsInt
+            val lineHeight = (metrics.descent - metrics.ascent)
+                .coerceAtLeast(1)
+            val maxBadge = (19f * density).roundToInt().coerceAtLeast(1)
+            // A little vertical breathing room prevents clipped glow
+            // without letting the sparkle influence menu row height.
+            return min(
+                (lineHeight * 0.86f).roundToInt().coerceAtLeast(1),
+                maxBadge
+            )
+        }
+
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?
+        ): Int {
+            // Deliberately do not modify fm.
+            return badgeSize(paint) + (3f * density).roundToInt()
+        }
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint
+        ) {
+            val size = badgeSize(paint)
+            val metrics = paint.fontMetricsInt
+            val fontCenter = y + (metrics.ascent + metrics.descent) / 2f
+            badge.setBounds(0, 0, size, size)
+            val saveCount = canvas.save()
+            canvas.translate(x, fontCenter - size / 2f)
+            badge.draw(canvas)
+            canvas.restoreToCount(saveCount)
+        }
     }
 
     private fun nativeString(context: Context, name: String): String? {
