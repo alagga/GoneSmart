@@ -11,6 +11,7 @@ internal object GoneSmartLogSummary {
         val smartDj: Int,
         val playlists: Int,
         val flip: Int,
+        val trackMix: Int,
         val other: Int
     )
 
@@ -21,12 +22,14 @@ internal object GoneSmartLogSummary {
         val smart = lines.count { it.contains("[Smart DJ]") }
         val playlists = lines.count { it.contains("[Playlists]") }
         val flip = lines.count { it.contains("[Flip]") }
+        val mix = lines.count { it.contains("[Track Mix]") }
         return Summary(
             total = lines.size,
             smartDj = smart,
             playlists = playlists,
             flip = flip,
-            other = lines.size - smart - playlists - flip
+            trackMix = mix,
+            other = lines.size - smart - playlists - flip - mix
         )
     }
 }
