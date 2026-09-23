@@ -515,6 +515,27 @@ class MainActivity : AppCompatActivity() {
         return scrollPage(container)
     }
 
+    /**
+     * Companion labels use GMMP's installed resource translations.
+     * Native GMMP context menus use their own live Context so a
+     * GMMP-specific language override is respected inside the player.
+     */
+    private fun nativeTrackAutoDjLabel(): String {
+        return runCatching {
+            val native = createPackageContext(GMMP_PACKAGE, 0)
+            val res = native.resources
+            fun word(name: String): String? {
+                val id = res.getIdentifier(name, "string", GMMP_PACKAGE)
+                return if (id != 0) res.getString(id) else null
+            }
+            TrackMixPlan.localizedMenuLabel(
+                res.configuration.locales[0].language,
+                word("track"),
+                word("auto_dj")
+            )
+        }.getOrDefault("Track Auto-DJ")
+    }
+
     private fun buildUiPage(): View {
         val container = pageContainer()
         container.addView(pageTitle("UI"))
@@ -535,8 +556,8 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_TRACK_MIX,
                 "♫",
-                "Track Mix",
-                "Play any song and start a fresh Auto-DJ mix based on it.",
+                nativeTrackAutoDjLabel(),
+                "Start Auto-DJ from any song and fill a fresh queue with similar tracks.",
                 COLOR_ACCENT
             ),
             SettingSpec(
@@ -557,7 +578,7 @@ class MainActivity : AppCompatActivity() {
         val container = pageContainer()
         container.addView(pageTitle("Logs"))
         container.addView(textView(
-            "Recent activity from Smart DJ, playlists, Flip and Track Mix.",
+            "Recent activity from Smart DJ, playlists, Flip and ${nativeTrackAutoDjLabel()}.",
             14f,
             COLOR_TEXT_SECONDARY
         ))
@@ -623,13 +644,13 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "What does Track Mix do?",
-            body = "In a song's three-dot menu, choose Track Mix after Play next. " +
+            title = "What does ${nativeTrackAutoDjLabel()} do?",
+            body = "In a song's three-dot menu, choose ${nativeTrackAutoDjLabel()} after Play next. " +
                 "GoneSmart plays that song, keeps it as the only initial queue " +
                 "entry, switches GMMP to Auto-DJ and fills the queue to your " +
                 "configured Initial Size with recommended local tracks. " +
-                "Choosing Track Mix also enables Smart DJ if it was off. " +
-                "Turn Track Mix on or off in the UI tab. Completed mixes " +
+                "Choosing ${nativeTrackAutoDjLabel()} also enables Smart DJ if it was off. " +
+                "Turn ${nativeTrackAutoDjLabel()} on or off in the UI tab. Completed mixes " +
                 "show one confirmation; errors appear separately."
         ))
 
@@ -1126,12 +1147,14 @@ class MainActivity : AppCompatActivity() {
         logCountText.text =
             "${summary.total} events • Smart DJ ${summary.smartDj} • " +
                 "Playlists ${summary.playlists} • Flip ${summary.flip} • " +
-                "Track Mix ${summary.trackMix}" +
+                "${nativeTrackAutoDjLabel()} ${summary.trackMix}" +
                 if (summary.other > 0) " • Other ${summary.other}" else ""
         logTextView.text = if (lines.isEmpty()) {
             "No events yet. Activity will appear here as you use GoneSmart."
         } else {
-            lines.joinToString("\n")
+            lines.joinToString("\n").replace(
+                "[Track Mix]", "[${nativeTrackAutoDjLabel()}]"
+            )
         }
     }
 
