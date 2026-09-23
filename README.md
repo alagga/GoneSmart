@@ -262,11 +262,11 @@ The new command uses GMMP's documented PLAY/CLEAR_QUEUE/AUTO_DJ
 integration and native Play menu callbacks. Its high-level start,
 verification and failure outcomes appear in the GoneSmart app's
 **Logs → Track Mix** category; details are in Android Logcat under
-`GoneSmartTrackMix`. A verified mix now shows **one concise confirmation**; GoneSmart suppresses only GMMP's intermediate Play/Clear/Auto-DJ notifications during the brief Track Mix transition. Actual errors still show a warning.
+`GoneSmartTrackMix`. A verified mix shows **one concise confirmation**. During the bounded Track Mix startup only, GoneSmart suppresses GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars, including delayed Auto-DJ-rules-changed status UI. Actual errors still show one warning.
 
 **Languages:** GMMP provides translated *track* and *Auto-DJ* nouns, but not a universal translation of GoneSmart's new word *Mix*. German uses **Titel-Mix**, English **Track Mix**; other GMMP languages use their own localized track + Auto-DJ words instead of an untranslated English menu command. The same rule applies to confirmation text, with a language-neutral checkmark if GMMP has no suitable localized “started” text.
 
-**Status:** tested on GMMP 4.2.0 with six successful five-song mixes and one intermittent queue-isolation failure during a concurrent Auto-DJ refill (24 September 2026). The feature branch now defers pre-clear native refills, retries native Clear once and verifies the selected seed. These latest concurrency and notification changes still require normal on-device use before a public release. See [Track Mix test and notes](docs/TRACK_MIX_TESTING.md).
+**Status:** tested on GMMP 4.2.0 with six successful five-song mixes and one intermittent queue-isolation failure during a concurrent Auto-DJ refill (24 September 2026). The feature branch now defers pre-clear native refills, allows up to three bounded native Clear attempts, and verifies the selected seed before Auto-DJ fills the new queue. These latest concurrency and notification changes still require normal on-device use before a public release. See [Track Mix test and notes](docs/TRACK_MIX_TESTING.md).
 
 ## Companion UI and player indicator
 
