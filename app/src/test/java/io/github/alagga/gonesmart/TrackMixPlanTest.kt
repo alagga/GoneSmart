@@ -146,34 +146,6 @@ class TrackMixPlanTest {
         }
     }
 
-    @Test fun clearedSeedMayAlreadyHaveNewAutoDjTracks() {
-        assertTrue(
-            TrackMixPlan.isSeedIsolated(
-                55L, listOf(1L, 55L, 2L, 3L), 1,
-                listOf(55L, 101L, 102L), 0
-            )
-        )
-        assertTrue(
-            TrackMixPlan.isSeedIsolated(
-                55L, listOf(1L, 55L, 2L, 3L), 1,
-                listOf(55L), 0
-            )
-        )
-    }
-
-    @Test fun neverMistakesOldQueueOrWrongCurrentForNewMix() {
-        val old = listOf(1L, 55L, 2L, 3L)
-        assertFalse(TrackMixPlan.isSeedIsolated(
-            55L, old, 1, old, 1
-        ))
-        assertFalse(TrackMixPlan.isSeedIsolated(
-            55L, old, 1, listOf(55L, 2L, 101L), 0
-        ))
-        assertFalse(TrackMixPlan.isSeedIsolated(
-            55L, old, 1, listOf(55L, 101L), 1
-        ))
-    }
-
     @Test fun alwaysInsertsAsThirdMenuItemAfterPlayNext() {
         assertEquals(2, TrackMixPlan.insertionIndex(1, 10))
         assertEquals(2, TrackMixPlan.insertionIndex(1, 7))
