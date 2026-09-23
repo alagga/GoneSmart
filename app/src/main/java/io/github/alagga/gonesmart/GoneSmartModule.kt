@@ -529,7 +529,7 @@ class GoneSmartModule : XposedModule() {
                 options = options.copy(enabled = true)
                 runtimeReporter.reportEvent(
                     GoneSmartRuntimeContract.CATEGORY_UI,
-                    "Smart DJ enabled by Track Mix."
+                    "Smart DJ enabled by song-based Auto-DJ."
                 )
                 val intent = android.content.Intent(
                     GoneSmartRuntimeContract.ACTION_ENABLE_SMART_DJ_FOR_MIX
@@ -786,7 +786,7 @@ class GoneSmartModule : XposedModule() {
         if (installed > 0) {
             runtimeReporter.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_SYSTEM,
-                "Track Mix is available in song menus."
+                "Song-based Auto-DJ is available in song menus."
             )
         }
     }
