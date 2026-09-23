@@ -536,9 +536,9 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
                 "⇵",
                 "Flip queue / Play flipped",
-                "Reverse your entire queue, or play a playlist or Smart Playlist " +
-                    "from its last song to its first. Preview only: " +
-                    "doesn't change playback yet.",
+                "Reverse your entire queue while keeping the current song, " +
+                    "or play any playlist or Smart Playlist from its last " +
+                    "song to its first.",
                 COLOR_ACCENT
             )
         )))
