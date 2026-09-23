@@ -287,6 +287,7 @@ internal class QueueFlipController {
         tracks: List<*>?
     ): List<*>? {
         if (!enabled) return null
+        val source = tracks ?: return null
         val pending = synchronized(this) {
             val request = pendingPlayback ?: return@synchronized null
             if (SystemClock.elapsedRealtime() - request.createdAt > 30_000L) {
@@ -294,14 +295,14 @@ internal class QueueFlipController {
                 Log.w(TAG, "FLIP PLAY | timed out waiting for native playlist")
                 return@synchronized null
             }
-            if (action != 0 || tracks.isNullOrEmpty()) return@synchronized null
-            val first = tracks.firstOrNull() ?: return@synchronized null
+            if (action != 0 || source.isEmpty()) return@synchronized null
+            val first = source.firstOrNull() ?: return@synchronized null
             val nativeSong = runCatching {
                 first.javaClass.classLoader
                     ?.loadClass("rm3")
                     ?.isInstance(first) == true
             }.getOrDefault(false)
-            if (!nativeSong || tracks.any { it == null }) {
+            if (!nativeSong || source.any { it == null }) {
                 Log.w(TAG, "FLIP PLAY | unsupported native playback list")
                 return@synchronized null
             }
@@ -310,13 +311,13 @@ internal class QueueFlipController {
         } ?: return null
 
         val reversed = QueueFlipPlanner.reverseForNewPlayback(
-            tracks.filterNotNull()
+            source.filterNotNull()
         ).entries
         Log.i(
             TAG,
             "FLIP PLAY APPLIED | kind=${pending.kind} | " +
                 "size=${reversed.size} | originalFirstId=" +
-                runCatching { firstSongId(tracks.first()!!) }.getOrNull() +
+                runCatching { firstSongId(source.first()!!) }.getOrNull() +
                 " | newFirstId=" +
                 runCatching { firstSongId(reversed.first()) }.getOrNull() +
                 " | action=0 | nativeQueueWriter=MusicService.w1"
@@ -421,7 +422,7 @@ internal class QueueFlipController {
             plan.entries.forEachIndexed { index, entry ->
                 positionField.setInt(entry, oldPositions[index])
             }
-            writer.invoke(dao, plan.entries)
+            writer.invoke(dao, ArrayList(plan.entries))
             wrote = true
             pointer.invoke(queue, newPosition)
             val verify = snapshot().map {
@@ -446,7 +447,7 @@ internal class QueueFlipController {
                     original.forEachIndexed { index, entry ->
                         positionField.setInt(entry, oldPositions[index])
                     }
-                    writer.invoke(dao, original)
+                    writer.invoke(dao, ArrayList(original))
                     pointer.invoke(queue, oldPosition)
                     Log.w(TAG, "FLIP ROLLBACK | previous queue restored")
                 }.onFailure {
