@@ -8,6 +8,7 @@
     <a href="https://github.com/alagga/GoneSmart/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/alagga/GoneSmart/build.yml?branch=main&style=for-the-badge&logo=githubactions&label=build&color=5f57b8&labelColor=151419"/></a>
     <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/alagga/GoneSmart/total?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/alagga/GoneSmart?style=for-the-badge&color=5f57b8&labelColor=151419"/></a>
+    <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fadd%3Furl%3Dhttps%253A%252F%252Fgithub.com%252Falagga%252FGoneSmart"><img alt="Add to Obtainium" src="https://img.shields.io/badge/Add_to-Obtainium-5f57b8?style=for-the-badge&logo=android&logoColor=white&labelColor=151419"/></a>
   </p>
 
   <p>
@@ -28,7 +29,7 @@
 
 GoneSmart is a modern libxposed module and companion app that extends [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/) with **smart and quality-of-life features**. The current main focus — and the first major feature — is **Smart Auto-DJ**: GMMP stays in charge of playback, queue management and Auto-DJ timing, while GoneSmart replaces the actual track-selection step with session-aware recommendations.
 
-The project is intentionally broader than Auto-DJ. Future releases can add more smart library, queue and workflow extensions around GMMP without changing the core idea: keep GMMP as the player, and add the features that are missing around it.
+The project is intentionally broader than Auto-DJ. GoneSmart now also includes optional GMMP quality-of-life extensions such as multi-playlist selection, while keeping the same core idea: keep GMMP as the player and add focused features around it.
 
 For Smart Auto-DJ, GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
 
@@ -93,6 +94,22 @@ The matching pipeline is currently **especially tuned for electronic-music libra
 </details>
 
 <details>
+<summary><b>🎛️ UI & quality-of-life</b></summary>
+
+<br/>
+
+| Feature | What it does |
+|---|---|
+| Multi-playlist selection | Long-press a destination in GMMP's Add to Playlist dialog, select multiple playlists, then confirm once |
+| Native playlist writes | Reuses GMMP's own playlist-add operation rather than editing playlist files directly |
+| Native look & language | Selection colors follow GMMP's dynamic theme and user-facing selection/result strings reuse GMMP's localized resources |
+| Safe scrolling | Selection is keyed to the real playlist path so RecyclerView row reuse does not move highlights to other playlists |
+| One completion message | Multiple native result messages are combined into one “X files / Y playlists” summary |
+| Independent UI toggle | The feature has its own switch in GoneSmart's **UI** tab and does not require Smart DJ to be enabled |
+
+</details>
+
+<details>
 <summary><b>🧰 Companion app</b></summary>
 
 <br/>
@@ -103,6 +120,9 @@ The matching pipeline is currently **especially tuned for electronic-music libra
 | Live settings | Recommendation settings are pushed to the running target without a normal restart |
 | Runtime logs | Keeps a compact high-level GoneSmart event log inside the app |
 | Compatibility status | Shows the installed GMMP version and the currently tested version |
+| Update status | Checks GitHub Releases when the companion app starts and shows whether the installed version is current |
+| Obtainium hand-off | Opens GoneSmart directly in Obtainium so Obtainium can handle APK updates |
+| UI tab | Keeps optional GMMP interface/QoL extensions separate from Smart DJ settings |
 | Built-in FAQ | Explains providers, rating rules, pool behavior, indicator states and fallback behavior |
 
 </details>
@@ -165,7 +185,7 @@ GoneSmart currently hooks obfuscated GMMP internals. That means a future GMMP up
 
 ## Installation
 
-Download the latest GoneSmart APK from [**Releases**](https://github.com/alagga/GoneSmart/releases/latest), then use the path that matches your setup.
+Install the latest GoneSmart APK from [**Releases**](https://github.com/alagga/GoneSmart/releases/latest), or add the repository to [**Obtainium**](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fadd%3Furl%3Dhttps%253A%252F%252Fgithub.com%252Falagga%252FGoneSmart) to let Obtainium track future GitHub releases. GoneSmart itself only checks for a newer published version; it does not download or install APK updates.
 
 ### Rooted — Vector / modern LSPosed
 
@@ -196,7 +216,9 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 
 ---
 
-## Player indicator
+## Companion UI and player indicator
+
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. The Smart DJ tab uses a headphones icon matching GMMP's Auto-DJ concept; the UI tab contains optional GMMP interface extensions such as multi-playlist selection.
 
 When GMMP is in Auto-DJ mode, GoneSmart adds a small sparkle to the headphones/playback-mode icon:
 
@@ -275,6 +297,9 @@ Release signing can be supplied through `keystore.properties` locally or the env
 
 ## Releases and CI
 
+- The companion app performs one lightweight GitHub Releases check on startup and reports whether the installed version is current.
+- GoneSmart does **not** self-update; use Obtainium or GitHub Releases for installation.
+- The README's **Add to Obtainium** button uses Obtainium's documented deep-link flow.
 - Normal pushes/PRs run the GitHub build workflow.
 - The **Release APK** workflow builds a signed release APK and publishes/updates the matching `v<versionName>` GitHub Release.
 - Release builds expect the Last.fm API-key secret plus Android signing secrets. See [docs/BUILDING.md](docs/BUILDING.md).
