@@ -13,7 +13,6 @@ import android.view.MenuItem
 import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -317,11 +316,10 @@ internal class QueueFlipController {
     }
 
     private fun brandedMenuTitle(context: Context, label: String): CharSequence {
-        // An ImageSpan with 28 dp bounds enlarged the platform popup row.
-        // ReplacementSpan reserves horizontal space only; it NEVER changes
-        // the TextView's FontMetricsInt. Drawing within the existing font
-        // line box keeps native GMMP menu row height and centers our exact
-        // lilac two-star Auto-DJ badge next to the label.
+        // A 28 dp ImageSpan enlarged the platform popup row because it
+        // increased the line's font metrics. This ReplacementSpan restores
+        // the full-size artwork, centers it on the text baseline, and
+        // reserves only horizontal space; menu row height stays native.
         val badge = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
             0xFFA39AFF.toInt(),
             scale = 1.85f
@@ -338,9 +336,9 @@ internal class QueueFlipController {
     }
 
     /**
-     * Unlike ImageSpan, ReplacementSpan never expands font ascenders,
-     * descenders or line spacing. The lilac main star and the smaller
-     * pale star share GMMP's natural text baseline for every font scale.
+     * Unlike ImageSpan, ReplacementSpan never expands the line's font
+     * metrics. The original 28 dp lilac two-star artwork is drawn around
+     * the line's vertical center inside the menu row's existing padding.
      */
     private class BaselineCenteredSparkleSpan(
         context: Context,
@@ -348,17 +346,11 @@ internal class QueueFlipController {
     ) : ReplacementSpan() {
         private val density = context.resources.displayMetrics.density
 
-        private fun badgeSize(paint: Paint): Int {
-            val metrics = paint.fontMetricsInt
-            val lineHeight = (metrics.descent - metrics.ascent)
-                .coerceAtLeast(1)
-            val maxBadge = (19f * density).roundToInt().coerceAtLeast(1)
-            // A little vertical breathing room prevents clipped glow
-            // without letting the sparkle influence menu row height.
-            return min(
-                (lineHeight * 0.86f).roundToInt().coerceAtLeast(1),
-                maxBadge
-            )
+        private fun badgeSize(): Int {
+            // Restore the original 28 dp artwork. A ReplacementSpan does
+            // not alter font metrics, so this extra height can occupy the
+            // menu row's existing vertical padding without enlarging it.
+            return (28f * density).roundToInt().coerceAtLeast(1)
         }
 
         override fun getSize(
@@ -369,7 +361,7 @@ internal class QueueFlipController {
             fm: Paint.FontMetricsInt?
         ): Int {
             // Deliberately do not modify fm.
-            return badgeSize(paint) + (3f * density).roundToInt()
+            return badgeSize() + (3f * density).roundToInt()
         }
 
         override fun draw(
@@ -383,7 +375,7 @@ internal class QueueFlipController {
             bottom: Int,
             paint: Paint
         ) {
-            val size = badgeSize(paint)
+            val size = badgeSize()
             val metrics = paint.fontMetricsInt
             val fontCenter = y + (metrics.ascent + metrics.descent) / 2f
             badge.setBounds(0, 0, size, size)
