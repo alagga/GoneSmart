@@ -543,6 +543,34 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "Flip queue capture hooks unavailable", it)
         }
 
+        // Read-only native instrumentation: when the user manually drags
+        // a queue item, capture ex3.K(from?, to?) argument order.
+        // We never call K ourselves in this diagnostic build.
+        runCatching {
+            val queueClass = param.classLoader.loadClass("ex3")
+            val nativeReorder = queueClass.getDeclaredMethod(
+                "K",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+            hook(nativeReorder).intercept { chain ->
+                val first = chain.getArg(0) as? Int
+                val second = chain.getArg(1) as? Int
+                val result = chain.proceed()
+                queueFlipController.onNativeQueueMoveObserved(
+                    first,
+                    second
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartFlip",
+                "FLIP MOVE OBSERVER READY | ex3.K(int,int) passive"
+            )
+        }.onFailure {
+            Log.w(TAG, "Flip native move observer unavailable", it)
+        }
+
         Log.i(
             "GoneSmartFlip",
             "FLIP READY | menuInflaters=$installed | " +
