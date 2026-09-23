@@ -546,6 +546,21 @@ class MainActivity : AppCompatActivity() {
                 "is disabled. The normal single-playlist tap and the " +
                 "plus button for creating a playlist are unchanged."
         ))
+
+        container.addView(verticalGap(24))
+        container.addView(sectionTitle("PLAYBACK & QUEUE"))
+        container.addView(settingGroup(listOf(
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
+                "⇵",
+                "Flip queue / Play flipped",
+                "Experimental: adds a reverse-order command to the Queue, " +
+                    "Playlist and Smart Playlist menus. Initial testing " +
+                    "checks the three menus and captures native queue " +
+                    "diagnostics without changing playback.",
+                COLOR_ACCENT
+            )
+        )))
         refreshSettingsSwitches()
         return scrollPage(container)
     }
@@ -922,6 +937,7 @@ class MainActivity : AppCompatActivity() {
 
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
         setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
