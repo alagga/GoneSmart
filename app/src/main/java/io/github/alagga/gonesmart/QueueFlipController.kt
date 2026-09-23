@@ -261,17 +261,10 @@ internal class QueueFlipController {
             }
 
             val pinned = sorted[pinIndex]
-            val othersReversed = sorted.filterIndexed { index, _ ->
-                index != pinIndex
-            }.asReversed()
-            var cursor = 0
-            val planned = sorted.indices.map { index ->
-                if (index == pinIndex) {
-                    pinned
-                } else {
-                    othersReversed[cursor++]
-                }
-            }
+            val planned = PinnedQueueFlipPlanner.flipPinned(
+                items = sorted,
+                pinnedIndex = pinIndex
+            )
             val plannedMovement = planned.indices.count { index ->
                 planned[index] !== sorted[index]
             }
