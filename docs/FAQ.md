@@ -40,7 +40,7 @@ A successful pipeline produces multiple ranked local track IDs. GMMP then consum
 
 ## What does Rating fallback do?
 
-When hard Minimum/Smart rating filters are the reason no suitable track remains, GoneSmart can retry the same recommendation candidates without those two filters. Other rules, including Exclude 0.5-star tracks, still apply. A status message is shown when this fallback is used.
+The **Rating fallback** switch is available only when Minimum rating is above zero or Smart rating is enabled. If neither threshold is active, the switch is greyed out and reset to off. When hard Minimum/Smart rating filters are the reason no suitable track remains, GoneSmart can retry the same recommendation candidates without those two filters. Other rules, including Exclude 0.5-star tracks, still apply. A status message is shown when this fallback is used.
 
 ## What does the native GMMP fallback do?
 
@@ -66,7 +66,7 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 
 ## Does changing settings require a restart?
 
-No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
+**Home → Settings** explains the shared live behavior for both feature tabs. No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
 
 ## How do I add several tracks to several playlists?
 
