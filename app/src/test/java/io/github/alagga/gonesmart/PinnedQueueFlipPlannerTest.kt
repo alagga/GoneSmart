@@ -50,7 +50,7 @@ class PinnedQueueFlipPlannerTest {
     @Test fun acceptsEmptyAndSingleTrackQueues() {
         assertEquals(
             emptyList<String>(),
-            PinnedQueueFlipPlanner.flipPinned(emptyList(), -1)
+            PinnedQueueFlipPlanner.flipPinned(emptyList<String>(), -1)
         )
         assertEquals(
             listOf("A"),
