@@ -9,6 +9,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.ref.WeakReference
 import java.util.ArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -272,6 +273,17 @@ class GoneSmartModule : XposedModule() {
     private val queueFlipController =
         QueueFlipController()
 
+    // Track Mix is always available from single-song context menus,
+    // even while Smart DJ is disabled. Clicking it explicitly enables
+    // Smart DJ and uses GMMP's documented native Auto-DJ command.
+    private val trackMixController = TrackMixController(
+        enableSmartDj = { context -> enableSmartDjForTrackMix(context) },
+        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) }
+    )
+
+    @Volatile
+    private var trackMixAutoDj: WeakReference<Any>? = null
+
     private val recommendationPool =
         SessionRecommendationPool()
 
@@ -490,6 +502,52 @@ class GoneSmartModule : XposedModule() {
      * Fully implemented queue and reverse-playlist playback; companion
      * settings control these hooks independently of Smart DJ.
      */
+    private fun enableSmartDjForTrackMix(
+        context: android.content.Context
+    ): Boolean {
+        return runCatching {
+            if (!options.enabled) {
+                // Immediate activation in this GMMP process: don't wait
+                // for a cross-process preferences notification to let
+                // the very first auto-DJ refill select GoneSmart songs.
+                options = options.copy(enabled = true)
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_UI,
+                    "Smart DJ enabled by Track Mix."
+                )
+                val intent = android.content.Intent(
+                    GoneSmartRuntimeContract.ACTION_ENABLE_SMART_DJ_FOR_MIX
+                ).setClassName(
+                    "io.github.alagga.gonesmart",
+                    "io.github.alagga.gonesmart.GoneSmartEventReceiver"
+                )
+                context.applicationContext.sendBroadcast(intent)
+            }
+            trackMixAutoDj?.get()?.let { startStartupPrewarm(it) }
+            true
+        }.onFailure {
+            Log.e(TAG, "Track Mix could not enable Smart DJ", it)
+        }.getOrDefault(false)
+    }
+
+    private fun requestNativeTrackMixRefill(count: Int): Boolean {
+        if (count <= 0) return true
+        val manager = trackMixAutoDj?.get() ?: return false
+        return runCatching {
+            manager.javaClass.getDeclaredMethod(
+                "z", Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+                .invoke(manager, count)
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX REQUEST REFILL | requested=$count"
+            )
+            true
+        }.onFailure {
+            Log.e(TAG, "Track Mix native refill unavailable", it)
+        }.getOrDefault(false)
+    }
+
     private fun installQueueFlipHooks(param: PackageReadyParam) {
         val menuInflaterClasses = listOf(
             android.view.MenuInflater::class.java,
@@ -515,6 +573,15 @@ class GoneSmartModule : XposedModule() {
                         )
                     } catch (error: Throwable) {
                         Log.e(TAG, "Flip menu observation failed", error)
+                    }
+                    try {
+                        trackMixController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Track Mix menu insertion failed", error)
                     }
                     result
                 }
@@ -543,6 +610,9 @@ class GoneSmartModule : XposedModule() {
                         queueFlipController.captureNativeQueue(
                             chain.getThisObject()
                         )
+                        trackMixController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
                         result
                     }
             }
@@ -555,6 +625,9 @@ class GoneSmartModule : XposedModule() {
                 queueFlipController.captureNativeQueue(
                     chain.getThisObject()
                 )
+                trackMixController.captureNativeQueue(
+                    chain.getThisObject()
+                )
                 chain.proceed()
             }
             Log.i(
@@ -563,6 +636,56 @@ class GoneSmartModule : XposedModule() {
             )
         }.onFailure {
             Log.w(TAG, "Flip queue capture hooks unavailable", it)
+        }
+
+        // Native playback from ordinary track lists may replace the
+        // queue through ex3.w(List), while Play on an existing queue
+        // row may only seek to a new absolute position via ex3.b2().
+        // These are passive, short-circuit-free notifications for the
+        // ONE pending Track Mix request, never global queue mutations.
+        runCatching {
+            val queueClass = param.classLoader.loadClass("ex3")
+            val queueWrite = queueClass.declaredMethods.firstOrNull {
+                it.name == "w" &&
+                    it.parameterCount == 1 &&
+                    java.util.List::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    )
+            }
+            if (queueWrite != null) {
+                hook(queueWrite.apply { isAccessible = true })
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        trackMixController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
+                        trackMixController.onNativePlaybackQueueUpdated(
+                            "ex3.w"
+                        )
+                        result
+                    }
+            } else {
+                Log.w(TAG, "Track Mix ex3.w observer unavailable")
+            }
+            val positionSet = queueClass.getDeclaredMethod(
+                "b2", Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+            hook(positionSet).intercept { chain ->
+                val result = chain.proceed()
+                trackMixController.captureNativeQueue(
+                    chain.getThisObject()
+                )
+                trackMixController.onNativePlaybackQueueUpdated(
+                    "ex3.b2"
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX QUEUE OBSERVERS READY | queue-write and position"
+            )
+        }.onFailure {
+            Log.w(TAG, "Track Mix native queue observers unavailable", it)
         }
 
         // Playlist and Smart Playlist both use MusicService.w1(action=0)
@@ -588,7 +711,11 @@ class GoneSmartModule : XposedModule() {
                         originalList
                     )
                 if (reversed == null) {
-                    chain.proceed()
+                    val result = chain.proceed()
+                    trackMixController.onNativePlaybackMethodFinished(
+                        chain.getArg(0) as? Int
+                    )
+                    result
                 } else {
                     // The hook framework does not expose an argument
                     // setter. Re-enter the original native method with a
@@ -1041,7 +1168,10 @@ class GoneSmartModule : XposedModule() {
             chain
                 .getThisObject()
                 ?.let { autoDjInstance ->
-
+                    trackMixAutoDj = WeakReference(autoDjInstance)
+                    trackMixController.captureNativeAutoDj(
+                        autoDjInstance
+                    )
                     startStartupPrewarm(
                         autoDjInstance
                     )
@@ -1273,6 +1403,14 @@ class GoneSmartModule : XposedModule() {
 
             val autoDjInstance =
                 chain.getThisObject()
+
+            if (autoDjInstance != null) {
+                trackMixAutoDj = WeakReference(autoDjInstance)
+                trackMixController.captureNativeAutoDj(autoDjInstance)
+                trackMixController.onNativeAutoDjRefillRequested(
+                    requestedTracks
+                )
+            }
 
             Log.i(
                 TAG,
