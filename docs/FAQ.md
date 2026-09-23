@@ -66,7 +66,11 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 
 ## Does changing settings require a restart?
 
-Normally no. Settings are sent to the running GMMP process and recommendation-related changes invalidate the existing pool. Restart GMMP is mainly needed after module updates or when troubleshooting hook state.
+No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
+
+## Why is Rating fallback greyed out?
+
+Rating fallback only makes sense when **Minimum rating** is above 0 or **Smart rating** is enabled. Until at least one of those restrictions is active, the Smart DJ switch is disabled and its existing preference is remembered. It becomes available immediately when you activate either rating restriction. Turning both restrictions off disables the control again; Smart DJ already skips rating fallback when no rating restriction is active.
 
 ## How do I add several tracks to several playlists?
 
