@@ -135,11 +135,24 @@ internal class TrackMixController(
         )
         val nativePlay = menu.findItem(playId) ?: return
         val nativeNext = menu.findItem(nextId) ?: return
-        val label = if (context.resources.configuration.locales[0].language == "de") {
-            "Titel-Mix"
-        } else {
-            "Track Mix"
+        val language = context.resources.configuration.locales[0].language
+        fun nativeText(resource: String): String? {
+            val resourceId = context.resources.getIdentifier(
+                resource, "string", GMMP_PACKAGE
+            )
+            if (resourceId == 0) return null
+            return runCatching {
+                context.resources.getString(resourceId)
+            }.getOrNull()
         }
+        // GMMP 4.2.0 contains native translations for both "track" and
+        // "auto_dj". "Titel-Mix" stays familiar in German; other player
+        // languages use the player's own localized words.
+        val label = TrackMixPlan.localizedMenuLabel(
+            language = language,
+            nativeTrack = nativeText("track"),
+            nativeAutoDj = nativeText("auto_dj")
+        )
         val item = menu.add(
             Menu.NONE,
             MIX_ITEM_ID,
@@ -147,10 +160,14 @@ internal class TrackMixController(
             lilacSparkleTitle(context, label)
         )
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-        item.contentDescription = if (label == "Titel-Mix") {
+        item.contentDescription = if (language == "de") {
             "Diesen Titel abspielen und GoneSmart Auto-DJ starten"
-        } else {
+        } else if (language == "en") {
             "Play this song and start GoneSmart Auto-DJ"
+        } else {
+            // Accessibility labels must not default to an unrelated
+            // language when GMMP has already translated the menu noun.
+            label
         }
         item.setOnMenuItemClickListener {
             onMixClicked(context, name, menu, nativePlay)
