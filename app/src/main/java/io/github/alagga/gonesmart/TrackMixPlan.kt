@@ -16,10 +16,9 @@ internal object TrackMixPlan {
         additionalTracksNeeded(initialSize, actualQueueSize) == 0
 
     /**
-     * GMMP translates both "track" and "auto_dj" in its own language.
-     * Preserve the familiar short menu label for German and English.
-     * For other languages use BOTH native GMMP words rather than an
-     * unlocalized English "Mix" suffix.
+     * Both words must come from the installed GMMP language resources.
+     * "Mix" is a GoneSmart-only word without a native translation, so
+     * use the same two native GMMP nouns for EVERY player language.
      */
     fun localizedMenuLabel(
         language: String,
@@ -27,38 +26,73 @@ internal object TrackMixPlan {
         nativeAutoDj: String?
     ): String {
         val track = nativeTrack?.takeIf { it.isNotBlank() }
-        val dj = nativeAutoDj?.takeIf { it.isNotBlank() }
-        return when (language.lowercase(java.util.Locale.ROOT)) {
-            "de" -> "${track ?: "Titel"}-Mix"
-            "en" -> "${track ?: "Track"} Mix"
-            else -> if (track != null && dj != null) {
-                "$track · $dj"
-            } else {
-                // Even if only one native resource is present, do not
-                // unexpectedly switch an otherwise localized GMMP UI to
-                // an English-only invented feature name.
-                dj ?: track?.let { "$it · Auto-DJ" } ?: "Auto-DJ"
+            ?: when (language.lowercase(java.util.Locale.ROOT)) {
+                "de" -> "Titel"
+                "en" -> "Track"
+                else -> null
             }
-        }
+        val dj = nativeAutoDj?.takeIf { it.isNotBlank() } ?: "Auto-DJ"
+        return listOfNotNull(track, dj).joinToString(" ")
     }
 
-    /**
-     * Track Mix is a GoneSmart feature name, not a GMMP string, so there
-     * cannot be a native "Mix" translation in every player language.
-     * Use GMMP's own track/Auto-DJ nouns for the menu label; a native
-     * "started" resource if available, otherwise a language-neutral
-     * confirmation mark. German and English preserve the familiar name.
-     */
     fun localizedStartedMessage(
         language: String,
         menuLabel: String,
         gmmpStarted: String?
-    ): String = when (language.lowercase(java.util.Locale.ROOT)) {
-        "de" -> "$menuLabel gestartet"
-        "en" -> "$menuLabel started"
-        else -> gmmpStarted?.takeIf { it.isNotBlank() }
-            ?.let { "$menuLabel · $it" }
-            ?: "$menuLabel ✓"
+    ): String {
+        val native = gmmpStarted?.takeIf { it.isNotBlank() }
+        return when {
+            native != null -> "$menuLabel $native"
+            language.equals("de", ignoreCase = true) ->
+                "$menuLabel gestartet"
+            language.equals("en", ignoreCase = true) ->
+                "$menuLabel started"
+            else -> "$menuLabel ✓"
+        }
+    }
+
+    data class NativeQueueEntry(
+        val queueId: Long,
+        val trackId: Long,
+        val position: Int
+    )
+
+    data class NativeIsolationPlan(
+        val selectedEntryId: Long,
+        val originalPosition: Int,
+        val removeEntryIds: List<Long>
+    )
+
+    /**
+     * A selected queue ROW is identified by queue_id, not just track_id.
+     * This handles duplicate tracks and pre-existing playback history.
+     * Failure to identify the exact selected native row aborts the
+     * transaction rather than clearing an unrelated queue.
+     */
+    fun planNativeIsolation(
+        entries: List<NativeQueueEntry>,
+        currentPosition: Int,
+        selectedTrackId: Long
+    ): NativeIsolationPlan {
+        require(entries.isNotEmpty()) { "Native queue is empty" }
+        require(entries.map { it.queueId }.distinct().size == entries.size) {
+            "Native queue IDs are not unique"
+        }
+        require(entries.map { it.position }.distinct().size == entries.size) {
+            "Native queue positions are not unique"
+        }
+        val current = entries.singleOrNull { it.position == currentPosition }
+            ?: error("Native current queue entry unavailable")
+        require(current.trackId == selectedTrackId) {
+            "The current native song changed before isolation"
+        }
+        return NativeIsolationPlan(
+            selectedEntryId = current.queueId,
+            originalPosition = current.position,
+            removeEntryIds = entries.filter {
+                it.queueId != current.queueId
+            }.map { it.queueId }
+        )
     }
 
     /**
