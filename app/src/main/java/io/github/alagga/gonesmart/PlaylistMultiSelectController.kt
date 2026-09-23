@@ -86,6 +86,7 @@ internal class PlaylistMultiSelectController {
     }
 
     private var active: Session? = null
+    private val eventReporter = GoneSmartRuntimeReporter()
 
     @Volatile
     private var enabled = false
@@ -245,6 +246,15 @@ internal class PlaylistMultiSelectController {
             }
         }
         if (successful == 0) return
+
+        // One user-facing log event per completed native multi-add batch.
+        // Never log full playlist paths or selected song metadata.
+        eventReporter.reportEvent(
+            GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+            "Added ${batch.sourceCount} " +
+                "song${if (batch.sourceCount == 1) "" else "s"} to " +
+                "$successful playlist${if (successful == 1) "" else "s"}."
+        )
 
         // Reuse GMMP's actual localized toast and its own playlist nouns.
         // GMMP's add_to_playlist_toast contains only ONE placeholder for
