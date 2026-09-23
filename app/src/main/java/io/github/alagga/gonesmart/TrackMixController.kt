@@ -496,7 +496,10 @@ internal class TrackMixController(
             editable.removeAt(oldIndex)
             val anchorIndex = editable.indexOf(anchor)
             require(anchorIndex >= 0)
-            editable.add(anchorIndex + 1, item)
+            editable.add(
+                TrackMixPlan.insertionIndex(anchorIndex, editable.size),
+                item
+            )
             true
         }.getOrDefault(false)
     }
