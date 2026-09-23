@@ -96,27 +96,6 @@ internal object TrackMixPlan {
     }
 
     /**
-     * If GMMP has already generated new entries while a native Clear
-     * command is being processed, its queue may never be observed at
-     * exactly one track. Accept only a first-position seed and no
-     * remaining PRE-CLEAR song IDs; a different newly generated queue
-     * must not be mistaken for leftover history.
-     */
-    fun isSeedIsolated(
-        selectedId: Long,
-        oldTracks: List<Long>,
-        oldCurrentIndex: Int,
-        newTracks: List<Long>,
-        newCurrentIndex: Int
-    ): Boolean {
-        if (newCurrentIndex != 0 || newTracks.firstOrNull() != selectedId) return false
-        if (newTracks.size == 1) return true
-        if (oldCurrentIndex !in oldTracks.indices) return false
-        val stale = oldTracks.filterIndexed { i, _ -> i != oldCurrentIndex }.toSet()
-        return newTracks.drop(1).none { it in stale }
-    }
-
-    /**
      * A new native track menu must always put the action immediately
      * after "Play next" without reordering any other native items.
      */
