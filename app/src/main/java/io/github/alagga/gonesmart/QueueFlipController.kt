@@ -425,8 +425,9 @@ internal class QueueFlipController {
     }
 
     /**
-     * Custom bold ↑↓ pair with a stroke similar to GMMP's menu text
-     * weight, unlike the font-dependent (and overly thin) Unicode ⇵.
+     * Custom heavy ↑↓ pair instead of the hairline Unicode ⇵ glyph.
+     * The shafts and arrowheads use the same stroke and rounded joins
+     * for a clear, bold silhouette at native menu text size.
      * Font metrics remain unchanged, as they do for the sparkle.
      */
     private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
@@ -454,12 +455,15 @@ internal class QueueFlipController {
             val metrics = paint.fontMetricsInt
             val centerY = y + (metrics.ascent + metrics.descent) / 2f
             val halfHeight = 9f * density
-            val head = 4.2f * density
+            val head = 4.6f * density
             val leftX = x + 6.5f * density
             val rightX = x + 19.5f * density
             val arrowPaint = Paint(paint).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = max(2.3f * density, paint.textSize * 0.14f)
+                // Previous 2.3 dp strokes looked much thinner than the
+                // adjacent menu labels. Use a bold 3.8 dp shaft/arrowhead
+                // and scale with accessibility font size if needed.
+                strokeWidth = max(3.8f * density, paint.textSize * 0.22f)
                 strokeCap = Paint.Cap.ROUND
                 strokeJoin = Paint.Join.ROUND
             }
