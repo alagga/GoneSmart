@@ -32,6 +32,43 @@ class TrackMixPlanTest {
         }
     }
 
+    @Test fun usesActualGmmpGermanAndEnglishTrackNouns() {
+        assertEquals(
+            "Titel-Mix",
+            TrackMixPlan.localizedMenuLabel("de", "Titel", "Auto-DJ")
+        )
+        assertEquals(
+            "Track Mix",
+            TrackMixPlan.localizedMenuLabel("en", "Track", "Auto-DJ")
+        )
+    }
+
+    @Test fun usesFullyNativeNounsForOtherGmmpLanguages() {
+        assertEquals(
+            "Piste · Auto-DJ",
+            TrackMixPlan.localizedMenuLabel("fr", "Piste", "Auto-DJ")
+        )
+        assertEquals(
+            "トラック · オートDJ",
+            TrackMixPlan.localizedMenuLabel("ja", "トラック", "オートDJ")
+        )
+    }
+
+    @Test fun fallsBackSafelyIfGmmpStringIsUnavailable() {
+        assertEquals(
+            "Titel-Mix",
+            TrackMixPlan.localizedMenuLabel("de", null, null)
+        )
+        assertEquals(
+            "Track Mix",
+            TrackMixPlan.localizedMenuLabel("en", null, null)
+        )
+        assertEquals(
+            "Auto-DJ",
+            TrackMixPlan.localizedMenuLabel("fr", "", "Auto-DJ")
+        )
+    }
+
     @Test fun alwaysInsertsAsThirdMenuItemAfterPlayNext() {
         assertEquals(2, TrackMixPlan.insertionIndex(1, 10))
         assertEquals(2, TrackMixPlan.insertionIndex(1, 7))
