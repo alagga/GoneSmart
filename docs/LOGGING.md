@@ -13,6 +13,7 @@ without confusing UI activity with Smart DJ health.
 | `[UI]` | Multi-playlist selection enabled/disabled; Flip enabled/disabled | Actual setting changes |
 | `[Playlists]` | Native multi-add batch completed with confirmed success count, partial completion, no confirmed success or no accepted destinations | Native result callback / terminal dispatch |
 | `[Flip]` | Existing queue fully reversed and verified; Playlist/Smart Playlist fully reversed and verified; native failure or rollback result | After verified outcome, never on speculative invocation |
+| `[Track Mix]` | Selected song started, new Auto-DJ queue verified, initial fill incomplete or native action failed | Only after playback/queue verification or an explicit failure |
 
 **Status isolation:** `GoneSmartRuntimeReporter.report()` continues to
 update the Home tab's Smart DJ readiness and fallback state.
@@ -25,8 +26,8 @@ native callbacks/queue verification confirm the actual result. An initial
 Flip click, playlist dispatch and successful reverse are different stages.
 Don't add repeated menu inflation, individual track IDs, full playlist
 paths or internal reflective class names to the user-facing log.
-Use `GoneSmart`, `GoneSmartPlaylist` or `GoneSmartFlip` in Android
-Logcat for those details.
+Use `GoneSmart`, `GoneSmartPlaylist`, `GoneSmartFlip` or
+`GoneSmartTrackMix` in Android Logcat for those details.
 
 **Storage:** `GoneSmartEventStore` retains the most recent 400
 timestamped lines in the companion application's existing
