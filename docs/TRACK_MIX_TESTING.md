@@ -1,23 +1,61 @@
-# Track Mix / Titel-Mix — GMMP 4.2.0
+# Track Auto-DJ / Titel Auto-DJ — GMMP 4.2.0
 
-**Development status (24 September 2026):** The supplied phone log records six successfully verified five-track mixes and one intermittent queue-isolation failure. The failure occurred after using Track Mix from a Queue row: GMMP requested another Auto-DJ track during the native Play/Clear transition (00:18:17), and GoneSmart could not establish that the selected song was isolated before its timeout (00:18:23). The log does not independently prove exactly which GMMP callback blocked clearing.
+**Development status (24 September 2026):** The supplied phone log recorded six
+verified five-track starts and one intermittent queue-isolation failure from a
+queue-row Play action. Immediately after that Play action GMMP requested a
+refill of its existing Auto-DJ queue. The original implementation broadcast
+CLEAR_QUEUE and waited for the selected song to become the only queue entry.
+Because both that command and GMMP's in-flight refill are asynchronous, the
+verification could time out without proving which native callback won the race.
 
-The current feature branch addresses this with a **temporary hold on native GMMP Auto-DJ refills before the new seed has been isolated**, one bounded retry of native Clear Queue, clearer failure diagnostics, and queue verification before declaring success. Only one GoneSmart confirmation is now scheduled after verification. These latest changes have passed source-level tests and must still be confirmed on GMMP itself.
+**Root-level implementation change:** The new code does not resend CLEAR_QUEUE
+or retry it. After GMMP's native Play moves to the selected song, GoneSmart
+resolves the selected entry by its unique native queue_id (not merely song ID),
+checks that the native queue has not changed, then uses GMMP's native Room
+transaction (ex3.c with xx3.O and xx3.O0) to remove only the other entries
+and move that same current queue entry to position 1. GMMP's native next-position
+allocator and playback pointer are synchronized to 1. The write is verified
+BEFORE Auto-DJ is allowed to fill the new queue. An unexpected concurrent
+queue change aborts safely rather than deleting a different queue.
 
-## What the feature does
+The old pre-clear refill hook remains a safeguard against *new* old-session
+refills, but a refill already running when the user taps Play cannot be canceled
+retroactively. The direct native transaction eliminates repeated asynchronous
+clear attempts and the failure mode they caused. **This new path requires one
+combined GMMP on-device validation; source inspection and unit tests are not
+equivalent to live playback verification.** Save any queue you need before testing.
 
-The item appears immediately after Play next on individual-song context menus in the library, queue, playlist detail, search and file browser. It is independently switchable in **GoneSmart → UI → Track Mix**, enabled by default for existing users. When selected, it plays the selected song, keeps only that song as the initial queue entry, enables Smart DJ if needed and lets GMMP Auto-DJ fill the queue up to GMMP's Initial Size (including the selected song). It leaves the real playlist files alone.
+## User behavior
 
-The native GMMP CLEAR_QUEUE command retains the currently selected song. Native pre-clear automatic refills are deferred while Track Mix is starting, so a previous Auto-DJ session does not refill the old queue during clearing. Once isolation is confirmed, GoneSmart sends the native AUTO_DJ command and verifies the new queue. If GMMP refills instantly, GoneSmart can accept a first-position seed plus **newly generated** entries, but never mistake the old remaining queue for a cleared queue. An incomplete mix shows a warning rather than claiming success.
+The song action appears after **Play next** in single-song menus (library,
+queue, playlist details, search, file browser and shared tracks). It is
+independently switchable in **GoneSmart → UI**, and can enable Smart DJ
+when it was previously disabled. The chosen song plays as the first entry
+of a fresh queue and GMMP Auto-DJ fills the rest to **Initial Size**.
 
-## Pop-ups and languages
+The menu name is built from the installed GMMP translations of its
+`track` and `auto_dj` resources in **every** player language.
+For example, native German: **Titel Auto-DJ**; native English: **Track Auto-DJ**.
+A localized native `started` resource is used for the one visible success
+confirmation where available; otherwise GoneSmart uses a checkmark
+rather than inventing a translation. If a GMMP resource is absent, an
+available native term is used without inserting a made-up foreign word.
 
-The user should see **one short confirmation after successful verification**, not the intermediate GMMP Play, Clear and Auto-DJ notifications. During the short startup window, only native toasts/snackbars generated inside GMMP's process are suppressed; other activity outside the window behaves normally. GoneSmart's own confirmation and genuine error warnings remain visible. Each outcome is also recorded in **GoneSmart → Logs → Track Mix**.
+Only one user-visible success confirmation should appear. GMMP's own
+Play/Clear/Auto-DJ status Toasts and Snackbars are suppressed during the
+short bounded transition. A genuine error still shows one warning;
+diagnostics go to **GoneSmart → Logs** and Logcat `GoneSmartTrackMix`.
 
-GMMP translates its own track and Auto-DJ words, not GoneSmart's invented Mix name. German: **Titel-Mix**; English: **Track Mix**. Other languages use the native GMMP words separated by a dot; confirmations use a native “started” resource if available or a universal checkmark. We deliberately do not maintain a custom translation catalog for this new feature.
+## One combined regression check
 
-## One optional combined regression check
+After the next green feature-branch APK, restart GMMP once and test
+**two cases on a disposable queue**: (1) from a middle Queue row while
+Auto-DJ is already on and (2) from an ordinary Library track with Smart DJ
+initially off. The chosen track must continue playing at queue position 1;
+GMMP must fill to its own Initial Size; one confirmation must appear.
 
-After installing the latest green feature-branch APK, restart GMMP once. With a disposable queue, try Track Mix from (1) a Queue row while Auto-DJ is already active and (2) an ordinary Library track, ideally when Smart DJ is disabled so it must be enabled. For either one, the chosen song should continue at queue position 1 and the total queue should reach GMMP's Initial Size. Only **one** successful Track Mix notification should appear. The UI-tab switch should hide the entry when off and reveal it again when on without another GMMP restart.
-
-If something fails, one Logcat extract filtered by `GoneSmartTrackMix` suffices. Particularly relevant entries: `MIX AUTO-DJ HOLD` (old refill deferred), `MIX CLEAR RETRY` (overlap occurred), `MIX CLEAR DIAG` (still unable to isolate), `MIX VERIFIED` (queue contains requested tracks), `MIX POPUP` (intermediate notification suppressed) and `MIX FAILED`. Do not repeat earlier multi-screen tests unless a new regression appears.
+Useful new logs: `MIX ISOLATED` (unique row ID, number removed and native
+transaction verification), `MIX ISOLATE FAILED` (concurrent queue change or
+native write failure), `MIX VERIFIED` (new queue and selected song intact),
+`MIX POPUP` (intermediate status suppressed). No repeated manual trial cycles
+are necessary: if either case fails, send the filtered log once.
