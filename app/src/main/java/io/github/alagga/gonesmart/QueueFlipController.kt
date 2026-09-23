@@ -67,6 +67,14 @@ internal class QueueFlipController {
     private var pendingPlayback: PendingPlayback? = null
 
     @Volatile
+    private var nativePlaylistInterceptorReady = false
+
+    fun setNativePlaylistInterceptorReady(ready: Boolean) {
+        nativePlaylistInterceptorReady = ready
+        Log.i(TAG, "FLIP PLAY HOOK STATUS | ready=$ready")
+    }
+
+    @Volatile
     private var queueFlipInProgress = false
 
     @Volatile
@@ -238,6 +246,11 @@ internal class QueueFlipController {
         menu: Menu,
         nativePlayId: Int
     ) {
+        if (!nativePlaylistInterceptorReady) {
+            Log.e(TAG, "FLIP PLAY | native playlist interception unavailable")
+            toast(context, "Reverse playback is unavailable in this GMMP version.")
+            return
+        }
         val play = menu.findItem(nativePlayId)
         val callback = field(menu, "mCallback")
         val popup = callback?.let { field(it, "this$0") }
@@ -323,6 +336,62 @@ internal class QueueFlipController {
                 " | action=0 | nativeQueueWriter=MusicService.w1"
         )
         return reversed
+    }
+
+    /**
+     * Verify the newly inserted native queue AFTER GMMP's asynchronous
+     * w1 -> ex3.w transaction has had time to complete. This makes one
+     * combined on-device test enough to diagnose all three actions.
+     */
+    fun verifyNativePlaylistPlayback(expectedTracks: List<*>) {
+        val expectedIds = expectedTracks.filterNotNull().mapNotNull {
+            runCatching { (firstSongId(it) as Number).toLong() }.getOrNull()
+        }
+        if (expectedIds.size != expectedTracks.size) {
+            Log.w(TAG, "FLIP PLAY VERIFY | native track IDs unavailable")
+            return
+        }
+        diagnosticsExecutor.execute {
+            val queue = nativeQueue?.get()
+            if (queue == null) {
+                Log.w(TAG, "FLIP PLAY VERIFY | queue not captured")
+                return@execute
+            }
+            repeat(12) { attempt ->
+                Thread.sleep(250)
+                val actualIds = runCatching {
+                    val dao = field(queue, "r")!!
+                    val raw = dao.javaClass.getMethod("H1")
+                        .invoke(dao) as List<*>
+                    raw.filterNotNull().sortedBy {
+                        (field(it, "a") as Number).toInt()
+                    }.map { (field(it, "b") as Number).toLong() }
+                }.getOrNull()
+                if (actualIds != null &&
+                    actualIds.size >= expectedIds.size &&
+                    actualIds.take(expectedIds.size) == expectedIds) {
+                    val position = runCatching {
+                        queue.javaClass.getDeclaredMethod("D")
+                            .apply { isAccessible = true }
+                            .invoke(queue)
+                    }.getOrNull()
+                    Log.i(
+                        TAG,
+                        "FLIP PLAY VERIFIED | expected=${expectedIds.size} | " +
+                            "queueSize=${actualIds.size} | " +
+                            "first=${actualIds.firstOrNull()} | " +
+                            "last=${actualIds[expectedIds.size - 1]} | " +
+                            "currentPosition=$position | checks=${attempt + 1}"
+                    )
+                    return@execute
+                }
+            }
+            Log.e(
+                TAG,
+                "FLIP PLAY VERIFY | queue did not match reversed playlist " +
+                    "after 3 seconds"
+            )
+        }
     }
 
     private fun firstSongId(track: Any): Any? =
