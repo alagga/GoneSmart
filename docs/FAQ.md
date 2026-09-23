@@ -78,6 +78,16 @@ The selected rows and action bar follow GMMP's dynamic colors. GoneSmart reuses 
 
 Yes. Multi-playlist selection has its own switch and works when Smart DJ is turned off, provided the module is enabled for GMMP.
 
+## How does Track Mix work, and can I turn it off?
+
+**Track Mix** appears after **Play next** in an individual song's three-dot menu. It starts that song, keeps it as the first entry of a fresh queue, enables Smart DJ if necessary and lets GMMP Auto-DJ fill the queue to its configured Initial Size. Turn this feature on or off independently under **GoneSmart → UI → Track Mix**. It is enabled by default for existing users.
+
+After a successful, verified mix, GoneSmart displays just **one short confirmation**; GMMP's intermediate playback, queue-clear and Auto-DJ status pop-ups are suppressed only during the brief Track Mix startup window. A genuine error still produces a warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers that refill, retries queue clearing once if necessary, and verifies that the newly selected song is preserved.
+
+## Is “Track Mix” localized in every GMMP language?
+
+There is no native GMMP translation for GoneSmart's newly invented **Mix** feature name. In German its label is **Titel-Mix** and in English **Track Mix**. In other player languages, GoneSmart combines GMMP's existing translated **track** and **Auto-DJ** words instead of showing a misleading English-only command. The same native-language approach is used for the confirmation, with a universal checkmark when the native player has no suitable translated “started” string. This avoids maintaining a separate translation catalog for each language, but it is **not** a professionally translated “Mix” word in every locale.
+
 ## How are GoneSmart updates handled?
 
 The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.
