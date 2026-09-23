@@ -4,6 +4,11 @@ object GoneSmartRuntimeContract {
     const val ACTION_RUNTIME_EVENT =
         "io.github.alagga.gonesmart.action.RUNTIME_EVENT"
 
+    // Explicit companion-app command used only when the user presses
+    // Track Mix while Smart DJ is switched off.
+    const val ACTION_ENABLE_SMART_DJ_FOR_MIX =
+        "io.github.alagga.gonesmart.action.ENABLE_SMART_DJ_FOR_MIX"
+
     const val EXTRA_MODE = "mode"
     const val EXTRA_MESSAGE = "message"
     const val EXTRA_EVENT = "event"
