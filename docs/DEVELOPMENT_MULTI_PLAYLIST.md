@@ -1,76 +1,34 @@
-# Multi-playlist selection: diagnostic phase
+# Multi-playlist selection (GMMP 4.2.0)
 
-This is a development-only investigation for GMMP 4.2.0 on the
-`feature/multi-playlist-add` branch. The multi-select UI is **not implemented yet**.
+GoneSmart's optional **UI → Multi-playlist selection** feature is implemented and available in release builds. It is independent of Smart DJ; normal single-playlist taps remain native GMMP operations. The implementation uses GMMP's own playlist writer and never edits playlist files directly.
 
-## Intended behavior
+## User flow
 
-- Normal playlist tap: GMMP's existing single-playlist behavior.
-- First long press on a playlist: enter GoneSmart multi-selection.
-- Further taps: select/deselect target playlists.
-- While selecting: the existing `playlistFab` switches from `+` to a persistent
-  pink-sparkle `✓` confirmation button.
-- Back: cancel multi-selection without leaving the playlist picker.
-- Confirm: add all the already-selected GMMP source tracks to each chosen target
-  playlist, preferably via GMMP's own native add operation.
+1. Enable **Multi-playlist selection** in GoneSmart's **UI** tab; enable and scope the libxposed module to GMMP.
+2. In GMMP's **Add to Playlist** dialog, long-press a destination to enter multiple selection.
+3. Tap other playlists to select or deselect them. The action bar displays GMMP's own localized selection count; selected rows track GMMP's changing dynamic theme and stay correctly highlighted when scrolling.
+4. Tap the confirmation checkmark (with GoneSmart's lilac sparkle) to add all source files to every selected destination. One native-style summary Toast reports the file count and the number of successful destinations.
+5. Back or the selection action bar's back arrow cancels the selection without an extra screen navigation. Outside selection mode, GMMP's create-playlist plus button and normal one-playlist tap behave normally.
 
-No direct playlist-file writes are planned.
+## Verified native integration points
 
-## What we know from existing GMMP logs and the supplied APK
+Tested against GMMP **4.2.0**; these are obfuscated implementation details, not a stable API:
 
-- Opening Add to Playlist creates obfuscated fragments `do3` and `bo3`.
-- The list presenter `go3` queries playlist file name, URI and ID.
-- The native plus button has resource ID `gonemad.gmmp:id/playlistFab` and
-  opens a playlist-name input dialog (`md_input_message`).
-- The GMMP 4.2.0 APK exposes:
-  - `bo3.k2()`: returns a `FloatingActionButton`.
-  - `bo3.D1()`: returns a `RecyclerView`.
-  - `bo3.E2(Boolean)`: relevant candidate to observe FAB visibility handling.
-  - `go3.y2()`: relevant candidate to observe list refreshes.
+- `bo3.I3()` initializes the picker; `bo3.D1()` exposes its RecyclerView and `bo3.k2()` exposes its FAB.
+- `zn3` binds `jo3` row holders; each bound `xn3` model contains the playlist file path in its `q` field. Stable paths, never recycled views/adapter positions, identify selected destinations.
+- `io3(ho3, boolean)` captures the original GMMP source selection. `io3.r(Context, ie0)` performs each native playlist-add action using a `jo3` holder.
+- A batch tracks the native completion callbacks and ensures duplicate picker-close events cannot navigate back multiple screens. Per-destination native Toasts are replaced with one aggregate result for GoneSmart multi-add only.
+- The feature retrieves translations from GMMP's live resources (`num_selected`, `add_to_playlist_toast`, `playlist` and `playlists`) rather than keeping its own translation table.
+- GMMP's Aesthetic primary/accent and FAB color observables supply live selection and sparkle color changes when the active album or theme changes.
 
-The exact native handler for adding the selected source track(s) to one target
-playlist still needs to be verified. Do not assume an obfuscated method name's
-meaning solely from its signature.
+## Settings and lifecycle
 
-## Build and log
+`KEY_MULTI_PLAYLIST` has its own `GoneSmartSettingsKeys` entry and lives in the **UI** tab. It remains available with Smart DJ disabled. Existing Xposed/module settings are synchronized through remote preferences. After installing a new build or changing module scope, restart the GMMP process.
 
-The diagnostics run **only in DEBUG builds**. They observe GMMP's native
-FAB, playlist RecyclerView, listener classes (when Android permits read-only
-inspection), and selected native picker callback invocations. No clicks are
-intercepted, no selections are changed, and no playlist data is written.
+## Testing
 
-1. In Android Studio, make sure the checked-out branch is
-   `feature/multi-playlist-add`; use **Git > Pull**.
-2. Build/install the **debug** variant of GoneSmart and confirm the module is
-   enabled for GMMP in Vector/LSPosed. Force-stop and restart GMMP.
-3. If the currently installed GoneSmart is the GitHub-signed release APK, a
-   locally debug-signed APK **cannot update it in place**. Do not uninstall
-   until any GoneSmart settings you need are backed up. Use a compatible
-   locally signed build or a private test release signed with the same key.
-4. Filter Android Studio Logcat with `package:gonemad.gmmp`, or use:
-   `adb logcat -s GoneSmartPlaylist:I GoneSmart:I '*:S'`.
-5. Open Add to Playlist through your Now Playing gesture with one **test**
-   track. Let the list settle; scroll down/up to reveal the native FAB
-   visibility behavior. Tap `+` and back out of the name dialog.
-6. Select a **test** playlist and observe the normal add operation.
-7. Repeat the test starting from GMMP's multi-track selection.
+Use disposable playlists. Verify long-press, toggle, scroll down/up, back cancellation, normal single-playlist tap, plus/create mode, multi-file adds, a dynamic-theme track change during selection and successful return to the launching GMMP screen. The aggregate Toast must appear exactly once and count **source files** and **successful playlist destinations**.
 
-Look for:
+For debugging, filter Logcat to `GoneSmartPlaylist` and inspect `MULTI PICKER`, `MULTI SELECT`, `MULTI PALETTE`, `MULTI NAV`, `MULTI NATIVE ADD`, `MULTI TOAST` and `MULTI CONFIRM`. Paths in logs may reveal local filenames: redact them before publishing logs.
 
-- `DIAGNOSTICS READY`
-- `HOOK READY`
-- `FAB FOUND`, `FAB STATE` (including scroll-triggered changes)
-- `LIST FOUND`, `LIST STATE`, `FIRST ROW`
-- `PICKER CALL` and `PRESENTER CALL`
-
-When sharing logs, include the timestamps around the actual playlist tap and
-existing GMMP logs as well as the `GoneSmartPlaylist` lines. Redact unrelated
-app logs and sensitive file paths if needed.
-
-## Before implementing multi-selection
-
-Confirm the native add callback, identify the model representing target
-playlists, and check the lifetime of GMMP's already-selected source tracks.
-Once confirmed, implement multi-selection with a persistent FAB and Back
-cancellation while preserving the original plus/create flow outside
-multi-select mode.
+This implementation targets GMMP 4.2.0 and will need revalidation if GMMP changes its internal obfuscated classes or its localized string resources.
