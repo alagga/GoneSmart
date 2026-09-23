@@ -66,7 +66,7 @@ The matching pipeline is currently **especially tuned for electronic-music libra
 |---|---|
 | Minimum rating | Hard 0–5 star minimum in 0.5-star steps |
 | Smart rating | Uses the median rating of the current recommendation context as a dynamic minimum |
-| Rating fallback | If hard rating limits eliminate everything, optionally retry once without Minimum/Smart rating |
+| Rating fallback | Optional retry without Minimum/Smart rating when hard limits eliminate everything; the switch is disabled unless one of those limits is active |
 | Prefer higher-rated matches | Uses ratings as a small ranking bonus after hard filters |
 | Exclude 0.5-star tracks | Completely blocks half-star tracks, including during Rating fallback |
 | Match current music era | Gives a modest bonus to music from a similar release period |
@@ -218,7 +218,7 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 
 ## Companion UI and player indicator
 
-The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and the available UI tweaks, plus module and update status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection. **Help → Settings** explains that both kinds of settings apply live without restarting GMMP (a restart is still recommended after module updates).
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
 
 When GMMP is in Auto-DJ mode, GoneSmart adds a small sparkle to the headphones/playback-mode icon:
 
@@ -242,7 +242,7 @@ A small representative seed set keeps requests bounded and reacts better to rece
 GoneSmart performs one broader provider search. If that still produces no usable local candidate, configured rating/native fallbacks take over.
 
 **Why did GoneSmart ignore my rating limit once?**  
-If **Rating fallback** is enabled, GoneSmart may retry the same candidates without Minimum/Smart rating when those hard thresholds would otherwise leave nothing. `Exclude 0.5-star tracks` remains active.
+**Rating fallback** is available only while Minimum rating is above zero or Smart rating is enabled. If both are off, its switch is dimmed, disabled and reset to off. When enabled, it may retry the same candidates without those hard thresholds; `Exclude 0.5-star tracks` remains active.
 
 **Does changing a setting require restarting GMMP?**  
 Normally no. Recommendation-affecting settings invalidate the current pool and apply to the next refill. Restart GMMP is mainly for hook/module updates or troubleshooting.
