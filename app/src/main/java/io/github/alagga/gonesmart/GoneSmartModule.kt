@@ -105,9 +105,23 @@ class GoneSmartModule : XposedModule() {
 
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
+                if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "Multi-playlist selection " +
+                            if (options.multiPlaylistEnabled) "enabled." else "disabled."
+                    )
+                }
             }
             if (key == GoneSmartSettingsKeys.KEY_FLIP_QUEUE) {
                 queueFlipController.setEnabled(options.flipQueueEnabled)
+                if (previous.flipQueueEnabled != options.flipQueueEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "Flip queue / reverse playlist playback " +
+                            if (options.flipQueueEnabled) "enabled." else "disabled."
+                    )
+                }
             }
 
             if (
@@ -346,12 +360,12 @@ class GoneSmartModule : XposedModule() {
 
         Log.i(
             TAG,
-            "GoneMAD Music Player detected - Build 45"
+            "GoneMAD Music Player detected - v${BuildConfig.VERSION_NAME}"
         )
 
         runtimeReporter.report(
             mode = GoneSmartRuntimeContract.MODE_NONE,
-            message = "GoneSmart Build 45 loaded in GoneMAD Music Player.",
+            message = "GoneSmart v${BuildConfig.VERSION_NAME} loaded in GoneMAD Music Player.",
             appendEvent = true
         )
 
@@ -369,7 +383,7 @@ class GoneSmartModule : XposedModule() {
         log(
             Log.INFO,
             TAG,
-            "GoneMAD Music Player detected - Build 45"
+            "GoneMAD Music Player detected - v${BuildConfig.VERSION_NAME}"
         )
 
         try {
@@ -428,19 +442,21 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
-            // Flip Queue phase 1 only inspects the three verified native
-            // menus and the existing queue model. It never changes order
-            // or starts playback while we validate the menu callbacks.
-            // Install even while disabled so enabling it in GoneSmart's
-            // UI tab takes effect without restarting GMMP.
+            // Native queue and reverse-playlist playback hooks are
+            // independently controlled by the companion UI setting.
+            // Install even while disabled so it can be enabled live.
             try {
                 queueFlipController.setEnabled(options.flipQueueEnabled)
                 installQueueFlipHooks(param)
             } catch (flipHookError: Throwable) {
                 Log.w(
                     TAG,
-                    "Queue Flip preview hooks unavailable; native menus unaffected",
+                    "Queue Flip hooks unavailable; native menus unaffected",
                     flipHookError
+                )
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Flip unavailable: GMMP hooks could not be installed."
                 )
             }
 
@@ -465,8 +481,8 @@ class GoneSmartModule : XposedModule() {
      * - menu_gm_context_playlist_list: playlist three-dot popup.
      * - menu_gm_context_smart: Smart Playlist three-dot popup.
      *
-     * This phase captures exact native menu/queue data without changing
-     * playback. The controller is independently controlled by UI settings.
+     * Fully implemented queue and reverse-playlist playback; companion
+     * settings control these hooks independently of Smart DJ.
      */
     private fun installQueueFlipHooks(param: PackageReadyParam) {
         val menuInflaterClasses = listOf(
@@ -604,16 +620,17 @@ class GoneSmartModule : XposedModule() {
                         "GoneSmartFlip",
                         "FLIP SERVICE | native action=0 | " +
                             "originalCount=${originalList?.size} | " +
-                            "reversedCount=${reversed.size}"
+                            "reversedCount=${reversed.tracks.size}"
                     )
                     val result = playListMethod.invoke(
                         chain.getThisObject(),
                         chain.getArg(0),
                         chain.getArg(1),
-                        reversed
+                        reversed.tracks
                     )
                     queueFlipController.verifyNativePlaylistPlayback(
-                        reversed
+                        reversed.tracks,
+                        reversed.sourceKind
                     )
                     result
                 }
