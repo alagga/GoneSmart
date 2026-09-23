@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 data class GoneSmartOptions(
     val enabled: Boolean = true,
     val multiPlaylistEnabled: Boolean = false,
+    val flipQueueEnabled: Boolean = false,
     val preferHigherRatedMatches: Boolean = true,
     val minimumRatingStars: Double = 0.0,
     val smartRatingEnabled: Boolean = false,
@@ -32,6 +33,10 @@ data class GoneSmartOptions(
                 ),
                 multiPlaylistEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
+                    false
+                ),
+                flipQueueEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
                     false
                 ),
                 preferHigherRatedMatches = preferences.getBoolean(
