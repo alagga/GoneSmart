@@ -554,6 +554,35 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
+        // GMMP displays a native Toast for each playlist completion.
+        // Hide only those Toast.show() calls made INSIDE the jd(mode=4)
+        // callbacks tagged during GoneSmart multi-add. The controller
+        // posts one aggregated Toast using GMMP's own app context once
+        // all successful native completions have been observed.
+        // The normal GMMP one-playlist operation is never affected.
+        runCatching {
+            val nativeToastShow = android.widget.Toast::class.java
+                .getDeclaredMethod("show")
+                .apply { isAccessible = true }
+            hook(nativeToastShow).intercept { chain ->
+                if (playlistController.shouldSuppressNativeResultToast()) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI TOAST READY | native results scoped to one summary"
+            )
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "Playlist native result Toast hook unavailable",
+                error
+            )
+        }
+
         val clickClass = param.classLoader.loadClass("xj5\$a")
         val clickMethod = clickClass.getDeclaredMethod(
             "onClick",
