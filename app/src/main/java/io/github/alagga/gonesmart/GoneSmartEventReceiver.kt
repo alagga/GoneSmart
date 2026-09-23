@@ -23,7 +23,14 @@ class GoneSmartEventReceiver : BroadcastReceiver() {
             context = context,
             mode = mode,
             message = message,
-            appendEvent = appendEvent
+            appendEvent = appendEvent,
+            eventOnly = intent.getBooleanExtra(
+                GoneSmartRuntimeContract.EXTRA_EVENT_ONLY,
+                false
+            ),
+            category = intent.getStringExtra(
+                GoneSmartRuntimeContract.EXTRA_CATEGORY
+            )
         )
     }
 }
