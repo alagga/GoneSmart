@@ -13,6 +13,7 @@ import android.view.MenuItem
 import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -116,12 +117,9 @@ internal class QueueFlipController {
             null
         }
 
-        // There is no localized "reverse/flip queue" string in GMMP
-        // 4.2.0. Combine its own translated Play/Queue noun with the
-        // universal inversion arrow and GoneSmart's exact TWO-star
-        // Auto-DJ badge renderer (big lilac star and small light star).
-        // A real ImageSpan is needed here: a plain Unicode star inherits
-        // the menu text color and rendered white in the first phone test.
+        // GMMP supplies its own localized Play/Queue label. Two custom
+        // bold counter-directional arrows replace the very thin ⇵ glyph.
+        // The usual full-size GoneSmart two-star lilac badge follows.
         val baseLabel = when (kind) {
             Kind.QUEUE -> nativeString(context, "queue") ?: "Queue"
             Kind.PLAYLIST, Kind.SMART ->
@@ -129,7 +127,7 @@ internal class QueueFlipController {
                     ?: nativeString(context, "play")
                     ?: "Play"
         }
-        val title = brandedMenuTitle(context, "$baseLabel ⇵")
+        val title = brandedMenuTitle(context, baseLabel)
 
         val item = menu.add(
             Menu.NONE,
@@ -190,8 +188,16 @@ internal class QueueFlipController {
                 "nativePlay=${if (nativePlayId != 0)
                     menu.findItem(nativePlayId)?.title else null}"
         )
-        diagnosticsExecutor.execute {
-            logNativeQueueSnapshot()
+        if (kind == Kind.QUEUE) {
+            diagnosticsExecutor.execute {
+                logNativeQueueSnapshot()
+            }
+        } else {
+            // Playlist and Smart Playlist start a NEW playback sequence.
+            // Do not mistakenly reverse/log the old, unrelated queue.
+            // First identify the native menu's selected target and Play
+            // dispatcher so we can attach a safe after-load observer.
+            logNativePlaylistTarget(kind, menu, nativePlayId)
         }
 
         // Phase 1 intentionally does not invoke a native Play item.
@@ -199,9 +205,62 @@ internal class QueueFlipController {
         // could reverse the previous queue instead of the new playlist.
         Toast.makeText(
             context,
-            "GoneSmart Flip preview: diagnostics logged; queue unchanged.",
+            "GoneSmart Flip preview: diagnostics logged; no playback changed.",
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    /**
+     * Non-destructive discovery of the PLAYLIST / SMART source.
+     * Menus are built from different Android implementations in GMMP:
+     * platform MenuBuilder for playlist lists and AppCompat for Queue.
+     * The native Play item may use an item-click listener, a MenuBuilder
+     * callback or activity/fragment dispatch. Log class and captured
+     * field TYPES only; never call Play or touch the old queue here.
+     */
+    private fun logNativePlaylistTarget(
+        kind: Kind,
+        menu: Menu,
+        nativePlayId: Int
+    ) {
+        val play = if (nativePlayId != 0) menu.findItem(nativePlayId) else null
+        val clickListener = play?.let { field(it, "mClickListener") }
+        val menuCallback = field(menu, "mCallback")
+        val menuInfo = play?.menuInfo
+
+        fun capturedTypes(target: Any?): String {
+            if (target == null) return "none"
+            return target.javaClass.declaredFields
+                .asSequence()
+                .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .take(8)
+                .joinToString(",") { item ->
+                    item.name + ":" + item.type.simpleName
+                }
+                .ifEmpty { "no instance fields" }
+        }
+
+        Log.i(
+            TAG,
+            "FLIP TARGET | kind=$kind | phase=SOURCE_DISCOVERY | " +
+                "playItem=${play?.javaClass?.name ?: "none"} | " +
+                "clickListener=${clickListener?.javaClass?.name ?: "none"} | " +
+                "menuCallback=${menuCallback?.javaClass?.name ?: "none"} | " +
+                "menuInfo=${menuInfo?.javaClass?.name ?: "none"}"
+        )
+        Log.i(
+            TAG,
+            "FLIP TARGET TYPES | kind=$kind | " +
+                "clickCaptured=${capturedTypes(clickListener)} | " +
+                "callbackCaptured=${capturedTypes(menuCallback)} | " +
+                "menuInfoCaptured=${capturedTypes(menuInfo)}"
+        )
+        Log.i(
+            TAG,
+            "FLIP PLAY PLAN | kind=$kind | " +
+                "reverse=ALL | startAt=ORIGINAL_LAST | " +
+                "status=AWAITING_NATIVE_PLAYLIST_LOAD | writes=0"
+        )
     }
 
     /**
@@ -230,6 +289,30 @@ internal class QueueFlipController {
                 Log.w(TAG, "FLIP QUEUE | native DAO snapshot unavailable")
                 return@runCatching
             }
+
+            // Only examine candidate native mutation signatures here.
+            // Actual native writes stay disabled until we confirm their
+            // event ordering and playback-state behavior on a small queue.
+            val queueWriters = queue.javaClass.declaredMethods
+                .filter { it.name == "K" || it.name == "b2" }
+                .joinToString("; ") { method ->
+                    "${method.name}(" +
+                        method.parameterTypes.joinToString(",") { it.simpleName } +
+                        "):${method.returnType.simpleName}"
+                }.ifEmpty { "none" }
+            val daoWriters = dao.javaClass.methods
+                .filter { it.name == "O0" }
+                .joinToString("; ") { method ->
+                    "${method.name}(" +
+                        method.parameterTypes.joinToString(",") { it.simpleName } +
+                        "):${method.returnType.simpleName}"
+                }.ifEmpty { "none" }
+            Log.i(
+                TAG,
+                "FLIP NATIVE API | queue=${queue.javaClass.name} | " +
+                    "queueCandidates=$queueWriters | " +
+                    "dao=${dao.javaClass.name} | daoCandidates=$daoWriters"
+            )
 
             val sorted = raw.filterNotNull().sortedBy {
                 (field(it, "a") as? Number)?.toInt()
@@ -316,42 +399,38 @@ internal class QueueFlipController {
     }
 
     private fun brandedMenuTitle(context: Context, label: String): CharSequence {
-        // A 28 dp ImageSpan enlarged the platform popup row because it
-        // increased the line's font metrics. This ReplacementSpan restores
-        // the full-size artwork, centers it on the text baseline, and
-        // reserves only horizontal space; menu row height stays native.
+        // Text first, then two bold custom arrows, then our unchanged
+        // 28 dp lilac two-star sparkle. Both glyphs are ReplacementSpans:
+        // they paint within native popup padding, never enlarging rows.
         val badge = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
             0xFFA39AFF.toInt(),
             scale = 1.85f
         )
-        val text = SpannableString("$label  \uFFFC")
-        val index = text.length - 1
+        val text = SpannableString("$label  \uFFFC  \uFFFC")
+        val arrowsIndex = text.indexOf('\uFFFC')
+        val badgeIndex = text.lastIndexOf('\uFFFC')
+        text.setSpan(
+            BoldReverseArrowsSpan(context),
+            arrowsIndex,
+            arrowsIndex + 1,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
         text.setSpan(
             BaselineCenteredSparkleSpan(context, badge),
-            index,
-            index + 1,
+            badgeIndex,
+            badgeIndex + 1,
             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
         return text
     }
 
     /**
-     * Unlike ImageSpan, ReplacementSpan never expands the line's font
-     * metrics. The original 28 dp lilac two-star artwork is drawn around
-     * the line's vertical center inside the menu row's existing padding.
+     * Custom bold ↑↓ pair with a stroke similar to GMMP's menu text
+     * weight, unlike the font-dependent (and overly thin) Unicode ⇵.
+     * Font metrics remain unchanged, as they do for the sparkle.
      */
-    private class BaselineCenteredSparkleSpan(
-        context: Context,
-        private val badge: PlayerAutoDjBadgeController.SparkleBadgeDrawable
-    ) : ReplacementSpan() {
+    private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
         private val density = context.resources.displayMetrics.density
-
-        private fun badgeSize(): Int {
-            // Restore the original 28 dp artwork. A ReplacementSpan does
-            // not alter font metrics, so this extra height can occupy the
-            // menu row's existing vertical padding without enlarging it.
-            return (28f * density).roundToInt().coerceAtLeast(1)
-        }
 
         override fun getSize(
             paint: Paint,
@@ -359,10 +438,76 @@ internal class QueueFlipController {
             start: Int,
             end: Int,
             fm: Paint.FontMetricsInt?
-        ): Int {
-            // Deliberately do not modify fm.
-            return badgeSize() + (3f * density).roundToInt()
+        ): Int = (26f * density).roundToInt()
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint
+        ) {
+            val metrics = paint.fontMetricsInt
+            val centerY = y + (metrics.ascent + metrics.descent) / 2f
+            val halfHeight = 9f * density
+            val head = 4.2f * density
+            val leftX = x + 6.5f * density
+            val rightX = x + 19.5f * density
+            val arrowPaint = Paint(paint).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = max(2.3f * density, paint.textSize * 0.14f)
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+
+            // Left arrow points up.
+            val arrowTop = centerY - halfHeight
+            val arrowBottom = centerY + halfHeight
+            canvas.drawLine(leftX, arrowBottom, leftX, arrowTop, arrowPaint)
+            canvas.drawLine(
+                leftX - head, arrowTop + head, leftX, arrowTop, arrowPaint
+            )
+            canvas.drawLine(
+                leftX, arrowTop, leftX + head, arrowTop + head, arrowPaint
+            )
+
+            // Right arrow points down.
+            canvas.drawLine(rightX, arrowTop, rightX, arrowBottom, arrowPaint)
+            canvas.drawLine(
+                rightX - head, arrowBottom - head,
+                rightX, arrowBottom, arrowPaint
+            )
+            canvas.drawLine(
+                rightX, arrowBottom,
+                rightX + head, arrowBottom - head, arrowPaint
+            )
         }
+    }
+
+    /**
+     * Full-size 28 dp GoneSmart two-star badge, centered in the native
+     * menu row without altering TextView font metrics.
+     */
+    private class BaselineCenteredSparkleSpan(
+        context: Context,
+        private val badge: PlayerAutoDjBadgeController.SparkleBadgeDrawable
+    ) : ReplacementSpan() {
+        private val density = context.resources.displayMetrics.density
+
+        private fun badgeSize(): Int =
+            (28f * density).roundToInt().coerceAtLeast(1)
+
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?
+        ): Int = badgeSize() + (3f * density).roundToInt()
 
         override fun draw(
             canvas: Canvas,
