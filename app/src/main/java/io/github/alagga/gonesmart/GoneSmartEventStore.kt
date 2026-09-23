@@ -11,7 +11,7 @@ object GoneSmartEventStore {
     private const val KEY_MODE = "mode"
     private const val KEY_MESSAGE = "message"
     private const val KEY_TIMESTAMP = "timestamp"
-    private const val MAX_LINES = 200
+    private const val MAX_LINES = 400
 
     data class RuntimeSnapshot(
         val mode: String,
@@ -24,21 +24,34 @@ object GoneSmartEventStore {
         context: Context,
         mode: String,
         message: String,
-        appendEvent: Boolean
+        appendEvent: Boolean,
+        eventOnly: Boolean = false,
+        category: String? = null
     ) {
         val prefs = context.applicationContext.getSharedPreferences(
             PREFS,
             Context.MODE_PRIVATE
         )
 
+        // UI actions and ordinary playlist operations must never replace
+        // the Home tab's Auto-DJ readiness/fallback status.
         val editor = prefs.edit()
-            .putString(KEY_MODE, mode)
-            .putString(KEY_MESSAGE, message)
-            .putLong(KEY_TIMESTAMP, System.currentTimeMillis())
+        if (!eventOnly) {
+            editor.putString(KEY_MODE, mode)
+                .putString(KEY_MESSAGE, message)
+                .putLong(KEY_TIMESTAMP, System.currentTimeMillis())
+        }
 
         if (appendEvent) {
             val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-            val line = "${formatter.format(Date())}  $message"
+            val section = category ?: when (mode) {
+                GoneSmartRuntimeContract.MODE_SMART,
+                GoneSmartRuntimeContract.MODE_FALLBACK,
+                GoneSmartRuntimeContract.MODE_STOPPED ->
+                    GoneSmartRuntimeContract.CATEGORY_SMART_DJ
+                else -> GoneSmartRuntimeContract.CATEGORY_SYSTEM
+            }
+            val line = "${formatter.format(Date())}  [$section] $message"
             val existing = prefs.getString(KEY_LOG, "")
                 .orEmpty()
                 .lineSequence()
@@ -72,6 +85,30 @@ object GoneSmartEventStore {
             PREFS,
             Context.MODE_PRIVATE
         ).getString(KEY_LOG, "").orEmpty()
+    }
+
+    data class EventSummary(
+        val total: Int,
+        val smartDj: Int,
+        val playlists: Int,
+        val flip: Int,
+        val other: Int
+    )
+
+    fun summary(context: Context): EventSummary {
+        val lines = logText(context).lineSequence()
+            .filter { it.isNotBlank() }
+            .toList()
+        val smart = lines.count { it.contains("[Smart DJ]") }
+        val playlists = lines.count { it.contains("[Playlists]") }
+        val flip = lines.count { it.contains("[Flip]") }
+        return EventSummary(
+            total = lines.size,
+            smartDj = smart,
+            playlists = playlists,
+            flip = flip,
+            other = lines.size - smart - playlists - flip
+        )
     }
 
     fun clear(context: Context) {
