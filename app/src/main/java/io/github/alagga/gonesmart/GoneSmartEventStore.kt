@@ -87,29 +87,8 @@ object GoneSmartEventStore {
         ).getString(KEY_LOG, "").orEmpty()
     }
 
-    data class EventSummary(
-        val total: Int,
-        val smartDj: Int,
-        val playlists: Int,
-        val flip: Int,
-        val other: Int
-    )
-
-    fun summary(context: Context): EventSummary {
-        val lines = logText(context).lineSequence()
-            .filter { it.isNotBlank() }
-            .toList()
-        val smart = lines.count { it.contains("[Smart DJ]") }
-        val playlists = lines.count { it.contains("[Playlists]") }
-        val flip = lines.count { it.contains("[Flip]") }
-        return EventSummary(
-            total = lines.size,
-            smartDj = smart,
-            playlists = playlists,
-            flip = flip,
-            other = lines.size - smart - playlists - flip
-        )
-    }
+    fun summary(context: Context): GoneSmartLogSummary.Summary =
+        GoneSmartLogSummary.fromText(logText(context))
 
     fun clear(context: Context) {
         context.applicationContext.getSharedPreferences(
