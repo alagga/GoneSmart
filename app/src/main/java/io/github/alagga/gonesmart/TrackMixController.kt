@@ -26,11 +26,11 @@ import kotlin.math.roundToInt
 /**
  * Adds a GMMP-localized "track + Auto-DJ" action to single-song menus.
  * Calls the exact native Play action for the clicked row, keeps only its
- * currently playing track through GMMP's own CLEAR_QUEUE command, enables
- * GMMP's documented AUTO_DJ command, and verifies the Initial Size.
+ * currently playing native queue entry through GMMP's own atomic DAO
+ * transaction, enables Auto-DJ and verifies GMMP's Initial Size.
  *
  * The track menu is installed independently of the Smart DJ switch so
- * choosing Track Mix can turn Smart DJ on even when it was disabled.
+ * choosing this action can turn Smart DJ on if previously disabled.
  */
 internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
@@ -39,7 +39,6 @@ internal class TrackMixController(
     companion object {
         private const val TAG = "GoneSmartTrackMix"
         private const val GMMP_PACKAGE = "gonemad.gmmp"
-        private const val COMMAND_CLEAR_QUEUE = "gonemad.gmmp.command.CLEAR_QUEUE"
         private const val COMMAND_AUTO_DJ = "gonemad.gmmp.command.AUTO_DJ"
         private const val MIX_ITEM_ID = 0x47534D01
         // These GMMP 4.2.0 menu XMLs all have native Play and Play next.
@@ -325,9 +324,9 @@ internal class TrackMixController(
 
     private fun runTrackMix(request: Pending) {
         try {
-            // Native Play may replace a whole album/playlist asynchronously
-            // or jump to another position in the existing queue. In both
-            // cases, GMMP's own CLEAR_QUEUE retains the newly playing song.
+            // Native Play may replace the queue or seek within the existing
+            // queue. Identify its selected entry before the atomic native
+            // DAO transition; never clear another currently playing queue.
             val loaded = waitForSelectedSong(request) ?: run {
                 fail("The selected song did not start.", request.context)
                 return
@@ -355,7 +354,7 @@ internal class TrackMixController(
                 val finalSnapshot = queueSnapshot()
                 Log.w(
                     TAG,
-                    "MIX CLEAR DIAG | selected=$selectedId | " +
+                    "MIX ISOLATE DIAG | selected=$selectedId | " +
                         "initialSize=${loaded.ids.size} | " +
                         "current=${finalSnapshot?.currentId} | " +
                         "finalSize=${finalSnapshot?.ids?.size} | " +
@@ -436,7 +435,7 @@ internal class TrackMixController(
             }
         } catch (failure: Throwable) {
             Log.e(TAG, "Track Mix failed", failure)
-            fail("Track Mix could not be completed.", request.context)
+            fail("Could not complete ${request.menuLabel}.", request.context)
         } finally {
             request.stage = "DONE"
             if (pending === request) pending = null
