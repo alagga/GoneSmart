@@ -2,6 +2,12 @@
 
 Smart Auto-DJ remains the core feature; this update adds a separately controlled GMMP interface extension and companion-app update awareness.
 
+## In development: Flip Queue (preview only)
+
+- Added an **off-by-default** UI switch and menu-placement diagnostics for the Queue overflow, Playlist and Smart Playlist context menus.
+- The preview entries use GMMP's own localized Play/Queue titles and a direction symbol + GoneSmart sparkle. GMMP 4.2.0 contains no localized reverse-queue label.
+- **This preview does not change playback or reorder tracks.** Full native queue inversion is not yet included in v0.4.0 release notes; it requires staged device testing.
+
 ## New: UI extensions
 
 - **Multi-playlist selection**, independently enabled under the new **UI** tab. Long-press a playlist in GMMP's Add to Playlist dialog, select multiple destinations and confirm once.
