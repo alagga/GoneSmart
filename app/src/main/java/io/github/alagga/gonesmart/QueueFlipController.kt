@@ -472,17 +472,22 @@ internal class QueueFlipController {
     }
 
     /**
-     * Reuse the original thin typographic ⇵ symbol rather than drawing
-     * oversized geometric shafts/arrowheads. Give it only a tiny stroke
-     * boost based on the ACTUAL "l" glyph in the TextView's own Paint.
+     * Keep the original typographic ⇵ with its subtly strengthened
+     * font-matched stroke. Separate its two arrow halves by a small
+     * text-proportional tracking gap instead of changing their shapes.
      *
-     * The drawn character is centered optically inside the existing
-     * menu row. ReplacementSpan does not change font metrics, and the
-     * adjacent full-size GoneSmart sparkle is left unchanged.
+     * Clipping and translating only the right half preserves the exact
+     * arrowheads, glyph height and weight the user approved. The span
+     * does not change line metrics or the neighboring sparkle.
      */
     private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
         private val density = context.resources.displayMetrics.density
         private val glyph = "⇵"
+
+        // Roughly the tracking between ordinary adjacent glyphs at the
+        // same text size; deliberately subtler than inserting a space.
+        private fun gap(paint: Paint): Float =
+            (paint.textSize * 0.16f).coerceIn(2f * density, 3.4f * density)
 
         private fun arrowPaint(textPaint: Paint): Paint {
             // Measure the glyph outline instead of guessing an Android
@@ -517,7 +522,7 @@ internal class QueueFlipController {
         ): Int {
             // Do not modify fm: the menu row stays exactly as high as
             // its native neighbors despite the arrow and sparkle.
-            return (paint.measureText(glyph) + 2f * density)
+            return (paint.measureText(glyph) + gap(paint) + 2f * density)
                 .roundToInt()
                 .coerceAtLeast(1)
         }
@@ -542,12 +547,43 @@ internal class QueueFlipController {
             val glyphBaseline =
                 lineCenter - (glyphBounds.top + glyphBounds.bottom) / 2f
 
+            // Unicode ⇵ is a single glyph, so normal letterSpacing
+            // cannot affect its two arrows. Draw its left/right halves
+            // independently, shifting only the right half horizontally.
+            // Both draws use the same native font and stroke measurement.
+            val drawX = x + density
+            val splitX =
+                drawX + (glyphBounds.left + glyphBounds.right) / 2f
+            val extra = gap(paint)
+            val arrowInk = arrowPaint(paint)
+            val clipTop = top.toFloat() - 8f * density
+            val clipBottom = bottom.toFloat() + 8f * density
+            val sidePadding = 3f * density
+
+            val leftSave = canvas.save()
+            canvas.clipRect(
+                drawX + glyphBounds.left - sidePadding,
+                clipTop,
+                splitX,
+                clipBottom
+            )
+            canvas.drawText(glyph, drawX, glyphBaseline, arrowInk)
+            canvas.restoreToCount(leftSave)
+
+            val rightSave = canvas.save()
+            canvas.clipRect(
+                splitX + extra,
+                clipTop,
+                drawX + glyphBounds.right + extra + sidePadding,
+                clipBottom
+            )
             canvas.drawText(
                 glyph,
-                x + density,
+                drawX + extra,
                 glyphBaseline,
-                arrowPaint(paint)
+                arrowInk
             )
+            canvas.restoreToCount(rightSave)
         }
     }
 
