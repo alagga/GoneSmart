@@ -87,7 +87,7 @@ object GoneSmartEventStore {
         ).getString(KEY_LOG, "").orEmpty()
     }
 
-    fun summary(context: Context): GoneSmartLogSummary.Summary =
+    internal fun summary(context: Context): GoneSmartLogSummary.Summary =
         GoneSmartLogSummary.fromText(logText(context))
 
     fun clear(context: Context) {
