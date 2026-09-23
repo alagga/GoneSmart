@@ -81,6 +81,7 @@ class MainActivity : AppCompatActivity() {
     private var minimumRatingValueText: TextView? = null
 
     private val switches = linkedMapOf<String, SwitchMaterial>()
+    private val settingRows = linkedMapOf<String, View>()
     private val tabButtons = linkedMapOf<Tab, LinearLayout>()
     private val tabIconBackgrounds = linkedMapOf<Tab, FrameLayout>()
     private val tabLabels = linkedMapOf<Tab, TextView>()
@@ -389,6 +390,13 @@ class MainActivity : AppCompatActivity() {
         container.addView(infoCard(
             title = "UI tweaks",
             body = "Optional enhancements to GMMP's interface, independent of Smart DJ. For example, select several playlists at once in Add to Playlist. Enable and configure available tweaks in the UI tab."
+        ))
+
+        container.addView(verticalGap(24))
+        container.addView(sectionTitle("SETTINGS"))
+        container.addView(infoCard(
+            title = "Settings apply live",
+            body = "Smart DJ and UI settings both apply directly to a running GMMP session. Recommendation changes refresh the smart pool on the next refill; UI changes take effect without a restart. Restart GMMP after module updates or when troubleshooting."
         ))
 
         return scrollPage(container)
@@ -798,6 +806,7 @@ class MainActivity : AppCompatActivity() {
                             GoneSmartSettingsKeys.KEY_MINIMUM_RATING,
                             sliderValue
                         )
+                        refreshRatingFallbackAvailability()
                     }
                 }
             }
@@ -892,10 +901,11 @@ class MainActivity : AppCompatActivity() {
                 intArrayOf(COLOR_ACCENT, 0xFFC8C5CE.toInt())
             )
             setOnCheckedChangeListener { _, checked ->
-                settingsRepository.setBoolean(spec.key, checked)
+                onSettingChanged(spec.key, checked)
             }
         }
         switches[spec.key] = switch
+        settingRows[spec.key] = row
         row.addView(switch)
         return row
     }
@@ -933,6 +943,52 @@ class MainActivity : AppCompatActivity() {
             options.fallbackToNativeAutoDjWhenNoSuitableTracks
         )
         setSwitch(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, options.showStatusMessages)
+        refreshRatingFallbackAvailability(options)
+    }
+
+    /**
+     * Rating fallback is meaningful only if Minimum rating or Smart rating
+     * can actually exclude tracks. Disable and uncheck it otherwise. A
+     * genuine user change is written immediately to the running target.
+     */
+    private fun refreshRatingFallbackAvailability(
+        suppliedOptions: GoneSmartOptions? = null
+    ) {
+        val options = suppliedOptions ?: settingsRepository.read()
+        val available =
+            options.minimumRatingStars > 0.0 || options.smartRatingEnabled
+
+        if (!available && options.fallbackWithoutRatingRestrictions) {
+            // Prevent an invisible, pre-checked fallback from automatically
+            // activating when the user later enables a rating threshold.
+            settingsRepository.setBoolean(
+                GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
+                false
+            )
+        }
+
+        val fallbackKey = GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING
+        setSwitch(fallbackKey, available && options.fallbackWithoutRatingRestrictions)
+        switches[fallbackKey]?.isEnabled = available
+        settingRows[fallbackKey]?.alpha = if (available) 1f else 0.45f
+    }
+
+    private fun onSettingChanged(key: String, checked: Boolean) {
+        if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {
+            val options = settingsRepository.read()
+            if (
+                options.minimumRatingStars <= 0.0 &&
+                !options.smartRatingEnabled
+            ) {
+                refreshRatingFallbackAvailability(options)
+                return
+            }
+        }
+
+        settingsRepository.setBoolean(key, checked)
+        if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) {
+            refreshRatingFallbackAvailability()
+        }
     }
 
     private fun setSwitch(key: String, value: Boolean) {
@@ -941,7 +997,7 @@ class MainActivity : AppCompatActivity() {
         switch.setOnCheckedChangeListener(null)
         switch.isChecked = value
         switch.setOnCheckedChangeListener { _, checked ->
-            settingsRepository.setBoolean(key, checked)
+            onSettingChanged(key, checked)
         }
     }
 
