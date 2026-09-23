@@ -34,12 +34,11 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - Uses GMMP's native playback commands and GoneSmart's existing
   recommendation pipeline. Includes a timeout, conservative queue
   verification, and safeguards against dispatching multiple mixes.
-- Adds its own **Track Mix** event category in companion Logs; detailed
-  troubleshooting uses the `GoneSmartTrackMix` Logcat tag.
-- Unit tests cover the initial-queue count and third-position menu
-  insertion. **The first full on-device playback test is still pending;**
-  this development feature must not be described as device-validated
-  before those results are received.
+- **Track Mix** now has an independent live switch under **UI → Playback & Queue** (enabled by default for existing users).
+- The selected seed is preserved through native Clear Queue; native Auto-DJ refills are held briefly during Play/Clear to avoid the intermittent overlap observed in queue-based mixes. One bounded Clear retry and final queue verification remain.
+- **One localized confirmation only** after verified success; the native GMMP Play/Clear/Auto-DJ toast/snackbar burst is suppressed only during the short Track Mix transition. Important failures still produce a warning and are recorded in Logs.
+- German is **Titel-Mix**, English **Track Mix**; other supported GMMP languages reuse their native translated track and Auto-DJ nouns, not an English-only Mix label. Unit tests cover label and confirmation fallback behavior.
+- **Six successful five-track mixes and one intermittent pre-clear error** appeared in the 24 September device log. The concurrency and popup fixes in this build still need a normal-use follow-up before public release; they are not yet device-verified.
 
 ## Expanded companion Logs
 
