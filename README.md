@@ -241,13 +241,41 @@ setting is off by default; no .m3u playlists are modified.
 See [Flip feature testing and compatibility](docs/QUEUE_FLIP_TESTING.md)
 for current behavior, diagnostics and limitations.
 
+## Track Mix — Auto-DJ from any song
+
+The **Track Mix** action appears directly after **Play next** in the
+three-dot context menu for individual songs in the library, queue,
+playlist detail pages, search results and file browser. In German its
+label is **Titel-Mix**. Like the other GoneSmart menu actions, it has
+the centered lilac two-star sparkle without enlarging GMMP's menu rows.
+It does not appear in whole-album, artist or playlist context menus.
+
+Choosing Track Mix plays **that selected song**, retains it as the seed
+for a new queue, enables GoneSmart's Smart DJ if necessary, and uses
+GMMP's own **Auto-DJ playback mode**. GMMP's configured **Initial Size**
+determines the target queue length (including the selected seed song);
+GoneSmart supplies its usual matching local recommendations for the
+remaining positions. The normal upcoming-track setting continues to
+control later refills. No playlist files are changed.
+
+The new command uses GMMP's documented PLAY/CLEAR_QUEUE/AUTO_DJ
+integration and native Play menu callbacks. Its high-level start,
+verification and failure outcomes appear in the GoneSmart app's
+**Logs → Track Mix** category; details are in Android Logcat under
+`GoneSmartTrackMix`.
+
+**Status:** implemented on the feature branch and covered by queue
+sizing/menu-order unit tests. Native Track Mix behavior across all
+song sources still needs one combined phone test on GMMP 4.2.0 before
+the public release. See [Track Mix device test](docs/TRACK_MIX_TESTING.md).
+
 ## Companion UI and player indicator
 
 The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
 
 **Logs** collects recent, high-level activity across **Smart DJ**,
-**multi-playlist selection**, **Flip Queue / Play Flipped**, and UI/System
-events. Successful Flip events are recorded only after native verification;
+**multi-playlist selection**, **Flip Queue / Play Flipped**,
+**Track Mix**, and UI/System events. Successful Flip events are recorded only after native verification;
 failures and recovery attempts have their own entries. These additional
 events do **not** replace the separate Auto-DJ readiness/fallback status
 on Home. For developer diagnostics, filter Android Logcat by `GoneSmart`,
