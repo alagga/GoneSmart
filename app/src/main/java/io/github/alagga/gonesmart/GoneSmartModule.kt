@@ -103,9 +103,13 @@ class GoneSmartModule : XposedModule() {
                     preferences
                 )
 
+            if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
+                playlistController.setEnabled(options.multiPlaylistEnabled)
+            }
+
             if (
-                key !=
-                GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES
+                key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
+                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST
             ) {
 
                 pipelineGeneration
@@ -401,9 +405,12 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
-            // Isolated to debug builds until native multi-add is tested.
-            if (BuildConfig.DEBUG) {
+            // Native playlist UI is opt-in through the companion app and
+            // remains independent of the Smart Auto-DJ recommendation mode.
+            // Hook registration is available in release builds too.
+            if (true) {
                 try {
+                    playlistController.setEnabled(options.multiPlaylistEnabled)
                     installPlaylistMultiSelectHooks(param)
                 } catch (playlistHookError: Throwable) {
                     Log.w(
