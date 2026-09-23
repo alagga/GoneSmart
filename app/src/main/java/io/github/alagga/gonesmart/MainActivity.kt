@@ -79,6 +79,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logCountText: TextView
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
+    private var ratingFallbackRow: LinearLayout? = null
+    private var ratingFallbackSubtitle: TextView? = null
+    private var ratingFallbackDefaultSubtitle: CharSequence? = null
 
     private val switches = linkedMapOf<String, SwitchMaterial>()
     private val tabButtons = linkedMapOf<Tab, LinearLayout>()
@@ -265,6 +268,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTab(tab: Tab) {
         activeTab = tab
+        // Discard references to views from the previous tab. UI switches
+        // are recreated from saved settings whenever a tab is revisited.
+        switches.clear()
+        minimumRatingSlider = null
+        minimumRatingValueText = null
+        ratingFallbackRow = null
+        ratingFallbackSubtitle = null
+        ratingFallbackDefaultSubtitle = null
         contentHost.removeAllViews()
 
         val view = when (tab) {
@@ -379,16 +390,16 @@ class MainActivity : AppCompatActivity() {
         refreshUpdateStatus()
 
         container.addView(verticalGap(24))
-        container.addView(sectionTitle("SMART DJ"))
+        container.addView(sectionTitle("FEATURES"))
         container.addView(infoCard(
-            title = "GoneSmart replaces GMMP Auto-DJ track selection",
-            body = "GMMP keeps control of playback, queue lifecycle and Auto-DJ timing. GoneSmart replaces only the track selection with smart recommendations matched to your local library, while regular GMMP Auto-DJ remains available as fallback."
+            title = "Smart DJ",
+            body = "Smarter recommendations for your local library, directly in GMMP's Auto-DJ. GMMP still controls playback and its queue; configure recommendation and fallback options in the Smart DJ tab."
         ))
 
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "Player indicator",
-            body = "Green sparkle = GMMP Auto-DJ is selected and GoneSmart is ready for the current session. Red sparkle = GMMP Auto-DJ is selected but GoneSmart cannot currently provide a smart track or GMMP fallback is active. No sparkle = GoneSmart is disabled, or GMMP is currently using Shuffle/Normal instead of Auto-DJ."
+            title = "UI tweaks",
+            body = "Optional enhancements to GMMP's interface, independent of Smart DJ. For example, select several playlists at once in Add to Playlist. Enable and configure available tweaks in the UI tab."
         ))
 
         return scrollPage(container)
@@ -425,7 +436,7 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
                 "↘",
                 "Rating fallback",
-                "If no suitable tracks meet Minimum rating / Smart rating, retry once without those two rating restrictions before using GMMP Auto-DJ fallback.",
+                "If no suitable tracks meet Minimum rating / Smart rating, retry once without those two rating restrictions before using GMMP Auto-DJ fallback. Available when at least one rating restriction is enabled.",
                 COLOR_AMBER
             ),
             SettingSpec(
@@ -492,12 +503,6 @@ class MainActivity : AppCompatActivity() {
         )))
 
         container.addView(verticalGap(18))
-        container.addView(infoCard(
-            title = "Settings apply live",
-            body = "A GMMP restart is not required for these options. Recommendation-affecting changes invalidate the current GoneSmart pool so the next Auto-DJ refill uses the new settings. The currently playing track is not interrupted."
-        ))
-
-        container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Offline behavior",
             body = "A valid pool from the current queue can continue offline. A new queue never reuses an old pool; if GoneSmart has no usable cached track, GMMP Auto-DJ takes over and the player sparkle turns red."
@@ -681,8 +686,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(22))
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
-            title = "Do settings require a restart?",
-            body = "No. GoneSmart settings are sent to the running GMMP process and apply live. Recommendation-related changes invalidate the old recommendation pool so the next refill uses the new behavior. Use Restart GMMP only for troubleshooting or after framework/module updates."
+            title = "Settings apply live",
+            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI tweaks, including multi-playlist selection, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
         ))
 
         container.addView(verticalGap(22))
@@ -804,6 +809,7 @@ class MainActivity : AppCompatActivity() {
                             GoneSmartSettingsKeys.KEY_MINIMUM_RATING,
                             sliderValue
                         )
+                        refreshRatingFallbackAvailability()
                     }
                 }
             }
@@ -876,10 +882,16 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(14), 0, dp(8), 0)
         }
         labels.addView(textView(spec.title, 16f, COLOR_TEXT, bold = true))
-        labels.addView(textView(spec.subtitle, 13f, COLOR_TEXT_SECONDARY).apply {
+        val subtitle = textView(spec.subtitle, 13f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(3), 0, 0)
-        })
+        }
+        labels.addView(subtitle)
         row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (spec.key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {
+            ratingFallbackRow = row
+            ratingFallbackSubtitle = subtitle
+            ratingFallbackDefaultSubtitle = spec.subtitle
+        }
 
         val switch = SwitchMaterial(this).apply {
             buttonTintList = null
@@ -898,7 +910,7 @@ class MainActivity : AppCompatActivity() {
                 intArrayOf(COLOR_ACCENT, 0xFFC8C5CE.toInt())
             )
             setOnCheckedChangeListener { _, checked ->
-                settingsRepository.setBoolean(spec.key, checked)
+                onSettingSwitchChanged(spec.key, checked)
             }
         }
         switches[spec.key] = switch
@@ -939,6 +951,44 @@ class MainActivity : AppCompatActivity() {
             options.fallbackToNativeAutoDjWhenNoSuitableTracks
         )
         setSwitch(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, options.showStatusMessages)
+        refreshRatingFallbackAvailability()
+    }
+
+    private fun refreshRatingFallbackAvailability() {
+        val fallback = switches[GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING]
+            ?: return
+        // Read the LIVE slider and switch rather than waiting for another
+        // settings roundtrip, so the disabled state changes immediately.
+        val options = settingsRepository.read()
+        val minimumActive =
+            (minimumRatingSlider?.value?.toDouble()
+                ?: options.minimumRatingStars) > 0.0
+        val smartActive =
+            switches[GoneSmartSettingsKeys.KEY_SMART_RATING]?.isChecked
+                ?: options.smartRatingEnabled
+        val available = minimumActive || smartActive
+
+        fallback.isEnabled = available
+        ratingFallbackRow?.alpha = if (available) 1f else 0.45f
+        ratingFallbackSubtitle?.text = if (available) {
+            ratingFallbackDefaultSubtitle
+        } else {
+            "Enable Minimum rating or Smart rating to use Rating fallback."
+        }
+        // Retain the saved switch value while unavailable, as Android's
+        // standard disabled controls do. The recommendation pipeline
+        // already only runs this fallback for an active rating restriction.
+    }
+
+    private fun onSettingSwitchChanged(key: String, checked: Boolean) {
+        if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING &&
+            switches[key]?.isEnabled == false
+        ) return
+
+        settingsRepository.setBoolean(key, checked)
+        if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) {
+            refreshRatingFallbackAvailability()
+        }
     }
 
     private fun setSwitch(key: String, value: Boolean) {
@@ -947,7 +997,7 @@ class MainActivity : AppCompatActivity() {
         switch.setOnCheckedChangeListener(null)
         switch.isChecked = value
         switch.setOnCheckedChangeListener { _, checked ->
-            settingsRepository.setBoolean(key, checked)
+            onSettingSwitchChanged(key, checked)
         }
     }
 
