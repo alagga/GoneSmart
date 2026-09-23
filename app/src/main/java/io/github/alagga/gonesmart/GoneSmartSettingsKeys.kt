@@ -6,6 +6,7 @@ object GoneSmartSettingsKeys {
     const val KEY_ENABLED = "enabled"
     const val KEY_MULTI_PLAYLIST = "multi_playlist_selection"
     const val KEY_FLIP_QUEUE = "flip_queue"
+    const val KEY_TRACK_MIX = "track_mix_enabled"
 
     const val KEY_PREFER_HIGHER_RATED = "prefer_higher_rated"
     const val KEY_MINIMUM_RATING = "minimum_rating"
