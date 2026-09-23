@@ -239,41 +239,44 @@ internal class QueueFlipController {
                 Log.i(TAG, "FLIP LAST[$i] | ${describe(entry)}")
             }
 
-            // User-confirmed semantics: the CURRENT entry is pinned to
-            // its exact queue position whether playing or paused. EVERY
-            // other entry (history AND upcoming, as one combined sequence)
-            // is globally reversed around that pin. This is a read-only
-            // plan until we have verified GMMP's native reorder API.
+            // Full reversal: ABCDE -> EDCBA. The current SONG stays
+            // active whether playing or paused, but follows its entry to
+            // the NEW queue index (n - 1 - oldIndex). This phase is
+            // read-only until GMMP's native reorder writer is validated.
             if (sorted.size < 2) {
                 Log.i(TAG, "FLIP PLAN | queue too short; no-op")
                 return@runCatching
             }
-            val pinIndex = sorted.indexOfFirst {
+            val currentIndex = sorted.indexOfFirst {
                 (field(it, "a") as? Number)?.toInt() == current
             }
-            if (current == null || pinIndex < 0) {
+            if (current == null || currentIndex < 0) {
                 Log.w(
                     TAG,
-                    "FLIP PLAN | current position not found; refusing to " +
-                        "build an unpinned reversal"
+                    "FLIP PLAN | current entry not found; refusing to " +
+                        "build a reversal without playback continuity"
                 )
                 return@runCatching
             }
 
-            val pinned = sorted[pinIndex]
-            val planned = PinnedQueueFlipPlanner.flipPinned(
+            val currentEntry = sorted[currentIndex]
+            val plan = QueueFlipPlanner.reverseAll(
                 items = sorted,
-                pinnedIndex = pinIndex
+                currentIndex = currentIndex
             )
+            val planned = plan.entries
             val plannedMovement = planned.indices.count { index ->
                 planned[index] !== sorted[index]
             }
-            val pinnedId = field(pinned, "d")
+            val currentEntryId = field(currentEntry, "d")
             Log.i(
                 TAG,
                 "FLIP PLAN | mode=DRY_RUN | size=${sorted.size} | " +
-                    "pinnedIndex=$pinIndex | pinnedPosition=$current | " +
-                    "pinnedEntryId=$pinnedId | " +
+                    "oldCurrentIndex=$currentIndex | " +
+                    "newCurrentIndex=${plan.newCurrentIndex} | " +
+                    "currentEntryId=$currentEntryId | " +
+                    "currentPreserved=" +
+                    (planned[plan.newCurrentIndex] === currentEntry) + " | " +
                     "wouldMove=$plannedMovement | writes=0"
             )
             planned.take(3).forEachIndexed { i, entry ->
