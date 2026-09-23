@@ -1,6 +1,9 @@
 package io.github.alagga.gonesmart
 
 import android.content.Context
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ImageSpan
 import android.util.Log
 import android.view.Menu
 import android.view.MenuInflater
@@ -100,9 +103,11 @@ internal class QueueFlipController {
         }
 
         // There is no localized "reverse/flip queue" string in GMMP
-        // 4.2.0. Compose its existing localized Play/Queue text with
-        // a direction symbol and our tiny white sparkle. These are
-        // presentation labels for the first menu-placement test.
+        // 4.2.0. Combine its own translated Play/Queue noun with the
+        // universal inversion arrow and GoneSmart's exact TWO-star
+        // Auto-DJ badge renderer (big lilac star and small light star).
+        // A real ImageSpan is needed here: a plain Unicode star inherits
+        // the menu text color and rendered white in the first phone test.
         val baseLabel = when (kind) {
             Kind.QUEUE -> nativeString(context, "queue") ?: "Queue"
             Kind.PLAYLIST, Kind.SMART ->
@@ -110,7 +115,7 @@ internal class QueueFlipController {
                     ?: nativeString(context, "play")
                     ?: "Play"
         }
-        val title = "$baseLabel ⇵ ✦"
+        val title = brandedMenuTitle(context, "$baseLabel ⇵")
 
         val item = menu.add(
             Menu.NONE,
@@ -236,6 +241,29 @@ internal class QueueFlipController {
         }.onFailure {
             Log.e(TAG, "FLIP QUEUE | snapshot failed", it)
         }
+    }
+
+    private fun brandedMenuTitle(context: Context, label: String): CharSequence {
+        // Both GMMP menu implementations (platform + AppCompat) render
+        // MenuItem.title in a TextView, so a drawable span works where
+        // ordinary MenuItem icons are normally hidden by overflow popups.
+        val pixelSize = (context.resources.displayMetrics.density * 28f)
+            .toInt().coerceAtLeast(22)
+        val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
+            0xFFA39AFF.toInt(), // same default GoneSmart lilac as our picker
+            scale = 1.85f
+        ).apply {
+            setBounds(0, 0, pixelSize, pixelSize)
+        }
+        val text = SpannableString("$label  \uFFFC")
+        val index = text.length - 1
+        text.setSpan(
+            ImageSpan(sparkle, ImageSpan.ALIGN_BOTTOM),
+            index,
+            index + 1,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        return text
     }
 
     private fun nativeString(context: Context, name: String): String? {
