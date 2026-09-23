@@ -6,6 +6,13 @@ import android.content.Intent
 
 class GoneSmartEventReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action ==
+            GoneSmartRuntimeContract.ACTION_ENABLE_SMART_DJ_FOR_MIX
+        ) {
+            (context.applicationContext as? GoneSmartApplication)
+                ?.enableSmartDjFromMix()
+            return
+        }
         if (intent.action != GoneSmartRuntimeContract.ACTION_RUNTIME_EVENT) {
             return
         }
