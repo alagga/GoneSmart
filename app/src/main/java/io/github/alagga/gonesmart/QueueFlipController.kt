@@ -238,6 +238,66 @@ internal class QueueFlipController {
             sorted.takeLast(3).forEachIndexed { i, entry ->
                 Log.i(TAG, "FLIP LAST[$i] | ${describe(entry)}")
             }
+
+            // User-confirmed semantics: the CURRENT entry is pinned to
+            // its exact queue position whether playing or paused. EVERY
+            // other entry (history AND upcoming, as one combined sequence)
+            // is globally reversed around that pin. This is a read-only
+            // plan until we have verified GMMP's native reorder API.
+            if (sorted.size < 2) {
+                Log.i(TAG, "FLIP PLAN | queue too short; no-op")
+                return@runCatching
+            }
+            val pinIndex = sorted.indexOfFirst {
+                (field(it, "a") as? Number)?.toInt() == current
+            }
+            if (current == null || pinIndex < 0) {
+                Log.w(
+                    TAG,
+                    "FLIP PLAN | current position not found; refusing to " +
+                        "build an unpinned reversal"
+                )
+                return@runCatching
+            }
+
+            val pinned = sorted[pinIndex]
+            val othersReversed = sorted.filterIndexed { index, _ ->
+                index != pinIndex
+            }.asReversed()
+            var cursor = 0
+            val planned = sorted.indices.map { index ->
+                if (index == pinIndex) {
+                    pinned
+                } else {
+                    othersReversed[cursor++]
+                }
+            }
+            val plannedMovement = planned.indices.count { index ->
+                planned[index] !== sorted[index]
+            }
+            val pinnedId = field(pinned, "d")
+            Log.i(
+                TAG,
+                "FLIP PLAN | mode=DRY_RUN | size=${sorted.size} | " +
+                    "pinnedIndex=$pinIndex | pinnedPosition=$current | " +
+                    "pinnedEntryId=$pinnedId | " +
+                    "wouldMove=$plannedMovement | writes=0"
+            )
+            planned.take(3).forEachIndexed { i, entry ->
+                Log.i(
+                    TAG,
+                    "FLIP PLAN FIRST[$i] | targetPosition=" +
+                        field(sorted[i], "a") + " | " + describe(entry)
+                )
+            }
+            planned.takeLast(3).forEachIndexed { i, entry ->
+                val safeIndex = planned.size - planned.takeLast(3).size + i
+                Log.i(
+                    TAG,
+                    "FLIP PLAN LAST[$safeIndex] | targetPosition=" +
+                        field(sorted[safeIndex], "a") + " | " + describe(entry)
+                )
+            }
         }.onFailure {
             Log.e(TAG, "FLIP QUEUE | snapshot failed", it)
         }
