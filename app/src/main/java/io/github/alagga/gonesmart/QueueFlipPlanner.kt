@@ -18,6 +18,21 @@ internal object QueueFlipPlanner {
         val newCurrentIndex: Int
     )
 
+    /**
+     * Start playback of a newly selected playlist (including a SMART
+     * playlist) strictly from its LAST original track to its FIRST.
+     *
+     * Unlike reversing an already playing queue, no old playhead needs
+     * preservation. The FIRST reversed entry must become current.
+     * The caller must supply GMMP's newly resolved playlist snapshot,
+     * never the queue that happened to be playing beforehand.
+     */
+    fun <T> reverseForNewPlayback(items: List<T>): Plan<T> =
+        Plan(
+            entries = items.asReversed().toList(),
+            newCurrentIndex = if (items.isEmpty()) -1 else 0
+        )
+
     fun <T> reverseAll(
         items: List<T>,
         currentIndex: Int
