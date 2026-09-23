@@ -225,12 +225,36 @@ internal class PlaylistMultiSelectController {
         }
         if (successful == 0) return
 
+        // Reuse GMMP's actual localized toast and its own playlist nouns.
+        // GMMP's add_to_playlist_toast contains only ONE placeholder for
+        // the number of files, not a second one for destination count.
+        // Appending the native plural noun is language-neutral and avoids
+        // maintaining translated templates with differing word order.
         val files = batch.sourceCount
-        val message = "$files " +
-            (if (files == 1) "Datei" else "Dateien") +
-            " zu $successful " +
-            (if (successful == 1) "Playlist" else "Playlists") +
-            " hinzugefügt"
+        val context = batch.context
+        val nativeToast = gmmpString(
+            context,
+            "add_to_playlist_toast",
+            files
+        )
+        val playlistLabel = gmmpString(
+            context,
+            if (successful == 1) "playlist" else "playlists"
+        )
+
+        val message = if (nativeToast != null) {
+            if (playlistLabel != null) {
+                "$nativeToast ($successful $playlistLabel)"
+            } else {
+                nativeToast
+            }
+        } else {
+            val fileLabel = gmmpString(
+                context,
+                if (files == 1) "file" else "files"
+            ).orEmpty()
+            "$files $fileLabel · $successful ${playlistLabel.orEmpty()}"
+        }
 
         // Post outside the jd callback's thread-local scope. Otherwise our
         // own summary Toast would be swallowed by the native Toast hook.
@@ -901,6 +925,43 @@ internal class PlaylistMultiSelectController {
         session.fabPaletteSubscribed = false
     }
 
+    /**
+     * Read resource strings directly from the HOST GMMP APK at runtime,
+     * using the current Activity context so GMMP/Android picks the locale.
+     * No GoneSmart translation bundles or copied GMMP translations.
+     */
+    private fun gmmpString(
+        context: Context,
+        name: String,
+        vararg args: Any
+    ): String? {
+        val id = context.resources.getIdentifier(
+            name,
+            "string",
+            context.packageName
+        )
+        if (id == 0) {
+            Log.w(TAG, "MULTI I18N | GMMP string unavailable: $name")
+            return null
+        }
+        return runCatching {
+            if (args.isEmpty()) context.getString(id)
+            else context.getString(id, *args)
+        }.onFailure {
+            Log.w(TAG, "MULTI I18N | failed native GMMP string: $name", it)
+        }.getOrNull()
+    }
+
+    private fun selectionTitle(
+        session: Session,
+        count: Int
+    ): String {
+        val context = session.list?.context
+            ?: return count.toString()
+        return gmmpString(context, "num_selected", count)
+            ?: count.toString()
+    }
+
     private fun updateSelectionBar(session: Session) {
         if (session.selectedPaths.isEmpty()) return
 
@@ -911,8 +972,10 @@ internal class PlaylistMultiSelectController {
                     mode: ActionMode,
                     menu: Menu
                 ): Boolean {
-                    mode.title =
-                        "${session.selectedPaths.size} ausgewählt"
+                    mode.title = selectionTitle(
+                        session,
+                        session.selectedPaths.size
+                    )
                     return true
                 }
 
@@ -961,8 +1024,10 @@ internal class PlaylistMultiSelectController {
             }
         }
 
-        session.selectionBar?.title =
-            "${session.selectedPaths.size} ausgewählt"
+        session.selectionBar?.title = selectionTitle(
+            session,
+            session.selectedPaths.size
+        )
         tintSelectionBar(session)
     }
 
@@ -1395,7 +1460,9 @@ internal class PlaylistMultiSelectController {
         val navigationBatch = if (targets.size > 1) {
             NativeNavigationBatch(
                 sourceCount = sourceCount,
-                context = fab.context.applicationContext ?: fab.context
+                // Use the picker Activity context: GMMP may apply a
+                // different in-app language than the application default.
+                context = fab.context
             )
         } else {
             null
