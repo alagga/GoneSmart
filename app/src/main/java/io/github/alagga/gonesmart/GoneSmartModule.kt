@@ -606,19 +606,25 @@ class GoneSmartModule : XposedModule() {
                             "originalCount=${originalList?.size} | " +
                             "reversedCount=${reversed.size}"
                     )
-                    playListMethod.invoke(
+                    val result = playListMethod.invoke(
                         chain.getThisObject(),
                         chain.getArg(0),
                         chain.getArg(1),
                         reversed
                     )
+                    queueFlipController.verifyNativePlaylistPlayback(
+                        reversed
+                    )
+                    result
                 }
             }
+            queueFlipController.setNativePlaylistInterceptorReady(true)
             Log.i(
                 "GoneSmartFlip",
                 "FLIP PLAY HOOK READY | MusicService.w1 native reversed list"
             )
         }.onFailure { error ->
+            queueFlipController.setNativePlaylistInterceptorReady(false)
             Log.e(TAG, "Flip native Playlist Play hook unavailable", error)
         }
 
