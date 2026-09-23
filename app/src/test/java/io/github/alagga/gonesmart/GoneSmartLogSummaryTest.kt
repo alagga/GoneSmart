@@ -11,16 +11,18 @@ class GoneSmartLogSummaryTest {
             22:00:03  [Playlists] Added 3 songs to 2 playlists.
             22:00:04  [Flip] Reversed 31-track queue.
             22:00:05  [Flip] Playing Smart Playlist in reverse.
-            22:00:06  [UI] Flip enabled.
-            22:00:07  Legacy entry before categories existed.
+            22:00:06  [Track Mix] Track Mix started: 4 songs.
+            22:00:07  [UI] Flip enabled.
+            22:00:08  Legacy entry before categories existed.
         """.trimIndent()
 
         assertEquals(
             GoneSmartLogSummary.Summary(
-                total = 7,
+                total = 8,
                 smartDj = 1,
                 playlists = 1,
                 flip = 2,
+                trackMix = 1,
                 other = 3
             ),
             GoneSmartLogSummary.fromText(log)
@@ -29,7 +31,7 @@ class GoneSmartLogSummaryTest {
 
     @Test fun emptyLogProducesZeroCounters() {
         assertEquals(
-            GoneSmartLogSummary.Summary(0, 0, 0, 0, 0),
+            GoneSmartLogSummary.Summary(0, 0, 0, 0, 0, 0),
             GoneSmartLogSummary.fromText("  \n\n")
         )
     }
@@ -43,7 +45,7 @@ class GoneSmartLogSummaryTest {
             "09:00:05  [Smart DJ] Recommendations resumed."
         ).joinToString("\n")
         assertEquals(
-            GoneSmartLogSummary.Summary(5, 2, 1, 2, 0),
+            GoneSmartLogSummary.Summary(5, 2, 1, 2, 0, 0),
             GoneSmartLogSummary.fromText(log)
         )
     }
