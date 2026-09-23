@@ -87,6 +87,27 @@ internal class PlaylistMultiSelectController {
 
     private var active: Session? = null
 
+    @Volatile
+    private var enabled = false
+
+    /**
+     * UI feature is separate from the Smart DJ recommendation switch.
+     * Enabling it does not affect regular GMMP playback or Auto-DJ.
+     */
+    fun setEnabled(value: Boolean) {
+        enabled = value
+        if (!value && active != null) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                reset()
+            } else {
+                mainHandler.post {
+                    if (!enabled) reset()
+                }
+            }
+        }
+    }
+
+
     /*
      * Native io3.r() publishes a j83 "close the add-to-playlist picker"
      * event after EACH successful destination. The host activity handles
@@ -269,7 +290,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun beginPicker(fragment: Any?) {
-        if (fragment == null) return
+        if (!enabled || fragment == null) return
         if (active?.fragment === fragment) return
 
         reset()
@@ -278,6 +299,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onFabFound(fab: View) {
+        if (!enabled) return
         val session = active ?: return
         if (resourceName(fab) != "playlistFab") return
         if (session.fab === fab) return
@@ -293,6 +315,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onListFound(list: View) {
+        if (!enabled) return
         val session = active ?: return
         if (resourceName(list) != "playlistListRecyclerView") return
         val group = list as? ViewGroup ?: return
@@ -339,6 +362,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onNativeHandler(handler: Any?) {
+        if (!enabled) return
         val session = active ?: return
         if (handler?.javaClass?.name != "io3") return
 
@@ -351,6 +375,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onLongClick(view: View?): Boolean {
+        if (!enabled) return false
         Log.i(
             TAG,
             "MULTI LONG | received | view=" +
@@ -380,6 +405,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun onClick(view: View?): Boolean {
+        if (!enabled) return false
         val session = visibleSession() ?: return false
 
         if (view === session.fab && session.selectedPaths.isNotEmpty()) {
@@ -415,6 +441,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun consumeBack(): Boolean {
+        if (!enabled) return false
         val session = visibleSession() ?: return false
         if (session.selectedPaths.isEmpty()) return false
 
@@ -424,6 +451,7 @@ internal class PlaylistMultiSelectController {
     }
 
     fun shouldBlockFabHide(receiver: Any?): Boolean {
+        if (!enabled) return false
         val session = active ?: return false
         return session.selectedPaths.isNotEmpty() &&
             receiver === session.fab &&
