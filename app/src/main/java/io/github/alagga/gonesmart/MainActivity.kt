@@ -379,16 +379,16 @@ class MainActivity : AppCompatActivity() {
         refreshUpdateStatus()
 
         container.addView(verticalGap(24))
-        container.addView(sectionTitle("SMART DJ"))
+        container.addView(sectionTitle("FEATURES"))
         container.addView(infoCard(
-            title = "GoneSmart replaces GMMP Auto-DJ track selection",
-            body = "GMMP keeps control of playback, queue lifecycle and Auto-DJ timing. GoneSmart replaces only the track selection with smart recommendations matched to your local library, while regular GMMP Auto-DJ remains available as fallback."
+            title = "Smart DJ",
+            body = "Smarter recommendations for your local library, directly in GMMP's Auto-DJ. GMMP still controls playback and its queue; configure recommendation and fallback options in the Smart DJ tab."
         ))
 
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "Player indicator",
-            body = "Green sparkle = GMMP Auto-DJ is selected and GoneSmart is ready for the current session. Red sparkle = GMMP Auto-DJ is selected but GoneSmart cannot currently provide a smart track or GMMP fallback is active. No sparkle = GoneSmart is disabled, or GMMP is currently using Shuffle/Normal instead of Auto-DJ."
+            title = "UI tweaks",
+            body = "Optional enhancements to GMMP's interface, independent of Smart DJ. For example, select several playlists at once in Add to Playlist. Enable and configure available tweaks in the UI tab."
         ))
 
         return scrollPage(container)
@@ -492,12 +492,6 @@ class MainActivity : AppCompatActivity() {
         )))
 
         container.addView(verticalGap(18))
-        container.addView(infoCard(
-            title = "Settings apply live",
-            body = "A GMMP restart is not required for these options. Recommendation-affecting changes invalidate the current GoneSmart pool so the next Auto-DJ refill uses the new settings. The currently playing track is not interrupted."
-        ))
-
-        container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Offline behavior",
             body = "A valid pool from the current queue can continue offline. A new queue never reuses an old pool; if GoneSmart has no usable cached track, GMMP Auto-DJ takes over and the player sparkle turns red."
@@ -681,8 +675,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(22))
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
-            title = "Do settings require a restart?",
-            body = "No. GoneSmart settings are sent to the running GMMP process and apply live. Recommendation-related changes invalidate the old recommendation pool so the next refill uses the new behavior. Use Restart GMMP only for troubleshooting or after framework/module updates."
+            title = "Settings apply live",
+            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI tweaks, including multi-playlist selection, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
         ))
 
         container.addView(verticalGap(22))
