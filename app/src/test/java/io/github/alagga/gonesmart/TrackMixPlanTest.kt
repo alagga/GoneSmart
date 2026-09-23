@@ -67,6 +67,14 @@ class TrackMixPlanTest {
             "Auto-DJ",
             TrackMixPlan.localizedMenuLabel("fr", "", "Auto-DJ")
         )
+        assertEquals(
+            "Piste · Auto-DJ",
+            TrackMixPlan.localizedMenuLabel("fr", "Piste", null)
+        )
+        assertEquals(
+            "Auto-DJ",
+            TrackMixPlan.localizedMenuLabel("fr", null, null)
+        )
     }
 
     @Test fun confirmsGermanAndEnglishButUsesNativeLabelsForOtherLanguages() {
