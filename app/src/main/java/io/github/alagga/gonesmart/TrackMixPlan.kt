@@ -34,7 +34,10 @@ internal object TrackMixPlan {
             else -> if (track != null && dj != null) {
                 "$track · $dj"
             } else {
-                dj ?: "Track Mix"
+                // Even if only one native resource is present, do not
+                // unexpectedly switch an otherwise localized GMMP UI to
+                // an English-only invented feature name.
+                dj ?: track?.let { "$it · Auto-DJ" } ?: "Auto-DJ"
             }
         }
     }
