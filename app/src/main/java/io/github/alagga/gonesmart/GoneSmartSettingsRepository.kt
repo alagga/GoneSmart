@@ -92,9 +92,14 @@ class GoneSmartSettingsRepository(
         key: String,
         value: Boolean
     ) {
-        localPreferences.edit()
+        val editor = localPreferences.edit()
             .putBoolean(key, value)
-            .apply()
+        // A later explicit user choice overrides Track Mix's queued
+        // auto-enable command if the Xposed service was not yet bound.
+        if (key == GoneSmartSettingsKeys.KEY_ENABLED && !value) {
+            editor.remove("pending_track_mix_enable")
+        }
+        editor.apply()
 
         remotePreferences()
             ?.edit()
