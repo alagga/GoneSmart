@@ -19,6 +19,7 @@ object GoneSmartRuntimeContract {
     const val CATEGORY_SMART_DJ = "Smart DJ"
     const val CATEGORY_PLAYLISTS = "Playlists"
     const val CATEGORY_FLIP = "Flip"
+    const val CATEGORY_TRACK_MIX = "Track Mix"
     const val CATEGORY_SYSTEM = "System"
     const val CATEGORY_UI = "UI"
 
