@@ -114,6 +114,16 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
+            if (key == GoneSmartSettingsKeys.KEY_TRACK_MIX) {
+                trackMixController.setEnabled(options.trackMixEnabled)
+                if (previous.trackMixEnabled != options.trackMixEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        if (options.trackMixEnabled)
+                            "Track Mix enabled." else "Track Mix disabled."
+                    )
+                }
+            }
             if (key == GoneSmartSettingsKeys.KEY_FLIP_QUEUE) {
                 queueFlipController.setEnabled(options.flipQueueEnabled)
                 if (previous.flipQueueEnabled != options.flipQueueEnabled) {
@@ -129,6 +139,7 @@ class GoneSmartModule : XposedModule() {
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
                 key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
+                key != GoneSmartSettingsKeys.KEY_TRACK_MIX &&
                 // Persisting Track Mix's already-active Smart DJ switch
                 // must not discard its first live recommendation pool.
                 !(key == GoneSmartSettingsKeys.KEY_ENABLED &&
@@ -373,6 +384,7 @@ class GoneSmartModule : XposedModule() {
         }
 
         initializeRemoteSettings()
+        trackMixController.setEnabled(options.trackMixEnabled)
 
         Log.i(
             TAG,
@@ -917,6 +929,11 @@ class GoneSmartModule : XposedModule() {
             hook(nativeToastShow).intercept { chain ->
                 if (playlistController.shouldSuppressNativeResultToast()) {
                     null
+                } else if (trackMixController.shouldSuppressNativeToast(
+                        chain.getThisObject() as? android.widget.Toast
+                    )
+                ) {
+                    null
                 } else {
                     chain.proceed()
                 }
@@ -930,6 +947,35 @@ class GoneSmartModule : XposedModule() {
                 TAG,
                 "Playlist native result Toast hook unavailable",
                 error
+            )
+        }
+
+        // GMMP can display the Auto-DJ rules-changed notification as a
+        // Material Snackbar, not only as an Android Toast. Hide only its
+        // short Track Mix transition window. Ordinary settings changes
+        // and all notifications outside that window are untouched.
+        runCatching {
+            val snackClass = param.classLoader.loadClass(
+                "com.google.android.material.snackbar.BaseTransientBottomBar"
+            )
+            val show = snackClass.getDeclaredMethod("show")
+                .apply { isAccessible = true }
+            hook(show).intercept { chain ->
+                if (trackMixController.shouldSuppressNativeSnackbar()) {
+                    Log.i(
+                        "GoneSmartTrackMix",
+                        "MIX POPUP | intermediate GMMP snackbar hidden"
+                    )
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i("GoneSmartTrackMix", "MIX POPUP | snackbar guard ready")
+        }.onFailure {
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX POPUP | GMMP has no compatible snackbar hook"
             )
         }
 
@@ -1422,6 +1468,14 @@ class GoneSmartModule : XposedModule() {
             if (autoDjInstance != null) {
                 trackMixAutoDj = WeakReference(autoDjInstance)
                 trackMixController.captureNativeAutoDj(autoDjInstance)
+                if (trackMixController.shouldSuppressNativeRefill()) {
+                    // GMMP may start a refill as soon as native Play
+                    // seeks to the selected queue row. That older refill
+                    // races CLEAR_QUEUE and caused intermittent failures.
+                    // Track Mix will explicitly enable native Auto-DJ
+                    // after it confirms that only the new seed remains.
+                    return@intercept null
+                }
                 trackMixController.onNativeAutoDjRefillRequested(
                     requestedTracks
                 )
