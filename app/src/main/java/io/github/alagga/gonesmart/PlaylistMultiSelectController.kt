@@ -182,7 +182,12 @@ internal class PlaylistMultiSelectController {
      * untouched. The aggregate is posted after all accepted callbacks.
      */
     fun shouldSuppressNativeResultToast(): Boolean {
-        val batch = runningNativeCallback.get() ?: return false
+        // GMMP versions may create their native success Toast either
+        // synchronously inside io3.r() or in its jd(mode=4) completion.
+        // Both scopes belong exclusively to this multi-add batch.
+        val batch = runningNativeCallback.get()
+            ?: constructingNativeCallback.get()
+            ?: return false
         synchronized(navigationLock) {
             batch.nativeToastsSuppressed++
         }
