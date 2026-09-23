@@ -30,6 +30,7 @@ class GoneSmartSettingsRepository(
             .putBoolean(GoneSmartSettingsKeys.KEY_ENABLED, local.enabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, local.multiPlaylistEnabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, local.flipQueueEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_TRACK_MIX, local.trackMixEnabled)
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                 local.preferHigherRatedMatches
@@ -142,6 +143,7 @@ class GoneSmartSettingsRepository(
             .putBoolean(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                 options.preferHigherRatedMatches
