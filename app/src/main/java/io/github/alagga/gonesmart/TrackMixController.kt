@@ -314,7 +314,7 @@ internal class TrackMixController(
                         "actual=${queueSnapshot()?.ids?.size ?: -1}"
                 )
                 events.reportEvent(
-                    GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                    GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
                     "Track Mix started, but the initial Auto-DJ queue " +
                         "could not be verified."
                 )
@@ -326,7 +326,7 @@ internal class TrackMixController(
                         "currentPreserved=true | recommendations=${filled.ids.size - 1}"
                 )
                 events.reportEvent(
-                    GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                    GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
                     "Track Mix started: ${filled.ids.size - 1} " +
                         "Auto-DJ tracks added after the selected song."
                 )
@@ -419,7 +419,7 @@ internal class TrackMixController(
     private fun fail(message: String, context: Context) {
         Log.e(TAG, "MIX FAILED | $message")
         events.reportEvent(
-            GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+            GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
             "Track Mix: $message"
         )
         toast(context, message)
