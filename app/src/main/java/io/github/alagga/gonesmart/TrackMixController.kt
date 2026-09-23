@@ -115,21 +115,34 @@ internal class TrackMixController(
         return suppress
     }
 
+    private fun shouldSuppressIntermediatePopup(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (now <= nativeToastSuppressionUntilMs) return true
+        val request = pending ?: return false
+        val age = now - request.createdAt
+        // Track Mix normally finishes in a few seconds. Keep a bounded
+        // guard active while its native Play/Clear/Auto-DJ transition is
+        // still pending so delayed GMMP status UI (including the
+        // Auto-DJ-rules-changed message) cannot become a second/third
+        // user-facing popup. Never suppress unrelated notifications
+        // indefinitely if a provider/refill stalls.
+        return age in 0..20_000L &&
+            request.stage != "DONE"
+    }
+
     fun shouldSuppressNativeToast(candidate: Toast?): Boolean {
         if (candidate == null) return false
         synchronized(ownToasts) {
             if (ownToasts.remove(candidate) != null) return false
         }
-        if (SystemClock.elapsedRealtime() > nativeToastSuppressionUntilMs) {
-            return false
-        }
+        if (!shouldSuppressIntermediatePopup()) return false
         val count = suppressedToastCount.incrementAndGet()
         Log.i(TAG, "MIX POPUP | native GMMP toast hidden | count=$count")
         return true
     }
 
     fun shouldSuppressNativeSnackbar(): Boolean =
-        SystemClock.elapsedRealtime() <= nativeToastSuppressionUntilMs
+        shouldSuppressIntermediatePopup()
 
     fun captureNativeQueue(instance: Any?) {
         if (instance?.javaClass?.name == "ex3") {
@@ -335,39 +348,41 @@ internal class TrackMixController(
             val cleared = if (loaded.ids.size == 1) {
                 loaded
             } else {
-                sendCommand(request.context, COMMAND_CLEAR_QUEUE)
-                val clearStarted = SystemClock.elapsedRealtime()
-                val first = awaitQueue(request, 3_000L) {
-                    TrackMixPlan.isSeedIsolated(
-                        selectedId, loaded.ids, loaded.currentIndex,
-                        it.ids, it.currentIndex
-                    )
-                }
-                if (first != null || !isCurrent(request)) {
-                    first
-                } else {
-                    // An already-active GMMP Auto-DJ can refill during
-                    // native Play and overtake the first Clear command.
-                    // Retry once after it has had time to settle.
+                var isolated: Snapshot? = null
+                // Native queue callbacks and an already-active Auto-DJ can
+                // overlap for a short moment after selecting a row from the
+                // queue. Refills are held while CLEARING; use a bounded
+                // three-attempt clear rather than failing on one unlucky
+                // callback ordering. Abort immediately if the selected song
+                // is no longer current.
+                for (attempt in 1..3) {
+                    if (!isCurrent(request)) break
                     val latest = queueSnapshot()
-                    if (latest?.currentId == selectedId) {
-                        Log.i(
-                            TAG,
-                            "MIX CLEAR RETRY | play/refill overlap | " +
-                                "queueSize=${latest.ids.size}"
+                    if (latest?.currentId != selectedId) break
+
+                    Log.i(
+                        TAG,
+                        "MIX CLEAR ATTEMPT | attempt=$attempt | " +
+                            "queueSize=${latest.ids.size}"
+                    )
+                    sendCommand(request.context, COMMAND_CLEAR_QUEUE)
+                    isolated = awaitQueue(
+                        request,
+                        if (attempt == 1) 2_500L else 2_000L
+                    ) {
+                        TrackMixPlan.isSeedIsolated(
+                            selectedId, loaded.ids, loaded.currentIndex,
+                            it.ids, it.currentIndex
                         )
-                        sendCommand(request.context, COMMAND_CLEAR_QUEUE)
-                        val retryStart = SystemClock.elapsedRealtime()
-                        awaitQueue(request, 4_000L) {
-                            TrackMixPlan.isSeedIsolated(
-                                selectedId, loaded.ids, loaded.currentIndex,
-                                it.ids, it.currentIndex
-                            )
-                        }
-                    } else {
-                        null
                     }
+                    if (isolated != null) break
+
+                    // Give native observers one short settle interval before
+                    // another Clear. This is still well inside the bounded
+                    // Track Mix startup window and does not create popups.
+                    Thread.sleep(220L)
                 }
+                isolated
             }
             if (cleared == null) {
                 val finalSnapshot = queueSnapshot()
@@ -450,7 +465,7 @@ internal class TrackMixController(
                 // Play/Clear/Auto-DJ toasts are scoped out above.
                 toast(request.context, request.confirmation)
                 nativeToastSuppressionUntilMs =
-                    SystemClock.elapsedRealtime() + 1_500L
+                    SystemClock.elapsedRealtime() + 3_000L
             }
         } catch (failure: Throwable) {
             Log.e(TAG, "Track Mix failed", failure)
