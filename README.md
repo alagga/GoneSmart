@@ -218,7 +218,9 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 
 ## Companion UI and player indicator
 
-The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. The Smart DJ tab uses a headphones icon matching GMMP's Auto-DJ concept; the UI tab contains optional GMMP interface extensions such as multi-playlist selection.
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and the available UI tweaks, plus module and update status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection. **Help → Settings** explains that both kinds of settings apply live without restarting GMMP (a restart is still recommended after module updates).
+
+In **Smart DJ → Matching**, Rating fallback is unavailable until **Minimum rating** is above 0 or **Smart rating** is enabled. Its switch is greyed out when neither restriction is active, then becomes available immediately when you turn one on.
 
 When GMMP is in Auto-DJ mode, GoneSmart adds a small sparkle to the headphones/playback-mode icon:
 
