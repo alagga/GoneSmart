@@ -256,18 +256,30 @@ internal class TrackMixController(
                 loaded
             } else {
                 sendCommand(request.context, COMMAND_CLEAR_QUEUE)
+                val clearStarted = SystemClock.elapsedRealtime()
                 awaitQueue(request, 5_000L) {
-                    it.ids.size == 1 && it.currentId == selectedId
+                    it.currentId == selectedId &&
+                        (
+                            it.ids.size == 1 ||
+                                (SystemClock.elapsedRealtime() - clearStarted > 450L &&
+                                    it.currentIndex == 0 &&
+                                    it.ids != loaded.ids)
+                            )
                 }
             }
             if (cleared == null) {
                 fail("Could not isolate the selected song in the queue.", request.context)
                 return
             }
-            Log.i(TAG, "MIX SEED | queueSize=1 | currentPreserved=true")
+            Log.i(
+                TAG,
+                "MIX SEED | queueSize=${cleared.ids.size} | " +
+                    "currentPreserved=true"
+            )
             request.stage = "FILLING"
-            val initial = settings.read().initialQueueSize.coerceAtLeast(1)
-            val upcoming = settings.read().upcomingTrackCount
+            val nativeSettings = settings.read()
+            val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
+            val upcoming = nativeSettings.upcomingTrackCount
             sendCommand(request.context, COMMAND_AUTO_DJ)
             Log.i(
                 TAG,
@@ -346,7 +358,9 @@ internal class TrackMixController(
                 val age = SystemClock.elapsedRealtime() - stableAt
                 if (age >= 350 && (
                         changed ||
-                            SystemClock.elapsedRealtime() - request.createdAt > 1_500L
+                            (request.source == "menu_gm_context_queue" &&
+                                request.nativeSource == "ex3.b2") ||
+                            SystemClock.elapsedRealtime() - request.createdAt > 4_000L
                         )
                 ) return current
             } else {
