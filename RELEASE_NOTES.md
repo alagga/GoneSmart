@@ -9,6 +9,11 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - Correct highlights while scrolling, GMMP's dynamic theme colors, native localized selection text, back cancellation and one aggregate completion message.
 - A compact GMMP-style headphones icon replaces the Smart DJ sparkle-only bottom-navigation icon. The player itself keeps its colored sparkle status indicator.
 
+## Companion app polish
+
+- Home highlights both Smart DJ and UI tweaks. General live-settings guidance now lives in Help, where it applies to both categories.
+- Smart DJ's Rating fallback switch is greyed out unless Minimum rating or Smart rating is active; changing either restriction updates the switch immediately without losing the saved preference.
+
 ## Update management
 
 - **Home → Updates** checks GitHub's latest published stable release on companion-app launch and shows current/newer/development/error states.
