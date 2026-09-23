@@ -402,7 +402,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
             title = "Settings apply live",
-            body = "Smart DJ and UI settings both apply directly to a running GMMP session. Recommendation changes refresh the smart pool on the next refill; UI changes take effect without a restart. Restart GMMP after module updates or when troubleshooting."
+            body = "Changes in Smart DJ and UI take effect while GMMP is running. Restart GMMP only after a GoneSmart update or if something isn't working."
         ))
 
         return scrollPage(container)
@@ -417,8 +417,8 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(
                 key = GoneSmartSettingsKeys.KEY_ENABLED,
                 glyph = "✦",
-                title = "Enable GoneSmart",
-                subtitle = "Use GoneSmart whenever GMMP Auto-DJ needs tracks.",
+                title = "Enable Smart DJ",
+                subtitle = "Let GoneSmart choose music when GMMP Auto-DJ needs more tracks.",
                 accent = COLOR_ACCENT
             )
         )))
@@ -446,7 +446,7 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                 "★",
                 "Prefer higher-rated matches",
-                "Use GMMP ratings as a small tie-break bonus after hard rating filters.",
+                "When several tracks are suitable, favor the ones you've rated higher.",
                 COLOR_ACCENT
             ),
             SettingSpec(
@@ -460,7 +460,7 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_PREFER_STUDIO,
                 "L",
                 "Prefer studio over live",
-                "Penalize live versions unless the current context is live.",
+                "Prefer studio recordings unless you're listening to live music.",
                 COLOR_AMBER
             ),
             SettingSpec(
@@ -474,7 +474,7 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_FAVOR_RECENTLY_ADDED,
                 "+",
                 "Favor recently added tracks",
-                "Use GMMP's date-added signal when the current queue is recent.",
+                "Favor recently added songs when you're listening to newer additions.",
                 COLOR_GREEN
             ),
             SettingSpec(
@@ -524,29 +524,11 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
                 "✓",
                 "Multi-playlist selection",
-                "Long-press a playlist in GMMP's Add to Playlist dialog, select " +
-                    "multiple destinations, then confirm once. Uses GMMP's " +
-                    "native playlist writer, theme colors and translations.",
+                "Long-press a playlist when adding songs, select more " +
+                    "playlists and tap the checkmark to add your songs to all of them.",
                 COLOR_ACCENT
             )
         )))
-        container.addView(verticalGap(16))
-        container.addView(infoCard(
-            title = "How to use",
-            body = "In GoneMAD Music Player, choose Add to Playlist for " +
-                "one or more tracks. Long-press the first destination, " +
-                "tap other playlists to select or deselect them, then tap " +
-                "the checkmark to add the same tracks to every selected " +
-                "playlist. Back cancels selection without closing the picker."
-        ))
-        container.addView(verticalGap(12))
-        container.addView(infoCard(
-            title = "Independent of Smart DJ",
-            body = "This feature is optional and works even when Smart DJ " +
-                "is disabled. The normal single-playlist tap and the " +
-                "plus button for creating a playlist are unchanged."
-        ))
-
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
         container.addView(settingGroup(listOf(
@@ -554,10 +536,9 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
                 "⇵",
                 "Flip queue / Play flipped",
-                "Experimental: adds a reverse-order command to the Queue, " +
-                    "Playlist and Smart Playlist menus. Initial testing " +
-                    "checks the three menus and captures native queue " +
-                    "diagnostics without changing playback.",
+                "Reverse your entire queue, or play a playlist or Smart Playlist " +
+                    "from its last song to its first. Preview only: " +
+                    "doesn't change playback yet.",
                 COLOR_ACCENT
             )
         )))
