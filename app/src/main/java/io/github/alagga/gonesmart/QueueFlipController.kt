@@ -57,10 +57,16 @@ internal class QueueFlipController {
         }
 
     private val mainThread = Handler(Looper.getMainLooper())
+    private val eventReporter = GoneSmartRuntimeReporter()
 
     private data class PendingPlayback(
         val kind: Kind,
         val createdAt: Long
+    )
+
+    data class ReversedPlayback(
+        val tracks: List<Any>,
+        val sourceKind: String
     )
 
     @Volatile
@@ -200,7 +206,13 @@ internal class QueueFlipController {
     private enum class Kind {
         QUEUE,
         PLAYLIST,
-        SMART
+        SMART;
+
+        fun displayName(): String = when (this) {
+            QUEUE -> "queue"
+            PLAYLIST -> "playlist"
+            SMART -> "Smart Playlist"
+        }
     }
 
     private fun onFlipPressed(
@@ -248,6 +260,10 @@ internal class QueueFlipController {
     ) {
         if (!nativePlaylistInterceptorReady) {
             Log.e(TAG, "FLIP PLAY | native playlist interception unavailable")
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Reverse playback unavailable: GMMP integration was not initialized."
+            )
             toast(context, "Reverse playback is unavailable in this GMMP version.")
             return
         }
@@ -261,6 +277,10 @@ internal class QueueFlipController {
 
         if (play == null || listener == null) {
             Log.e(TAG, "FLIP PLAY | kind=$kind | native row listener unavailable")
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Could not start ${kind.displayName()} in reverse."
+            )
             toast(context, "Unable to start this playlist in reverse.")
             return
         }
@@ -276,11 +296,19 @@ internal class QueueFlipController {
             if (!started) {
                 synchronized(this) { pendingPlayback = null }
                 Log.w(TAG, "FLIP PLAY | kind=$kind | native listener declined")
+                eventReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Could not start ${kind.displayName()} in reverse."
+                )
                 toast(context, "Could not start this playlist.")
             }
         } catch (failure: Throwable) {
             synchronized(this) { pendingPlayback = null }
             Log.e(TAG, "FLIP PLAY | native Play failed", failure)
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Could not start ${kind.displayName()} in reverse."
+            )
             toast(context, "Could not start this playlist.")
         }
     }
@@ -298,7 +326,7 @@ internal class QueueFlipController {
     fun consumeReversePlaylistForNativePlay(
         action: Int?,
         tracks: List<*>?
-    ): List<*>? {
+    ): ReversedPlayback? {
         if (!enabled) return null
         val source = tracks ?: return null
         val pending = synchronized(this) {
@@ -306,6 +334,10 @@ internal class QueueFlipController {
             if (SystemClock.elapsedRealtime() - request.createdAt > 30_000L) {
                 pendingPlayback = null
                 Log.w(TAG, "FLIP PLAY | timed out waiting for native playlist")
+                eventReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Reverse playlist playback timed out."
+                )
                 return@synchronized null
             }
             if (action != 0 || source.isEmpty()) return@synchronized null
@@ -335,7 +367,10 @@ internal class QueueFlipController {
                 runCatching { firstSongId(reversed.first()) }.getOrNull() +
                 " | action=0 | nativeQueueWriter=MusicService.w1"
         )
-        return reversed
+        return ReversedPlayback(
+            tracks = reversed,
+            sourceKind = pending.kind.displayName()
+        )
     }
 
     /**
@@ -343,18 +378,29 @@ internal class QueueFlipController {
      * w1 -> ex3.w transaction has had time to complete. This makes one
      * combined on-device test enough to diagnose all three actions.
      */
-    fun verifyNativePlaylistPlayback(expectedTracks: List<*>) {
+    fun verifyNativePlaylistPlayback(
+        expectedTracks: List<*>,
+        sourceKind: String
+    ) {
         val expectedIds = expectedTracks.filterNotNull().mapNotNull {
             runCatching { (firstSongId(it) as Number).toLong() }.getOrNull()
         }
         if (expectedIds.size != expectedTracks.size) {
             Log.w(TAG, "FLIP PLAY VERIFY | native track IDs unavailable")
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Could not verify reverse $sourceKind playback: track IDs unavailable."
+            )
             return
         }
         diagnosticsExecutor.execute {
             val queue = nativeQueue?.get()
             if (queue == null) {
                 Log.w(TAG, "FLIP PLAY VERIFY | queue not captured")
+                eventReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Could not verify reverse $sourceKind playback: queue unavailable."
+                )
                 return@execute
             }
             repeat(12) { attempt ->
@@ -375,21 +421,33 @@ internal class QueueFlipController {
                             .apply { isAccessible = true }
                             .invoke(queue)
                     }.getOrNull()
-                    Log.i(
-                        TAG,
-                        "FLIP PLAY VERIFIED | expected=${expectedIds.size} | " +
-                            "queueSize=${actualIds.size} | " +
-                            "first=${actualIds.firstOrNull()} | " +
-                            "last=${actualIds[expectedIds.size - 1]} | " +
-                            "currentPosition=$position | checks=${attempt + 1}"
-                    )
-                    return@execute
+                    if (position == 1) {
+                        Log.i(
+                            TAG,
+                            "FLIP PLAY VERIFIED | kind=$sourceKind | " +
+                                "expected=${expectedIds.size} | " +
+                                "queueSize=${actualIds.size} | " +
+                                "first=${actualIds.firstOrNull()} | " +
+                                "last=${actualIds[expectedIds.size - 1]} | " +
+                                "currentPosition=$position | checks=${attempt + 1}"
+                        )
+                        eventReporter.reportEvent(
+                            GoneSmartRuntimeContract.CATEGORY_FLIP,
+                            "Playing $sourceKind in reverse: " +
+                                "${expectedIds.size} tracks, starting with the original last."
+                        )
+                        return@execute
+                    }
                 }
             }
             Log.e(
                 TAG,
-                "FLIP PLAY VERIFY | queue did not match reversed playlist " +
-                    "after 3 seconds"
+                "FLIP PLAY VERIFY | $sourceKind playback did not match " +
+                    "reversed playlist after 3 seconds"
+            )
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Reverse $sourceKind playback could not be verified."
             )
         }
     }
@@ -409,10 +467,17 @@ internal class QueueFlipController {
         }
         diagnosticsExecutor.execute {
             try {
-                performNativeQueueFlip()
-                toast(context, "Queue reversed.")
+                val count = performNativeQueueFlip()
+                toast(
+                    context,
+                    if (count > 1) "Queue reversed." else "Queue is too short to reverse."
+                )
             } catch (failure: Throwable) {
                 Log.e(TAG, "FLIP APPLY | failed; see rollback status", failure)
+                eventReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Could not reverse the queue. See Logcat for details."
+                )
                 toast(context, "Could not reverse queue; see GoneSmart log.")
             } finally {
                 queueFlipInProgress = false
@@ -427,7 +492,7 @@ internal class QueueFlipController {
      * queue_position has NO unique index in GMMP 4.2.0, allowing a single
      * batch reverse while keeping duplicate song IDs distinguishable.
      */
-    private fun performNativeQueueFlip() {
+    private fun performNativeQueueFlip(): Int {
         val queue = nativeQueue?.get()
             ?: error("GMMP native queue not captured")
         val dao = field(queue, "r")
@@ -448,7 +513,7 @@ internal class QueueFlipController {
         val original = snapshot()
         if (original.size < 2) {
             Log.i(TAG, "FLIP APPLY | queue too short; no changes")
-            return
+            return original.size
         }
         val oldPositions = original.map {
             (field(it, "a") as? Number)?.toInt()
@@ -508,6 +573,12 @@ internal class QueueFlipController {
                     "currentEntryId=$oldCurrentEntryId | " +
                     "verified=true | writer=xx3.O0"
             )
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_FLIP,
+                "Reversed ${original.size}-track queue. " +
+                    "Current song moved from position $oldPosition to $newPosition."
+            )
+            return original.size
         } catch (failure: Throwable) {
             // Restore the original queue if the write succeeded but the
             // native playback pointer/verification failed.
@@ -519,8 +590,16 @@ internal class QueueFlipController {
                     writer.invoke(dao, ArrayList(original))
                     pointer.invoke(queue, oldPosition)
                     Log.w(TAG, "FLIP ROLLBACK | previous queue restored")
+                    eventReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_FLIP,
+                        "Queue reversal failed; original order restored."
+                    )
                 }.onFailure {
                     Log.e(TAG, "FLIP ROLLBACK | failed", it)
+                    eventReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_FLIP,
+                        "Queue reversal and recovery failed; check your queue."
+                    )
                 }
             }
             throw (failure as? InvocationTargetException)?.targetException
