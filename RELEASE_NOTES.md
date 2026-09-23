@@ -8,6 +8,8 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - Writes through GMMP's native playlist-add operation for every selected source file. Normal single-destination taps and create-playlist behavior are unchanged.
 - Correct highlights while scrolling, GMMP's dynamic theme colors, native localized selection text, back cancellation and one aggregate completion message.
 - A compact GMMP-style headphones icon replaces the Smart DJ sparkle-only bottom-navigation icon. The player itself keeps its colored sparkle status indicator.
+- Home has balanced Smart DJ/UI feature summaries and a shared **Settings apply live** explanation, rather than repeating it under one feature.
+- **Rating fallback** is disabled and unchecked whenever Minimum rating is off and Smart rating is disabled. It becomes selectable when either rating restriction is active.
 
 ## Update management
 
