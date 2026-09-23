@@ -22,7 +22,7 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
   reported the feature working on-device. Other GMMP versions and every
   possible playback/queue race have not been tested.
 
-## In development: Track Mix / Titel-Mix
+## In development: Track Auto-DJ / Titel Auto-DJ
 
 - Third item after **Play** and **Play next** in individual-song
   three-dot menus (queue, track library, playlist details, search,
@@ -34,16 +34,16 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - Uses GMMP's native playback commands and GoneSmart's existing
   recommendation pipeline. Includes a timeout, conservative queue
   verification, and safeguards against dispatching multiple mixes.
-- **Track Mix** now has an independent live switch under **UI → Playback & Queue** (enabled by default for existing users).
-- The selected seed is preserved through native Clear Queue; native Auto-DJ refills are held briefly during Play/Clear to avoid the intermittent overlap observed in queue-based mixes. Queue isolation now allows up to three bounded native Clear attempts before reporting failure, with the selected seed verified between attempts.
-- **One localized confirmation only** after verified success; native GMMP Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed UI—are suppressed only during the bounded Track Mix transition. Important failures still produce one warning and are recorded in Logs.
-- German is **Titel-Mix**, English **Track Mix**; other supported GMMP languages reuse their native translated track and Auto-DJ nouns, not an English-only Mix label. Unit tests cover label and confirmation fallback behavior.
-- **Six successful five-track mixes and one intermittent pre-clear error** appeared in the 24 September device log. The concurrency and popup fixes in this build still need a normal-use follow-up before public release; they are not yet device-verified.
+- **Track Auto-DJ** now has an independent live switch under **UI → Playback & Queue** (enabled by default for existing users).
+- The selected seed is preserved through native Clear Queue; native Auto-DJ refills are held briefly during Play/Clear to avoid the intermittent overlap observed in queue-based mixes. Queue isolation now uses a single native Room transaction to retain the exact current queue entry by unique ID and remove all other entries, rather than retrying the asynchronous CLEAR_QUEUE command.
+- **One localized confirmation only** after verified success; native GMMP Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed UI—are suppressed only during the bounded Track Auto-DJ transition. Important failures still produce one warning and are recorded in Logs.
+- Every GMMP language now composes the action name from its own translated **track** and **Auto-DJ** terms with a normal space: German **Titel Auto-DJ**, English **Track Auto-DJ**. The confirmation reuses GMMP's translated *started* resource when available.
+- **Six successful five-track mixes and one intermittent pre-clear error** appeared in the 24 September device log. The direct native transaction and localized-label changes still require one combined on-device regression check before public release.
 
 ## Expanded companion Logs
 
 - Logs now covers **Smart DJ**, **multi-playlist selection**, **Flip**,
-  **Track Mix** and **UI/System** events, with category labels and recent
+  **Track Auto-DJ** and **UI/System** events, with category labels and recent
   category totals.
 - Native-verified Flip successes and failures/recovery attempts, playlist
   multi-add completion, and live UI option changes are shown in the app.
