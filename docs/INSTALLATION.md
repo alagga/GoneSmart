@@ -9,7 +9,14 @@ GoneSmart targets libxposed API 102. The recommended rooted setup is JingMatrix 
 3. In the module manager, enable GoneSmart and scope it to `gonemad.gmmp`.
 4. Force stop GoneMAD Music Player and reopen it.
 5. Open GoneSmart and verify that the Xposed service is connected and GMMP is detected.
-6. Enable GMMP's normal Auto-DJ mode. GoneSmart only replaces the track-selection portion of Auto-DJ.
+6. For Smart DJ, enable GMMP's normal Auto-DJ mode. GoneSmart only replaces the track-selection portion of Auto-DJ.
+7. For multi-playlist selection, open GoneSmart's **UI** tab and enable **Multi-playlist selection**. This feature also works when Smart DJ is disabled.
+
+### Automatic update checks and Obtainium
+
+On launch, GoneSmart checks the latest published stable version via the GitHub Releases API. The status appears on **Home → Updates** and no APK is downloaded automatically.
+
+Tap **Add to Obtainium** in GoneSmart, or use the [Add to Obtainium link](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fadd%3Furl%3Dhttps%253A%252F%252Fgithub.com%252Falagga%252FGoneSmart) on the README. Obtainium tracks this GitHub repository and handles updates once you approve importing it. Keep your original APK's signing lineage: an APK signed with a different key cannot update an existing installation in place.
 
 ### If the module does not become active
 

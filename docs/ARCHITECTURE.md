@@ -98,6 +98,8 @@ The companion app provides:
 - live settings updates
 - high-level GoneSmart runtime logs
 - FAQ/help
+- independently enabled UI-tab extensions
+- GitHub Releases update status and Obtainium deep link
 - GMMP restart shortcut
 
 Settings are shared with the module through libxposed remote preferences so normal preference changes do not require restarting GMMP.
@@ -109,6 +111,16 @@ Settings are shared with the module through libxposed remote preferences so norm
 - green: Smart Auto-DJ is ready
 - red: smart selection cannot currently supply a track / native fallback is active
 - none: GMMP Auto-DJ is inactive or GoneSmart is disabled
+
+## Optional UI integration: multi-playlist selection
+
+`PlaylistMultiSelectController` is an independently enabled feature in the **UI** tab. It intercepts GMMP 4.2.0's native Add to Playlist row actions through `GoneSmartModule`, identifies destinations by the native playlist path rather than recycled RecyclerView holders, and dispatches each destination through GMMP's own `io3.r(Context, ie0)` operation.
+
+It preserves the original source selection and single-playlist behavior. The multi-add batch suppresses only duplicate native navigation and per-destination success Toasts, issuing one aggregate result instead. GMMP's own Aesthetic color observables and localized resources provide theme-sensitive selection highlights and interface text. These hooks are version-sensitive and require on-device compatibility checks when GMMP changes.
+
+## Update checking and distribution
+
+`GitHubReleaseChecker` performs a lightweight asynchronous, read-only check against the latest published **stable** GitHub Release when the companion app starts. The Home tab compares the published version with `BuildConfig.VERSION_NAME` and shows newer/current/development/unavailable states. It never downloads or installs APKs. **Add to Obtainium** delegates subsequent signed APK updates to Obtainium's documented deep link.
 
 ## Tech stack
 

@@ -103,9 +103,13 @@ class GoneSmartModule : XposedModule() {
                     preferences
                 )
 
+            if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
+                playlistController.setEnabled(options.multiPlaylistEnabled)
+            }
+
             if (
-                key !=
-                GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES
+                key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
+                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST
             ) {
 
                 pipelineGeneration
@@ -243,6 +247,9 @@ class GoneSmartModule : XposedModule() {
 
     private val playerBadgeController =
         PlayerAutoDjBadgeController()
+
+    private val playlistController =
+        PlaylistMultiSelectController()
 
     private val recommendationPool =
         SessionRecommendationPool()
@@ -398,6 +405,22 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
+            // Native playlist UI is opt-in through the companion app and
+            // remains independent of the Smart Auto-DJ recommendation mode.
+            // Hook registration is available in release builds too.
+            if (true) {
+                try {
+                    playlistController.setEnabled(options.multiPlaylistEnabled)
+                    installPlaylistMultiSelectHooks(param)
+                } catch (playlistHookError: Throwable) {
+                    Log.w(
+                        TAG,
+                        "Experimental playlist hooks unavailable; native picker unaffected",
+                        playlistHookError
+                    )
+                }
+            }
+
             Log.i(
                 TAG,
                 "All GoneSmart core hooks installed successfully"
@@ -411,6 +434,281 @@ class GoneSmartModule : XposedModule() {
                 t
             )
         }
+    }
+
+    /**
+     * Debug-only experimental multi-destination playlist picker for GMMP 4.2.0.
+     * Hooks only native picker methods and the three verified UI callbacks.
+     * The native io3 handler performs all actual playlist writes.
+     */
+    private fun installPlaylistMultiSelectHooks(
+        param: PackageReadyParam
+    ) {
+        val pickerClass = param.classLoader.loadClass("bo3")
+
+        listOf("I3", "k2", "D1").forEach { name ->
+            val method = pickerClass.declaredMethods
+                .firstOrNull {
+                    it.name == name && it.parameterCount == 0
+                } ?: throw NoSuchMethodException("bo3.$name()")
+
+            method.isAccessible = true
+            hook(method).intercept { chain ->
+                if (name == "I3") {
+                    playlistController.beginPicker(
+                        chain.getThisObject()
+                    )
+                }
+
+                val result = chain.proceed()
+                try {
+                    when (name) {
+                        "k2" -> (result as? android.view.View)?.let {
+                            playlistController.onFabFound(it)
+                        }
+                        "D1" -> (result as? android.view.View)?.let {
+                            playlistController.onListFound(it)
+                        }
+                    }
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Playlist $name observer failed", error)
+                }
+                result
+            }
+        }
+
+        // go3.y2() constructs this native handler using the original
+        // source selection (ho3). Capture it during picker startup.
+        val handlerClass = param.classLoader.loadClass("io3")
+        val nativeConstructor = handlerClass.declaredConstructors
+            .firstOrNull {
+                it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0].name == "ho3" &&
+                    it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            } ?: throw NoSuchMethodException("io3(ho3, boolean)")
+
+        nativeConstructor.isAccessible = true
+        hook(nativeConstructor).intercept { chain ->
+            val result = chain.proceed()
+            playlistController.onNativeHandler(
+                chain.getThisObject()
+            )
+            result
+        }
+
+        // GMMP io3.r() builds one jd(mode=4) completion callback per
+        // playlist. Each successful callback posts j83 to the activity,
+        // whose onEvent(j83) navigates back once. Scope ONLY callbacks
+        // created by our multi-add and forward that event once per batch.
+        // Regular one-playlist adds and unrelated back actions are unchanged.
+        runCatching {
+            val callbackClass = param.classLoader.loadClass("jd")
+            val nativeCallbackConstructor =
+                callbackClass.declaredConstructors.first {
+                    it.parameterTypes.size == 3 &&
+                        it.parameterTypes[0] == Int::class.javaPrimitiveType
+                }.apply { isAccessible = true }
+
+            hook(nativeCallbackConstructor).intercept { chain ->
+                val result = chain.proceed()
+                playlistController.onNativeResultCallbackConstructed(
+                    chain.getThisObject(),
+                    chain.getArg(0)
+                )
+                result
+            }
+
+            val invoke = callbackClass.getDeclaredMethod(
+                "invoke",
+                Any::class.java
+            ).apply { isAccessible = true }
+
+            hook(invoke).intercept { chain ->
+                playlistController.aroundNativeResultCallback(
+                    chain.getThisObject()
+                ) {
+                    chain.proceed()
+                }
+            }
+
+            val eventBusClass = param.classLoader.loadClass("f2")
+            val emitEvent = eventBusClass.getDeclaredMethod(
+                "b",
+                Any::class.java
+            ).apply { isAccessible = true }
+
+            hook(emitEvent).intercept { chain ->
+                if (
+                    playlistController.shouldSuppressNativeCloseEvent(
+                        chain.getArg(0)
+                    )
+                ) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI NAV READY | one native j83 close event per batch"
+            )
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "Playlist native navigation guard unavailable",
+                error
+            )
+        }
+
+        // GMMP displays a native Toast for each playlist completion.
+        // Hide only those Toast.show() calls made INSIDE the jd(mode=4)
+        // callbacks tagged during GoneSmart multi-add. The controller
+        // posts one aggregated Toast using GMMP's own app context once
+        // all successful native completions have been observed.
+        // The normal GMMP one-playlist operation is never affected.
+        runCatching {
+            val nativeToastShow = android.widget.Toast::class.java
+                .getDeclaredMethod("show")
+                .apply { isAccessible = true }
+            hook(nativeToastShow).intercept { chain ->
+                if (playlistController.shouldSuppressNativeResultToast()) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI TOAST READY | native results scoped to one summary"
+            )
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "Playlist native result Toast hook unavailable",
+                error
+            )
+        }
+
+        val clickClass = param.classLoader.loadClass("xj5\$a")
+        val clickMethod = clickClass.getDeclaredMethod(
+            "onClick",
+            android.view.View::class.java
+        )
+        clickMethod.isAccessible = true
+        hook(clickMethod).intercept { chain ->
+            val view = chain.getArg(0) as? android.view.View
+            val intercepted = runCatching {
+                playlistController.onClick(view)
+            }.getOrElse { error ->
+                Log.e(TAG, "Playlist click interception failed", error)
+                false
+            }
+
+            if (intercepted) null else chain.proceed()
+        }
+
+        val longClickClass = param.classLoader.loadClass("rk5\$a")
+        val longClickMethod = longClickClass.getDeclaredMethod(
+            "onLongClick",
+            android.view.View::class.java
+        )
+        longClickMethod.isAccessible = true
+        hook(longClickMethod).intercept { chain ->
+            val view = chain.getArg(0) as? android.view.View
+            val intercepted = runCatching {
+                playlistController.onLongClick(view)
+            }.getOrElse { error ->
+                Log.e(TAG, "Playlist long-click interception failed", error)
+                false
+            }
+
+            if (intercepted) true else chain.proceed()
+        }
+
+        // GMMP reuses PlaylistAdd row views while scrolling. Refresh the
+        // tint AFTER a native bind so no selected background can leak onto
+        // an unrelated playlist occupying the same RecyclerView holder.
+        runCatching {
+            val adapterClass = param.classLoader.loadClass("zn3")
+            val bindMethods = adapterClass.declaredMethods.filter { method ->
+                method.name == "N0" && method.parameterCount >= 1
+            }
+            bindMethods.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    val holder = (0 until method.parameterCount)
+                        .map { index -> chain.getArg(index) }
+                        .firstOrNull { it?.javaClass?.name == "jo3" }
+                    if (holder != null) {
+                        playlistController.onRowBound(holder)
+                    }
+                    result
+                }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI ROW BIND | native zn3.N0 hooks=${bindMethods.size}"
+            )
+        }.onFailure { error ->
+            Log.w(
+                TAG,
+                "Native row-bind hook unavailable; scroll observer remains active",
+                error
+            )
+        }
+
+        // The native FAB normally disappears while scrolling. Suppress
+        // its hide animation only while GoneSmart multi-select is active.
+        runCatching {
+            val fabClass = param.classLoader.loadClass(
+                "com.google.android.material.floatingactionbutton.FloatingActionButton"
+            )
+            fabClass.declaredMethods
+                .filter {
+                    it.name == "hide" &&
+                        it.returnType == Void.TYPE
+                }
+                .forEach { method ->
+                    method.isAccessible = true
+                    hook(method).intercept { chain ->
+                        if (
+                            playlistController.shouldBlockFabHide(
+                                chain.getThisObject()
+                            )
+                        ) {
+                            null
+                        } else {
+                            chain.proceed()
+                        }
+                    }
+                }
+        }.onFailure { error ->
+            Log.w(TAG, "FAB hide hook unavailable; layout pin remains", error)
+        }
+
+        runCatching {
+            val backClass = param.classLoader.loadClass(
+                "androidx.activity.OnBackPressedDispatcher"
+            )
+            val backMethod = backClass.getDeclaredMethod("onBackPressed")
+            backMethod.isAccessible = true
+            hook(backMethod).intercept { chain ->
+                if (playlistController.consumeBack()) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Playlist back-gesture hook unavailable", error)
+        }
+
+        Log.i(
+            "GoneSmartPlaylist",
+            "MULTI READY | experimental native playlist picker (debug build)"
+        )
     }
 
     private fun initializeRemoteSettings() {

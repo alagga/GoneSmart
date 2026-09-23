@@ -67,3 +67,17 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 ## Does changing settings require a restart?
 
 Normally no. Settings are sent to the running GMMP process and recommendation-related changes invalidate the existing pool. Restart GMMP is mainly needed after module updates or when troubleshooting hook state.
+
+## How do I add several tracks to several playlists?
+
+Enable **Multi-playlist selection** under GoneSmart's **UI** tab. In GMMP's Add to Playlist dialog, long-press the first destination and tap further destinations. The confirmation checkmark adds all original source files to each selected playlist using GMMP's own playlist writer. The confirmation appears once, with the number of files and successfully updated destinations. Press Back to cancel selection without dismissing the picker.
+
+The selected rows and action bar follow GMMP's dynamic colors. GoneSmart reuses GMMP's own localized strings for this feature; another GMMP language does not require a separate GoneSmart translation. Normal taps and GMMP's create-playlist plus button remain unchanged.
+
+## Can I use the UI feature without Smart DJ?
+
+Yes. Multi-playlist selection has its own switch and works when Smart DJ is turned off, provided the module is enabled for GMMP.
+
+## How are GoneSmart updates handled?
+
+The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.

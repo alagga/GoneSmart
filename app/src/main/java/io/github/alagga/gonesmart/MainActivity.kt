@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -23,6 +24,7 @@ import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.content.res.AppCompatResources
 import com.google.android.material.button.MaterialButton
@@ -55,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private enum class Tab {
         HOME,
         SMART,
+        UI,
         LOGS,
         HELP
     }
@@ -68,6 +71,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frameworkStatusText: TextView
     private lateinit var runtimeStatusText: TextView
     private lateinit var compatibilityText: TextView
+    private var updateStatusText: TextView? = null
+    private var updateVersionText: TextView? = null
+    private var updateState: GitHubReleaseChecker.State = GitHubReleaseChecker.State.Checking
+    private var updateCheckRunning = false
     private lateinit var logTextView: TextView
     private lateinit var logCountText: TextView
     private var minimumRatingSlider: Slider? = null
@@ -106,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         showTab(Tab.HOME)
         refreshSettingsSwitches()
         refreshStatus()
+        checkForUpdates()
     }
 
     override fun onResume() {
@@ -207,7 +215,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         addNavItem(bar, Tab.HOME, "Home", R.drawable.ic_gs_home)
-        addNavItem(bar, Tab.SMART, "Smart DJ", R.drawable.ic_gs_sparkles)
+        addNavItem(bar, Tab.SMART, "Smart DJ", R.drawable.ic_gs_auto_dj_headphones)
+        addNavItem(bar, Tab.UI, "UI", R.drawable.ic_gs_ui)
         addNavItem(bar, Tab.LOGS, "Logs", R.drawable.ic_gs_terminal)
         addNavItem(bar, Tab.HELP, "Help", R.drawable.ic_gs_help)
 
@@ -261,6 +270,7 @@ class MainActivity : AppCompatActivity() {
         val view = when (tab) {
             Tab.HOME -> buildHomePage()
             Tab.SMART -> buildSmartPage()
+            Tab.UI -> buildUiPage()
             Tab.LOGS -> buildLogsPage()
             Tab.HELP -> buildHelpPage()
         }
@@ -282,6 +292,7 @@ class MainActivity : AppCompatActivity() {
         if (tab == Tab.LOGS) {
             refreshLogs()
         }
+        refreshUpdateStatus()
         refreshStatus()
     }
 
@@ -328,6 +339,44 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(54)
         ))
+
+        container.addView(verticalGap(24))
+        container.addView(sectionTitle("UPDATES"))
+        val updateCard = card()
+        val updateContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(19), dp(18), dp(19), dp(18))
+        }
+        updateContent.addView(
+            textView("Installed v${BuildConfig.VERSION_NAME}", 15f, COLOR_TEXT, bold = true)
+        )
+        updateStatusText = textView("Checking GitHub Releases…", 16f, COLOR_TEXT_SECONDARY).apply {
+            setPadding(0, dp(12), 0, dp(3))
+        }
+        updateVersionText = textView("", 13f, COLOR_MUTED)
+        updateContent.addView(updateStatusText)
+        updateContent.addView(updateVersionText)
+        updateCard.addView(updateContent)
+        container.addView(updateCard)
+        container.addView(verticalGap(12))
+        container.addView(actionButton("Add to Obtainium") {
+            openObtainium()
+        })
+        container.addView(verticalGap(10))
+        container.addView(outlineButton("Check for updates") {
+            checkForUpdates()
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(54)
+        ))
+        container.addView(verticalGap(10))
+        container.addView(outlineButton("View GitHub releases") {
+            openUrl("https://github.com/alagga/GoneSmart/releases")
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(54)
+        ))
+        refreshUpdateStatus()
 
         container.addView(verticalGap(24))
         container.addView(sectionTitle("SMART DJ"))
@@ -454,6 +503,41 @@ class MainActivity : AppCompatActivity() {
             body = "A valid pool from the current queue can continue offline. A new queue never reuses an old pool; if GoneSmart has no usable cached track, GMMP Auto-DJ takes over and the player sparkle turns red."
         ))
 
+        refreshSettingsSwitches()
+        return scrollPage(container)
+    }
+
+    private fun buildUiPage(): View {
+        val container = pageContainer()
+        container.addView(pageTitle("UI"))
+        container.addView(sectionTitle("PLAYLISTS"))
+        container.addView(settingGroup(listOf(
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
+                "✓",
+                "Multi-playlist selection",
+                "Long-press a playlist in GMMP's Add to Playlist dialog, select " +
+                    "multiple destinations, then confirm once. Uses GMMP's " +
+                    "native playlist writer, theme colors and translations.",
+                COLOR_ACCENT
+            )
+        )))
+        container.addView(verticalGap(16))
+        container.addView(infoCard(
+            title = "How to use",
+            body = "In GoneMAD Music Player, choose Add to Playlist for " +
+                "one or more tracks. Long-press the first destination, " +
+                "tap other playlists to select or deselect them, then tap " +
+                "the checkmark to add the same tracks to every selected " +
+                "playlist. Back cancels selection without closing the picker."
+        ))
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "Independent of Smart DJ",
+            body = "This feature is optional and works even when Smart DJ " +
+                "is disabled. The normal single-playlist tap and the " +
+                "plus button for creating a playlist are unchanged."
+        ))
         refreshSettingsSwitches()
         return scrollPage(container)
     }
@@ -827,6 +911,7 @@ class MainActivity : AppCompatActivity() {
         val options = settingsRepository.read()
 
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
@@ -1036,6 +1121,97 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    private fun refreshUpdateStatus() {
+        val (message, detail, color) = when (val state = updateState) {
+            GitHubReleaseChecker.State.Checking ->
+                Triple("Checking GitHub Releases…", "No APK downloads are started.", COLOR_TEXT_SECONDARY)
+            is GitHubReleaseChecker.State.UpToDate ->
+                Triple(
+                    "You have the latest published release",
+                    "GitHub: v${state.version}",
+                    COLOR_GREEN
+                )
+            is GitHubReleaseChecker.State.NewVersion ->
+                Triple(
+                    "New version available: v${state.version}",
+                    "Open Obtainium to install this update.",
+                    COLOR_AMBER
+                )
+            is GitHubReleaseChecker.State.DevelopmentBuild ->
+                Triple(
+                    "Development build",
+                    "Latest published release: v${state.version}",
+                    COLOR_ACCENT
+                )
+            is GitHubReleaseChecker.State.Unavailable ->
+                Triple(
+                    "Update check unavailable",
+                    "Check your connection or retry. ${state.reason}",
+                    COLOR_TEXT_SECONDARY
+                )
+        }
+        updateStatusText?.apply {
+            text = message
+            setTextColor(color)
+        }
+        updateVersionText?.text = detail
+    }
+
+    private fun checkForUpdates() {
+        if (updateCheckRunning) return
+        updateCheckRunning = true
+        updateState = GitHubReleaseChecker.State.Checking
+        refreshUpdateStatus()
+        GitHubReleaseChecker.check(BuildConfig.VERSION_NAME) { result ->
+            runOnUiThread {
+                updateCheckRunning = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                updateState = result
+                refreshUpdateStatus()
+            }
+        }
+    }
+
+    private fun openUrl(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            Toast.makeText(this, "Could not open link", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openObtainium() {
+        // Official Obtainium deep link; package-pinned so no other app can
+        // intercept this action. Importing is still explicitly confirmed
+        // inside Obtainium, never silently installed by GoneSmart.
+        val intent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("obtainium://add/https://github.com/alagga/GoneSmart")
+        ).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            setPackage("dev.imranr.obtainium")
+        }
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            AlertDialog.Builder(this)
+                .setTitle("Obtainium is not installed")
+                .setMessage(
+                    "Obtainium can track GoneSmart's GitHub Releases " +
+                        "and install signed updates. Install Obtainium " +
+                        "first or add the GoneSmart repository URL manually."
+                )
+                .setPositiveButton("Get Obtainium") { _, _ ->
+                    openUrl("https://github.com/ImranR98/Obtainium/releases/latest")
+                }
+                .setNeutralButton("View GoneSmart") { _, _ ->
+                    openUrl("https://github.com/alagga/GoneSmart")
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     private fun pageContainer(): LinearLayout {

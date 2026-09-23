@@ -37,6 +37,10 @@ The release workflow:
 
 For alpha/beta builds, use a version name such as `0.4.0-beta1`, update the release notes, then manually run **Release APK** with **prerelease** enabled.
 
+## Version checks and Obtainium
+
+The companion app queries GitHub's latest **stable** release on launch, rather than treating feature-branch or CI debug builds as published updates. After merging, bump `versionName` and `versionCode` before creating a new signed release, and use a matching `v<versionName>` release tag. The repository README and app have an **Add to Obtainium** link. Obtainium, not GoneSmart, handles future APK downloads and installation.
+
 ## Local development
 
 After cloning the repository, put your local Last.fm application key in the ignored `local.properties` file. Do not copy the GitHub signing secrets into source files.
@@ -53,4 +57,6 @@ GoneSmart hooks internal GMMP implementation details. Before marking a new GMMP 
 4. test offline/native fallback,
 5. test the green/red player sparkle,
 6. test rating and broad-search fallbacks,
-7. update the compatibility documentation only after verification.
+7. test normal single-playlist and optional multi-playlist selection, including multi-file adds, the aggregate Toast, scrolling, theme changes and returning to the original screen,
+8. verify the in-app version check against the published stable GitHub Release and the Obtainium hand-off,
+9. update compatibility documentation only after verification.
