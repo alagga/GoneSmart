@@ -230,30 +230,40 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun maybeShowNativeSummary(batch: NativeNavigationBatch) {
-        val successful = synchronized(navigationLock) {
+        // Distinguish "still waiting" from "every callback finished, but
+        // GMMP confirmed zero successful destinations". Emit one final
+        // event for either outcome, never intermediate optimistic results.
+        val completed = synchronized(navigationLock) {
             if (batch.summaryScheduled ||
                 !batch.dispatchFinished ||
                 batch.acceptedDestinations <= 0 ||
-                batch.callbacksFinished < batch.acceptedDestinations ||
-                batch.successfulDestinations <= 0
+                batch.callbacksFinished < batch.acceptedDestinations
             ) {
-                0
+                null
             } else {
                 batch.summaryScheduled = true
                 batch.successfulDestinations.coerceAtMost(
                     batch.acceptedDestinations
                 )
             }
+        } ?: return
+        if (completed == 0) {
+            Log.w(TAG, "MULTI RESULT | no successful destinations confirmed")
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+                "Adding songs to multiple playlists was not confirmed."
+            )
+            return
         }
-        if (successful == 0) return
-
-        // One user-facing log event per completed native multi-add batch.
-        // Never log full playlist paths or selected song metadata.
+        val successful = completed
         eventReporter.reportEvent(
             GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
             "Added ${batch.sourceCount} " +
                 "song${if (batch.sourceCount == 1) "" else "s"} to " +
-                "$successful playlist${if (successful == 1) "" else "s"}."
+                "$successful playlist${if (successful == 1) "" else "s"}." +
+                if (successful < batch.acceptedDestinations) {
+                    " (Partial: ${batch.acceptedDestinations} accepted.)"
+                } else ""
         )
 
         // Reuse GMMP's actual localized toast and its own playlist nouns.
@@ -1561,6 +1571,12 @@ internal class PlaylistMultiSelectController {
             )
         }
 
+        if (accepted == 0) {
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+                "Could not start adding the selected songs to playlists."
+            )
+        }
         Log.i(
             TAG,
             "MULTI CONFIRM | accepted=$accepted / ${targets.size}" +
