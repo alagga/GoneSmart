@@ -12,17 +12,17 @@ GoneSmart injects a preview action into three independently controlled GMMP menu
 | Playlists (row three-dot menu) | `menu_gm_context_playlist_list` | Directly **below Shuffle** |
 | Smart Playlists (row three-dot menu) | `menu_gm_context_smart` | Directly **below Shuffle** |
 
-The list and smart-list actions use GMMP's *currently localized* native Play title plus the universal direction symbol `⇵` and a small GoneSmart `✦`. The queue action uses GMMP's localized Queue title. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
+The playlist and smart-playlist actions use GMMP's *currently localized* native Play title, a custom pair of **two thick parallel up/down arrows** (drawn to match the menu text weight), and GoneSmart's full-size **two-star lilac sparkle**. The queue action uses GMMP's localized Queue title with the same arrows and sparkle. Both icons are centered without increasing native menu row height. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
 
 ### First phone test
 
 1. Install the debug APK from the `feature/multi-playlist-add` branch, with GoneSmart's scope enabled for `gonemad.gmmp`. Restart GMMP after installing the **module update**.
 2. In GoneSmart open **UI → Playback & Queue**, enable **Flip queue / Play flipped**. This setting is separate from Smart DJ and Multi-playlist selection.
-3. **Test 1: Queue.** Open GMMP's Queue overflow. The new `Queue ⇵` entry should appear directly **above Remove duplicates** with the **same two-star lilac GoneSmart sparkle** used by the other features. Tap it with a small queue and check that the log prints a `FLIP PLAN | mode=DRY_RUN` line.
-4. **Test 2: Playlist.** Open the three-dot menu of an ordinary playlist. Verify that `Play ⇵` (with the lilac two-star sparkle) follows Shuffle; tap it.
-5. **Test 3: Smart Playlist.** Open a Smart Playlist three-dot menu, verify the same position directly below Shuffle, and tap it.
+3. **Test 1: Queue.** Open GMMP's Queue overflow. The new Queue + bold paired arrows + lilac sparkle entry should appear directly **above Remove duplicates**. Check the **row height matches adjacent native entries**. Tap it with a small queue and check `FLIP NATIVE API`, `FLIP QUEUE` and `FLIP PLAN | mode=DRY_RUN` in Logcat.
+4. **Test 2: Playlist.** Open the three-dot menu of an ordinary playlist. Verify that Play + bold paired arrows + lilac sparkle follows Shuffle without increasing row height; tap it. Logcat should print `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN` for `PLAYLIST`. It must **not log a flip plan for the old queue**.
+5. **Test 3: Smart Playlist.** Open a Smart Playlist three-dot menu, verify the same placement and normal row height, then tap it. Look for `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN` for `SMART`.
 6. All three entries are still a **safe preview**. Tapping them logs diagnostics and shows a preview toast; **no track is reordered and no playlist starts playing** in this build.
-7. Send Logcat lines filtered by `GoneSmartFlip`, especially `FLIP MENU`, `FLIP CLICK`, `FLIP QUEUE`, `FLIP PLAN`, `FLIP PLAN FIRST` and `FLIP PLAN LAST`. The test ordering is always **Queue → Playlist → Smart Playlist**, so consecutive click logs identify their source.
+7. Send Logcat lines filtered by `GoneSmartFlip`, especially `FLIP MENU`, `FLIP CLICK`, `FLIP NATIVE API`, `FLIP QUEUE`, `FLIP PLAN`, `FLIP TARGET`, `FLIP TARGET TYPES` and `FLIP PLAY PLAN`. The test ordering is always **Queue → Playlist → Smart Playlist**, so consecutive click logs identify their source.
 
 Prefer a disposable five-track queue for the first test. The native model can contain thousands of tracks and we will not experiment on a large queue.
 
@@ -43,7 +43,7 @@ After phase-1 logs confirm exact callback and native queue identity:
 
 1. **Confirmed behavior (corrected):** reverse the **entire queue with no pinned position**: `A, B, C, D, E` → `E, D, C, B, A`. This includes all previously played and all upcoming tracks. Keep the exact same **song/queue-entry playing or paused** by moving GMMP's playback pointer to its new index (`newCurrentIndex = queueSize - 1 - oldCurrentIndex`). For instance, `A, [B], C, D, E` → `E, D, C, [B], A` (the current B moves from index 1 to index 3 but continues playing or stays paused). If current C was central, `A, B, [C], D, E` → `E, D, [C], B, A`.
 2. Verify the native queue writer and its UI notifications with a disposable five-track queue. Preserve the current **queue-entry ID, playing/paused state and playback progress**, but change the numeric queue position to the new index. Maintain valid queue/shuffle positions unless the user requests otherwise. The preview now logs the full reverse permutation in truncated first/last samples without writing anything.
-3. For playlist and smart-playlist actions, invoke their native Play command and apply reversal **only after the resulting queue is known to have loaded**; otherwise an asynchronous playlist load could reverse the old queue.
+3. For playlist and smart-playlist actions, reverse **the newly resolved playlist's complete ordering** and begin playback at the **original last song**, not at the preexisting queue's current track. The pure `QueueFlipPlanner.reverseForNewPlayback` and tests already encode this distinction. We are currently probing the native Play dispatcher and target classes through `FLIP TARGET`/`FLIP TARGET TYPES`; do **not** invoke the native Play action until the correct asynchronous source and after-load callback are verified.
 4. Replace preview-only clicks with a native, reversible operation after the phone test passes. Never hook unrelated menus or bypass normal GMMP playlist loading.
 
 Do not document Flip Queue as shipped until all three actions actually work and have passed device testing.
