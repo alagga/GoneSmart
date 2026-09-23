@@ -261,7 +261,7 @@ control later refills. No playlist files are changed.
 The action uses GMMP's native Play callback followed by a native Room transaction that removes other queue entries by their unique IDs (without an asynchronous Clear Queue broadcast), then enables GMMP Auto-DJ. Its high-level start,
 verification and failure outcomes appear in the GoneSmart app's
 **Logs → Track Auto-DJ** category; details are in Android Logcat under
-`GoneSmartTrackMix`. A verified mix shows **one concise confirmation**. During the bounded Track Auto-DJ startup only, GoneSmart suppresses GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars, including delayed Auto-DJ-rules-changed status UI. Actual errors still show one warning.
+`GoneSmartTrackMix`. A verified mix shows **one concise confirmation**. During the bounded Track Auto-DJ startup only, GoneSmart suppresses GMMP's intermediate Play/Auto-DJ Toasts and Snackbars, including delayed Auto-DJ-rules-changed status UI. Actual errors still show one warning.
 
 **Languages:** The two menu words always use GMMP's own translated **track** and **Auto-DJ** strings, including German **Titel Auto-DJ** and English **Track Auto-DJ**. Confirmations reuse the native translated **started** string if available, otherwise a neutral checkmark. No manually maintained Mix translations are needed.
 
