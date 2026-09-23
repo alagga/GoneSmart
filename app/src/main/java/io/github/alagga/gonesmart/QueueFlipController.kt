@@ -3,6 +3,9 @@ package io.github.alagga.gonesmart
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Rect
+import android.graphics.RectF
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ReplacementSpan
@@ -14,7 +17,6 @@ import android.view.View
 import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -443,9 +445,10 @@ internal class QueueFlipController {
     }
 
     private fun brandedMenuTitle(context: Context, label: String): CharSequence {
-        // Text first, then two bold custom arrows, then our unchanged
-        // 28 dp lilac two-star sparkle. Both glyphs are ReplacementSpans:
-        // they paint within native popup padding, never enlarging rows.
+        // Text first, then the original typographic two-way arrow with
+        // a slight native-font-weight adjustment, then our unchanged
+        // 28 dp two-star lilac sparkle. ReplacementSpans do not increase
+        // native GMMP popup row height.
         val badge = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
             0xFFA39AFF.toInt(),
             scale = 1.85f
@@ -469,14 +472,41 @@ internal class QueueFlipController {
     }
 
     /**
-     * Two distinct ↑↓ arrows with stems between the earlier thin
-     * version and the overly heavy 3.8 dp version. Derive thickness
-     * from the native menu text size to approach the stem of its "L".
-     * Their ReplacementSpan leaves GMMP's row height unchanged.
-     * Font metrics remain unchanged, as they do for the sparkle.
+     * Reuse the original thin typographic ⇵ symbol rather than drawing
+     * oversized geometric shafts/arrowheads. Give it only a tiny stroke
+     * boost based on the ACTUAL "l" glyph in the TextView's own Paint.
+     *
+     * The drawn character is centered optically inside the existing
+     * menu row. ReplacementSpan does not change font metrics, and the
+     * adjacent full-size GoneSmart sparkle is left unchanged.
      */
     private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
         private val density = context.resources.displayMetrics.density
+        private val glyph = "⇵"
+
+        private fun arrowPaint(textPaint: Paint): Paint {
+            // Measure the glyph outline instead of guessing an Android
+            // dp width. Font, typeface and accessibility scale all come
+            // directly from the native GMMP menu's TextView.
+            val stem = Path()
+            textPaint.getTextPath("l", 0, 1, 0f, 0f, stem)
+            val bounds = RectF()
+            stem.computeBounds(bounds, true)
+            val lWidth = bounds.width().takeIf { it > 0f }
+                ?: (textPaint.textSize * 0.075f)
+
+            return Paint(textPaint).apply {
+                style = Paint.Style.FILL_AND_STROKE
+                // The original ⇵ glyph remains the basis. Increase its
+                // original line width only slightly (~20% of a native
+                // lowercase l stem), never use the old 2.65/3.8 dp shafts.
+                strokeWidth = (lWidth * 0.20f).coerceIn(
+                    0.18f * density,
+                    0.55f * density
+                )
+                strokeJoin = Paint.Join.ROUND
+            }
+        }
 
         override fun getSize(
             paint: Paint,
@@ -484,7 +514,13 @@ internal class QueueFlipController {
             start: Int,
             end: Int,
             fm: Paint.FontMetricsInt?
-        ): Int = (26f * density).roundToInt()
+        ): Int {
+            // Do not modify fm: the menu row stays exactly as high as
+            // its native neighbors despite the arrow and sparkle.
+            return (paint.measureText(glyph) + 2f * density)
+                .roundToInt()
+                .coerceAtLeast(1)
+        }
 
         override fun draw(
             canvas: Canvas,
@@ -498,41 +534,19 @@ internal class QueueFlipController {
             paint: Paint
         ) {
             val metrics = paint.fontMetricsInt
-            val centerY = y + (metrics.ascent + metrics.descent) / 2f
-            val halfHeight = 9f * density
-            val head = 4.3f * density
-            val leftX = x + 6.5f * density
-            val rightX = x + 19.5f * density
-            val arrowPaint = Paint(paint).apply {
-                style = Paint.Style.STROKE
-                // 2.3 dp looked too thin; 3.8 dp looked too heavy.
-                // Approximate the vertical stroke of the surrounding
-                // regular text, including larger accessibility font sizes.
-                strokeWidth = max(2.65f * density, paint.textSize * 0.16f)
-                strokeCap = Paint.Cap.BUTT
-                strokeJoin = Paint.Join.MITER
-            }
+            val lineCenter = y + (metrics.ascent + metrics.descent) / 2f
+            val glyphBounds = Rect()
+            paint.getTextBounds(glyph, 0, glyph.length, glyphBounds)
+            // Optical center of the actual fallback-font arrow glyph,
+            // not the font's generic text bounding box.
+            val glyphBaseline =
+                lineCenter - (glyphBounds.top + glyphBounds.bottom) / 2f
 
-            // Left arrow points up.
-            val arrowTop = centerY - halfHeight
-            val arrowBottom = centerY + halfHeight
-            canvas.drawLine(leftX, arrowBottom, leftX, arrowTop, arrowPaint)
-            canvas.drawLine(
-                leftX - head, arrowTop + head, leftX, arrowTop, arrowPaint
-            )
-            canvas.drawLine(
-                leftX, arrowTop, leftX + head, arrowTop + head, arrowPaint
-            )
-
-            // Right arrow points down.
-            canvas.drawLine(rightX, arrowTop, rightX, arrowBottom, arrowPaint)
-            canvas.drawLine(
-                rightX - head, arrowBottom - head,
-                rightX, arrowBottom, arrowPaint
-            )
-            canvas.drawLine(
-                rightX, arrowBottom,
-                rightX + head, arrowBottom - head, arrowPaint
+            canvas.drawText(
+                glyph,
+                x + density,
+                glyphBaseline,
+                arrowPaint(paint)
             )
         }
     }
