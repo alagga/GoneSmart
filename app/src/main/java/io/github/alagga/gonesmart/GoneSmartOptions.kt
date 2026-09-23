@@ -6,6 +6,7 @@ data class GoneSmartOptions(
     val enabled: Boolean = true,
     val multiPlaylistEnabled: Boolean = false,
     val flipQueueEnabled: Boolean = false,
+    val trackMixEnabled: Boolean = true,
     val preferHigherRatedMatches: Boolean = true,
     val minimumRatingStars: Double = 0.0,
     val smartRatingEnabled: Boolean = false,
@@ -38,6 +39,10 @@ data class GoneSmartOptions(
                 flipQueueEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
                     false
+                ),
+                trackMixEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_TRACK_MIX,
+                    true
                 ),
                 preferHigherRatedMatches = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
