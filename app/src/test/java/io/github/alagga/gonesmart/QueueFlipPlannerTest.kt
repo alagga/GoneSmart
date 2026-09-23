@@ -6,6 +6,34 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class QueueFlipPlannerTest {
+    @Test fun ordinaryPlaylistStartsWithItsOriginalLastSong() {
+        val plan = QueueFlipPlanner.reverseForNewPlayback(
+            listOf("A", "B", "C", "D", "E")
+        )
+        assertEquals(listOf("E", "D", "C", "B", "A"), plan.entries)
+        assertEquals(0, plan.newCurrentIndex)
+        assertEquals("E", plan.entries[plan.newCurrentIndex])
+    }
+
+    @Test fun smartPlaylistReversesResolvedOrderNotTheOldQueue() {
+        val gmmpResolvedSmartPlaylist = listOf("One", "Two", "Three")
+        val plan = QueueFlipPlanner.reverseForNewPlayback(
+            gmmpResolvedSmartPlaylist
+        )
+        assertEquals(listOf("Three", "Two", "One"), plan.entries)
+        assertEquals("Three", plan.entries[plan.newCurrentIndex])
+        assertEquals(
+            listOf("One", "Two", "Three"),
+            gmmpResolvedSmartPlaylist
+        )
+    }
+
+    @Test fun newlyPlayedEmptyPlaylistHasNoCurrentSong() {
+        val plan = QueueFlipPlanner.reverseForNewPlayback(emptyList<String>())
+        assertEquals(emptyList<String>(), plan.entries)
+        assertEquals(-1, plan.newCurrentIndex)
+    }
+
     @Test fun reversesWholeQueueWhileKeepingCurrentSongPlaying() {
         val original = listOf("A", "B", "C", "D", "E")
         val plan = QueueFlipPlanner.reverseAll(original, currentIndex = 1)
