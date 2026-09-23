@@ -241,16 +241,16 @@ setting is off by default; no .m3u playlists are modified.
 See [Flip feature testing and compatibility](docs/QUEUE_FLIP_TESTING.md)
 for current behavior, diagnostics and limitations.
 
-## Track Mix — Auto-DJ from any song
+## Track Auto-DJ — Auto-DJ from any song
 
-The **Track Mix** action appears directly after **Play next** in the
+The **Track Auto-DJ** action appears directly after **Play next** in the
 three-dot context menu for individual songs in the library, queue,
 playlist detail pages, search results and file browser. In German its
-label is **Titel-Mix**. Like the other GoneSmart menu actions, it has
+label is **Titel Auto-DJ**. Like the other GoneSmart menu actions, it has
 the centered lilac two-star sparkle without enlarging GMMP's menu rows.
-It does not appear in whole-album, artist or playlist context menus. You can enable or disable this independent feature under **GoneSmart → UI → Track Mix**; it remains enabled for existing users until they switch it off.
+It does not appear in whole-album, artist or playlist context menus. You can enable or disable this independent feature under **GoneSmart → UI → Track Auto-DJ**; it remains enabled for existing users until they switch it off.
 
-Choosing Track Mix plays **that selected song**, retains it as the seed
+Choosing Track Auto-DJ plays **that selected song**, retains it as the seed
 for a new queue, enables GoneSmart's Smart DJ if necessary, and uses
 GMMP's own **Auto-DJ playback mode**. GMMP's configured **Initial Size**
 determines the target queue length (including the selected seed song);
@@ -258,23 +258,22 @@ GoneSmart supplies its usual matching local recommendations for the
 remaining positions. The normal upcoming-track setting continues to
 control later refills. No playlist files are changed.
 
-The new command uses GMMP's documented PLAY/CLEAR_QUEUE/AUTO_DJ
-integration and native Play menu callbacks. Its high-level start,
+The action uses GMMP's native Play callback followed by a native Room transaction that removes other queue entries by their unique IDs (without an asynchronous Clear Queue broadcast), then enables GMMP Auto-DJ. Its high-level start,
 verification and failure outcomes appear in the GoneSmart app's
-**Logs → Track Mix** category; details are in Android Logcat under
-`GoneSmartTrackMix`. A verified mix shows **one concise confirmation**. During the bounded Track Mix startup only, GoneSmart suppresses GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars, including delayed Auto-DJ-rules-changed status UI. Actual errors still show one warning.
+**Logs → Track Auto-DJ** category; details are in Android Logcat under
+`GoneSmartTrackMix`. A verified mix shows **one concise confirmation**. During the bounded Track Auto-DJ startup only, GoneSmart suppresses GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars, including delayed Auto-DJ-rules-changed status UI. Actual errors still show one warning.
 
-**Languages:** GMMP provides translated *track* and *Auto-DJ* nouns, but not a universal translation of GoneSmart's new word *Mix*. German uses **Titel-Mix**, English **Track Mix**; other GMMP languages use their own localized track + Auto-DJ words instead of an untranslated English menu command. The same rule applies to confirmation text, with a language-neutral checkmark if GMMP has no suitable localized “started” text.
+**Languages:** The two menu words always use GMMP's own translated **track** and **Auto-DJ** strings, including German **Titel Auto-DJ** and English **Track Auto-DJ**. Confirmations reuse the native translated **started** string if available, otherwise a neutral checkmark. No manually maintained Mix translations are needed.
 
-**Status:** tested on GMMP 4.2.0 with six successful five-song mixes and one intermittent queue-isolation failure during a concurrent Auto-DJ refill (24 September 2026). The feature branch now defers pre-clear native refills, allows up to three bounded native Clear attempts, and verifies the selected seed before Auto-DJ fills the new queue. These latest concurrency and notification changes still require normal on-device use before a public release. See [Track Mix test and notes](docs/TRACK_MIX_TESTING.md).
+**Status:** tested on GMMP 4.2.0 with six successful five-song mixes and one intermittent queue-isolation failure during a concurrent Auto-DJ refill (24 September 2026). The feature branch now prevents new old-session refills while the native selected queue entry is atomically isolated by unique queue ID; it no longer retries asynchronous Clear Queue. An on-device regression check is still required. These latest concurrency and notification changes still require normal on-device use before a public release. See [Track Auto-DJ test and notes](docs/TRACK_MIX_TESTING.md).
 
 ## Companion UI and player indicator
 
-The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection, Flip Queue and Track Mix. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection, Flip Queue and Track Auto-DJ. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
 
 **Logs** collects recent, high-level activity across **Smart DJ**,
 **multi-playlist selection**, **Flip Queue / Play Flipped**,
-**Track Mix**, and UI/System events. Successful Flip events are recorded only after native verification;
+**Track Auto-DJ**, and UI/System events. Successful Flip events are recorded only after native verification;
 failures and recovery attempts have their own entries. These additional
 events do **not** replace the separate Auto-DJ readiness/fallback status
 on Home. For developer diagnostics, filter Android Logcat by `GoneSmart`,
