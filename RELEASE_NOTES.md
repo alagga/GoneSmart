@@ -22,10 +22,30 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
   reported the feature working on-device. Other GMMP versions and every
   possible playback/queue race have not been tested.
 
+## In development: Track Mix / Titel-Mix
+
+- Third item after **Play** and **Play next** in individual-song
+  three-dot menus (queue, track library, playlist details, search,
+  file browser and shared tracks).
+- Plays the selected song, isolates it as the first/seed queue entry,
+  enables Smart DJ if it was disabled and switches GMMP into Auto-DJ.
+  Initially fills the queue to GMMP's configured **Initial Size** and
+  then continues using the normal Upcoming Tracks setting.
+- Uses GMMP's native playback commands and GoneSmart's existing
+  recommendation pipeline. Includes a timeout, conservative queue
+  verification, and safeguards against dispatching multiple mixes.
+- Adds its own **Track Mix** event category in companion Logs; detailed
+  troubleshooting uses the `GoneSmartTrackMix` Logcat tag.
+- Unit tests cover the initial-queue count and third-position menu
+  insertion. **The first full on-device playback test is still pending;**
+  this development feature must not be described as device-validated
+  before those results are received.
+
 ## Expanded companion Logs
 
-- Logs now covers **Smart DJ**, **multi-playlist selection**, **Flip**
-  and **UI/System** events, with category labels and recent category totals.
+- Logs now covers **Smart DJ**, **multi-playlist selection**, **Flip**,
+  **Track Mix** and **UI/System** events, with category labels and recent
+  category totals.
 - Native-verified Flip successes and failures/recovery attempts, playlist
   multi-add completion, and live UI option changes are shown in the app.
 - UI activity does not overwrite the separate Smart DJ readiness and
