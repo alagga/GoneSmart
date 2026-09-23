@@ -266,6 +266,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTab(tab: Tab) {
         activeTab = tab
+        // Switches and rating views belong to the outgoing page. Never
+        // retain detached views when moving between Home, Smart DJ and UI.
+        switches.clear()
+        settingRows.clear()
+        minimumRatingSlider = null
+        minimumRatingValueText = null
         contentHost.removeAllViews()
 
         val view = when (tab) {
@@ -920,7 +926,8 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
             GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
-            options.fallbackWithoutRatingRestrictions
+            options.fallbackWithoutRatingRestrictions &&
+                (options.minimumRatingStars > 0.0 || options.smartRatingEnabled)
         )
         setSwitch(GoneSmartSettingsKeys.KEY_EXCLUDE_HALF_STAR, options.excludeHalfStarTracks)
 
