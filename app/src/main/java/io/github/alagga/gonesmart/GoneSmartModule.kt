@@ -106,10 +106,14 @@ class GoneSmartModule : XposedModule() {
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
             }
+            if (key == GoneSmartSettingsKeys.KEY_FLIP_QUEUE) {
+                queueFlipController.setEnabled(options.flipQueueEnabled)
+            }
 
             if (
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
-                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST
+                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
+                key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE
             ) {
 
                 pipelineGeneration
@@ -250,6 +254,9 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistController =
         PlaylistMultiSelectController()
+
+    private val queueFlipController =
+        QueueFlipController()
 
     private val recommendationPool =
         SessionRecommendationPool()
@@ -421,6 +428,22 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
+            // Flip Queue phase 1 only inspects the three verified native
+            // menus and the existing queue model. It never changes order
+            // or starts playback while we validate the menu callbacks.
+            // Install even while disabled so enabling it in GoneSmart's
+            // UI tab takes effect without restarting GMMP.
+            try {
+                queueFlipController.setEnabled(options.flipQueueEnabled)
+                installQueueFlipHooks(param)
+            } catch (flipHookError: Throwable) {
+                Log.w(
+                    TAG,
+                    "Queue Flip preview hooks unavailable; native menus unaffected",
+                    flipHookError
+                )
+            }
+
             Log.i(
                 TAG,
                 "All GoneSmart core hooks installed successfully"
@@ -434,6 +457,98 @@ class GoneSmartModule : XposedModule() {
                 t
             )
         }
+    }
+
+    /**
+     * GMMP 4.2.0 menu resources verified from its own APK:
+     * - menu_gm_queue: Queue overflow; Remove duplicates is the anchor.
+     * - menu_gm_context_playlist_list: playlist three-dot popup.
+     * - menu_gm_context_smart: Smart Playlist three-dot popup.
+     *
+     * This phase captures exact native menu/queue data without changing
+     * playback. The controller is independently controlled by UI settings.
+     */
+    private fun installQueueFlipHooks(param: PackageReadyParam) {
+        val menuInflaterClasses = listOf(
+            android.view.MenuInflater::class.java,
+            param.classLoader.loadClass(
+                "androidx.appcompat.view.SupportMenuInflater"
+            )
+        )
+        var installed = 0
+        for (inflaterClass in menuInflaterClasses) {
+            runCatching {
+                val method = inflaterClass.getDeclaredMethod(
+                    "inflate",
+                    Int::class.javaPrimitiveType,
+                    android.view.Menu::class.java
+                ).apply { isAccessible = true }
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        queueFlipController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Flip menu observation failed", error)
+                    }
+                    result
+                }
+                installed++
+            }.onFailure { error ->
+                Log.w(
+                    TAG,
+                    "Flip menu inflater hook unavailable: " +
+                        inflaterClass.name,
+                    error
+                )
+            }
+        }
+
+        runCatching {
+            val queueClass = param.classLoader.loadClass("ex3")
+
+            val constructor = queueClass.declaredConstructors.firstOrNull {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == android.content.Context::class.java
+            }
+            if (constructor != null) {
+                hook(constructor.apply { isAccessible = true })
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        queueFlipController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
+                        result
+                    }
+            }
+
+            // Fallback if GMMP constructed its queue before hooks were
+            // registered. This method is observed during normal queue UI.
+            val queuePosition = queueClass.getDeclaredMethod("D")
+                .apply { isAccessible = true }
+            hook(queuePosition).intercept { chain ->
+                queueFlipController.captureNativeQueue(
+                    chain.getThisObject()
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartFlip",
+                "FLIP QUEUE READY | native ex3 capture installed"
+            )
+        }.onFailure {
+            Log.w(TAG, "Flip queue capture hooks unavailable", it)
+        }
+
+        Log.i(
+            "GoneSmartFlip",
+            "FLIP READY | menuInflaters=$installed | " +
+                "enabled=${options.flipQueueEnabled} | " +
+                "phase=non-destructive diagnostics"
+        )
     }
 
     /**
