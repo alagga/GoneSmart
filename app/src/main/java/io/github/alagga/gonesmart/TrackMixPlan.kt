@@ -16,6 +16,30 @@ internal object TrackMixPlan {
         additionalTracksNeeded(initialSize, actualQueueSize) == 0
 
     /**
+     * GMMP translates both "track" and "auto_dj" in its own language.
+     * Preserve the familiar short menu label for German and English.
+     * For other languages use BOTH native GMMP words rather than an
+     * unlocalized English "Mix" suffix.
+     */
+    fun localizedMenuLabel(
+        language: String,
+        nativeTrack: String?,
+        nativeAutoDj: String?
+    ): String {
+        val track = nativeTrack?.takeIf { it.isNotBlank() }
+        val dj = nativeAutoDj?.takeIf { it.isNotBlank() }
+        return when (language.lowercase(java.util.Locale.ROOT)) {
+            "de" -> "${track ?: "Titel"}-Mix"
+            "en" -> "${track ?: "Track"} Mix"
+            else -> if (track != null && dj != null) {
+                "$track · $dj"
+            } else {
+                dj ?: "Track Mix"
+            }
+        }
+    }
+
+    /**
      * A new native track menu must always put the action immediately
      * after "Play next" without reordering any other native items.
      */
