@@ -66,7 +66,7 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 
 ## Does changing settings require a restart?
 
-Normally no. Settings are sent to the running GMMP process and recommendation-related changes invalidate the existing pool. Restart GMMP is mainly needed after module updates or when troubleshooting hook state.
+No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
 
 ## How do I add several tracks to several playlists?
 
