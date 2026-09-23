@@ -762,6 +762,17 @@ class GoneSmartModule : XposedModule() {
                 "Flip Queue and reverse playlist playback are available."
             )
         }
+        Log.i(
+            "GoneSmartTrackMix",
+            "MIX READY | menuInflaters=$installed | " +
+                "scope=individual-track-menus | initialSize=GMMP"
+        )
+        if (installed > 0) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Track Mix is available in song menus."
+            )
+        }
     }
 
     /**
