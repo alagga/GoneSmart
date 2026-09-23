@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
 /**
- * Adds "Titel-Mix" / "Track Mix" to *single-track* native context menus.
+ * Adds a GMMP-localized "track + Auto-DJ" action to single-song menus.
  * Calls the exact native Play action for the clicked row, keeps only its
  * currently playing track through GMMP's own CLEAR_QUEUE command, enables
  * GMMP's documented AUTO_DJ command, and verifies the Initial Size.
@@ -67,6 +67,7 @@ internal class TrackMixController(
         val source: String,
         val before: Snapshot?,
         val confirmation: String,
+        val menuLabel: String,
         val createdAt: Long
     ) {
         @Volatile var nativePlaySignal = false
@@ -210,9 +211,7 @@ internal class TrackMixController(
                 context.resources.getString(resourceId)
             }.getOrNull()
         }
-        // GMMP 4.2.0 contains native translations for both "track" and
-        // "auto_dj". "Titel-Mix" stays familiar in German; other player
-        // languages use the player's own localized words.
+        // Use both terms from GMMP native resources in every locale.
         val label = TrackMixPlan.localizedMenuLabel(
             language = language,
             nativeTrack = nativeText("track"),
@@ -230,17 +229,9 @@ internal class TrackMixController(
             lilacSparkleTitle(context, label)
         )
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-        item.contentDescription = if (language == "de") {
-            "Diesen Titel abspielen und GoneSmart Auto-DJ starten"
-        } else if (language == "en") {
-            "Play this song and start GoneSmart Auto-DJ"
-        } else {
-            // Accessibility labels must not default to an unrelated
-            // language when GMMP has already translated the menu noun.
-            label
-        }
+        item.contentDescription = label
         item.setOnMenuItemClickListener {
-            onMixClicked(context, name, menu, nativePlay, confirmation)
+            onMixClicked(context, name, menu, nativePlay, confirmation, label)
             true
         }
 
@@ -257,7 +248,8 @@ internal class TrackMixController(
         source: String,
         menu: Menu,
         nativePlay: MenuItem,
-        confirmation: String
+        confirmation: String,
+        menuLabel: String
     ) {
         if (!enabled) return
         if (pending != null) {
@@ -285,6 +277,7 @@ internal class TrackMixController(
             source = source,
             before = old,
             confirmation = confirmation,
+            menuLabel = menuLabel,
             createdAt = SystemClock.elapsedRealtime()
         )
         pending = request
@@ -419,10 +412,10 @@ internal class TrackMixController(
                 )
                 events.reportEvent(
                     GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
-                    "Track Mix started, but the initial Auto-DJ queue " +
+                    "${request.menuLabel} started, but the initial Auto-DJ queue " +
                         "could not be verified."
                 )
-                toast(request.context, "Track Mix started; Auto-DJ fill is still pending.")
+                toast(request.context, request.menuLabel + " ✓")
             } else {
                 Log.i(
                     TAG,
@@ -431,7 +424,7 @@ internal class TrackMixController(
                 )
                 events.reportEvent(
                     GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
-                    "Track Mix started: ${filled.ids.size - 1} " +
+                    "${request.menuLabel}: ${filled.ids.size - 1} " +
                         "tracks queued after the selected song."
                 )
                 // The user sees exactly one GoneSmart confirmation after
@@ -683,7 +676,7 @@ internal class TrackMixController(
         Log.e(TAG, "MIX FAILED | $message")
         events.reportEvent(
             GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
-            "Track Mix: $message"
+            "${pending?.menuLabel ?: "Auto-DJ"}: $message"
         )
         toast(context, message)
     }
