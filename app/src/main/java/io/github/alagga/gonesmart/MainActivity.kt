@@ -550,7 +550,7 @@ class MainActivity : AppCompatActivity() {
         val container = pageContainer()
         container.addView(pageTitle("Logs"))
         container.addView(textView(
-            "Activity from Smart DJ, multi-playlist selection and Flip Queue.",
+            "Recent activity from Smart DJ, playlists, Flip and Track Mix.",
             14f,
             COLOR_TEXT_SECONDARY
         ))
@@ -595,7 +595,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(14))
         container.addView(textView(
             "Shows recent activity from all GoneSmart features. For detailed " +
-                "diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist or GoneSmartFlip.",
+                "diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist, " +
+                "GoneSmartFlip or GoneSmartTrackMix.",
             13f,
             COLOR_MUTED
         ))
@@ -611,6 +612,16 @@ class MainActivity : AppCompatActivity() {
         container.addView(infoCard(
             title = "How are tracks selected?",
             body = "GoneSmart keeps GMMP's playback and queue handling, but replaces Auto-DJ track selection. It builds a session-aware context from the current and recent user-selected tracks, asks ListenBrainz and Last.fm for similar music, merges both signals, and matches the result against your local GMMP library. Only tracks that actually exist in your library can be selected."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "What does Track Mix do?",
+            body = "In a song's three-dot menu, choose Track Mix after Play next. " +
+                "GoneSmart plays that song, keeps it as the only initial queue " +
+                "entry, switches GMMP to Auto-DJ and fills the queue to your " +
+                "configured Initial Size with recommended local tracks. " +
+                "Choosing Track Mix also enables Smart DJ if it was off."
         ))
 
         container.addView(verticalGap(12))
@@ -1104,7 +1115,8 @@ class MainActivity : AppCompatActivity() {
         val summary = GoneSmartEventStore.summary(this)
         logCountText.text =
             "${summary.total} events • Smart DJ ${summary.smartDj} • " +
-                "Playlists ${summary.playlists} • Flip ${summary.flip}" +
+                "Playlists ${summary.playlists} • Flip ${summary.flip} • " +
+                "Track Mix ${summary.trackMix}" +
                 if (summary.other > 0) " • Other ${summary.other}" else ""
         logTextView.text = if (lines.isEmpty()) {
             "No events yet. Activity will appear here as you use GoneSmart."
