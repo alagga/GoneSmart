@@ -6,6 +6,9 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ReplacementSpan
@@ -15,20 +18,20 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
+import android.widget.PopupMenu
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
+import java.lang.reflect.InvocationTargetException
 import kotlin.math.roundToInt
 
 /**
- * Phase 1: opt-in, NON-DESTRUCTIVE integration diagnostics for GMMP 4.2.0.
+ * Opt-in full queue reversal and reverse playback for GMMP 4.2.0.
  *
- * We verified the exact native menu XMLs and item IDs in GMMP's APK.
- * Do not reorder thousands of native queue entries, replace the playing
- * song, or trigger playlist playback until the native queue write path and
- * asynchronous context-menu dispatch have been checked on-device.
- *
- * Follow-up phase: use the captured native queue and native Play action
- * to implement the actual inversion. No direct writes to GMMP's SQLite DB.
+ * Existing queue: update native queue entities transactionally using
+ * GMMP's own Room DAO and move its playback pointer with the SAME entry.
+ * Playlist / smart playlist: forward the selected row's original Play
+ * command, then reverse the NEW list just before MusicService.w1(action=0)
+ * builds the playback queue. Neither path edits any playlist on disk.
  */
 internal class QueueFlipController {
     companion object {
@@ -53,6 +56,19 @@ internal class QueueFlipController {
             }
         }
 
+    private val mainThread = Handler(Looper.getMainLooper())
+
+    private data class PendingPlayback(
+        val kind: Kind,
+        val createdAt: Long
+    )
+
+    @Volatile
+    private var pendingPlayback: PendingPlayback? = null
+
+    @Volatile
+    private var queueFlipInProgress = false
+
     @Volatile
     private var enabled = false
 
@@ -61,7 +77,8 @@ internal class QueueFlipController {
 
     fun setEnabled(value: Boolean) {
         enabled = value
-        Log.i(TAG, "FLIP SETTINGS | enabled=$value | phase=menu-diagnostics")
+        if (!value) pendingPlayback = null
+        Log.i(TAG, "FLIP SETTINGS | enabled=$value | phase=native-flip")
     }
 
     fun captureNativeQueue(candidate: Any?) {
@@ -191,26 +208,254 @@ internal class QueueFlipController {
                 "nativePlay=${if (nativePlayId != 0)
                     menu.findItem(nativePlayId)?.title else null}"
         )
-        if (kind == Kind.QUEUE) {
-            diagnosticsExecutor.execute {
-                logNativeQueueSnapshot()
+        if (!enabled) return
+        when (kind) {
+            Kind.QUEUE -> flipCurrentQueue(context)
+            Kind.PLAYLIST, Kind.SMART -> playPlaylistFlipped(
+                kind, context, menu, nativePlayId
+            )
+        }
+    }
+
+    private fun toast(context: Context, message: String) {
+        mainThread.post {
+            Toast.makeText(
+                context.applicationContext ?: context,
+                message,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    /**
+     * Use the exact original PopupMenu listener that GMMP installed for
+     * THIS row. xn0 captures the selected playlist/smart playlist through
+     * zn0, which prevents accidentally starting a different playlist.
+     */
+    private fun playPlaylistFlipped(
+        kind: Kind,
+        context: Context,
+        menu: Menu,
+        nativePlayId: Int
+    ) {
+        val play = menu.findItem(nativePlayId)
+        val callback = field(menu, "mCallback")
+        val popup = callback?.let { field(it, "this$0") }
+        val listener = popup?.let {
+            field(it, "mMenuItemClickListener")
+                ?: field(it, "mOnMenuItemClickListener")
+        } as? PopupMenu.OnMenuItemClickListener
+
+        if (play == null || listener == null) {
+            Log.e(TAG, "FLIP PLAY | kind=$kind | native row listener unavailable")
+            toast(context, "Unable to start this playlist in reverse.")
+            return
+        }
+        synchronized(this) {
+            if (pendingPlayback != null) {
+                Log.w(TAG, "FLIP PLAY | replacing previously pending request")
             }
-        } else {
-            // Playlist and Smart Playlist start a NEW playback sequence.
-            // Do not mistakenly reverse/log the old, unrelated queue.
-            // First identify the native menu's selected target and Play
-            // dispatcher so we can attach a safe after-load observer.
-            logNativePlaylistTarget(kind, menu, nativePlayId)
+            pendingPlayback = PendingPlayback(kind, SystemClock.elapsedRealtime())
+        }
+        try {
+            Log.i(TAG, "FLIP PLAY | kind=$kind | native play dispatched")
+            val started = listener.onMenuItemClick(play)
+            if (!started) {
+                synchronized(this) { pendingPlayback = null }
+                Log.w(TAG, "FLIP PLAY | kind=$kind | native listener declined")
+                toast(context, "Could not start this playlist.")
+            }
+        } catch (failure: Throwable) {
+            synchronized(this) { pendingPlayback = null }
+            Log.e(TAG, "FLIP PLAY | native Play failed", failure)
+            toast(context, "Could not start this playlist.")
+        }
+    }
+
+    /**
+     * Called BEFORE GMMP executes MusicService.w1.
+     * Its action=0 path resets the queue and inserts this List<rm3> of
+     * resolved songs. Intercept only that path, after the exact menu
+     * listener was activated, and reverse the list before any native
+     * playback begins. No delayed queue-flip race or transient first song.
+     *
+     * The pending request expires rather than affecting later normal
+     * playback if an empty/broken playlist never reaches MusicService.
+     */
+    fun consumeReversePlaylistForNativePlay(
+        action: Int?,
+        tracks: List<*>?
+    ): List<*>? {
+        if (!enabled) return null
+        val pending = synchronized(this) {
+            val request = pendingPlayback ?: return@synchronized null
+            if (SystemClock.elapsedRealtime() - request.createdAt > 30_000L) {
+                pendingPlayback = null
+                Log.w(TAG, "FLIP PLAY | timed out waiting for native playlist")
+                return@synchronized null
+            }
+            if (action != 0 || tracks.isNullOrEmpty()) return@synchronized null
+            val first = tracks.firstOrNull() ?: return@synchronized null
+            val nativeSong = runCatching {
+                first.javaClass.classLoader
+                    ?.loadClass("rm3")
+                    ?.isInstance(first) == true
+            }.getOrDefault(false)
+            if (!nativeSong || tracks.any { it == null }) {
+                Log.w(TAG, "FLIP PLAY | unsupported native playback list")
+                return@synchronized null
+            }
+            pendingPlayback = null
+            request
+        } ?: return null
+
+        val reversed = QueueFlipPlanner.reverseForNewPlayback(
+            tracks.filterNotNull()
+        ).entries
+        Log.i(
+            TAG,
+            "FLIP PLAY APPLIED | kind=${pending.kind} | " +
+                "size=${reversed.size} | originalFirstId=" +
+                runCatching { firstSongId(tracks.first()!!) }.getOrNull() +
+                " | newFirstId=" +
+                runCatching { firstSongId(reversed.first()) }.getOrNull() +
+                " | action=0 | nativeQueueWriter=MusicService.w1"
+        )
+        return reversed
+    }
+
+    private fun firstSongId(track: Any): Any? =
+        track.javaClass.methods.firstOrNull {
+            it.name == "getId" && it.parameterCount == 0
+        }?.invoke(track)
+
+    private fun flipCurrentQueue(context: Context) {
+        synchronized(this) {
+            if (queueFlipInProgress) {
+                toast(context, "Queue reversal is already running.")
+                return
+            }
+            queueFlipInProgress = true
+        }
+        diagnosticsExecutor.execute {
+            try {
+                performNativeQueueFlip()
+                toast(context, "Queue reversed.")
+            } catch (failure: Throwable) {
+                Log.e(TAG, "FLIP APPLY | failed; see rollback status", failure)
+                toast(context, "Could not reverse queue; see GoneSmart log.")
+            } finally {
+                queueFlipInProgress = false
+            }
+        }
+    }
+
+    /**
+     * On the worker thread (Room rejects main-thread queries), update
+     * every native ey3 by its unique queue_id in ONE native DAO transaction.
+     * No direct SQL: xx3.O0(List) uses GMMP's own UPDATE OR ABORT adapter.
+     * queue_position has NO unique index in GMMP 4.2.0, allowing a single
+     * batch reverse while keeping duplicate song IDs distinguishable.
+     */
+    private fun performNativeQueueFlip() {
+        val queue = nativeQueue?.get()
+            ?: error("GMMP native queue not captured")
+        val dao = field(queue, "r")
+            ?: error("GMMP queue DAO unavailable")
+        val read = dao.javaClass.getMethod("H1")
+        val writer = dao.javaClass.getMethod("O0", List::class.java)
+        val pointer = queue.javaClass.getDeclaredMethod(
+            "b2", Int::class.javaPrimitiveType
+        ).apply { isAccessible = true }
+        val currentMethod = queue.javaClass.getDeclaredMethod("D")
+            .apply { isAccessible = true }
+
+        fun snapshot() = (read.invoke(dao) as? List<*>)
+            ?.filterNotNull()
+            ?.sortedBy { (field(it, "a") as Number).toInt() }
+            ?: error("Cannot read GMMP queue")
+
+        val original = snapshot()
+        if (original.size < 2) {
+            Log.i(TAG, "FLIP APPLY | queue too short; no changes")
+            return
+        }
+        val oldPositions = original.map {
+            (field(it, "a") as? Number)?.toInt()
+                ?: error("Entry position unavailable")
+        }
+        val ids = original.map {
+            (field(it, "d") as? Number)?.toLong()
+                ?: error("Entry ID unavailable")
+        }
+        require(ids.toSet().size == ids.size) {
+            "Non-unique native queue IDs; aborting"
+        }
+        require(oldPositions.zipWithNext().all { (a, b) -> b == a + 1 }) {
+            "Non-contiguous native queue positions; aborting"
+        }
+        val oldPosition = currentMethod.invoke(queue) as? Int
+            ?: error("Playback index unavailable")
+        val oldIndex = oldPositions.indexOf(oldPosition)
+        require(oldIndex >= 0) {
+            "Playback entry missing from queue; aborting"
+        }
+        val oldCurrentEntryId = ids[oldIndex]
+        val plan = QueueFlipPlanner.reverseAll(original, oldIndex)
+        val newPosition = oldPositions[plan.newCurrentIndex]
+        val positionField = original[0].javaClass.getDeclaredField("a")
+            .apply { isAccessible = true }
+
+        // Re-read just before committing; do not overwrite an unrelated
+        // queue if GMMP changed its contents while the worker was waiting.
+        val latest = snapshot()
+        require(latest.map { (field(it, "d") as Number).toLong() } == ids &&
+            (currentMethod.invoke(queue) as? Int) == oldPosition) {
+            "Native queue changed before flip; aborting"
         }
 
-        // Phase 1 intentionally does not invoke a native Play item.
-        // Doing so before a matching queue-change callback is identified
-        // could reverse the previous queue instead of the new playlist.
-        Toast.makeText(
-            context,
-            "GoneSmart Flip preview: diagnostics logged; no playback changed.",
-            Toast.LENGTH_SHORT
-        ).show()
+        var wrote = false
+        try {
+            // The planned entry at each index receives that index's old
+            // 1-based queue position; its unique queue ID never changes.
+            plan.entries.forEachIndexed { index, entry ->
+                positionField.setInt(entry, oldPositions[index])
+            }
+            writer.invoke(dao, plan.entries)
+            wrote = true
+            pointer.invoke(queue, newPosition)
+            val verify = snapshot().map {
+                (field(it, "d") as Number).toLong()
+            }
+            require(verify == ids.reversed() &&
+                (currentMethod.invoke(queue) as? Int) == newPosition) {
+                "Native queue verification failed"
+            }
+            Log.i(
+                TAG,
+                "FLIP APPLIED | size=${original.size} | " +
+                    "oldPosition=$oldPosition | newPosition=$newPosition | " +
+                    "currentEntryId=$oldCurrentEntryId | " +
+                    "verified=true | writer=xx3.O0"
+            )
+        } catch (failure: Throwable) {
+            // Restore the original queue if the write succeeded but the
+            // native playback pointer/verification failed.
+            if (wrote) {
+                runCatching {
+                    original.forEachIndexed { index, entry ->
+                        positionField.setInt(entry, oldPositions[index])
+                    }
+                    writer.invoke(dao, original)
+                    pointer.invoke(queue, oldPosition)
+                    Log.w(TAG, "FLIP ROLLBACK | previous queue restored")
+                }.onFailure {
+                    Log.e(TAG, "FLIP ROLLBACK | failed", it)
+                }
+            }
+            throw (failure as? InvocationTargetException)?.targetException
+                ?: failure
+        }
     }
 
     /**
