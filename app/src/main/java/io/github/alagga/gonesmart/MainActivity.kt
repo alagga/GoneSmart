@@ -536,6 +536,9 @@ class MainActivity : AppCompatActivity() {
         }.getOrDefault("Track Auto-DJ")
     }
 
+    private fun localizedFeatureLogs(log: String): String =
+        log.replace("Track Mix", nativeTrackAutoDjLabel())
+
     private fun buildUiPage(): View {
         val container = pageContainer()
         container.addView(pageTitle("UI"))
@@ -595,7 +598,7 @@ class MainActivity : AppCompatActivity() {
             marginEnd = dp(8)
         })
         actions.addView(actionButton("Copy") {
-            val text = GoneSmartEventStore.logText(this)
+            val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("GoneSmart logs", text))
             Toast.makeText(this, "Logs copied", Toast.LENGTH_SHORT).show()
@@ -1141,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshLogs() {
         if (!::logTextView.isInitialized) return
-        val text = GoneSmartEventStore.logText(this)
+        val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
         logCountText.text =
@@ -1152,9 +1155,7 @@ class MainActivity : AppCompatActivity() {
         logTextView.text = if (lines.isEmpty()) {
             "No events yet. Activity will appear here as you use GoneSmart."
         } else {
-            lines.joinToString("\n").replace(
-                "[Track Mix]", "[${nativeTrackAutoDjLabel()}]"
-            )
+            lines.joinToString("\n")
         }
     }
 
