@@ -10,6 +10,8 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.ActionMode
@@ -36,8 +38,9 @@ internal class PlaylistMultiSelectController {
 
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        // Only used before GMMP exposes a native theme color. The live
-        // Aesthetic colorAccent drives the sparkle during multi-selection.
+        // GoneSmart lilac is the default even while GMMP's Aesthetic
+        // palette changes. Only switch to an alternate live GMMP palette
+        // color if lilac becomes too similar to the actual FAB background.
         private const val FALLBACK_LILAC = 0xFFA39AFF.toInt()
         private const val OLD_CHECK_TAG = "gonesmart_playlist_check_v1"
     }
@@ -99,11 +102,21 @@ internal class PlaylistMultiSelectController {
      * The callback registry outlives the picker session because the FIRST
      * j83 can detach its fragment before later Rx callbacks finish.
      */
-    private class NativeNavigationBatch {
+    private class NativeNavigationBatch(
+        val sourceCount: Int,
+        val context: Context
+    ) {
         var closeEventSent = false
+        var successfulDestinations = 0
+        var callbacksFinished = 0
+        var dispatchFinished = false
+        var acceptedDestinations = 0
+        var nativeToastsSuppressed = 0
+        var summaryScheduled = false
     }
 
     private val navigationLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val nativeCallbacks = WeakHashMap<Any, NativeNavigationBatch>()
     private val constructingNativeCallback = ThreadLocal<NativeNavigationBatch?>()
     private val runningNativeCallback = ThreadLocal<NativeNavigationBatch?>()
@@ -135,6 +148,10 @@ internal class PlaylistMultiSelectController {
             } else {
                 runningNativeCallback.set(previous)
             }
+            synchronized(navigationLock) {
+                batch.callbacksFinished++
+            }
+            maybeShowNativeSummary(batch)
         }
     }
 
@@ -142,7 +159,8 @@ internal class PlaylistMultiSelectController {
         if (event?.javaClass?.name != "j83") return false
         val batch = runningNativeCallback.get() ?: return false
 
-        return synchronized(navigationLock) {
+        val suppress = synchronized(navigationLock) {
+            batch.successfulDestinations++
             if (!batch.closeEventSent) {
                 batch.closeEventSent = true
                 Log.i(TAG, "MULTI NAV | first native close event allowed")
@@ -151,6 +169,73 @@ internal class PlaylistMultiSelectController {
                 Log.i(TAG, "MULTI NAV | duplicate native close event suppressed")
                 true
             }
+        }
+        maybeShowNativeSummary(batch)
+        return suppress
+    }
+
+    /**
+     * Android renders Toast.makeText with GMMP's own icon and system UI,
+     * matching the native screenshot. Suppress Toast.show only while
+     * executing a native jd(mode=4) completion from OUR multi-add batch.
+     * Ordinary one-playlist operations and unrelated GMMP Toasts are left
+     * untouched. The aggregate is posted after all accepted callbacks.
+     */
+    fun shouldSuppressNativeResultToast(): Boolean {
+        val batch = runningNativeCallback.get() ?: return false
+        synchronized(navigationLock) {
+            batch.nativeToastsSuppressed++
+        }
+        Log.i(TAG, "MULTI TOAST | individual GMMP result hidden")
+        return true
+    }
+
+    private fun markNativeDispatchFinished(
+        batch: NativeNavigationBatch?,
+        accepted: Int
+    ) {
+        if (batch == null) return
+        synchronized(navigationLock) {
+            batch.acceptedDestinations = accepted
+            batch.dispatchFinished = true
+        }
+        maybeShowNativeSummary(batch)
+    }
+
+    private fun maybeShowNativeSummary(batch: NativeNavigationBatch) {
+        val successful = synchronized(navigationLock) {
+            if (batch.summaryScheduled ||
+                !batch.dispatchFinished ||
+                batch.acceptedDestinations <= 0 ||
+                batch.callbacksFinished < batch.acceptedDestinations ||
+                batch.successfulDestinations <= 0
+            ) {
+                0
+            } else {
+                batch.summaryScheduled = true
+                batch.successfulDestinations.coerceAtMost(
+                    batch.acceptedDestinations
+                )
+            }
+        }
+        if (successful == 0) return
+
+        val files = batch.sourceCount
+        val message = "$files " +
+            (if (files == 1) "Datei" else "Dateien") +
+            " zu $successful " +
+            (if (successful == 1) "Playlist" else "Playlists") +
+            " hinzugefügt"
+
+        // Post outside the jd callback's thread-local scope. Otherwise our
+        // own summary Toast would be swallowed by the native Toast hook.
+        mainHandler.post {
+            Toast.makeText(batch.context, message, Toast.LENGTH_SHORT).show()
+            Log.i(
+                TAG,
+                "MULTI TOAST | combined=$message" +
+                    " | nativeSuppressed=${batch.nativeToastsSuppressed}"
+            )
         }
     }
 
@@ -955,33 +1040,54 @@ internal class PlaylistMultiSelectController {
      * All three colors are subscribed to Aesthetic updates in this session.
      */
     private fun currentSparkleColor(session: Session, view: View): Int {
-        val accent = session.liveAccent
-            ?: session.nativeAccentAttr.takeIf { it != 0 }
-                ?.let { themeColor(view, it) }
-
-        // When colorAccent happens to equal the FAB color, prefer the
-        // alternative native colorPrimary if it is visibly different.
-        val background = session.liveFabAccent
+        val fabColor = session.liveFabAccent
             ?: (session.fab as?
                 com.google.android.material.floatingactionbutton.FloatingActionButton)
-                ?.backgroundTintList?.defaultColor
+                ?.backgroundTintList?.let { tint ->
+                    val fab = session.fab
+                    tint.getColorForState(
+                        fab?.drawableState ?: intArrayOf(),
+                        tint.defaultColor
+                    )
+                }
+            ?: session.livePrimary
 
-        if (accent != null) {
-            val other = session.livePrimary
-            if (background != null &&
-                colorDistance(accent, background) < 34f &&
-                other != null &&
-                colorDistance(other, background) >
-                    colorDistance(accent, background) + 22f
-            ) {
-                return other
-            }
-            return accent
+        // Most covers contrast nicely with GoneSmart lilac. Do NOT
+        // normally replace it with album-art red/blue: that made the
+        // sparkle look like another GMMP theme indicator.
+        if (fabColor == null ||
+            colorDistance(FALLBACK_LILAC, fabColor) >= 100f
+        ) {
+            return FALLBACK_LILAC
         }
 
-        return session.livePrimary
-            ?: session.liveFabAccent
-            ?: FALLBACK_LILAC
+        // Only when the native FAB is itself lilac/purple, prefer a
+        // DISTINCT live Aesthetic palette slot with better contrast.
+        val alternatives = listOfNotNull(
+            session.liveAccent,
+            session.livePrimary,
+            session.nativeAccentAttr.takeIf { it != 0 }
+                ?.let { themeColor(view, it) }
+        ).distinct().filter { Color.alpha(it) >= 200 }
+
+        val strongest = alternatives.maxByOrNull {
+            colorDistance(it, fabColor)
+        }
+        if (strongest != null &&
+            colorDistance(strongest, fabColor) >= 125f
+        ) {
+            return strongest
+        }
+
+        // If GMMP's available slots are all nearly the same color,
+        // retain a contrasting violet rather than an illegible badge.
+        val hsv = FloatArray(3)
+        Color.colorToHSV(fabColor, hsv)
+        return if (hsv[2] > 0.55f) {
+            0xFF34305F.toInt()
+        } else {
+            0xFFE3DFFF.toInt()
+        }
     }
 
     private fun colorDistance(a: Int, b: Int): Float {
@@ -1282,7 +1388,10 @@ internal class PlaylistMultiSelectController {
         // One batch spans every destination, but only the native completion
         // callback is allowed to dismiss the picker, and only once.
         val navigationBatch = if (targets.size > 1) {
-            NativeNavigationBatch()
+            NativeNavigationBatch(
+                sourceCount = sourceCount,
+                context = fab.context.applicationContext ?: fab.context
+            )
         } else {
             null
         }
@@ -1320,20 +1429,25 @@ internal class PlaylistMultiSelectController {
         } finally {
             runCatching { modelField.set(holder, originalModel) }
                 .onFailure { Log.e(TAG, "MULTI CONFIRM | holder restore failed", it) }
+            markNativeDispatchFinished(navigationBatch, accepted)
             // A retry after partial dispatch could duplicate tracks.
             exitSelection(session)
             session.submitting = false
         }
 
-        if (accepted == targets.size) {
-            warn(
-                fab.context,
-                "Hinzufügen zu $accepted Playlists gestartet"
-            )
+        if (navigationBatch == null) {
+            // This case is a single destination dispatched from a selection
+            // session; preserve GMMP's normal native completion toast.
+            if (accepted == 0) {
+                warn(fab.context, "Hinzufügen nicht gestartet")
+            }
+        } else if (accepted == 0) {
+            warn(fab.context, "Hinzufügen zu keiner Playlist gestartet")
         } else {
-            warn(
-                fab.context,
-                "$accepted von ${targets.size} Playlist-Aktionen gestartet"
+            Log.i(
+                TAG,
+                "MULTI TOAST | awaiting native confirmations for " +
+                    "$accepted playlist(s) and $sourceCount file(s)"
             )
         }
 
