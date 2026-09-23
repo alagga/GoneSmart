@@ -439,7 +439,7 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
                 "↘",
                 "Rating fallback",
-                "If no suitable tracks meet Minimum rating / Smart rating, retry once without those two rating restrictions before using GMMP Auto-DJ fallback.",
+                "Available when Minimum rating is above zero or Smart rating is enabled. If no tracks pass, retry once without those thresholds before native GMMP fallback.",
                 COLOR_AMBER
             ),
             SettingSpec(
@@ -637,7 +637,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What does Rating fallback do?",
-            body = "If no suitable track survives Minimum rating / Smart rating, GoneSmart can retry the same recommendation set once while ignoring only those two hard rating thresholds. A status message is shown when this happens. Other rules such as Exclude 0.5-star tracks remain active. If Rating fallback is disabled or still finds nothing, the normal GMMP Auto-DJ fallback behavior applies."
+            body = "The switch is only available while Minimum rating is above zero or Smart rating is enabled; otherwise it is greyed out and reset to off. When enabled, GoneSmart can retry the same recommendations once without those two thresholds. Exclude 0.5-star tracks still applies. If nothing suitable remains, the configured GMMP Auto-DJ fallback behavior applies."
         ))
 
         container.addView(verticalGap(22))
