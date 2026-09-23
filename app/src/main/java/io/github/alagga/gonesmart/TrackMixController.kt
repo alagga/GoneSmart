@@ -16,6 +16,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.widget.Toast
 import java.lang.ref.WeakReference
+import java.lang.reflect.Proxy
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -345,45 +346,18 @@ internal class TrackMixController(
             }
 
             request.stage = "CLEARING"
-            val cleared = if (loaded.ids.size == 1) {
-                loaded
-            } else {
-                var isolated: Snapshot? = null
-                // Native queue callbacks and an already-active Auto-DJ can
-                // overlap for a short moment after selecting a row from the
-                // queue. Refills are held while CLEARING; use a bounded
-                // three-attempt clear rather than failing on one unlucky
-                // callback ordering. Abort immediately if the selected song
-                // is no longer current.
-                for (attempt in 1..3) {
-                    if (!isCurrent(request)) break
-                    val latest = queueSnapshot()
-                    if (latest?.currentId != selectedId) break
-
-                    Log.i(
-                        TAG,
-                        "MIX CLEAR ATTEMPT | attempt=$attempt | " +
-                            "queueSize=${latest.ids.size}"
-                    )
-                    sendCommand(request.context, COMMAND_CLEAR_QUEUE)
-                    isolated = awaitQueue(
-                        request,
-                        if (attempt == 1) 2_500L else 2_000L
-                    ) {
-                        TrackMixPlan.isSeedIsolated(
-                            selectedId, loaded.ids, loaded.currentIndex,
-                            it.ids, it.currentIndex
-                        )
-                    }
-                    if (isolated != null) break
-
-                    // Give native observers one short settle interval before
-                    // another Clear. This is still well inside the bounded
-                    // Track Mix startup window and does not create popups.
-                    Thread.sleep(220L)
-                }
-                isolated
-            }
+            // GMMP's CLEAR_QUEUE broadcast is asynchronous. A native
+            // Auto-DJ refill already running before this click can append
+            // between its delivery and our queue read. Repeated broadcasts
+            // cannot make that atomic. Instead, isolate exactly the
+            // currently playing QUEUE ENTRY by its unique queue_id inside
+            // GMMP's own native database transaction.
+            val cleared = runCatching {
+                if (loaded.ids.size == 1) loaded
+                else isolateNativeSeed(request, selectedId)
+            }.onFailure {
+                Log.e(TAG, "MIX ISOLATE FAILED | native transaction", it)
+            }.getOrNull()
             if (cleared == null) {
                 val finalSnapshot = queueSnapshot()
                 Log.w(
@@ -396,7 +370,7 @@ internal class TrackMixController(
                         "nativePlay=${request.nativeSource} | " +
                         "refillObserved=${request.refillObserved}"
                 )
-                fail("Could not isolate the selected song in the queue.", request.context)
+                fail("Could not prepare the selected song for Auto-DJ.", request.context)
                 return
             }
             Log.i(
@@ -474,6 +448,160 @@ internal class TrackMixController(
             request.stage = "DONE"
             if (pending === request) pending = null
         }
+    }
+
+    /**
+     * Deterministic Queue isolation via GMMP 4.2.0 native ex3.c(uq1),
+     * xx3.O(ey3[]) and xx3.O0(ArrayList). Unlike CLEAR_QUEUE broadcast,
+     * the delete and current-row update happen in one Room transaction.
+     * The selected native queue_id and currently playing track both stay
+     * unchanged. All operations run on Track Mix's worker (never UI).
+     */
+    private fun isolateNativeSeed(
+        request: Pending,
+        selectedTrackId: Long
+    ): Snapshot? {
+        val queue = nativeQueue?.get()
+            ?: nativeAutoDj?.get()?.let { field(it, "q") }
+            ?: run {
+                Log.e(TAG, "MIX ISOLATE | native queue not captured")
+                return null
+            }
+        val dao = field(queue, "r") ?: return null
+        val read = dao.javaClass.getMethod("H1")
+        val position = queue.javaClass.getDeclaredMethod("D").apply {
+            isAccessible = true
+        }
+        val positionField = queue.javaClass.getDeclaredField("p").apply {
+            isAccessible = true
+        }
+        fun entries(): List<Any> =
+            ((read.invoke(dao) as? List<*>)
+                ?: error("Native queue cannot be read"))
+                .filterNotNull()
+                .sortedBy { (field(it, "a") as Number).toInt() }
+
+        fun refs(rows: List<Any>): List<TrackMixPlan.NativeQueueEntry> =
+            rows.map {
+                TrackMixPlan.NativeQueueEntry(
+                    queueId = (field(it, "d") as Number).toLong(),
+                    trackId = (field(it, "b") as Number).toLong(),
+                    position = (field(it, "a") as Number).toInt()
+                )
+            }
+
+        val originals = entries()
+        val before = refs(originals)
+        val originalPosition = position.invoke(queue) as? Int ?: return null
+        val plan = TrackMixPlan.planNativeIsolation(
+            before, originalPosition, selectedTrackId
+        )
+        if (plan.removeEntryIds.isEmpty()) {
+            Log.i(TAG, "MIX ISOLATE | selected queue entry already alone")
+            return Snapshot(listOf(selectedTrackId), 0)
+        }
+
+        val entryType = originals.first().javaClass
+        val stale = originals.filter {
+            (field(it, "d") as Number).toLong() != plan.selectedEntryId
+        }
+        val staleArray = java.lang.reflect.Array.newInstance(
+            entryType, stale.size
+        )
+        stale.forEachIndexed { index, row ->
+            java.lang.reflect.Array.set(staleArray, index, row)
+        }
+
+        val nativeInterface = queue.javaClass.classLoader!!.loadClass("uq1")
+        val nativeUnitClass = queue.javaClass.classLoader!!.loadClass("uf5")
+        val nativeUnit = nativeUnitClass.getDeclaredField("a").apply {
+            isAccessible = true
+        }.get(null)
+        var mutationError: Throwable? = null
+        var mutationPerformed = false
+
+        val callback = Proxy.newProxyInstance(
+            queue.javaClass.classLoader,
+            arrayOf(nativeInterface)
+        ) { proxy, method, args ->
+            when (method.name) {
+                "invoke" -> {
+                    try {
+                        // A competing Play/Flip/refill between our first
+                        // snapshot and transaction must not be overwritten.
+                        check(isCurrent(request)) {
+                            "Track Auto-DJ action was superseded"
+                        }
+                        check(refs(entries()) == before &&
+                            (position.invoke(queue) as? Int) ==
+                                originalPosition) {
+                            "Native queue changed before isolation"
+                        }
+                        dao.javaClass.getMethod(
+                            "O", Array<Any>::class.java
+                        ).invoke(dao, staleArray)
+                        val selected = originals.first {
+                            (field(it, "d") as Number).toLong() ==
+                                plan.selectedEntryId
+                        }
+                        selected.javaClass.getDeclaredField("a").apply {
+                            isAccessible = true
+                        }.setInt(selected, 1)
+                        dao.javaClass.getMethod(
+                            "O0", List::class.java
+                        ).invoke(dao, arrayListOf(selected))
+                        mutationPerformed = true
+                    } catch (error: Throwable) {
+                        mutationError = error
+                        throw error
+                    }
+                    nativeUnit
+                }
+                "toString" -> "GoneSmart native queue isolation"
+                "hashCode" -> System.identityHashCode(proxy)
+                "equals" -> proxy === args?.firstOrNull()
+                else -> null
+            }
+        }
+
+        // ex3.c invokes the callback inside its native Room transaction;
+        // GMMP catches callback exceptions internally, so track failure
+        // explicitly instead of accidentally treating it as success.
+        queue.javaClass.getDeclaredMethod(
+            "c", nativeInterface
+        ).apply { isAccessible = true }.invoke(queue, callback)
+        mutationError?.let { throw it }
+        check(mutationPerformed) {
+            "Native queue transaction did not execute"
+        }
+
+        val result = entries()
+        val after = refs(result)
+        check(after.size == 1 &&
+            after[0].queueId == plan.selectedEntryId &&
+            after[0].trackId == selectedTrackId &&
+            after[0].position == 1) {
+            "Native queue isolation did not preserve the selected entry"
+        }
+        // ex3.p is GMMP's queue position allocator used by ex3.t/w.
+        // Keep it in sync before re-enabling Auto-DJ, so newly generated
+        // tracks begin at position 2 rather than leaving position gaps.
+        positionField.setInt(queue, 1)
+        queue.javaClass.getDeclaredMethod(
+            "b2", Int::class.javaPrimitiveType
+        ).apply { isAccessible = true }.invoke(queue, 1)
+        check((position.invoke(queue) as? Int) == 1) {
+            "Native playback pointer did not move with the selected song"
+        }
+        Log.i(
+            TAG,
+            "MIX ISOLATED | method=native-transaction | " +
+                "removed=${plan.removeEntryIds.size} | " +
+                "selectedEntryId=${plan.selectedEntryId} | " +
+                "oldPosition=$originalPosition | newPosition=1 | " +
+                "verified=true"
+        )
+        return Snapshot(listOf(selectedTrackId), 0)
     }
 
     private fun waitForSelectedSong(request: Pending): Snapshot? {
