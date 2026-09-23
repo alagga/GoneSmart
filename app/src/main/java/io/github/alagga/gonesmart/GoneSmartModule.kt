@@ -128,7 +128,11 @@ class GoneSmartModule : XposedModule() {
             if (
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
-                key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE
+                key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
+                // Persisting Track Mix's already-active Smart DJ switch
+                // must not discard its first live recommendation pool.
+                !(key == GoneSmartSettingsKeys.KEY_ENABLED &&
+                    previous.enabled == options.enabled)
             ) {
 
                 pipelineGeneration
