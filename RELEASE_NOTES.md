@@ -2,11 +2,34 @@
 
 Smart Auto-DJ remains the core feature; this update adds a separately controlled GMMP interface extension and companion-app update awareness.
 
-## In development: Flip Queue (preview only)
+## New: Flip Queue / Play Flipped
 
-- Added an **off-by-default** UI switch and menu-placement diagnostics for the Queue overflow, Playlist and Smart Playlist context menus.
-- The preview entries use GMMP's own localized Play/Queue titles and a direction symbol + GoneSmart sparkle. GMMP 4.2.0 contains no localized reverse-queue label.
-- **This preview does not change playback or reorder tracks.** Full native queue inversion is not yet included in v0.4.0 release notes; it requires staged device testing.
+- Optional **Flip queue / Play flipped** under **UI → Playback & Queue**;
+  independent of Smart DJ and disabled by default.
+- The Queue overflow can reverse every queue entry while the currently
+  playing/paused track follows its new position, preserving its identity
+  and playback state.
+- Playlist and Smart Playlist row menus offer **Play Flipped**, playing
+  the original last track first and continuing through to the original
+  first. GMMP resolves Smart Playlist membership before reversal.
+- Localized native Play/Queue labels, two spaced typographic arrows,
+  GoneSmart's full-size lilac two-star sparkle, and native menu row height.
+- Uses GMMP's native queue/playlist APIs, verifies resulting order, and
+  attempts to restore the previous queue if the native queue update fails.
+- **Device validation (GMMP 4.2.0):** 31-track queue reversal (current
+  position 8 → 24), 17-track playlist and Smart Playlists of 31 and 140
+  tracks all passed native queue/order verification. The user also
+  reported the feature working on-device. Other GMMP versions and every
+  possible playback/queue race have not been tested.
+
+## Expanded companion Logs
+
+- Logs now covers **Smart DJ**, **multi-playlist selection**, **Flip**
+  and **UI/System** events, with category labels and recent category totals.
+- Native-verified Flip successes and failures/recovery attempts, playlist
+  multi-add completion, and live UI option changes are shown in the app.
+- UI activity does not overwrite the separate Smart DJ readiness and
+  fallback status on Home. Detailed internal diagnostics remain in Logcat.
 
 ## New: UI extensions
 
