@@ -172,7 +172,9 @@ internal class TrackMixController(
         nativePlay: MenuItem
     ) {
         if (pending != null) {
-            toast(context, "A track mix is already starting.")
+            // Avoid stacking toasts if the user taps while the previous
+            // native playback command is still pending.
+            Log.i(TAG, "MIX SKIPPED | previous Track Mix still starting")
             return
         }
         if (!nativePlay.isEnabled) {
@@ -257,14 +259,42 @@ internal class TrackMixController(
             } else {
                 sendCommand(request.context, COMMAND_CLEAR_QUEUE)
                 val clearStarted = SystemClock.elapsedRealtime()
-                awaitQueue(request, 5_000L) {
+                val first = awaitQueue(request, 3_000L) {
                     it.currentId == selectedId &&
                         (
                             it.ids.size == 1 ||
                                 (SystemClock.elapsedRealtime() - clearStarted > 450L &&
                                     it.currentIndex == 0 &&
                                     it.ids != loaded.ids)
-                            )
+                        )
+                }
+                if (first != null || !isCurrent(request)) {
+                    first
+                } else {
+                    // An already-active GMMP Auto-DJ can refill during
+                    // native Play and overtake the first Clear command.
+                    // Retry once after it has had time to settle.
+                    val latest = queueSnapshot()
+                    if (latest?.currentId == selectedId) {
+                        Log.i(
+                            TAG,
+                            "MIX CLEAR RETRY | play/refill overlap | " +
+                                "queueSize=${latest.ids.size}"
+                        )
+                        sendCommand(request.context, COMMAND_CLEAR_QUEUE)
+                        val retryStart = SystemClock.elapsedRealtime()
+                        awaitQueue(request, 4_000L) {
+                            it.currentId == selectedId &&
+                                (
+                                    it.ids.size == 1 ||
+                                        (SystemClock.elapsedRealtime() - retryStart > 450L &&
+                                            it.currentIndex == 0 &&
+                                            it.ids != latest.ids)
+                                )
+                        }
+                    } else {
+                        null
+                    }
                 }
             }
             if (cleared == null) {
@@ -323,14 +353,15 @@ internal class TrackMixController(
                 Log.i(
                     TAG,
                     "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +
-                        "currentPreserved=true | recommendations=${filled.ids.size - 1}"
+                        "currentPreserved=true | tracksAfterSeed=${filled.ids.size - 1}"
                 )
                 events.reportEvent(
                     GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
                     "Track Mix started: ${filled.ids.size - 1} " +
-                        "Auto-DJ tracks added after the selected song."
+                        "tracks queued after the selected song."
                 )
-                toast(request.context, "Track Mix started.")
+                // Keep success in GoneSmart Logs, with no redundant
+                // on-screen toast after GMMP's own playback change.
             }
         } catch (failure: Throwable) {
             Log.e(TAG, "Track Mix failed", failure)
