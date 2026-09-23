@@ -82,7 +82,7 @@ Yes. Multi-playlist selection has its own switch and works when Smart DJ is turn
 
 **Track Mix** appears after **Play next** in an individual song's three-dot menu. It starts that song, keeps it as the first entry of a fresh queue, enables Smart DJ if necessary and lets GMMP Auto-DJ fill the queue to its configured Initial Size. Turn this feature on or off independently under **GoneSmart → UI → Track Mix**. It is enabled by default for existing users.
 
-After a successful, verified mix, GoneSmart displays just **one short confirmation**; GMMP's intermediate playback, queue-clear and Auto-DJ status pop-ups are suppressed only during the brief Track Mix startup window. A genuine error still produces a warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers that refill, retries queue clearing once if necessary, and verifies that the newly selected song is preserved.
+After a successful, verified mix, GoneSmart displays just **one short confirmation**. GMMP's intermediate Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed status UI—are suppressed only during the bounded Track Mix startup window. A genuine error still produces one warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers that refill, can retry native queue clearing up to three bounded attempts, and verifies that the newly selected song is preserved before filling the new mix.
 
 ## Is “Track Mix” localized in every GMMP language?
 
