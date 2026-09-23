@@ -12,7 +12,7 @@ GoneSmart injects a preview action into three independently controlled GMMP menu
 | Playlists (row three-dot menu) | `menu_gm_context_playlist_list` | Directly **below Shuffle** |
 | Smart Playlists (row three-dot menu) | `menu_gm_context_smart` | Directly **below Shuffle** |
 
-The playlist and smart-playlist actions use GMMP's *currently localized* native Play title, a custom pair of **two moderately weighted parallel up/down arrows** (approximately matching the native menu letter-stem width), and GoneSmart's full-size **two-star lilac sparkle**. The queue action uses GMMP's localized Queue title with the same arrows and sparkle. Both icons are centered without increasing native menu row height. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
+The playlist and smart-playlist actions use GMMP's *currently localized* native Play title, the original typographic **⇵ symbol with a very subtle stroke enhancement** derived from the native menu font's measured lowercase `l` glyph, and GoneSmart's full-size **two-star lilac sparkle**. The queue action uses GMMP's localized Queue title with the same arrows and sparkle. Both icons are centered without increasing native menu row height. **GMMP 4.2.0 has no translated string meaning reverse/flip a queue.** Its resource named `flip` is a *view ID*, not a translatable string. Do not mistakenly use the `invert_colors` text for playback semantics.
 
 ### First phone test
 
