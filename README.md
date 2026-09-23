@@ -216,6 +216,10 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 
 ---
 
+## Experimental development: Flip Queue (not yet functional)
+
+The v0.4.x feature branch now includes an **off-by-default Flip Queue preview** in **GoneSmart → UI → Playback & Queue**. It adds a marked `⇵ ✦` menu entry to the Queue overflow, Playlist context menu and Smart Playlist context menu. This first test phase is intentionally non-destructive: tapping the entry logs native queue/menu diagnostics rather than starting playback or reordering tracks. The existing Smart DJ and Multi-playlist selection features are unaffected. See [Flip Queue staged testing](docs/QUEUE_FLIP_TESTING.md) for exact test steps and current limitations.
+
 ## Companion UI and player indicator
 
 The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
