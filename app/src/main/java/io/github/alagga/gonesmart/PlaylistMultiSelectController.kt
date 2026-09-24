@@ -1095,6 +1095,13 @@ internal class PlaylistMultiSelectController {
             refreshVisibleRows(session)
             updateSparkleColor(session)
         }
+        if (active === session) {
+            session.list?.let { list ->
+                // The same live native accent drives the inline overlay,
+                // not only the hidden RecyclerView row decorations.
+                folderSelectionChanged?.invoke(list)
+            }
+        }
     }
 
     private fun stopNativeGmmpPalette(session: Session) {
