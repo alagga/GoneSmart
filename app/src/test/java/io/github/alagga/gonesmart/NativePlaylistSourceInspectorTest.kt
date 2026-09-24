@@ -6,7 +6,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativePlaylistSourceInspectorTest {
-    private class xn3(val q: String)
+    private class Details(val title: String)
+    private class xn3(
+        val q: String,
+        val r: String? = null,
+        val info: Details? = null
+    )
     private class NativeGroup(val rows: List<Any>)
     private open class AdapterBase(private val groups: List<NativeGroup>)
     private class Adapter(
@@ -22,6 +27,19 @@ class NativePlaylistSourceInspectorTest {
         val result = NativePlaylistSourceInspector.inspect(adapter, 2)
         assertEquals(setOf("/sdcard/a.m3u", "/card/b.m3u"), result.paths.toSet())
         assertFalse(result.truncated)
+    }
+
+    @Test fun readsNativeModelTitlesWithoutGuessingFromFilenames() {
+        val path = "/external/file-does-not-match.m3u"
+        val adapter = Adapter(
+            listOf(xn3(path, "Real playlist name", Details("Nested title"))),
+            emptyList()
+        )
+        val found = NativePlaylistSourceInspector.inspect(adapter)
+            .models.single()
+        assertEquals(path, found.path)
+        assertEquals("Real playlist name", found.textFields["r"])
+        assertEquals("Nested title", found.textFields["info.title"])
     }
 
     @Test fun repeatedModelsAreDeduplicatedByPath() {

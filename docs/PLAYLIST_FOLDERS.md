@@ -244,6 +244,39 @@ from an observed native path. The final writable feature must read
 GMMP's configured playlist root instead of relying on path inference.
 
 
+
+### Full GMMP dataset and playlist display names — 24 September
+
+A device test of the native adapter inspector at 23:01 returned
+**248 distinct native xn3 playlist models for 248 adapter rows**,
+with 61 models under the verified internal GMMP playlist root and
+187 external models. The bounded traversal visited 516 objects and
+reported no truncation or filesystem scan. This establishes snapshot
+completeness relative to GMMP's ordinary Playlists adapter; it is
+not an independent proof that the native database contains no
+additional hidden/filtered playlist records.
+
+The next combined device-test build reads text metadata on every
+native xn3 model, including one-level nested native metadata fields
+and semantically named read-only getters. It compares candidate
+name fields against GMMP's actual TextView titles from visible,
+already-bound wp3/jo3 rows, then selects a matching native name
+field for the entire native dataset. Playlist identity remains
+xn3.q, and the folder index sorts and displays the resulting
+native names. In ambiguous cases it uses verified visible native
+titles first and filename fallback only for otherwise unresolved
+rows; it never invents a title.
+
+To reduce on-device test cycles, this build also reports native
+model counts and a stable snapshot fingerprint for each surface,
+the title-field match and fallback statistics, and all four
+combinations of the independent grouping options in one Folders
+preview operation. Open the preview once in the normal Playlists
+tab and once in Add to Playlist to test both native adapters.
+All diagnostics are debug-only and read-only; there is no playlist
+file scan, DB write, file move or native adapter replacement.
+
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

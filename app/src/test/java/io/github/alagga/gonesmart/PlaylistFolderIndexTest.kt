@@ -220,6 +220,39 @@ class PlaylistFolderIndexTest {
         assertEquals(2, result.folders.size)
     }
 
+
+    @Test fun nativeDisplayNamesReplaceFilenamesAndDetermineSortOrder() {
+        val one = "$root/z_file_name.m3u"
+        val two = "/external/a_file_name.m3u"
+        val index = PlaylistFolderIndex.build(
+            nativePlaylistPaths = listOf(one, two),
+            mainPlaylistDirectory = root,
+            groupExternalLocations = false,
+            groupRootPlaylists = false,
+            displayNamesByPath = mapOf(
+                one to "A Beautiful Playlist",
+                two to "Z My External Mix"
+            )
+        )
+        assertEquals(
+            listOf("A Beautiful Playlist", "Z My External Mix"),
+            index.ungroupedPlaylists.map { it.name }
+        )
+        assertEquals(listOf(one, two), index.ungroupedPlaylists.map { it.path })
+    }
+
+    @Test fun fallbackFilenameOnlyWhenNoNativeTitleIsAvailable() {
+        val path = "$root/file-title.m3u"
+        val index = PlaylistFolderIndex.build(
+            nativePlaylistPaths = listOf(path),
+            mainPlaylistDirectory = root,
+            groupExternalLocations = false,
+            groupRootPlaylists = false,
+            displayNamesByPath = mapOf(path to "   ")
+        )
+        assertEquals("file-title.m3u", index.ungroupedPlaylists.single().name)
+    }
+
     @Test fun canonicalDuplicatesCannotAppearInDifferentGroups() {
         val result = PlaylistFolderIndex.build(
             listOf(

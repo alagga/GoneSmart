@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import java.lang.ref.WeakReference
+import java.security.MessageDigest
 import java.util.WeakHashMap
 
 /**
@@ -46,6 +47,8 @@ internal class PlaylistFolderPreviewController {
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val chips = WeakHashMap<ViewGroup, Chip>()
     private val observedPaths = linkedSetOf<String>()
+    private val observedTitles = linkedMapOf<String, String>()
+    private val snapshotFingerprints = linkedMapOf<String, String>()
 
     fun setOptions(
         enabled: Boolean,
@@ -138,6 +141,7 @@ internal class PlaylistFolderPreviewController {
             return
         }
         observedPaths.addAll(currentlyVisiblePaths(list))
+        observedTitles.putAll(currentlyVisibleTitles(list))
         val root = chip.root
         if (root.width == 0 || list.width == 0) return
         val listPosition = IntArray(2)
@@ -180,32 +184,87 @@ internal class PlaylistFolderPreviewController {
         val itemCount = runCatching {
             adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
         }.getOrDefault(-1)
-        // GMMP's zn3.i0()/t23.r() exposes section headers, not
-        // the full playlist model list. Inspect only native adapter
-        // backing fields and standard read-only getItem(int).
         val native = NativePlaylistSourceInspector.inspect(adapter, itemCount)
-        for (trace in native.traces) {
-            Log.i(TAG, "FOLDER NATIVE TRACE | " + trace)
-        }
         val nativePaths = (native.paths + nativePlaylistPaths(adapter)).distinct()
         observedPaths.addAll(currentlyVisiblePaths(list))
-        val paths = (nativePaths + observedPaths).distinct()
-        val root = PlaylistRootLocator.infer(
-            paths,
-            Environment.getExternalStorageDirectory().absolutePath
+        observedTitles.putAll(currentlyVisibleTitles(list))
+
+        // Names are always keyed by the native xn3.q path, never filenames.
+        // Use bound native text views to validate which xn3 metadata field
+        // contains the title; the winning field then covers unseen rows.
+        val resolvedTitles = NativePlaylistTitleResolver.resolve(
+            native.models, observedTitles
         )
-        val externalNative = if (root == null) -1 else {
-            val prefix = root.trimEnd('/') + "/"
-            nativePaths.count { !it.startsWith(prefix) }
+        val sample = native.models
+            .filter { observedTitles.containsKey(it.path) }
+            .take(3)
+        for (model in sample) {
+            val fields = model.textFields.entries
+                .filter { it.key != "q" }
+                .take(12)
+                .joinToString(";") { entry ->
+                    entry.key + "=" + entry.value.replace("\n", " ").take(64)
+                }
+            Log.i(
+                TAG,
+                "FOLDER TITLE MODEL | path=" + model.path +
+                    " | gmmpRow=" + observedTitles[model.path] +
+                    " | modelFields=" + fields
+            )
         }
         Log.i(
             TAG,
-            "FOLDER NATIVE SOURCE | adapterRows=" + itemCount +
+            "FOLDER TITLE SOURCE | chosenField=" +
+                (resolvedTitles.chosenField ?: "none") +
+                " | matchedVisible=" + resolvedTitles.observedLabels +
+                " | nativeTitles=" + resolvedTitles.nativeTitles +
+                " | fallbackFilenames=" + resolvedTitles.filenameFallbacks +
+                " | modelCount=" + native.models.size +
+                " | candidateFields=" + resolvedTitles.candidates
+                    .take(5).joinToString(";") {
+                        it.field + ":match=" + it.matches +
+                            ",mismatch=" + it.mismatches +
+                            ",distinctive=" + it.distinctiveMatches +
+                            ",coverage=" + it.coverage
+                    }
+        )
+
+        val root = PlaylistRootLocator.infer(
+            nativePaths + observedPaths,
+            Environment.getExternalStorageDirectory().absolutePath
+        )
+        val rootCount = if (root == null) -1 else {
+            val prefix = root.trimEnd('/') + "/"
+            nativePaths.count { it.startsWith(prefix) }
+        }
+        val externalCount = if (rootCount < 0) -1
+            else nativePaths.size - rootCount
+        val nativeComplete =
+            itemCount > 0 && nativePaths.size == itemCount && !native.truncated
+        val surface = if (isPicker(list)) "add-picker" else "playlists-tab"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(nativePaths.sorted().joinToString("\n").toByteArray())
+            .take(6).joinToString("") { byte ->
+                (byte.toInt() and 255).toString(16).padStart(2, '0')
+            }
+        val opposite = if (surface == "add-picker") "playlists-tab"
+            else "add-picker"
+        val oppositeDigest = snapshotFingerprints[opposite]
+        snapshotFingerprints[surface] = digest
+        Log.i(
+            TAG,
+            "FOLDER NATIVE SOURCE | surface=" + surface +
+                " | adapterRows=" + itemCount +
                 " | nativeModels=" + nativePaths.size +
-                " | externalNative=" + externalNative +
+                " | internalNative=" + rootCount +
+                " | externalNative=" + externalCount +
                 " | visibleCached=" + observedPaths.size +
                 " | visited=" + native.visitedObjects +
                 " | truncated=" + native.truncated +
+                " | complete=" + nativeComplete +
+                " | fingerprint=" + digest +
+                " | sameAsOtherSurface=" +
+                    (oppositeDigest?.let { it == digest } ?: "unknown") +
                 " | filesystemScan=false"
         )
         if (root == null) {
@@ -216,16 +275,46 @@ internal class PlaylistFolderPreviewController {
             ).show()
             return
         }
-        // Native lists may contain a section header. Mark partial unless
-        // nearly all native adapter rows have corresponding playlist models.
-        val nativeComplete = itemCount > 0 &&
-            nativePaths.size >= itemCount - 1 && !native.truncated
+        // Cached rows are only a fallback for an incomplete native dataset.
+        // Otherwise an old visible row could reintroduce a deleted playlist.
+        val paths = if (nativeComplete) nativePaths
+            else (nativePaths + observedPaths).distinct()
         val index = PlaylistFolderIndex.build(
             nativePlaylistPaths = paths,
             mainPlaylistDirectory = root,
             groupExternalLocations = settings.groupExternal,
-            groupRootPlaylists = settings.groupRoot
+            groupRootPlaylists = settings.groupRoot,
+            displayNamesByPath = resolvedTitles.names + observedTitles
         )
+        // Exercise all four grouping combinations using one device test.
+        // This does not modify settings or GMMP's native playlist adapter.
+        for (external in listOf(false, true)) {
+            for (groupRoot in listOf(false, true)) {
+                val candidate = PlaylistFolderIndex.build(
+                    nativePlaylistPaths = paths,
+                    mainPlaylistDirectory = root,
+                    groupExternalLocations = external,
+                    groupRootPlaylists = groupRoot,
+                    displayNamesByPath = resolvedTitles.names + observedTitles
+                )
+                fun countFolder(folder: PlaylistFolderIndex.Folder): Int =
+                    folder.playlists.size +
+                        folder.children.sumOf(::countFolder)
+                val nested = candidate.folders.sumOf(::countFolder)
+                val grouped = candidate.otherLocations?.playlists?.size ?: 0
+                val ungrouped = candidate.ungroupedPlaylists.size
+                Log.i(
+                    TAG,
+                    "FOLDER GROUP MATRIX | external=" + external +
+                        " | root=" + groupRoot +
+                        " | nested=" + nested +
+                        " | other=" + grouped +
+                        " | loose=" + ungrouped +
+                        " | total=" + (nested + grouped + ungrouped) +
+                        " | native=" + paths.size
+                )
+            }
+        }
         showFolder(
             list = list,
             index = index,
@@ -360,6 +449,53 @@ internal class PlaylistFolderPreviewController {
             }
             modelPath(model)
         }
+    }
+
+    /** Read GMMP's actual rendered playlist title from visible native rows. */
+    private fun currentlyVisibleTitles(list: ViewGroup): Map<String, String> {
+        val holderMethod = runCatching {
+            list.javaClass.getMethod("getChildViewHolder", View::class.java)
+        }.getOrNull() ?: return emptyMap()
+        val found = linkedMapOf<String, String>()
+        for (index in 0 until list.childCount) {
+            val row = list.getChildAt(index) ?: continue
+            val holder = runCatching {
+                holderMethod.invoke(list, row)
+            }.getOrNull() ?: continue
+            val model = runCatching {
+                holder.javaClass.getDeclaredField("A").apply {
+                    isAccessible = true
+                }.get(holder)
+            }.getOrNull() ?: continue
+            val path = modelPath(model) ?: continue
+            val title = visiblePlaylistTitle(row) ?: continue
+            found[path] = title
+        }
+        return found
+    }
+
+    private fun visiblePlaylistTitle(row: View): String? {
+        val candidates = arrayListOf<Pair<String, Float>>()
+        fun collect(view: View, depth: Int) {
+            if (depth > 6 || candidates.size >= 32 ||
+                view.visibility != View.VISIBLE
+            ) return
+            if (view is TextView) {
+                val title = view.text?.toString()?.trim().orEmpty()
+                if (title.length in 1..250 && title.any(Char::isLetterOrDigit) &&
+                    !title.startsWith("/") && !title.contains("://")
+                ) {
+                    candidates.add(title to view.textSize)
+                }
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    collect(view.getChildAt(index), depth + 1)
+                }
+            }
+        }
+        collect(row, 0)
+        return candidates.maxByOrNull { it.second }?.first
     }
 
     private fun modelPath(value: Any?): String? {

@@ -17,7 +17,8 @@ internal object NativePlaylistSourceInspector {
         val paths: List<String>,
         val traces: List<String>,
         val visitedObjects: Int,
-        val truncated: Boolean
+        val truncated: Boolean,
+        val models: List<NativePlaylistTitleResolver.Model> = emptyList()
     )
 
     private data class Entry(val value: Any, val via: String, val depth: Int)
@@ -28,6 +29,7 @@ internal object NativePlaylistSourceInspector {
 
     fun inspect(adapter: Any, expectedRows: Int = -1): Result {
         val paths = linkedSetOf<String>()
+        val models = linkedMapOf<String, NativePlaylistTitleResolver.Model>()
         val traces = linkedSetOf<String>()
         val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
         val queue = java.util.ArrayDeque<Entry>()
@@ -58,7 +60,14 @@ internal object NativePlaylistSourceInspector {
                 val path = runCatching {
                     findField(type, "q")?.get(value) as? String
                 }.getOrNull()
-                if (!path.isNullOrBlank()) paths.add(path)
+                if (!path.isNullOrBlank()) {
+                    paths.add(path)
+                    if (!models.containsKey(path)) {
+                        models[path] = NativePlaylistTitleResolver.Model(
+                            path, textFields(value)
+                        )
+                    }
+                }
                 continue
             }
 
@@ -148,13 +157,84 @@ internal object NativePlaylistSourceInspector {
                     val path = runCatching {
                         findField(model.javaClass, "q")?.get(model) as? String
                     }.getOrNull()
-                    if (!path.isNullOrBlank()) paths.add(path)
+                    if (!path.isNullOrBlank()) {
+                        paths.add(path)
+                        if (!models.containsKey(path)) {
+                            models[path] = NativePlaylistTitleResolver.Model(
+                                path, textFields(model)
+                            )
+                        }
+                    }
                 }
             }
         }
         log("RESULT nativePaths=" + paths.size +
             " expectedAdapterRows=" + expectedRows)
-        return Result(paths.toList(), traces.toList(), visited.size, truncated)
+        return Result(
+            paths.toList(), traces.toList(), visited.size, truncated,
+            models.values.toList()
+        )
+    }
+
+
+    /** Read only direct and one-level nested text metadata from xn3. */
+    private fun textFields(model: Any): Map<String, String> {
+        val result = linkedMapOf<String, String>()
+        fun inspect(target: Any, prefix: String, limit: Int) {
+            var owner: Class<*>? = target.javaClass
+            var visitedFields = 0
+            while (owner != null && owner != Any::class.java &&
+                visitedFields < limit && result.size < 48
+            ) {
+                for (field in owner.declaredFields) {
+                    if (visitedFields++ >= limit || result.size >= 48) break
+                    if (field.isSynthetic ||
+                        java.lang.reflect.Modifier.isStatic(field.modifiers)
+                    ) continue
+                    val member = runCatching {
+                        field.isAccessible = true
+                        field.get(target)
+                    }.getOrNull() ?: continue
+                    val label = prefix + field.name
+                    when (member) {
+                        is CharSequence -> {
+                            val text = member.toString().trim()
+                            if (text.isNotBlank() && text.length <= 500) {
+                                result[label] = text
+                            }
+                        }
+                        else -> {
+                            if (prefix.isEmpty() &&
+                                isNativeCarrier(member.javaClass) &&
+                                member.javaClass.simpleName != "xn3" &&
+                                !member.javaClass.isArray &&
+                                member !is Collection<*> &&
+                                member !is Map<*, *>
+                            ) {
+                                inspect(member, label + ".", 12)
+                            }
+                        }
+                    }
+                }
+                owner = owner.superclass
+            }
+        }
+        inspect(model, "", 48)
+
+        // Only semantically explicit read-only Java/Kotlin getters.
+        val getters = setOf("getName", "getTitle", "getDisplayName",
+            "getPlaylistName")
+        for (method in model.javaClass.methods) {
+            if (method.name !in getters || method.parameterCount != 0 ||
+                !CharSequence::class.java.isAssignableFrom(method.returnType)
+            ) continue
+            val text = runCatching { method.invoke(model) as? CharSequence }
+                .getOrNull()?.toString()?.trim()
+            if (!text.isNullOrBlank() && text.length <= 500) {
+                result[method.name] = text
+            }
+        }
+        return result
     }
 
     private fun isTraversable(value: Any): Boolean =
