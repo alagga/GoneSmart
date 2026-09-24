@@ -404,6 +404,55 @@ creating a playlist in the wrong folder. Actual in-folder native
 creation needs a separately verified GMMP destination hook. Existing
 playlist clicks and native multi-destination writes remain native.
 
+
+### Device report and crash-stack diagnosis — 25 September, 01:20–01:26
+
+The user's 4 screenshots compare GMMP's original black Playlists/Add
+rows against GoneSmart's small-font, gray Add overlay with filled folder
+icons. The original compact native row is 144px high; our style probe
+selected `metadataTextEntry` at only 30px for its title, although
+the visible native playlist headline appears around 45px. The device
+log verifies all 248 native models and 248 native display names.
+
+More importantly, two reproduced normal-tab crashes have the same
+main-thread stack: `NullPointerException in ViewGroup.dispatchDetachedFromWindow`
+called by AndroidX Fragment `SpecialEffectsController` while removing
+the old playlist fragment after GoneSmart invokes a real native
+`wp3` row click. The Add picker also reports the same NPE
+on back navigation immediately after its selection session exits.
+The previous controller removed the sibling overlay synchronously
+inside the native list's `onViewDetachedFromWindow` callback,
+thereby changing an ancestor's children during Android's active
+detach traversal. It could also re-render picker selection from that
+same callback and leave an offscreen browser blocking other pages.
+
+The next combined stability build hides the overlay immediately but
+deletes it from the parent on the **next main-loop turn**, after
+FragmentManager finishes detachment. Selection notifications render
+on the next turn too; a successful native playlist click also retires
+the browser, suppresses stale auto-reattach until the original list
+actually detaches, and restores the native list's alpha. Overlay
+visibility is conditioned on the native list's actual global visible
+bounds and not merely `isShown()` (which is true for some
+offscreen pages).
+
+Visual changes in the same build: the known compact GMMP metadata title
+is expanded proportionally (30→45px on the observed 144px row, while
+other native title views retain their own live sizes); the original
+typeface, row XML and metrics remain native. Folder icons are now
+thin-stroke vector outlines, not the previously selected filled GMMP
+drawable. Its stroke is 1.25 units in a 24x24 viewport, avoiding the
+earlier accidental double application of density scaling.
+The Add screen's background now clones the actual GMMP window
+`DecorView` surface, rather than its inner #303030 placeholder
+CoordinatorLayout, and redraw/style checks follow the live theme.
+
+Unit tests cover compact metadata correction, alternate GMMP view
+sizes, native large headlines and scaled compact type. Android
+FragmentManager teardown and visual skin parity still require one
+on-device verification: JVM unit tests cannot simulate GMMP's actual
+obfuscated runtime and FragmentContainerView lifecycle.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

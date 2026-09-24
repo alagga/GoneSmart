@@ -10,6 +10,9 @@ import android.graphics.Path
 import android.view.LayoutInflater
 import android.widget.ImageView
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.graphics.Rect
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -69,7 +72,8 @@ internal class PlaylistFolderPreviewController(
         val themeListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var currentFolderId: String? = null,
-        var actionPending: Boolean = false
+        var actionPending: Boolean = false,
+        var nativeNavigationInProgress: Boolean = false
     )
 
     private var settings = Settings()
@@ -77,6 +81,8 @@ internal class PlaylistFolderPreviewController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val styles = WeakHashMap<ViewGroup, NativeRowStyle>()
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
+    private val suspendedNativeLists = WeakHashMap<ViewGroup, Boolean>()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingLayoutObservers = WeakHashMap<
         ViewGroup,
         android.view.ViewTreeObserver.OnGlobalLayoutListener
@@ -87,10 +93,19 @@ internal class PlaylistFolderPreviewController(
 
     init {
         multiSelect.setFolderSelectionChangedListener { list ->
-            browsers[list]?.let { browser ->
-                if (list.isAttachedToWindow) {
-                    positionOverlay(browser)
-                    safeRender(browser)
+            // Picker exit notifications can occur inside Android's window
+            // detach traversal. Never rerender overlay children reentrantly.
+            val weakList = WeakReference(list)
+            mainHandler.post {
+                weakList.get()?.let { current ->
+                    browsers[current]?.let { browser ->
+                        if (current.isAttachedToWindow &&
+                            !browser.nativeNavigationInProgress
+                        ) {
+                            positionOverlay(browser)
+                            safeRender(browser)
+                        }
+                    }
                 }
             }
         }
@@ -127,11 +142,13 @@ internal class PlaylistFolderPreviewController(
         val adapter = nativeAdapter(list)
         if (adapter != null && adapter.javaClass.name != "zn3") return
         knownLists[list] = true
+        if (suspendedNativeLists.containsKey(list)) return
         if (!pendingLayoutObservers.containsKey(list)) {
             val weakList = WeakReference(list)
             val observer = android.view.ViewTreeObserver.OnGlobalLayoutListener {
                 weakList.get()?.let { current ->
                     if (settings.enabled && browsers[current] == null &&
+                        !suspendedNativeLists.containsKey(current) &&
                         pendingRetries[current] == null &&
                         current.isAttachedToWindow
                     ) {
@@ -155,6 +172,7 @@ internal class PlaylistFolderPreviewController(
                             }
                         }
                         pendingRetries.remove(original)
+                        suspendedNativeLists.remove(original)
                         knownLists.remove(original)
                     }
                 }
@@ -210,6 +228,9 @@ internal class PlaylistFolderPreviewController(
                 it.list.isAttachedToWindow && it.overlay.isShown
             }
             ?: return false
+        if (browser.overlay.visibility != View.VISIBLE ||
+            browser.nativeNavigationInProgress
+        ) return false
         if (browser.currentFolderId == null) return false
         val folder = findFolder(browser.index, browser.currentFolderId)
         browser.currentFolderId = parentFolderId(browser, folder)
@@ -225,6 +246,7 @@ internal class PlaylistFolderPreviewController(
 
     private fun scheduleAttach(list: ViewGroup, attempt: Int) {
         if (!settings.enabled || browsers.containsKey(list) ||
+            suspendedNativeLists.containsKey(list) ||
             !list.isAttachedToWindow
         ) return
         val previous = pendingRetries[list]
@@ -243,6 +265,7 @@ internal class PlaylistFolderPreviewController(
 
     private fun attachIfReady(list: ViewGroup, attempt: Int) {
         if (!settings.enabled || browsers.containsKey(list) ||
+            suspendedNativeLists.containsKey(list) ||
             !list.isAttachedToWindow
         ) return
         val adapter = nativeAdapter(list)
@@ -473,8 +496,19 @@ internal class PlaylistFolderPreviewController(
         browser.parent.getLocationOnScreen(hostLocation)
         overlay.x = (listLocation[0] - hostLocation[0]).toFloat()
         overlay.y = (listLocation[1] - hostLocation[1]).toFloat()
-        overlay.visibility =
-            if (list.isShown) View.VISIBLE else View.GONE
+        // Offscreen ViewPager pages may remain attached: they must not
+        // intercept input on Now Playing or other library tabs.
+        val visibleBounds = Rect()
+        val nativeVisible = list.isShown &&
+            list.getGlobalVisibleRect(visibleBounds) &&
+            visibleBounds.width() > dp(list, 30) &&
+            visibleBounds.height() > dp(list, 30) &&
+            !browser.nativeNavigationInProgress
+        val nextVisibility = if (nativeVisible) View.VISIBLE else View.GONE
+        if (overlay.visibility != nextVisibility) {
+            overlay.visibility = nextVisibility
+        }
+        if (!nativeVisible) return
         updatePickerFab(browser)
         updatePlaylistMenu()
         // GMMP's Aesthetic theme can change live with album art or user
@@ -502,6 +536,13 @@ internal class PlaylistFolderPreviewController(
     private fun removeBrowser(list: ViewGroup) {
         val browser = browsers.remove(list) ?: return
         styles.remove(list)
+
+        // GMMP's FragmentManager may be iterating the same ancestor's
+        // children while dispatching detach. Never remove our sibling
+        // synchronously from inside that detach callback.
+        browser.overlay.visibility = View.GONE
+        browser.overlay.isClickable = false
+        browser.overlay.isFocusable = false
         list.alpha = browser.originalAlpha
         list.removeOnAttachStateChangeListener(browser.detachListener)
         if (list.viewTreeObserver.isAlive) {
@@ -512,18 +553,29 @@ internal class PlaylistFolderPreviewController(
                 browser.themeListener
             )
         }
-        if (browser.overlay.parent === browser.parent) {
-            browser.parent.removeView(browser.overlay)
+        if (activeBrowser.get() === list) activeBrowser.clear()
+
+        val overlay = browser.overlay
+        val parent = browser.parent
+        mainHandler.post {
+            runCatching {
+                if (overlay.parent === parent) parent.removeView(overlay)
+            }.onFailure {
+                Log.e(TAG, "FOLDER INLINE CLEANUP | deferred remove", it)
+            }
         }
-        if (activeBrowser.get() === list) {
-            activeBrowser.clear()
+        // Native picker owns the FAB; only touch it while still attached.
+        if (list.isAttachedToWindow) {
+            multiSelect.folderNativeFab(list)?.let { fab ->
+                if (fab.isAttachedToWindow) fab.visibility = View.VISIBLE
+            }
         }
-        updatePlaylistMenu()
-        multiSelect.folderNativeFab(list)?.let { fab ->
-            // Native controls regain their original responsibility as soon
-            // as inline folders are disabled or the picker is dismissed.
-            fab.visibility = View.VISIBLE
-        }
+        mainHandler.post { updatePlaylistMenu() }
+        Log.i(
+            TAG,
+            "FOLDER INLINE CLEANUP | surface=" + surface(list) +
+                " | deferred=true"
+        )
     }
 
     private fun safeRender(browser: Browser) {
@@ -686,7 +738,7 @@ internal class PlaylistFolderPreviewController(
                     TypedValue.COMPLEX_UNIT_PX, native.textSizePx
                 )
                 target.setTextColor(native.textColor)
-                target.typeface = native.typeface
+                if (native.typeface != null) target.typeface = native.typeface
                 target.gravity = native.titleGravity
                 target.setPaddingRelative(
                     native.titlePaddingStart,
@@ -795,20 +847,9 @@ internal class PlaylistFolderPreviewController(
         val color = native?.textColor ?: resolveTextColor(host)
         // Use GMMP's own drawable if its APK exposes one; otherwise render
         // an outline vector, tinted from the native playlist text.
-        val names = arrayOf(
-            "ic_folder", "ic_folder_outline", "ic_folder_24dp",
-            "ic_folder_black_24dp", "ic_folder_closed"
-        )
-        val drawable = names.firstNotNullOfOrNull { name ->
-            val id = host.resources.getIdentifier(
-                name, "drawable", host.context.packageName
-            )
-            if (id != 0) runCatching {
-                host.context.getDrawable(id)?.mutate()?.apply {
-                    setTint(color)
-                }
-            }.getOrNull() else null
-        } ?: FolderOutlineDrawable(color, dp(host, 24))
+        // The native ic_folder drawable is filled and too heavy in this
+        // skin. Use a fine outlined vector, tinted with live GMMP text.
+        val drawable = FolderOutlineDrawable(color, dp(host, 24))
         val image = ImageView(host.context).apply {
             setImageDrawable(drawable)
             contentDescription = "Folder"
@@ -852,7 +893,10 @@ internal class PlaylistFolderPreviewController(
     ) : Drawable() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = sizePx * 0.075f
+            // This path is drawn in a 24x24 vector viewport and scaled
+            // by Canvas. Width must be in viewport units, NOT pixels:
+            // multiplying by sizePx and scaling again caused fat outlines.
+            strokeWidth = 1.25f
             strokeJoin = Paint.Join.ROUND
             strokeCap = Paint.Cap.ROUND
             this.color = color
@@ -978,26 +1022,29 @@ internal class PlaylistFolderPreviewController(
             }.getOrNull() ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
-                // Native GMMP can replace this page synchronously.
-                // Hide our old overlay before the native click to avoid a
-                // brief flash of both old and new playlist screens.
+                // Native clicks navigate GMMP's fragment stack. Retire
+                // the overlay before the native FragmentManager transition,
+                // and do not automatically reattach over the new screen.
                 val current = browsers[list]
-                if (!longClick) current?.overlay?.visibility = View.INVISIBLE
+                if (!longClick) {
+                    current?.nativeNavigationInProgress = true
+                    current?.overlay?.visibility = View.GONE
+                    current?.overlay?.isClickable = false
+                }
                 val handled = if (longClick) {
                     nativeRow.performLongClick()
                 } else {
                     nativeRow.performClick()
                 }
-                if (!handled || longClick) {
+                if (!handled && !longClick) {
+                    current?.nativeNavigationInProgress = false
                     if (current != null && browsers[list] === current) {
-                        current.overlay.visibility = View.VISIBLE
+                        current.overlay.isClickable = true
+                        positionOverlay(current)
                     }
-                } else {
-                    list.post {
-                        if (current != null && browsers[list] === current) {
-                            positionOverlay(current)
-                        }
-                    }
+                } else if (handled && !longClick && current != null) {
+                    suspendedNativeLists[list] = true
+                    removeBrowser(list)
                 }
                 Log.i(
                     TAG,
@@ -1155,10 +1202,15 @@ internal class PlaylistFolderPreviewController(
             val title = findNativeTitleTextView(nativeRow, name) ?: continue
             val matchedNativeTitle = !name.isNullOrBlank() &&
                 title.text?.toString()?.trim().equals(name.trim(), true)
-            val normalTextSize = if (matchedNativeTitle) title.textSize
-                else title.textSize.coerceAtLeast(
-                    16f * list.resources.displayMetrics.scaledDensity
-                )
+            // The compact GMMP metadata layout reports a 30px metadata
+            // font here while its visible playlist headline is about 45px
+            // on this device. Correct that known view only; other GMMP
+            // skins retain their native headline typography unchanged.
+            val normalTextSize = NativePlaylistRowTypography.titleSizePx(
+                title.textSize,
+                nativeRow.height,
+                resourceName(title)
+            )
             val color = title.currentTextColor
             val size = normalTextSize
             val height = nativeRow.height.coerceAtLeast(dp(list, 44))
@@ -1255,8 +1307,15 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun nativeSurfaceBackground(list: View): Int {
+        // AestheticCoordinatorLayout in the Add dialog exposes #303030
+        // even when the native GMMP list is drawn on the black window
+        // background. Sample the genuine, live window surface first.
+        val window = list.rootView.background as? ColorDrawable
+        if (window != null && Color.alpha(window.color) == 255) {
+            return window.color
+        }
         var current: View? = list
-        repeat(5) {
+        repeat(7) {
             val view = current ?: return@repeat
             val background = view.background as? ColorDrawable
             if (background != null &&
@@ -1304,6 +1363,13 @@ internal class PlaylistFolderPreviewController(
         host: ViewGroup,
         style: NativeRowStyle
     ): Drawable {
+        // Mirror the current GMMP window surface, not the intermediate
+        // gray picker CoordinatorLayout; the original row is transparent.
+        val originalWindow = list.rootView.background
+        val windowDrawable = runCatching {
+            originalWindow?.constantState?.newDrawable(list.resources)?.mutate()
+        }.getOrNull()
+        if (windowDrawable != null) return windowDrawable
         var node: View? = list
         while (node != null) {
             val original = node.background
