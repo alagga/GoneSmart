@@ -269,13 +269,18 @@ verification and failure outcomes appear in the GoneSmart app's
 
 ## In development: Playlist folders
 
-The next v0.4.x feature introduces optional physical playlist folder navigation
-in GMMP's Playlists tab and Add to Playlist picker. A separate **Group other
-locations** option will either place root-level/external playlists in a virtual
-**Other Locations** folder or display them as individual rows after physical
-folders. The read-only path/folder classifier and its unit tests are in place;
-native UI hooks and file-moving actions are **not yet implemented**. See
-[the staged implementation and device-feasibility checklist](docs/PLAYLIST_FOLDERS.md).
+The next v0.4.x feature introduces optional physical playlist folder
+navigation in GMMP's Playlists tab and Add to Playlist picker, with nested
+folders. Two **independent** options control whether external playlists and
+playlists directly in GMMP's main root appear inside the virtual **Other
+Locations** folder or as loose items after folder rows. The GMMP 4.2.0
+scanner and native Add picker have been tested with a physical subfolder.
+The maintainer also confirmed that moving playlist files externally leaves
+stale GMMP database records until cleanup: GoneSmart's future Move action
+will require a verified native per-playlist path update. The classifier,
+settings persistence and expanded tests are implemented; native folder UI
+and file-moving actions are **not yet implemented**. See
+[the design and on-device findings](docs/PLAYLIST_FOLDERS.md).
 
 ## Companion UI and player indicator
 

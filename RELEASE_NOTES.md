@@ -40,6 +40,19 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - The GoneSmart companion app always uses English **Track Auto-DJ** in its UI, Logs and Help. GMMP's own context menus compose the name from its localized **track** and **Auto-DJ** resources (for example, German **Titel Auto-DJ**). The confirmation reuses GMMP's translated *started* resource when available.
 - **Feature complete in the development branch:** the maintainer reports Track Auto-DJ working on-device with GMMP 4.2.0. The 24 September development log contained six successful five-track starts and one intermittent failure with the older asynchronous queue-clearing path, now replaced by atomic native queue-ID isolation. The maintainer retested Track Auto-DJ from an existing queue with the corrected build and reported no repeat failure; the targeted on-device regression is accepted as passed.
 
+## In development: Playlist folders
+
+- GMMP 4.2.0 read a playlist inside a physical main-root subfolder; the
+  maintainer confirmed the native Add to Playlist operation worked.
+- Read-only folder model supports multiple depths and two **independent**
+  settings for placing external playlists and main-root playlists in
+  virtual **Other Locations** or displaying them as loose entries.
+- Settings keys and local/remote persistence have been staged, but native
+  UI hooks and working folder controls are not yet implemented.
+- External file moves left stale native playlist records. Before enabling
+  native folder creation and Move Playlist, verify scoped GMMP database
+  synchronization and rollback rather than requiring manual full cleanup.
+
 ## Expanded companion Logs
 
 - Logs now covers **Smart DJ**, **multi-playlist selection**, **Flip**,

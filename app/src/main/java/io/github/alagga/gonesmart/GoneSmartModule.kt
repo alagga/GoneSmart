@@ -138,6 +138,9 @@ class GoneSmartModule : XposedModule() {
             if (
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
+                key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
+                key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
                 key != GoneSmartSettingsKeys.KEY_TRACK_MIX &&
                 // Persisting Track Mix's already-active Smart DJ switch

@@ -109,4 +109,98 @@ class PlaylistFolderIndexTest {
         assertTrue(result.topLevelFolders[1].virtual)
         assertTrue(result.topLevelFolders[0].id != result.topLevelFolders[1].id)
     }
+
+    @Test fun bothGroupOptionsOffKeepRootAndExternalLoose() {
+        val result = PlaylistFolderIndex.build(
+            listOf("$root/Trance/A.m3u", "$root/Loose.m3u", "/external/Outside.m3u"),
+            root, groupExternalLocations = false, groupRootPlaylists = false
+        )
+        assertEquals(listOf("Trance"), result.topLevelFolders.map { it.name })
+        assertNull(result.otherLocations)
+        assertEquals(
+            setOf(PlaylistFolderIndex.Location.MAIN_ROOT, PlaylistFolderIndex.Location.EXTERNAL),
+            result.ungroupedPlaylists.map { it.location }.toSet()
+        )
+    }
+
+    @Test fun externalGroupedAndRootLoose() {
+        val result = PlaylistFolderIndex.build(
+            listOf(
+                "$root/Trance/A.m3u", "$root/Loose.m3u",
+                "/external/Outside.m3u", "content://playlists/42"
+            ), root, groupExternalLocations = true, groupRootPlaylists = false
+        )
+        assertEquals(listOf("Trance", "Other Locations"),
+            result.topLevelFolders.map { it.name })
+        assertEquals(listOf("$root/Loose.m3u"),
+            result.ungroupedPlaylists.map { it.path })
+        assertEquals(2, result.otherLocations!!.playlists.size)
+        assertTrue(result.otherLocations!!.playlists.all {
+            it.location == PlaylistFolderIndex.Location.EXTERNAL
+        })
+    }
+
+    @Test fun rootGroupedAndExternalLoose() {
+        val result = PlaylistFolderIndex.build(
+            listOf("$root/Trance/A.m3u", "$root/Loose.m3u", "/external/Outside.m3u"),
+            root, groupExternalLocations = false, groupRootPlaylists = true
+        )
+        assertEquals(listOf("Trance", "Other Locations"),
+            result.topLevelFolders.map { it.name })
+        assertEquals(listOf("/external/Outside.m3u"),
+            result.ungroupedPlaylists.map { it.path })
+        assertEquals(
+            PlaylistFolderIndex.Location.MAIN_ROOT,
+            result.otherLocations!!.playlists.single().location
+        )
+    }
+
+    @Test fun bothOptionsOnShareOneVirtualFolder() {
+        val result = PlaylistFolderIndex.build(
+            listOf("$root/Trance/A.m3u", "$root/Loose.m3u", "/external/Outside.m3u"),
+            root, groupExternalLocations = true, groupRootPlaylists = true
+        )
+        assertTrue(result.ungroupedPlaylists.isEmpty())
+        assertEquals(listOf("Trance", "Other Locations"),
+            result.topLevelFolders.map { it.name })
+        assertEquals(
+            setOf(PlaylistFolderIndex.Location.MAIN_ROOT, PlaylistFolderIndex.Location.EXTERNAL),
+            result.otherLocations!!.playlists.map { it.location }.toSet()
+        )
+    }
+
+    @Test fun arbitraryNestedDepthAndEmptyPhysicalSubfolders() {
+        val result = PlaylistFolderIndex.build(
+            listOf("$root/Genre/Decade/Year/Edition/Deep.m3u"),
+            root, groupExternalLocations = true, groupRootPlaylists = true,
+            physicalDirectoryPaths = listOf(
+                "$root/Genre/Decade/Year/Edition",
+                "$root/Empty/Child/Grandchild",
+                "$root" + "2/Outside",
+                "$root/../../Other/Escaped"
+            )
+        )
+        val deep = result.folders.single { it.name == "Genre" }
+            .children.single().children.single().children.single()
+        assertEquals("Edition", deep.name)
+        assertEquals(listOf("Deep.m3u"), deep.playlists.map { it.name })
+        assertEquals(
+            "Grandchild",
+            result.folders.single { it.name == "Empty" }
+                .children.single().children.single().name
+        )
+        assertEquals(2, result.folders.size)
+    }
+
+    @Test fun canonicalDuplicatesCannotAppearInDifferentGroups() {
+        val result = PlaylistFolderIndex.build(
+            listOf(
+                "$root/./Loose.m3u", "$root/Loose.m3u",
+                "$root/Sub/../Loose.m3u",
+                "/external/../external/Same.m3u", "/external/Same.m3u"
+            ), root, groupExternalLocations = true, groupRootPlaylists = false
+        )
+        assertEquals(1, result.ungroupedPlaylists.size)
+        assertEquals(1, result.otherLocations!!.playlists.size)
+    }
 }

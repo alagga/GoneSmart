@@ -5,6 +5,9 @@ object GoneSmartSettingsKeys {
     const val KEY_INITIALIZED = "initialized"
     const val KEY_ENABLED = "enabled"
     const val KEY_MULTI_PLAYLIST = "multi_playlist_selection"
+    const val KEY_PLAYLIST_FOLDERS = "playlist_folders_enabled"
+    const val KEY_GROUP_EXTERNAL_PLAYLISTS = "playlist_folders_group_external"
+    const val KEY_GROUP_ROOT_PLAYLISTS = "playlist_folders_group_main_root"
     const val KEY_FLIP_QUEUE = "flip_queue"
     const val KEY_TRACK_MIX = "track_mix_enabled"
 

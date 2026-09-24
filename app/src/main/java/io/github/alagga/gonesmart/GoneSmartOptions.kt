@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 data class GoneSmartOptions(
     val enabled: Boolean = true,
     val multiPlaylistEnabled: Boolean = false,
+    val playlistFoldersEnabled: Boolean = false,
+    val groupExternalPlaylists: Boolean = true,
+    val groupRootPlaylists: Boolean = true,
     val flipQueueEnabled: Boolean = false,
     val trackMixEnabled: Boolean = true,
     val preferHigherRatedMatches: Boolean = true,
@@ -35,6 +38,18 @@ data class GoneSmartOptions(
                 multiPlaylistEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
                     false
+                ),
+                playlistFoldersEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
+                    false
+                ),
+                groupExternalPlaylists = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
+                    true
+                ),
+                groupRootPlaylists = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS,
+                    true
                 ),
                 flipQueueEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
