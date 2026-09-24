@@ -131,6 +131,30 @@ mapped, broad diagnostics stop and implementation moves to read-only
 folder navigation. The device's playlist data and native behavior remain
 untouched.
 
+### Playlist creation destination
+
+Playlist creation follows the currently open folder instead of showing a
+second folder chooser. In both native surfaces, creating a playlist while
+inside a physical folder targets that physical directory. Creating from
+the main/root view targets GMMP's main playlist directory. The virtual
+**Other Locations** node is not a filesystem location; creation there also
+targets the real GMMP main playlist directory. Whether the new root
+playlist is then shown loose or under Other Locations is purely determined
+by the existing **Group root playlists** presentation option.
+
+This same rule applies to the Add-to-Playlist **+** action and the normal
+Playlists view's native add/create menu action.
+
+### Final model-binding probe
+
+The previous device probe showed that `zn3.N0()` creates `wp3` in the
+normal Playlists tab and `jo3` in the Add picker, but `A:xn3` is still
+null at that creation point. The next debug build hooks the framework
+`RecyclerView.Adapter.bindViewHolder` completion instead and records
+`FOLDER BOUND MODEL` only after GMMP has populated the holder. This should
+yield the authoritative `xn3.q` playlist path for each surface without
+changing the list or playlist data.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

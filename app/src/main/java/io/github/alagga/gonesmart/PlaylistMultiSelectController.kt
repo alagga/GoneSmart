@@ -98,6 +98,7 @@ internal class PlaylistMultiSelectController {
     private val maxNativeRowBindProbes = 16
     private val nativeModelDiagnostics = linkedSetOf<String>()
     private val nativeDatasetDiagnostics = linkedSetOf<String>()
+    private val nativeBoundModelDiagnostics = linkedSetOf<String>()
 
     @Volatile
     private var enabled = false
@@ -1457,6 +1458,41 @@ internal class PlaylistMultiSelectController {
                 )
             }
         }
+    }
+
+    /**
+     * Runs after RecyclerView.Adapter.bindViewHolder has populated wp3/jo3.
+     * Both native holder variants expose A:xn3 on GMMP 4.2.0.
+     */
+    fun onNativePlaylistHolderBound(
+        adapter: Any?,
+        holder: Any?,
+        position: Int
+    ) {
+        if (adapter?.javaClass?.name != "zn3") return
+        val holderName = holder?.javaClass?.name ?: return
+        if (holderName != "wp3" && holderName != "jo3") return
+
+        val model = holderModel(holder) ?: return
+        val path = modelPath(model) ?: return
+        val row = runCatching {
+            holder.javaClass.getField("itemView").get(holder) as? View
+        }.getOrNull()
+        val surface = if (holderName == "jo3") "add-picker" else "playlists-tab"
+        val key = surface + "|" + path
+        if (nativeBoundModelDiagnostics.size >= 20 ||
+            !nativeBoundModelDiagnostics.add(key)
+        ) return
+
+        Log.i(
+            TAG,
+            "FOLDER BOUND MODEL | surface=" + surface +
+                " | holder=" + holderName +
+                " | position=" + position +
+                " | path=" + path +
+                " | row=" + (row?.javaClass?.name ?: "null") +
+                "#" + (row?.let(::resourceName) ?: "")
+        )
     }
 
     /**
