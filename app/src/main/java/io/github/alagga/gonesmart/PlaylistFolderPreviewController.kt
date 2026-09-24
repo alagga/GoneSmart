@@ -201,11 +201,20 @@ internal class PlaylistFolderPreviewController {
         val itemCount = runCatching {
             adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
         }.getOrDefault(-1)
-        val complete = itemCount >= 0 && nativePaths.size >= itemCount &&
+        val nativeComplete = itemCount >= 0 && nativePaths.size >= itemCount &&
             nativePaths.isNotEmpty()
         val physical = physicalDirectories(root)
+        val physicalPlaylists = physicalPlaylistFiles(
+            root = root,
+            observedPaths = paths
+        )
+        // Files inside the verified main root are authoritative physical
+        // playlist locations. Merge them with GMMP-observed paths so root
+        // and nested folders are complete even when zn3 exposes only the
+        // currently bound RecyclerView rows.
+        val indexedPaths = (paths + physicalPlaylists).distinct()
         val index = PlaylistFolderIndex.build(
-            nativePlaylistPaths = paths,
+            nativePlaylistPaths = indexedPaths,
             mainPlaylistDirectory = root,
             groupExternalLocations = settings.groupExternal,
             groupRootPlaylists = settings.groupRoot,
@@ -215,8 +224,9 @@ internal class PlaylistFolderPreviewController {
             TAG,
             "FOLDER PREVIEW | nativeModels=${nativePaths.size}" +
                 " | visibleCached=${observedPaths.size}" +
-                " | adapterItems=$itemCount | complete=$complete" +
-                " | physicalFolders=${physical.size}"
+                " | adapterItems=$itemCount | nativeComplete=$nativeComplete" +
+                " | physicalFolders=${physical.size}" +
+                " | physicalPlaylists=${physicalPlaylists.size}"
         )
         showFolder(
             list = list,
@@ -224,7 +234,7 @@ internal class PlaylistFolderPreviewController {
             mainRoot = root,
             folder = null,
             parents = emptyList(),
-            complete = complete
+            complete = nativeComplete
         )
     }
 
@@ -371,6 +381,35 @@ internal class PlaylistFolderPreviewController {
                 .filter { directory ->
                     directory.isDirectory &&
                         directory.canonicalPath.startsWith(prefix)
+                }
+                .take(MAX_DIRECTORY_SCAN)
+                .map { it.canonicalPath }
+                .toList()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun physicalPlaylistFiles(
+        root: String,
+        observedPaths: Collection<String>
+    ): List<String> {
+        return runCatching {
+            val base = File(root).canonicalFile
+            val prefix = base.path.trimEnd(File.separatorChar) + File.separator
+            val verifiedExtensions = observedPaths.mapNotNull { raw ->
+                if (raw.contains("://")) return@mapNotNull null
+                val file = runCatching { File(raw).canonicalFile }.getOrNull()
+                    ?: return@mapNotNull null
+                if (!file.path.startsWith(prefix)) return@mapNotNull null
+                file.extension.lowercase().takeIf { it.isNotBlank() }
+            }.toSet()
+            val allowedExtensions = verifiedExtensions.ifEmpty {
+                setOf("m3u", "m3u8")
+            }
+            base.walkTopDown().maxDepth(32)
+                .filter { file ->
+                    file.isFile &&
+                        file.canonicalPath.startsWith(prefix) &&
+                        file.extension.lowercase() in allowedExtensions
                 }
                 .take(MAX_DIRECTORY_SCAN)
                 .map { it.canonicalPath }

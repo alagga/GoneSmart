@@ -219,6 +219,22 @@ grouping switches before altering the obfuscated native adapter.
 The three folder-preview switches are displayed **only in debug
 builds**, and the feature is disabled by default.
 
+The first on-device preview exposed one more adapter limitation:
+`zn3` reported 248 playlist rows but its read-only `i0()/t23.r()`
+snapshot yielded no `xn3` models, so the preview initially knew only
+the 15 paths that had actually been bound on screen. This made the
+ungrouped root incomplete when **Group root playlists** was disabled.
+
+The preview now fills that specific gap by scanning the already-verified
+physical GMMP main playlist root read-only for playlist files whose
+extensions match observed native root playlists (falling back only to
+M3U/M3U8 before an extension is observed). Those paths are merged into
+the classifier together with native GMMP paths. Therefore physical
+root and nested playlists no longer depend on which RecyclerView rows
+have already been bound. External playlists remain sourced only from
+GMMP-observed paths; they are not invented by scanning unrelated storage.
+
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a
