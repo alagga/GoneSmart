@@ -267,6 +267,16 @@ verification and failure outcomes appear in the GoneSmart app's
 
 **Status:** Feature complete in the v0.4.x development branch; the maintainer reports Track Auto-DJ working on-device with GMMP 4.2.0. The 24 September development log showed six successful five-song starts and one earlier intermittent queue-isolation failure during an old-queue refill. That older clearing path has been replaced with native atomic isolation by unique queue-entry ID. The maintainer subsequently retested the queue-row Track Auto-DJ flow with the corrected build and reported no recurrence of the failure; this targeted device regression is accepted as passed. Other GMMP versions remain unverified. See [Track Auto-DJ test and notes](docs/TRACK_MIX_TESTING.md).
 
+## In development: Playlist folders
+
+The next v0.4.x feature introduces optional physical playlist folder navigation
+in GMMP's Playlists tab and Add to Playlist picker. A separate **Group other
+locations** option will either place root-level/external playlists in a virtual
+**Other Locations** folder or display them as individual rows after physical
+folders. The read-only path/folder classifier and its unit tests are in place;
+native UI hooks and file-moving actions are **not yet implemented**. See
+[the staged implementation and device-feasibility checklist](docs/PLAYLIST_FOLDERS.md).
+
 ## Companion UI and player indicator
 
 The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection, Flip Queue and Track Auto-DJ. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
