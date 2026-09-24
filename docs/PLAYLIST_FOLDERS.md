@@ -102,6 +102,28 @@ adapter; and logs the picker's RecyclerView directly when captured by
 `FOLDER DISCOVERY` while opening the normal Playlists tab and the
 native Add to Playlist picker. No playlist data or view changes occur.
 
+### Device result: adapter structure, 24 September
+
+The follow-up diagnostic Logcat established that the ordinary Playlists
+tab and the Add to Playlist picker both use native adapter `zn3`
+on separate `playlistListRecyclerView` views. The normal tab had
+248 adapter items and showed `wp3` ViewHolders; the picker was observed
+immediately after opening, before its rows populated.
+
+The first surface probe incorrectly labeled the normal tab
+`surface=add-picker` because it identified the picker solely from the
+shared RecyclerView resource name. That label is now reserved for the
+exact active picker instance; a same-named, uncaptured list is reported
+as `playlist-list-uncaptured`.
+
+Native `zn3.N0` takes `(int, t23, ViewGroup)` and returns `jw`;
+the old probe incorrectly assumed a `jo3` ViewHolder would appear among
+its arguments. The next **debug-only** probe captures the result's
+field types, a bounded sample of the `t23.r()` group members and a
+picker snapshot once rows are actually populated. Diagnostic labels:
+`FOLDER N0 RESULT` and `FOLDER SURFACE | reason=picker-populated`.
+The device's original playlist data and navigation are untouched.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

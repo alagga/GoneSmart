@@ -95,7 +95,7 @@ internal class PlaylistMultiSelectController {
     private val maxPlaylistSurfaceDiagnostics = 24
     private val nativeAdapterSurfaces = linkedSetOf<String>()
     private var nativeRowBindProbeCount = 0
-    private val maxNativeRowBindProbes = 8
+    private val maxNativeRowBindProbes = 16
 
     @Volatile
     private var enabled = false
@@ -370,9 +370,14 @@ internal class PlaylistMultiSelectController {
             }
         )
 
+        var populatedLogged = false
         val observer = group.viewTreeObserver
         if (observer.isAlive) {
             observer.addOnGlobalLayoutListener {
+                if (active === session && !populatedLogged && group.childCount > 0) {
+                    populatedLogged = true
+                    diagnoseNativeRecycler(group, "picker-populated")
+                }
                 if (active === session && session.selectedPaths.isNotEmpty()) {
                     refreshVisibleRows(session)
                     pinFab(session)
@@ -1387,15 +1392,33 @@ internal class PlaylistMultiSelectController {
      * assumed jo3 holder is not among the method arguments. This determines
      * why the earlier holder-only FOLDER DISCOVERY diagnostic was silent.
      */
-    fun onNativeRowBindObserved(signature: String, arguments: List<Any?>) {
+    fun onNativeRowBindObserved(
+        signature: String,
+        arguments: List<Any?>,
+        returned: Any?
+    ) {
         if (nativeRowBindProbeCount >= maxNativeRowBindProbes) return
         nativeRowBindProbeCount++
+        val group = arguments.firstOrNull { it?.javaClass?.name == "t23" }
+        val models = runCatching {
+            group?.javaClass?.getMethod("r")?.invoke(group) as? List<*>
+        }.getOrNull()
+        val sample = models.orEmpty().take(3).joinToString(",") { model ->
+            val path = model?.let(::modelPath)
+            path?.substringAfterLast('/') ?: model?.javaClass?.name ?: "null"
+        }
+        val returnFields = returned?.javaClass?.declaredFields.orEmpty()
+            .take(8).joinToString(",") { it.name + ":" + it.type.simpleName }
         Log.i(
             TAG,
-            "FOLDER N0 CALL | signature=$signature" +
+            "FOLDER N0 RESULT | signature=" + signature +
                 " | args=" + arguments.joinToString(",") {
                     it?.javaClass?.name ?: "null"
-                }
+                } +
+                " | returned=" + (returned?.javaClass?.name ?: "null") +
+                " | returnFields=" + returnFields +
+                " | groupSize=" + (models?.size ?: -1) +
+                " | sampleNames=" + sample
         )
     }
 
@@ -1429,8 +1452,8 @@ internal class PlaylistMultiSelectController {
         // A native picker can be identified by its verified resource ID,
         // even if setAdapter ran before bo3.D1 exposed the view.
         val surface = when {
-            active?.list === list || resource == "playlistListRecyclerView" ->
-                "add-picker"
+            active?.list === list -> "add-picker"
+            resource == "playlistListRecyclerView" -> "playlist-list-uncaptured"
             else -> "candidate-other"
         }
         val ancestry = buildList {

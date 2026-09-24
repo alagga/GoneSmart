@@ -482,7 +482,9 @@ class GoneSmartModule : XposedModule() {
             // Read-only folder diagnostics are independent of Multi-playlist
             // selection and do not modify the native playlist database/UI.
             try {
-                installPlaylistSurfaceDiscoveryHooks(param)
+                if (BuildConfig.DEBUG) {
+                    installPlaylistSurfaceDiscoveryHooks(param)
+                }
             } catch (folderDiscoveryError: Throwable) {
                 Log.w(
                     "GoneSmartPlaylist",
@@ -1095,10 +1097,13 @@ class GoneSmartModule : XposedModule() {
                     val args = (0 until method.parameterCount)
                         .map { index -> chain.getArg(index) }
                     runCatching {
-                        playlistController.onNativeRowBindObserved(
-                            method.toGenericString(),
-                            args
-                        )
+                        if (BuildConfig.DEBUG) {
+                            playlistController.onNativeRowBindObserved(
+                                method.toGenericString(),
+                                args,
+                                result
+                            )
+                        }
                     }.onFailure {
                         Log.w(
                             "GoneSmartPlaylist",
