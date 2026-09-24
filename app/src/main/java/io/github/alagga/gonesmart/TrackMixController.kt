@@ -350,20 +350,11 @@ internal class TrackMixController(
             val cleared = if (loaded.ids.size == 1) {
                 loaded
             } else {
-                // The refill barrier is still armed here. One native Clear
-                // is enough once old-queue Auto-DJ can no longer race it.
-                Log.i(
-                    TAG,
-                    "MIX CLEAR | queueSize=${loaded.ids.size} | " +
-                        "selected=$selectedId"
-                )
-                sendCommand(request.context, COMMAND_CLEAR_QUEUE)
-                awaitQueue(request, 4_500L) {
-                    TrackMixPlan.isSeedIsolated(
-                        selectedId, loaded.ids, loaded.currentIndex,
-                        it.ids, it.currentIndex
-                    )
-                }
+                // Deterministic native isolation: remove every other queue
+                // entry and move this exact selected queue_id to position 1
+                // inside GMMP's own Room transaction. No CLEAR_QUEUE
+                // broadcast and no retry loop.
+                isolateNativeSeed(request, selectedId)
             }
             if (cleared == null) {
                 val finalSnapshot = queueSnapshot()
