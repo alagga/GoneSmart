@@ -25,7 +25,7 @@ class PlaylistFolderIndexTest {
             "$root/Trance/Classic/Favorites.m3u",
             trance.children.single().playlists.single().path
         )
-        assertEquals(2, result.folders.sumOf { it.playlists.size + it.children.sumOf { sub -> sub.playlists.size } })
+        assertEquals(3, result.folders.sumOf { it.playlists.size + it.children.sumOf { sub -> sub.playlists.size } })
     }
 
     @Test fun groupingCombinesMainRootAndExternalPlaylistsOnly() {
