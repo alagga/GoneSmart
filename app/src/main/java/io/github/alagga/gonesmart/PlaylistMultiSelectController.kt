@@ -24,6 +24,7 @@ import android.widget.ImageView
 import android.widget.Toast
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
 /**
@@ -99,6 +100,8 @@ internal class PlaylistMultiSelectController {
     private val nativeModelDiagnostics = linkedSetOf<String>()
     private val nativeDatasetDiagnostics = linkedSetOf<String>()
     private val nativeBoundModelDiagnostics = linkedSetOf<String>()
+    private val observedPlaylistLists =
+        WeakHashMap<ViewGroup, android.view.ViewTreeObserver.OnGlobalLayoutListener>()
 
     @Volatile
     private var enabled = false
@@ -357,6 +360,7 @@ internal class PlaylistMultiSelectController {
         if (session.list === group) return
 
         session.list = group
+        observeVisiblePlaylistRows(group)
         diagnoseNativeRecycler(group, "picker-list-found")
         group.post {
             if (active === session) {
@@ -383,6 +387,7 @@ internal class PlaylistMultiSelectController {
                 if (active === session && !populatedLogged && group.childCount > 0) {
                     populatedLogged = true
                     diagnoseNativeRecycler(group, "picker-populated")
+                    sampleVisiblePlaylistRows(group)
                 }
                 if (active === session && session.selectedPaths.isNotEmpty()) {
                     refreshVisibleRows(session)
@@ -1480,9 +1485,10 @@ internal class PlaylistMultiSelectController {
         }.getOrNull()
         val surface = if (holderName == "jo3") "add-picker" else "playlists-tab"
         val key = surface + "|" + path
-        if (nativeBoundModelDiagnostics.size >= 20 ||
-            !nativeBoundModelDiagnostics.add(key)
+        if (nativeBoundModelDiagnostics.contains(key) ||
+            nativeBoundModelDiagnostics.count { it.startsWith("$surface|") } >= 12
         ) return
+        nativeBoundModelDiagnostics.add(key)
 
         Log.i(
             TAG,
@@ -1496,20 +1502,71 @@ internal class PlaylistMultiSelectController {
     }
 
     /**
-     * Read-only mapping of all distinct native RecyclerView adapters.
-     * GMMP's normal playlist list may not use the same zn3 binder as the
-     * picker. Observing RecyclerView itself avoids that assumption.
+     * The native AndroidX RecyclerView.Adapter class is obfuscated in GMMP.
+     * Avoid hooking a guessed Adapter class; inspect the visible, fully
+     * bound rows directly through the *verified* RecyclerView instance.
+     */
+    private fun observeVisiblePlaylistRows(list: ViewGroup) {
+        if (resourceName(list) != "playlistListRecyclerView") return
+        if (observedPlaylistLists.containsKey(list)) return
+        val weakList = WeakReference(list)
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            weakList.get()?.let(::sampleVisiblePlaylistRows)
+        }
+        if (list.viewTreeObserver.isAlive) {
+            list.viewTreeObserver.addOnGlobalLayoutListener(listener)
+            observedPlaylistLists[list] = listener
+        }
+        list.post {
+            // Some GMMP pages already have all their rows bound before
+            // the next global layout callback can run.
+            sampleVisiblePlaylistRows(list)
+        }
+    }
+
+    private fun sampleVisiblePlaylistRows(list: ViewGroup) {
+        if (resourceName(list) != "playlistListRecyclerView") return
+        val adapter = runCatching {
+            list.javaClass.getMethod("getAdapter").invoke(list)
+        }.getOrNull()
+        if (adapter?.javaClass?.name != "zn3") return
+
+        val holderMethod = runCatching {
+            list.javaClass.getMethod("getChildViewHolder", View::class.java)
+        }.getOrNull() ?: return
+        for (index in 0 until list.childCount) {
+            val child = list.getChildAt(index) ?: continue
+            val holder = runCatching {
+                holderMethod.invoke(list, child)
+            }.getOrNull()
+            if (holder != null) {
+                onNativePlaylistHolderBound(adapter, holder, index)
+            }
+        }
+    }
+
+    /**
+     * Read-only mapping of native RecyclerViews. Works even if the
+     * regular Playlists tab and the Add picker have different lifecycles.
      */
     fun onNativeRecyclerAttached(view: View?) {
         val list = view as? ViewGroup ?: return
+        observeVisiblePlaylistRows(list)
         diagnoseNativeRecycler(list, "attached")
-        list.post { diagnoseNativeRecycler(list, "attached-rendered") }
+        list.post {
+            diagnoseNativeRecycler(list, "attached-rendered")
+            sampleVisiblePlaylistRows(list)
+        }
     }
 
     fun onNativeRecyclerAdapterSet(view: View?, adapter: Any?) {
         val list = view as? ViewGroup ?: return
+        observeVisiblePlaylistRows(list)
         diagnoseNativeRecycler(list, "setAdapter", adapter)
-        list.post { diagnoseNativeRecycler(list, "adapter-rendered") }
+        list.post {
+            diagnoseNativeRecycler(list, "adapter-rendered")
+            sampleVisiblePlaylistRows(list)
+        }
     }
 
     private fun diagnoseNativeDataset(adapter: Any?, surface: String) {

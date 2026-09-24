@@ -857,46 +857,10 @@ class GoneSmartModule : XposedModule() {
             }
             result
         }
-        runCatching {
-            val adapterClass = param.classLoader.loadClass(
-                "androidx.recyclerview.widget.RecyclerView\$Adapter"
-            )
-            val bindViewHolder = adapterClass.declaredMethods.firstOrNull {
-                it.name == "bindViewHolder" &&
-                    it.parameterCount == 2 &&
-                    it.parameterTypes[1] == Int::class.javaPrimitiveType
-            } ?: throw NoSuchMethodException(
-                "RecyclerView.Adapter.bindViewHolder(holder, int)"
-            )
-            bindViewHolder.isAccessible = true
-            hook(bindViewHolder).intercept { chain ->
-                val result = chain.proceed()
-                runCatching {
-                    playlistController.onNativePlaylistHolderBound(
-                        chain.getThisObject(),
-                        chain.getArg(0),
-                        (chain.getArg(1) as? Number)?.toInt() ?: -1
-                    )
-                }.onFailure {
-                    Log.w(
-                        "GoneSmartPlaylist",
-                        "FOLDER BOUND MODEL | bind probe failed",
-                        it
-                    )
-                }
-                result
-            }
-            Log.i(
-                "GoneSmartPlaylist",
-                "FOLDER BOUND READY | RecyclerView.Adapter.bindViewHolder hook"
-            )
-        }.onFailure {
-            Log.w(
-                "GoneSmartPlaylist",
-                "FOLDER BOUND MODEL | bind hook unavailable",
-                it
-            )
-        }
+        // Native GMMP obfuscates RecyclerView.Adapter itself. Its public
+        // RecyclerView methods above are sufficient: the controller probes
+        // already-bound visible holders after layout instead of hooking a
+        // class name that does not exist in GMMP's APK.
 
         Log.i(
             "GoneSmartPlaylist",

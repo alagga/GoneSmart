@@ -22,10 +22,13 @@ independent feature switch plus two independent options:
 | Off | Off | Absent | External + main-root playlists |
 
 Order is always real physical folders, optional virtual Other Locations,
-then loose playlists. The virtual folder appears only when a selected
-category contains at least one playlist. A physical folder literally named
-"Other Locations" has a distinct identity from the virtual folder; both
-are navigable. Both settings only affect presentation, not file placement.
+then loose playlists. If **Group root playlists** is enabled, the
+virtual folder stays visible even when empty so the first main-root
+playlist can be created from inside it. With root grouping disabled,
+the virtual folder appears only if grouped external playlists exist.
+A physical folder literally named "Other Locations" has a distinct
+identity from the virtual folder; both are navigable. Both settings
+only affect presentation, not file placement.
 
 The existing multi-playlist picker must continue to support selecting
 destinations across folders and invoking GMMP's native playlist writer.
@@ -131,29 +134,51 @@ mapped, broad diagnostics stop and implementation moves to read-only
 folder navigation. The device's playlist data and native behavior remain
 untouched.
 
-### Playlist creation destination
+### Playlist creation destination and action visibility
 
-Playlist creation follows the currently open folder instead of showing a
-second folder chooser. In both native surfaces, creating a playlist while
-inside a physical folder targets that physical directory. Creating from
-the main/root view targets GMMP's main playlist directory. The virtual
-**Other Locations** node is not a filesystem location; creation there also
-targets the real GMMP main playlist directory. Whether the new root
-playlist is then shown loose or under Other Locations is purely determined
-by the existing **Group root playlists** presentation option.
+Creation always targets the currently viewed *physical* folder and never
+opens a second folder chooser. The root grouping option controls which
+of the two nonphysical navigation nodes may create directly in GMMP's
+main playlist directory:
 
-This same rule applies to the Add-to-Playlist **+** action and the normal
-Playlists view's native add/create menu action.
+| Current location | Group root playlists ON | Group root playlists OFF |
+| --- | --- | --- |
+| Main/root view | Hide create action | Create in main root |
+| Virtual Other Locations | Create in main root | Hide create action |
+| Any physical subfolder | Create inside it | Create inside it |
+
+The **Group external playlists** option does not change creation
+permissions. Virtual Other Locations is kept navigable when root grouping
+is ON even if no playlist exists, allowing creation of the first root
+playlist. An *actual* physical directory named Other Locations follows
+physical-folder rules, not the virtual node's rules.
+
+Use the exact same decision for both surfaces. Hide only the native
+create/add-playlist overflow item in the normal Playlists tab, and hide
+the native **+** creation FAB in the Add to Playlist picker wherever
+creation is forbidden. The latter **must remain available** as a
+multi-destination *confirm* FAB while GoneSmart multi-select is active,
+even in a folder where playlist creation is disabled. Guard the creation
+callback as well as the visible control; cancel safely if navigation or
+grouping settings change while an open creation dialog is pending.
+
+This policy applies only while **Playlist folders** is enabled. When
+the feature is disabled, preserve GMMP's ordinary playlist creation UI
+and destination. No file relocation or GMMP database writes may occur
+as part of folder-group presentation.
 
 ### Final model-binding probe
 
 The previous device probe showed that `zn3.N0()` creates `wp3` in the
 normal Playlists tab and `jo3` in the Add picker, but `A:xn3` is still
-null at that creation point. The next debug build hooks the framework
-`RecyclerView.Adapter.bindViewHolder` completion instead and records
-`FOLDER BOUND MODEL` only after GMMP has populated the holder. This should
-yield the authoritative `xn3.q` playlist path for each surface without
-changing the list or playlist data.
+null at that creation point. The attempt to hook
+`androidx.recyclerview.widget.RecyclerView$Adapter` failed on the tested
+GMMP installation with `ClassNotFoundException`: that exact nested-class
+name is not present in GMMP's obfuscated APK. Instead, the next
+debug-only diagnostic reads the *actual visible ViewHolders* through the
+verified native RecyclerView's `getChildViewHolder(view)` after layout
+and examines their already bound `A:xn3.q`. No guessed adapter class name
+or native playlist/database mutation is involved.
 
 ## Step 2 — native GMMP navigation
 

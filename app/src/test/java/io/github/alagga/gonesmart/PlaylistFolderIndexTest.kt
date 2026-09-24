@@ -90,11 +90,39 @@ class PlaylistFolderIndexTest {
         assertFalse(result.topLevelFolders.any { it.virtual })
     }
 
-    @Test fun otherLocationsFolderOnlyAppearsIfNeeded() {
+    @Test fun otherLocationsHiddenWhenOnlyExternalGroupingIsOnAndNoneExist() {
         val result = PlaylistFolderIndex.build(
             listOf("$root/Trance/A.m3u"),
             root,
-            groupOtherLocations = true
+            groupExternalLocations = true,
+            groupRootPlaylists = false
+        )
+        assertNull(result.otherLocations)
+    }
+
+    @Test fun groupedRootKeepsOtherLocationsVisibleEvenWhenEmpty() {
+        for (external in listOf(false, true)) {
+            val result = PlaylistFolderIndex.build(
+                emptyList(),
+                root,
+                groupExternalLocations = external,
+                groupRootPlaylists = true
+            )
+            assertTrue(result.otherLocations!!.virtual)
+            assertTrue(result.otherLocations!!.playlists.isEmpty())
+            assertEquals(
+                listOf("Other Locations"),
+                result.topLevelFolders.map { it.name }
+            )
+        }
+    }
+
+    @Test fun noGroupedRootAndNoGroupedExternalKeepsEmptyOtherHidden() {
+        val result = PlaylistFolderIndex.build(
+            emptyList(),
+            root,
+            groupExternalLocations = false,
+            groupRootPlaylists = false
         )
         assertNull(result.otherLocations)
     }

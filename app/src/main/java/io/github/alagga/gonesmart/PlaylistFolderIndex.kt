@@ -126,7 +126,10 @@ internal object PlaylistFolderIndex {
         return Result(
             folders = root.children.values.map(::freeze).sortedWith(folderOrder),
             ungroupedPlaylists = sortPlaylists(ungrouped.values),
-            otherLocations = if (groupedSorted.isNotEmpty()) {
+            // Root creation moves into Other Locations when root grouping
+            // is enabled. Keep this virtual destination navigable even
+            // before the very first root playlist exists.
+            otherLocations = if (groupRootPlaylists || groupedSorted.isNotEmpty()) {
                 Folder(
                     id = OTHER_LOCATIONS_ID,
                     name = OTHER_LOCATIONS,
