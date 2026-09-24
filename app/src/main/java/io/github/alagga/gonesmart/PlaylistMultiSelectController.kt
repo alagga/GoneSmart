@@ -88,6 +88,12 @@ internal class PlaylistMultiSelectController {
     private var active: Session? = null
     private val eventReporter = GoneSmartRuntimeReporter()
 
+    // Read-only discovery for the upcoming Playlist folders feature. The
+    // zn3/jo3 row binding hook already exists for multi-select, so reuse it
+    // to identify playlist surfaces without changing any native view.
+    private val playlistSurfaceDiagnostics = linkedSetOf<String>()
+    private val maxPlaylistSurfaceDiagnostics = 12
+
     @Volatile
     private var enabled = false
 
@@ -1372,11 +1378,13 @@ internal class PlaylistMultiSelectController {
      * onto unrelated playlists during RecyclerView view recycling.
      */
     fun onRowBound(holder: Any?) {
+        if (holder?.javaClass?.name != "jo3") return
+        diagnosePlaylistSurface(holder)
+
         val session = active ?: return
         if (session.selectedPaths.isEmpty() &&
             session.appliedRowOverlays.isEmpty()
         ) return
-        if (holder?.javaClass?.name != "jo3") return
 
         val row = runCatching {
             holder.javaClass.getField("itemView").get(holder) as? FrameLayout
@@ -1391,6 +1399,71 @@ internal class PlaylistMultiSelectController {
                 }
             }
         }
+    }
+
+    /**
+     * Read-only diagnostic used only to map GMMP 4.2.0's native playlist UI.
+     * A distinct view hierarchy is logged once, so opening the normal
+     * Playlists tab and the Add to Playlist picker is enough for comparison.
+     */
+    private fun diagnosePlaylistSurface(holder: Any) {
+        if (playlistSurfaceDiagnostics.size >= maxPlaylistSurfaceDiagnostics) return
+
+        val model = holderModel(holder) ?: return
+        val path = modelPath(model) ?: return
+        val row = runCatching {
+            holder.javaClass.getField("itemView").get(holder) as? View
+        }.getOrNull() ?: return
+
+        val ancestors = mutableListOf<String>()
+        var current: View? = row
+        repeat(7) {
+            val view = current ?: return@repeat
+            val idName = resourceName(view).takeIf { it.isNotBlank() }
+            ancestors += if (idName == null) {
+                view.javaClass.simpleName
+            } else {
+                "${view.javaClass.simpleName}#$idName"
+            }
+            current = view.parent as? View
+        }
+
+        var parent: View? = row.parent as? View
+        var recycler: ViewGroup? = null
+        while (parent != null && recycler == null) {
+            if (parent is ViewGroup) {
+                val hasAdapterGetter = runCatching {
+                    parent.javaClass.getMethod("getAdapter")
+                }.isSuccess
+                if (hasAdapterGetter) recycler = parent
+            }
+            parent = parent.parent as? View
+        }
+
+        val adapterName = recycler?.let { group ->
+            runCatching {
+                group.javaClass.getMethod("getAdapter").invoke(group)
+                    ?.javaClass?.name
+            }.getOrNull()
+        } ?: "none"
+        val surface =
+            if (active?.list === recycler) "add-picker" else "outside-picker"
+        val signature =
+            "$surface|$adapterName|${resourceName(recycler ?: row)}|" +
+                ancestors.joinToString(">")
+
+        if (!playlistSurfaceDiagnostics.add(signature)) return
+
+        Log.i(
+            TAG,
+            "FOLDER DISCOVERY | surface=$surface" +
+                " | holder=${holder.javaClass.name}" +
+                " | model=${model.javaClass.name}" +
+                " | adapter=$adapterName" +
+                " | recyclerId=${recycler?.let(::resourceName).orEmpty()}" +
+                " | path=$path" +
+                " | hierarchy=${ancestors.joinToString(" > ")}"
+        )
     }
 
     private fun refreshRow(

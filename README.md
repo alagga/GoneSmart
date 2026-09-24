@@ -274,12 +274,15 @@ navigation in GMMP's Playlists tab and Add to Playlist picker, with nested
 folders. Two **independent** options control whether external playlists and
 playlists directly in GMMP's main root appear inside the virtual **Other
 Locations** folder or as loose items after folder rows. The GMMP 4.2.0
-scanner and native Add picker have been tested with a physical subfolder.
-The maintainer also confirmed that moving playlist files externally leaves
-stale GMMP database records until cleanup: GoneSmart's future Move action
-will require a verified native per-playlist path update. The classifier,
-settings persistence and expanded tests are implemented; native folder UI
-and file-moving actions are **not yet implemented**. See
+GMMP 4.2.0 has now been tested with playlists several physical folder
+levels deep: normal listing/opening, native Add to Playlist and GoneSmart
+multi-destination add all passed. A native GMMP write also converted an
+existing relative M3U entry to an absolute path. Moving playlist files
+externally still leaves stale GMMP database records until cleanup, so
+GoneSmart's future Move action requires a verified native per-playlist path
+update. A read-only `FOLDER DISCOVERY` diagnostic is now staged to map
+the normal Playlists tab against the Add picker. Native folder UI and
+file-moving actions are **not yet implemented**. See
 [the design and on-device findings](docs/PLAYLIST_FOLDERS.md).
 
 ## Companion UI and player indicator

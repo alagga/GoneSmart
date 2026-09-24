@@ -51,14 +51,20 @@ The successful **write** was confirmed by the maintainer's on-device
 observation, not by a dedicated native writer confirmation in that
 short Logcat excerpt.
 
-This confirms one-level GMMP scanner/picker compatibility. Deeper
-navigation is supported by GoneSmart's read-only tree model, but
-multi-level GMMP scanning and writing still need a device check.
+The maintainer subsequently tested a playlist several directory levels
+deep. It appeared in both the normal Playlists tab and Add to Playlist
+view, opened normally, accepted a native GMMP add, and participated in a
+GoneSmart multi-destination add together with a playlist at a different
+folder depth. That regression passed, so GoneSmart does not impose a
+one-folder-depth limit.
 
-The maintainer reports GMMP-written playlists use absolute song paths.
-Before **moving** imported third-party playlists, still check for
-possible relative song paths rather than assuming that every M3U is
-GMMP-generated.
+A separate disposable M3U test started with a relative song path. After
+adding a track through GMMP, GMMP rewrote the existing relative entry to
+an absolute path too. This shows that GMMP's native write path normalizes
+existing playlist entries, not only the newly added row. A future Move
+action should therefore prefer a verified native GMMP save/rewrite path
+after its database/file-path update instead of implementing an independent
+M3U path converter.
 
 ## Step 1 — implemented and unit tested
 
@@ -86,7 +92,11 @@ device-specific directory. Identify native playlist data sources and
 menu/list hooks in **both** the Playlists tab and the Add to Playlist
 picker. The latter already exposes `xn3.q` native playlist paths through
 the `bo3` picker; its native `io3` writer must remain the only method
-for adding songs.
+for adding songs. A read-only `FOLDER DISCOVERY` diagnostic now records
+distinct `zn3.N0 -> jo3 -> xn3` surfaces, including adapter class,
+RecyclerView resource ID and view ancestry. Opening the normal Playlists
+tab and then the Add to Playlist picker will show whether both surfaces
+reuse the same native row/adapter stack.
 
 Use the shared classifier for both screens. Maintain Back/up navigation,
 scroll state, dynamic theme colors, normal single-playlist taps,

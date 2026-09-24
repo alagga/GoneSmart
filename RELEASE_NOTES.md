@@ -42,6 +42,13 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 
 ## In development: Playlist folders
 
+- Multi-level device test passed: a deeply nested playlist appeared in
+  both playlist surfaces, opened normally, accepted a native add, and
+  worked in a GoneSmart multi-destination add across different depths.
+- GMMP's native writer converted an existing relative M3U song path to an
+  absolute path when a new track was added.
+- A read-only `FOLDER DISCOVERY` diagnostic now maps the native
+  playlist holder/adapter/view hierarchy outside the Add picker.
 - GMMP 4.2.0 read a playlist inside a physical main-root subfolder; the
   maintainer confirmed the native Add to Playlist operation worked.
 - Read-only folder model supports multiple depths and two **independent**
