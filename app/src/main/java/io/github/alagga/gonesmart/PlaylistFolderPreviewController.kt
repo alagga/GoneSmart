@@ -1166,7 +1166,7 @@ internal class PlaylistFolderPreviewController(
                         " | matchedTitle=" + matchedNativeTitle +
                         " | modelName=" + name?.take(60) +
                         " | nativePx=" + title.textSize +
-                        " | chosenPx=" + size,
+                        " | chosenPx=" + size +
                         " | bg=" +
                             (nativeRow.background?.javaClass?.name ?: "none") +
                         " | style=" + signature
