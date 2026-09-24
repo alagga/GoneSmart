@@ -66,6 +66,7 @@ internal class PlaylistFolderPreviewController(
         val nativeOrder: List<String>,
         val originalAlpha: Float,
         val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
+        val themeListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var currentFolderId: String? = null,
         var actionPending: Boolean = false
@@ -88,8 +89,8 @@ internal class PlaylistFolderPreviewController(
         multiSelect.setFolderSelectionChangedListener { list ->
             browsers[list]?.let { browser ->
                 if (list.isAttachedToWindow) {
+                    positionOverlay(browser)
                     safeRender(browser)
-                    updatePickerFab(browser)
                 }
             }
         }
@@ -363,6 +364,27 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             }
+        var lastThemeProbe = 0L
+        // Aesthetic can change color values from album artwork without
+        // triggering a new layout. Probe the actual native row on redraw,
+        // throttled so scrolling and cover animations remain lightweight.
+        val themeListener = android.view.ViewTreeObserver.OnPreDrawListener {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastThemeProbe >= 400L) {
+                lastThemeProbe = now
+                weakList.get()?.let { current ->
+                    browsers[current]?.let { browser ->
+                        runCatching {
+                            positionOverlay(browser)
+                        }.onFailure { error ->
+                            Log.e(TAG, "FOLDER INLINE ERROR | theme probe", error)
+                            removeBrowser(current)
+                        }
+                    }
+                }
+            }
+            true
+        }
         val detachListener = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) = Unit
             override fun onViewDetachedFromWindow(view: View) {
@@ -381,6 +403,7 @@ internal class PlaylistFolderPreviewController(
             nativeOrder = native.paths,
             originalAlpha = list.alpha,
             layoutListener = layoutListener,
+            themeListener = themeListener,
             detachListener = detachListener
         )
         browsers[list] = browser
@@ -388,6 +411,7 @@ internal class PlaylistFolderPreviewController(
         list.addOnAttachStateChangeListener(detachListener)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
+            list.viewTreeObserver.addOnPreDrawListener(themeListener)
         }
 
         list.alpha = 0f
@@ -483,6 +507,9 @@ internal class PlaylistFolderPreviewController(
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.removeOnGlobalLayoutListener(
                 browser.layoutListener
+            )
+            list.viewTreeObserver.removeOnPreDrawListener(
+                browser.themeListener
             )
         }
         if (browser.overlay.parent === browser.parent) {
