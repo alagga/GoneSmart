@@ -536,6 +536,44 @@ class MainActivity : AppCompatActivity() {
                 COLOR_ACCENT
             )
         )))
+        if (BuildConfig.DEBUG) {
+            container.addView(verticalGap(12))
+            container.addView(settingGroup(listOf(
+                SettingSpec(
+                    GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
+                    "▣",
+                    "Playlist folders (preview)",
+                    "Show a read-only folder browser in both GMMP playlist " +
+                        "views. Native playlist rows and creation stay unchanged for now.",
+                    COLOR_ACCENT
+                ),
+                SettingSpec(
+                    GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
+                    "↗",
+                    "Group external playlists",
+                    "Show SD-card and other external playlists inside " +
+                        "the virtual Other Locations folder.",
+                    COLOR_GREEN
+                ),
+                SettingSpec(
+                    GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS,
+                    "⌂",
+                    "Group root playlists",
+                    "Show main-root playlists inside Other Locations. " +
+                        "Keeps the virtual folder available even when empty.",
+                    COLOR_ACCENT
+                )
+            )))
+            container.addView(verticalGap(12))
+            container.addView(infoCard(
+                title = "Experimental folder preview",
+                body = "Open the Folders chip in GMMP's Playlists or Add to " +
+                    "Playlist view to browse folders without moving files. " +
+                    "The native list and playlist creation controls are " +
+                    "not yet filtered. This preview may omit playlists " +
+                    "that GMMP's adapter has not exposed."
+            ))
+        }
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
         container.addView(settingGroup(listOf(
@@ -952,6 +990,10 @@ class MainActivity : AppCompatActivity() {
 
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
         setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, options.playlistFoldersEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
+        setSwitch(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)
+        refreshPlaylistFolderAvailability(options)
         setSwitch(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
@@ -983,6 +1025,19 @@ class MainActivity : AppCompatActivity() {
         )
         setSwitch(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, options.showStatusMessages)
         refreshRatingFallbackAvailability(options)
+    }
+
+    private fun refreshPlaylistFolderAvailability(
+        options: GoneSmartOptions = settingsRepository.read()
+    ) {
+        for (key in listOf(
+            GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
+            GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS
+        )) {
+            switches[key]?.isEnabled = options.playlistFoldersEnabled
+            settingRows[key]?.alpha =
+                if (options.playlistFoldersEnabled) 1f else 0.45f
+        }
     }
 
     /**
@@ -1025,6 +1080,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         settingsRepository.setBoolean(key, checked)
+        if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS) {
+            refreshPlaylistFolderAvailability()
+        }
         if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) {
             refreshRatingFallbackAvailability()
         }

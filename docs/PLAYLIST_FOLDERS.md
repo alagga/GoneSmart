@@ -83,10 +83,14 @@ depth, path traversal and physical/virtual name collisions.
 (default off) and both grouping preferences (default on). Changing
 these values must not reset the Smart DJ recommendation pool.
 
-**Current limitation:** Only the classifier and preference persistence
-are implemented. The two options are intentionally not exposed as
-working GoneSmart UI controls until there are actual native folder
-navigation hooks to consume them.
+**Current limitation:** The tree classifier and preference persistence
+are implemented. An opt-in **debug-only** read-only folder browser now
+exposes the three switches in GoneSmart's companion UI. It overlays a
+small Folders chip on native GMMP playlist RecyclerViews and browses a
+preview tree without mutating native adapters. The final in-list folder
+rows, in-folder native creation and native create-control visibility
+are **not implemented** yet. The debug preview explicitly labels
+possibly incomplete native model snapshots.
 
 ### Device diagnostic: normal tab vs Add picker
 
@@ -179,6 +183,41 @@ debug-only diagnostic reads the *actual visible ViewHolders* through the
 verified native RecyclerView's `getChildViewHolder(view)` after layout
 and examines their already bound `A:xn3.q`. No guessed adapter class name
 or native playlist/database mutation is involved.
+
+### First read-only folder-browser prototype
+
+The 24 September bound-holder Logcat established that both native
+playlist views expose actual `xn3.q` file paths after binding:
+`wp3` in the normal Playlists tab and `jo3` in the Add picker.
+The paths include the internal test tree down to
+`GoneSmart Tests/Level2/Level3` and other playlists on the external
+SD-card location. This validates stable path-based classification in
+both native surfaces.
+
+The opt-in debug-only preview adds a compact Folders entrypoint to
+each native playlist RecyclerView. Tapping it presents the physical
+subfolder tree and optional virtual Other Locations folder using the
+shared classifier. It reads `zn3.i0()`/`t23.r()` as a non-mutating
+model snapshot and caches real paths from already-bound native rows
+as a conservative fallback. If the adapter has not exposed all its
+native entries, the dialog identifies its snapshot as **partial**.
+Empty physical subdirectories are scanned read-only, with a hard
+500-directory limit. No external files are created, moved or deleted.
+
+To avoid mistaking the SD-card playlist collection for GMMP's main
+root, this experimental preview enables itself only when an observed
+native playlist path proves that the primary storage directory's
+`gmmp/playlists` directory is in use. This inference is **not**
+a replacement for reading GMMP's actual configured playlist root;
+that remains mandatory before enabling native creation or moves.
+
+The preview deliberately leaves original native playlist lists
+visible and does not yet filter them. Original native playlist
+clicks, multi-select, overflow creation and picker FAB are unchanged.
+Its purpose is to device-test nested navigation and both independent
+grouping switches before altering the obfuscated native adapter.
+The three folder-preview switches are displayed **only in debug
+builds**, and the feature is disabled by default.
 
 ## Step 2 — native GMMP navigation
 

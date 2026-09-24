@@ -104,6 +104,22 @@ class GoneSmartModule : XposedModule() {
                     preferences
                 )
 
+            if (
+                BuildConfig.DEBUG && (
+                    key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ||
+                    key == GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS ||
+                    key == GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS
+                )
+            ) {
+                val next = options
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    playlistFolderPreview.setOptions(
+                        next.playlistFoldersEnabled,
+                        next.groupExternalPlaylists,
+                        next.groupRootPlaylists
+                    )
+                }
+            }
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
                 if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
@@ -287,6 +303,9 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistController =
         PlaylistMultiSelectController()
+
+    private val playlistFolderPreview =
+        PlaylistFolderPreviewController()
 
     private val queueFlipController =
         QueueFlipController()
@@ -483,6 +502,11 @@ class GoneSmartModule : XposedModule() {
             // selection and do not modify the native playlist database/UI.
             try {
                 if (BuildConfig.DEBUG) {
+                    playlistFolderPreview.setOptions(
+                        options.playlistFoldersEnabled,
+                        options.groupExternalPlaylists,
+                        options.groupRootPlaylists
+                    )
                     installPlaylistSurfaceDiscoveryHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {
@@ -832,10 +856,12 @@ class GoneSmartModule : XposedModule() {
         hook(setAdapter).intercept { chain ->
             val result = chain.proceed()
             runCatching {
+                val list = chain.getThisObject() as? android.view.View
                 playlistController.onNativeRecyclerAdapterSet(
-                    chain.getThisObject() as? android.view.View,
+                    list,
                     chain.getArg(0)
                 )
+                playlistFolderPreview.onNativeRecyclerObserved(list)
             }.onFailure {
                 Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter probe failed", it)
             }
@@ -849,9 +875,9 @@ class GoneSmartModule : XposedModule() {
         hook(attach).intercept { chain ->
             val result = chain.proceed()
             runCatching {
-                playlistController.onNativeRecyclerAttached(
-                    chain.getThisObject() as? android.view.View
-                )
+                val list = chain.getThisObject() as? android.view.View
+                playlistController.onNativeRecyclerAttached(list)
+                playlistFolderPreview.onNativeRecyclerObserved(list)
             }.onFailure {
                 Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach probe failed", it)
             }
@@ -1102,7 +1128,7 @@ class GoneSmartModule : XposedModule() {
                     val args = (0 until method.parameterCount)
                         .map { index -> chain.getArg(index) }
                     runCatching {
-                        if (BuildConfig.DEBUG) {
+                        if (BuildConfig.DEBUG && !options.playlistFoldersEnabled) {
                             playlistController.onNativeRowBindObserved(
                                 method.toGenericString(),
                                 args,
