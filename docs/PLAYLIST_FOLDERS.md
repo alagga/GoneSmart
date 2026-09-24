@@ -195,14 +195,23 @@ SD-card location. This validates stable path-based classification in
 both native surfaces.
 
 The opt-in debug-only preview adds a compact Folders entrypoint to
-each native playlist RecyclerView. Tapping it presents the physical
-subfolder tree and optional virtual Other Locations folder using the
-shared classifier. It reads `zn3.i0()`/`t23.r()` as a non-mutating
-model snapshot and caches real paths from already-bound native rows
-as a conservative fallback. If the adapter has not exposed all its
-native entries, the dialog identifies its snapshot as **partial**.
-Empty physical subdirectories are scanned read-only, with a hard
-500-directory limit. No external files are created, moved or deleted.
+each native playlist RecyclerView. It uses the shared folder classifier,
+with paths sourced from native playlist models. The earlier
+`zn3.i0()`/`t23.r()` snapshot was confirmed to contain only
+section/header data; GMMP reported 248 playlist rows while that
+interface yielded no `xn3` models. Visible, fully bound native
+rows exposed their paths but could not account for all entries.
+
+The next diagnostic preview inspects native adapter backing fields,
+bounded collections and the standard read-only `getItem(int)`
+method to locate the authoritative complete `xn3` dataset.
+It logs `FOLDER NATIVE SOURCE` and bounded
+`FOLDER NATIVE TRACE` records on opening the preview, without
+reading the playlist filesystem. Until the full source is proven,
+the preview explicitly labels an incomplete snapshot **partial**.
+Empty physical directories cannot be inferred from playlist paths and
+require separate native-directory discovery or an explicitly justified
+read-only folder enumeration later.
 
 To avoid mistaking the SD-card playlist collection for GMMP's main
 root, this experimental preview enables itself only when an observed
@@ -219,20 +228,20 @@ grouping switches before altering the obfuscated native adapter.
 The three folder-preview switches are displayed **only in debug
 builds**, and the feature is disabled by default.
 
-The first on-device preview exposed one more adapter limitation:
-`zn3` reported 248 playlist rows but its read-only `i0()/t23.r()`
-snapshot yielded no `xn3` models, so the preview initially knew only
-the 15 paths that had actually been bound on screen. This made the
-ungrouped root incomplete when **Group root playlists** was disabled.
+A temporary on-device prototype filled the incomplete root list by
+reading 61 physical playlist files from GMMP's main folder. This fixed
+root-grouping display but did not solve external playlists: the native
+adapter still held 248 rows while only 15–70 bound paths had been cached,
+so the virtual Other Locations view remained incomplete.
 
-The preview now fills that specific gap by scanning the already-verified
-physical GMMP main playlist root read-only for playlist files whose
-extensions match observed native root playlists (falling back only to
-M3U/M3U8 before an extension is observed). Those paths are merged into
-the classifier together with native GMMP paths. Therefore physical
-root and nested playlists no longer depend on which RecyclerView rows
-have already been bound. External playlists remain sourced only from
-GMMP-observed paths; they are not invented by scanning unrelated storage.
+**Decision:** the physical-file fallback has been removed from the next
+diagnostic build. All displayed playlist paths must come from GMMP's
+native model source or its already bound native rows; no internal- or
+external-storage playlist scan occurs. This can temporarily make the
+root preview partial again until the complete native data structure is
+identified. The primary playlist root is still inferred conservatively
+from an observed native path. The final writable feature must read
+GMMP's configured playlist root instead of relying on path inference.
 
 
 ## Step 2 — native GMMP navigation

@@ -12,7 +12,6 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
-import java.io.File
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -28,7 +27,6 @@ import java.util.WeakHashMap
 internal class PlaylistFolderPreviewController {
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        private const val MAX_DIRECTORY_SCAN = 500
     }
 
     private data class Settings(
@@ -179,54 +177,54 @@ internal class PlaylistFolderPreviewController {
 
         val adapter = nativeAdapter(list)
         if (adapter?.javaClass?.name != "zn3") return
-        val nativePaths = nativePlaylistPaths(adapter)
-        val visible = currentlyVisiblePaths(list)
-        observedPaths.addAll(visible)
-        // Only group verified native models/visible rows. Do not silently
-        // substitute file-system results for GMMP's playlist database.
+        val itemCount = runCatching {
+            adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
+        }.getOrDefault(-1)
+        // GMMP's zn3.i0()/t23.r() exposes section headers, not
+        // the full playlist model list. Inspect only native adapter
+        // backing fields and standard read-only getItem(int).
+        val native = NativePlaylistSourceInspector.inspect(adapter, itemCount)
+        for (trace in native.traces) {
+            Log.i(TAG, "FOLDER NATIVE TRACE | " + trace)
+        }
+        val nativePaths = (native.paths + nativePlaylistPaths(adapter)).distinct()
+        observedPaths.addAll(currentlyVisiblePaths(list))
         val paths = (nativePaths + observedPaths).distinct()
         val root = PlaylistRootLocator.infer(
             paths,
             Environment.getExternalStorageDirectory().absolutePath
         )
+        val externalNative = if (root == null) -1 else {
+            val prefix = root.trimEnd('/') + "/"
+            nativePaths.count { !it.startsWith(prefix) }
+        }
+        Log.i(
+            TAG,
+            "FOLDER NATIVE SOURCE | adapterRows=" + itemCount +
+                " | nativeModels=" + nativePaths.size +
+                " | externalNative=" + externalNative +
+                " | visibleCached=" + observedPaths.size +
+                " | visited=" + native.visitedObjects +
+                " | truncated=" + native.truncated +
+                " | filesystemScan=false"
+        )
         if (root == null) {
             Toast.makeText(
                 list.context,
-                "Playlist root not yet verified; open a GMMP root playlist first.",
+                "Playlist root not yet verified from GMMP's native entries.",
                 Toast.LENGTH_LONG
             ).show()
-            Log.w(TAG, "FOLDER PREVIEW | no verified primary playlist root")
             return
         }
-        val itemCount = runCatching {
-            adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
-        }.getOrDefault(-1)
-        val nativeComplete = itemCount >= 0 && nativePaths.size >= itemCount &&
-            nativePaths.isNotEmpty()
-        val physical = physicalDirectories(root)
-        val physicalPlaylists = physicalPlaylistFiles(
-            root = root,
-            observedPaths = paths
-        )
-        // Files inside the verified main root are authoritative physical
-        // playlist locations. Merge them with GMMP-observed paths so root
-        // and nested folders are complete even when zn3 exposes only the
-        // currently bound RecyclerView rows.
-        val indexedPaths = (paths + physicalPlaylists).distinct()
+        // Native lists may contain a section header. Mark partial unless
+        // nearly all native adapter rows have corresponding playlist models.
+        val nativeComplete = itemCount > 0 &&
+            nativePaths.size >= itemCount - 1 && !native.truncated
         val index = PlaylistFolderIndex.build(
-            nativePlaylistPaths = indexedPaths,
+            nativePlaylistPaths = paths,
             mainPlaylistDirectory = root,
             groupExternalLocations = settings.groupExternal,
-            groupRootPlaylists = settings.groupRoot,
-            physicalDirectoryPaths = physical
-        )
-        Log.i(
-            TAG,
-            "FOLDER PREVIEW | nativeModels=${nativePaths.size}" +
-                " | visibleCached=${observedPaths.size}" +
-                " | adapterItems=$itemCount | nativeComplete=$nativeComplete" +
-                " | physicalFolders=${physical.size}" +
-                " | physicalPlaylists=${physicalPlaylists.size}"
+            groupRootPlaylists = settings.groupRoot
         )
         showFolder(
             list = list,
@@ -371,50 +369,6 @@ internal class PlaylistFolderPreviewController {
                 isAccessible = true
             }.get(value) as? String
         }.getOrNull()?.takeIf(String::isNotBlank)
-    }
-
-    private fun physicalDirectories(root: String): List<String> {
-        return runCatching {
-            val base = File(root).canonicalFile
-            val prefix = base.path.trimEnd(File.separatorChar) + File.separator
-            base.walkTopDown().maxDepth(32)
-                .filter { directory ->
-                    directory.isDirectory &&
-                        directory.canonicalPath.startsWith(prefix)
-                }
-                .take(MAX_DIRECTORY_SCAN)
-                .map { it.canonicalPath }
-                .toList()
-        }.getOrDefault(emptyList())
-    }
-
-    private fun physicalPlaylistFiles(
-        root: String,
-        observedPaths: Collection<String>
-    ): List<String> {
-        return runCatching {
-            val base = File(root).canonicalFile
-            val prefix = base.path.trimEnd(File.separatorChar) + File.separator
-            val verifiedExtensions = observedPaths.mapNotNull { raw ->
-                if (raw.contains("://")) return@mapNotNull null
-                val file = runCatching { File(raw).canonicalFile }.getOrNull()
-                    ?: return@mapNotNull null
-                if (!file.path.startsWith(prefix)) return@mapNotNull null
-                file.extension.lowercase().takeIf { it.isNotBlank() }
-            }.toSet()
-            val allowedExtensions = verifiedExtensions.ifEmpty {
-                setOf("m3u", "m3u8")
-            }
-            base.walkTopDown().maxDepth(32)
-                .filter { file ->
-                    file.isFile &&
-                        file.canonicalPath.startsWith(prefix) &&
-                        file.extension.lowercase() in allowedExtensions
-                }
-                .take(MAX_DIRECTORY_SCAN)
-                .map { it.canonicalPath }
-                .toList()
-        }.getOrDefault(emptyList())
     }
 
     private fun isPicker(list: ViewGroup): Boolean =
