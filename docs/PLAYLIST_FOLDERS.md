@@ -116,13 +116,20 @@ shared RecyclerView resource name. That label is now reserved for the
 exact active picker instance; a same-named, uncaptured list is reported
 as `playlist-list-uncaptured`.
 
-Native `zn3.N0` takes `(int, t23, ViewGroup)` and returns `jw`;
-the old probe incorrectly assumed a `jo3` ViewHolder would appear among
-its arguments. The next **debug-only** probe captures the result's
-field types, a bounded sample of the `t23.r()` group members and a
-picker snapshot once rows are actually populated. Diagnostic labels:
-`FOLDER N0 RESULT` and `FOLDER SURFACE | reason=picker-populated`.
-The device's original playlist data and navigation are untouched.
+Native `zn3.N0` takes `(int, t23, ViewGroup)` and returns `jw`.
+The device log now proves that the ordinary Playlists tab receives
+`wp3` while the Add picker receives `jo3`; both returned holders have
+fields `A:xn3` and `B:int`. This strongly suggests one shared
+`xn3` data path can drive folder grouping in both surfaces while their
+row presentation and click behavior remain surface-specific.
+
+The final bounded debug probe before the first real UI prototype logs
+`FOLDER MODEL` for the returned holder's `A:xn3`, including its native
+playlist path when available, and `FOLDER DATASET` for `zn3.i0()`
+groups plus their `t23.r()` member types. After those structures are
+mapped, broad diagnostics stop and implementation moves to read-only
+folder navigation. The device's playlist data and native behavior remain
+untouched.
 
 ## Step 2 — native GMMP navigation
 

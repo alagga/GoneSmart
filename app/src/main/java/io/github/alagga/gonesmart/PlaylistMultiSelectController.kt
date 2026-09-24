@@ -96,6 +96,8 @@ internal class PlaylistMultiSelectController {
     private val nativeAdapterSurfaces = linkedSetOf<String>()
     private var nativeRowBindProbeCount = 0
     private val maxNativeRowBindProbes = 16
+    private val nativeModelDiagnostics = linkedSetOf<String>()
+    private val nativeDatasetDiagnostics = linkedSetOf<String>()
 
     @Volatile
     private var enabled = false
@@ -1412,6 +1414,23 @@ internal class PlaylistMultiSelectController {
         }
         val returnFields = returned?.javaClass?.declaredFields.orEmpty()
             .take(8).joinToString(",") { it.name + ":" + it.type.simpleName }
+        val returnedModel = returned?.let(::holderModel)
+        val returnedPath = returnedModel?.let(::modelPath)
+        val modelFields = returnedModel?.javaClass?.declaredFields.orEmpty()
+            .take(24).joinToString(",") { field ->
+                val type = field.type.simpleName
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(returnedModel)
+                }.getOrNull()
+                val summary = when (value) {
+                    is String -> value.takeLast(80)
+                    is Number, is Boolean -> value.toString()
+                    null -> "null"
+                    else -> value.javaClass.simpleName
+                }
+                field.name + ":" + type + "=" + summary
+            }
         Log.i(
             TAG,
             "FOLDER N0 RESULT | signature=" + signature +
@@ -1420,9 +1439,24 @@ internal class PlaylistMultiSelectController {
                 } +
                 " | returned=" + (returned?.javaClass?.name ?: "null") +
                 " | returnFields=" + returnFields +
+                " | model=" + (returnedModel?.javaClass?.name ?: "null") +
+                " | modelPath=" + (returnedPath ?: "-") +
                 " | groupSize=" + (models?.size ?: -1) +
                 " | sampleNames=" + sample
         )
+        if (returnedModel != null) {
+            val key = returned.javaClass.name + "|" + (returnedPath ?: modelFields)
+            if (nativeModelDiagnostics.size < 12 &&
+                nativeModelDiagnostics.add(key)
+            ) {
+                Log.i(
+                    TAG,
+                    "FOLDER MODEL | holder=" + returned.javaClass.name +
+                        " | path=" + (returnedPath ?: "-") +
+                        " | fields=" + modelFields
+                )
+            }
+        }
     }
 
     /**
@@ -1440,6 +1474,35 @@ internal class PlaylistMultiSelectController {
         val list = view as? ViewGroup ?: return
         diagnoseNativeRecycler(list, "setAdapter", adapter)
         list.post { diagnoseNativeRecycler(list, "adapter-rendered") }
+    }
+
+    private fun diagnoseNativeDataset(adapter: Any?, surface: String) {
+        if (adapter?.javaClass?.name != "zn3") return
+        val groups = runCatching {
+            adapter.javaClass.getMethod("i0").invoke(adapter) as? List<*>
+        }.getOrNull() ?: return
+        val summary = groups.take(8).mapIndexed { index, group ->
+            if (group == null) {
+                index.toString() + ":null"
+            } else {
+                val entries = runCatching {
+                    group.javaClass.getMethod("r").invoke(group) as? List<*>
+                }.getOrNull()
+                val types = entries.orEmpty().take(4)
+                    .joinToString(",") { it?.javaClass?.name ?: "null" }
+                index.toString() + ":" + group.javaClass.name +
+                    "[" + (entries?.size ?: -1) + "]{" + types + "}"
+            }
+        }.joinToString(" ; ")
+        val key = surface + "|" + groups.size + "|" + summary
+        if (nativeDatasetDiagnostics.size >= 8 ||
+            !nativeDatasetDiagnostics.add(key)
+        ) return
+        Log.i(
+            TAG,
+            "FOLDER DATASET | surface=" + surface +
+                " | groups=" + groups.size + " | sample=" + summary
+        )
     }
 
     private fun diagnoseNativeRecycler(
@@ -1480,6 +1543,7 @@ internal class PlaylistMultiSelectController {
                 it.javaClass.getMethod("getItemCount").invoke(it) as? Int
             }.getOrNull()
         }
+        diagnoseNativeDataset(adapter, surface)
         val sampleHolders = (0 until minOf(2, list.childCount)).map { index ->
             val child = list.getChildAt(index)
             runCatching {
