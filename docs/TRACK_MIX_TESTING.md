@@ -1,6 +1,6 @@
 # Track Auto-DJ — GMMP 4.2.0
 
-**Feature status:** Complete in the v0.4.x development branch following the maintainer's report that the latest Track Auto-DJ build works on-device. The companion app uses English **Track Auto-DJ**, while GMMP's own menus retain native translations. A targeted concurrent-refill regression check remains on the pre-release checklist.
+**Feature status:** Complete in the v0.4.x development branch following the maintainer's report that the latest Track Auto-DJ build works on-device. The companion app uses English **Track Auto-DJ**, while GMMP's own menus retain native translations. The maintainer subsequently confirmed the corrected build works when launching Track Auto-DJ from an existing queue, with no repeat error observed. That targeted regression check is considered passed; this confirmation is based on the maintainer's device test, not an independent review of the new Logcat output.
 
 **Earlier development diagnostics (24 September 2026):** The supplied phone log recorded six
 verified five-track starts and one intermittent queue-isolation failure from a
@@ -23,10 +23,11 @@ queue change aborts safely rather than deleting a different queue.
 The old pre-clear refill hook remains a safeguard against *new* old-session
 refills, but a refill already running when the user taps Play cannot be canceled
 retroactively. The direct native transaction eliminates repeated asynchronous
-clear attempts and the failure mode they caused. **The maintainer reports the current feature working on-device; the specific
-concurrent-refill race should still be rechecked before the bundled release.**
-Source inspection and unit tests are not substitutes for that regression check.
-Save any queue you need before testing.
+clear attempts and the failure mode they caused. **The maintainer has retested Track Auto-DJ from an existing queue using the
+corrected build and observed no recurrence of the earlier failure.** This closes
+the targeted regression check. The earlier log remains historical evidence of
+the superseded implementation; the new run's Logcat was not independently
+reviewed in this chat.
 
 ## User behavior
 
@@ -50,13 +51,19 @@ Play/Clear/Auto-DJ status Toasts and Snackbars are suppressed during the
 short bounded transition. A genuine error still shows one warning;
 diagnostics go to **GoneSmart → Logs** and Logcat `GoneSmartTrackMix`.
 
-## One combined regression check
+## Regression result and future smoke tests
 
-Before publishing the combined v0.4.x release, use a green feature-branch APK,
-restart GMMP once and check **two cases on a disposable queue**: (1) from a middle Queue row while
-Auto-DJ is already on and (2) from an ordinary Library track with Smart DJ
-initially off. The chosen track must continue playing at queue position 1;
-GMMP must fill to its own Initial Size; one confirmation must appear.
+**Passed (maintainer report):** The corrected build was tested by starting
+Track Auto-DJ from an existing queue. The earlier queue-isolation failure
+did not recur. Other routine Track Auto-DJ starts were previously reported
+working, including the six verified five-track starts in the earlier log.
+No further targeted retest is required to close this issue.
+
+For future GMMP updates or the bundled v0.4.x release, a normal smoke test
+may cover both (1) a middle Queue row while Auto-DJ is already on and
+(2) an ordinary Library track with Smart DJ initially off. The selected track
+should be queue position 1, GMMP should fill to Initial Size, and one
+confirmation should appear.
 
 Useful new logs: `MIX ISOLATED` (unique row ID, number removed and native
 transaction verification), `MIX ISOLATE FAILED` (concurrent queue change or
