@@ -323,6 +323,9 @@ internal class PlaylistMultiSelectController {
         if (active?.fragment === fragment) return
 
         reset()
+        // The normal Playlists page may have consumed the bounded native
+        // zn3.N0 probes already. Give the Add picker its own sample budget.
+        if (BuildConfig.DEBUG) nativeRowBindProbeCount = 0
         active = Session(fragment)
         Log.i(TAG, "MULTI PICKER | new session")
     }
