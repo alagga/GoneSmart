@@ -87,6 +87,39 @@ internal class PlaylistMultiSelectController {
     }
 
     private var active: Session? = null
+    private var folderSelectionChanged: ((ViewGroup) -> Unit)? = null
+
+    fun setFolderSelectionChangedListener(listener: (ViewGroup) -> Unit) {
+        folderSelectionChanged = listener
+    }
+
+    fun folderSelectionAccent(list: ViewGroup): Int? {
+        val session = active ?: return null
+        if (!enabled || session.list !== list) return null
+        return gmmpPrimary(session, list)
+    }
+
+    fun folderNativeFab(list: ViewGroup): View? =
+        active?.takeIf { enabled && it.list === list }?.fab
+
+    fun confirmFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        if (!enabled || session.list !== list ||
+            session.selectedPaths.isEmpty()
+        ) return false
+        confirm(session)
+        folderSelectionChanged?.invoke(list)
+        return true
+    }
+
+    fun clearFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        if (session.list !== list || session.selectedPaths.isEmpty()) {
+            return false
+        }
+        exitSelection(session)
+        return true
+    }
     private val eventReporter = GoneSmartRuntimeReporter()
 
     // Read-only discovery for the upcoming Playlist folders feature. The
@@ -511,6 +544,7 @@ internal class PlaylistMultiSelectController {
         enableFab(session)
         updateSelectionBar(session)
         refreshVisibleRows(session)
+        folderSelectionChanged?.invoke(list)
         Log.i(TAG, "MULTI FOLDER SELECT | added=$path")
         return true
     }
@@ -544,6 +578,7 @@ internal class PlaylistMultiSelectController {
             updateSelectionBar(session)
         }
         refreshVisibleRows(session)
+        folderSelectionChanged?.invoke(list)
         return true
     }
 
@@ -2069,6 +2104,9 @@ internal class PlaylistMultiSelectController {
         session.originalTint = null
         session.originalDescription = null
         refreshVisibleRows(session)
+        session.list?.let { list ->
+            folderSelectionChanged?.invoke(list)
+        }
         Log.i(TAG, "MULTI MODE | exited")
     }
 

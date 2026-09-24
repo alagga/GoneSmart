@@ -4,6 +4,11 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.ColorDrawable
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.view.LayoutInflater
+import android.widget.ImageView
 import android.os.Environment
 import android.util.Log
 import android.util.TypedValue
@@ -42,7 +47,12 @@ internal class PlaylistFolderPreviewController(
         val backgroundColor: Int,
         val accentColor: Int,
         val rowBackground: Drawable.ConstantState?,
-        val signature: String
+        val signature: String,
+        val nativeRowLayoutId: Int,
+        val titleViewId: Int,
+        val titleGravity: Int,
+        val titlePaddingStart: Int,
+        val titlePaddingEnd: Int
     )
 
     private data class Browser(
@@ -72,6 +82,18 @@ internal class PlaylistFolderPreviewController(
     >()
     private var activeBrowser = WeakReference<ViewGroup>(null)
     private val observedMenus = linkedSetOf<String>()
+    private var playlistTabMenu: WeakReference<android.view.Menu>? = null
+
+    init {
+        multiSelect.setFolderSelectionChangedListener { list ->
+            browsers[list]?.let { browser ->
+                if (list.isAttachedToWindow) {
+                    safeRender(browser)
+                    updatePickerFab(browser)
+                }
+            }
+        }
+    }
 
     fun setOptions(
         enabled: Boolean,
@@ -84,6 +106,7 @@ internal class PlaylistFolderPreviewController(
             settings.groupExternal != next.groupExternal ||
                 settings.groupRoot != next.groupRoot
         settings = next
+        updatePlaylistMenu()
 
         if (!enabled) {
             browsers.keys.toList().forEach(::removeBrowser)
@@ -164,6 +187,10 @@ internal class PlaylistFolderPreviewController(
                     it.contains("playlist", ignoreCase = true) ||
                         it.contains("wiedergabeliste", ignoreCase = true)
                 }
+        if (name == "menu_gm_playlist_list") {
+            playlistTabMenu = WeakReference(menu)
+            updatePlaylistMenu()
+        }
         if (!playlistRelated || !observedMenus.add(name) ||
             observedMenus.size > 18
         ) return
@@ -288,16 +315,18 @@ internal class PlaylistFolderPreviewController(
             retry(list, attempt)
             return
         }
-        val parent = list.rootView as? FrameLayout ?: run {
-            Log.w(TAG, "FOLDER INLINE STOP | no safe FrameLayout overlay host")
+        // Keep the browser INSIDE GMMP's page/dialog content. Decorating
+        // the whole window previously covered the drawer, FAB and mini player.
+        val parent = safeOverlayHost(list) ?: run {
+            Log.w(TAG, "FOLDER INLINE STOP | no scoped page overlay host")
             return
         }
         val overlay = FrameLayout(list.context).apply {
             isClickable = true
             isFocusable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            background = ColorDrawable(nativeStyle.backgroundColor)
-            elevation = list.elevation + dp(list, 1).toFloat()
+            background = nativeContentBackground(list, parent, nativeStyle)
+            elevation = 0f
         }
         val scroller = ScrollView(list.context).apply {
             isFillViewport = true
@@ -362,13 +391,22 @@ internal class PlaylistFolderPreviewController(
         }
 
         list.alpha = 0f
+        // Insert after the fragment content, but BELOW later siblings
+        // such as the native creation/confirm FAB.
+        val contentChild = directChildInHost(list, parent)
+        val insertAt = if (contentChild == null) parent.childCount else {
+            (parent.indexOfChild(contentChild) + 1).coerceAtMost(parent.childCount)
+        }
         parent.addView(
             overlay,
-            FrameLayout.LayoutParams(list.width, list.height)
+            insertAt,
+            ViewGroup.LayoutParams(list.width, list.height)
         )
         positionOverlay(browser)
         safeRender(browser)
         activeBrowser = WeakReference(list)
+        updatePlaylistMenu()
+        updatePickerFab(browser)
 
         Log.i(
             TAG,
@@ -413,6 +451,8 @@ internal class PlaylistFolderPreviewController(
         overlay.y = (listLocation[1] - hostLocation[1]).toFloat()
         overlay.visibility =
             if (list.isShown) View.VISIBLE else View.GONE
+        updatePickerFab(browser)
+        updatePlaylistMenu()
         // GMMP's Aesthetic theme can change live with album art or user
         // settings. Mirror the real native row typography/background each
         // time its rendered style changes; never freeze an Android theme
@@ -423,7 +463,9 @@ internal class PlaylistFolderPreviewController(
             oldStyle?.signature != updatedStyle.signature
         ) {
             styles[list] = updatedStyle
-            overlay.background = ColorDrawable(updatedStyle.backgroundColor)
+            overlay.background = nativeContentBackground(
+                list, browser.parent, updatedStyle
+            )
             safeRender(browser)
             Log.i(
                 TAG,
@@ -449,6 +491,12 @@ internal class PlaylistFolderPreviewController(
         if (activeBrowser.get() === list) {
             activeBrowser.clear()
         }
+        updatePlaylistMenu()
+        multiSelect.folderNativeFab(list)?.let { fab ->
+            // Native controls regain their original responsibility as soon
+            // as inline folders are disabled or the picker is dismissed.
+            fab.visibility = View.VISIBLE
+        }
     }
 
     private fun safeRender(browser: Browser) {
@@ -471,6 +519,7 @@ internal class PlaylistFolderPreviewController(
         val folders = folder?.children ?: browser.index.topLevelFolders
         val playlists = folder?.playlists ?: browser.index.ungroupedPlaylists
         browser.rows.removeAllViews()
+        updatePickerFab(browser)
 
         if (folder != null) {
             browser.rows.addView(
@@ -485,10 +534,11 @@ internal class PlaylistFolderPreviewController(
                             parentFolderId(browser, folder)
                         activeBrowser = WeakReference(list)
                         safeRender(browser)
+                        updatePlaylistMenu()
+                        updatePickerFab(browser)
                     }
                 }
             )
-            browser.rows.addView(divider(list))
         }
 
         for (child in folders) {
@@ -503,6 +553,8 @@ internal class PlaylistFolderPreviewController(
                         browser.currentFolderId = child.id
                         activeBrowser = WeakReference(list)
                         safeRender(browser)
+                        updatePlaylistMenu()
+                        updatePickerFab(browser)
                         Log.i(
                             TAG,
                             "FOLDER INLINE NAV | surface=" + surface(list) +
@@ -511,7 +563,6 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             )
-            browser.rows.addView(divider(list))
         }
 
         for (playlist in playlists) {
@@ -562,7 +613,6 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             )
-            browser.rows.addView(divider(list))
         }
 
         if (folders.isEmpty() && playlists.isEmpty()) {
@@ -585,44 +635,232 @@ internal class PlaylistFolderPreviewController(
         text: String,
         folder: Boolean,
         selected: Boolean
-    ): TextView = TextView(view.context).apply {
+    ): View {
         val native = styles[view]
-        this.text = (if (folder) "▣  " else "") + text
-        setTextColor(native?.textColor ?: resolveTextColor(view))
-        if (native != null) {
-            setTextSize(TypedValue.COMPLEX_UNIT_PX, native.textSizePx)
-            typeface = native.typeface
-        } else {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-        }
-        gravity = Gravity.CENTER_VERTICAL
-        val inset = native?.titleInset ?: dp(view, 18)
-        setPadding(inset, 0, dp(view, 12), 0)
-        minHeight = native?.rowHeight ?: dp(view, 54)
-        isClickable = true
-        isFocusable = true
-        background = if (selected) {
-            ColorDrawable(
-                withAlpha(
-                    native?.accentColor ?: resolveAccent(view),
-                    0x35
-                )
-            )
-        } else {
+        val parent = browsers[view as? ViewGroup]?.rows
+        // Clone GMMP's own current row XML first. Its AestheticTextViews
+        // retain native textAppearance, layout and live theme subscriptions.
+        val template = if (native != null && native.nativeRowLayoutId != 0) {
             runCatching {
-                native?.rowBackground?.newDrawable(view.resources)?.mutate()
-            }.getOrNull() ?: typedSelectableBackground(view)
+                LayoutInflater.from(view.context).inflate(
+                    native.nativeRowLayoutId, parent, false
+                )
+            }.getOrNull()
+        } else null
+        val target = if (template != null) {
+            if (native?.titleViewId != 0) {
+                template.findViewById<TextView>(native!!.titleViewId)
+            } else null
+        } else null
+        if (target != null && template != null) {
+            target.text = text
+            if (native != null) {
+                target.setTextSize(
+                    TypedValue.COMPLEX_UNIT_PX, native.textSizePx
+                )
+                target.setTextColor(native.textColor)
+                target.typeface = native.typeface
+                target.gravity = native.titleGravity
+                target.setPaddingRelative(
+                    native.titlePaddingStart,
+                    target.paddingTop,
+                    native.titlePaddingEnd,
+                    target.paddingBottom
+                )
+            }
+            val root = template
+            root.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                native?.rowHeight ?: dp(view, 54)
+            )
+            root.minimumHeight = native?.rowHeight ?: dp(view, 54)
+            // A bare inflation is not bound by zn3. Hide unused template
+            // metadata until we have real native metadata for this model.
+            hideOtherTemplateLabels(root, target)
+            if (folder) {
+                addNativeFolderIcon(root, native, view)
+            }
+            styleRowSelection(root, view, native, selected)
+            root.isClickable = true
+            root.isFocusable = true
+            return root
+        }
+        // Defensive fallback on custom native view modes without XML IDs.
+        return TextView(view.context).apply {
+            this.text = text
+            setTextColor(native?.textColor ?: resolveTextColor(view))
+            setTextSize(
+                TypedValue.COMPLEX_UNIT_PX,
+                native?.textSizePx ?: (view.resources.displayMetrics.scaledDensity * 16f)
+            )
+            typeface = native?.typeface
+            gravity = Gravity.CENTER_VERTICAL
+            val inset = (native?.titleInset ?: dp(view, 18)) +
+                if (folder) dp(view, 28) else 0
+            setPadding(inset, 0, dp(view, 12), 0)
+            minHeight = native?.rowHeight ?: dp(view, 54)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                native?.rowHeight ?: dp(view, 54)
+            )
+            background = native?.rowBackground?.newDrawable(resources)?.mutate()
+                ?: typedSelectableBackground(view)
+            if (folder) {
+                setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    FolderOutlineDrawable(
+                        native?.textColor ?: resolveTextColor(view),
+                        dp(view, 24)
+                    ), null, null, null
+                )
+                compoundDrawablePadding = dp(view, 12)
+                setPadding(native?.titleInset ?: dp(view, 12), 0, dp(view, 12), 0)
+            }
+            if (selected) {
+                foreground = ColorDrawable(
+                    withAlpha(
+                        multiSelect.folderSelectionAccent(view as ViewGroup)
+                            ?: native?.accentColor ?: resolveAccent(view),
+                        0x80
+                    )
+                )
+            }
         }
     }
 
-    private fun divider(view: View): View = View(view.context).apply {
-        setBackgroundColor(withAlpha(resolveTextColor(view), 0x18))
-        layoutParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(view, 1)
-        ).apply {
-            marginStart = dp(view, 18)
+    private fun hideOtherTemplateLabels(root: View, title: TextView) {
+        fun walk(view: View) {
+            if (view is TextView && view !== title) {
+                view.visibility = View.GONE
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) walk(view.getChildAt(i))
+            }
         }
+        walk(root)
+    }
+
+    private fun styleRowSelection(
+        root: View,
+        view: View,
+        native: NativeRowStyle?,
+        selected: Boolean
+    ) {
+        val backdrop = native?.rowBackground?.newDrawable(view.resources)
+            ?.mutate() ?: typedSelectableBackground(view)
+        if (backdrop != null) root.background = backdrop
+        if (selected) {
+            root.foreground = ColorDrawable(
+                withAlpha(
+                    multiSelect.folderSelectionAccent(view as ViewGroup)
+                        ?: native?.accentColor ?: resolveAccent(view),
+                    0x80
+                )
+            )
+        } // Otherwise preserve the native XML foreground/ripple.
+    }
+
+    private fun addNativeFolderIcon(
+        root: View,
+        native: NativeRowStyle?,
+        host: View
+    ) {
+        val content = root as? ViewGroup ?: return
+        val color = native?.textColor ?: resolveTextColor(host)
+        // Use GMMP's own drawable if its APK exposes one; otherwise render
+        // an outline vector, tinted from the native playlist text.
+        val names = arrayOf(
+            "ic_folder", "ic_folder_outline", "ic_folder_24dp",
+            "ic_folder_black_24dp", "ic_folder_closed"
+        )
+        val drawable = names.firstNotNullOfOrNull { name ->
+            val id = host.resources.getIdentifier(
+                name, "drawable", host.context.packageName
+            )
+            if (id != 0) runCatching {
+                host.context.getDrawable(id)?.mutate()?.apply {
+                    setTint(color)
+                }
+            }.getOrNull() else null
+        } ?: FolderOutlineDrawable(color, dp(host, 24))
+        val image = ImageView(host.context).apply {
+            setImageDrawable(drawable)
+            contentDescription = "Folder"
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility =
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val size = dp(host, 24)
+        // The original GMMP row has no GoneSmart glyph. The folder
+        // indicator is introduced only on synthetic folder rows.
+        if (content is FrameLayout) {
+            content.addView(
+                image,
+                FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.CENTER_VERTICAL)
+                    .apply { marginStart = dp(host, 12) }
+            )
+        } else {
+            content.addView(
+                image,
+                ViewGroup.LayoutParams(size, size)
+            )
+        }
+        val title = if (native?.titleViewId != 0) {
+            root.findViewById<TextView>(native!!.titleViewId)
+        } else null
+        title?.let {
+            val padding = it.paddingStart
+            it.setPaddingRelative(
+                padding + dp(host, 28),
+                it.paddingTop,
+                it.paddingEnd,
+                it.paddingBottom
+            )
+        }
+    }
+
+    private class FolderOutlineDrawable(
+        color: Int,
+        private val sizePx: Int
+    ) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = sizePx * 0.075f
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.ROUND
+            this.color = color
+        }
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            val scale = minOf(
+                b.width().toFloat() / 24f,
+                b.height().toFloat() / 24f
+            )
+            if (scale <= 0f) return
+            canvas.save()
+            canvas.translate(b.left.toFloat(), b.top.toFloat())
+            canvas.scale(scale, scale)
+            val p = Path().apply {
+                moveTo(3f, 6f)
+                lineTo(9f, 6f)
+                lineTo(11f, 8.5f)
+                lineTo(21f, 8.5f)
+                lineTo(21f, 19f)
+                lineTo(3f, 19f)
+                close()
+            }
+            canvas.drawPath(p, paint)
+            canvas.restore()
+        }
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+        override fun setColorFilter(filter: android.graphics.ColorFilter?) {
+            paint.colorFilter = filter
+        }
+        @Suppress("DEPRECATION")
+        override fun getOpacity(): Int =
+            android.graphics.PixelFormat.TRANSLUCENT
+        override fun getIntrinsicWidth() = sizePx
+        override fun getIntrinsicHeight() = sizePx
     }
 
     /**
@@ -713,10 +951,26 @@ internal class PlaylistFolderPreviewController(
             }.getOrNull() ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
+                // Native GMMP can replace this page synchronously.
+                // Hide our old overlay before the native click to avoid a
+                // brief flash of both old and new playlist screens.
+                val current = browsers[list]
+                if (!longClick) current?.overlay?.visibility = View.INVISIBLE
                 val handled = if (longClick) {
                     nativeRow.performLongClick()
                 } else {
                     nativeRow.performClick()
+                }
+                if (!handled || longClick) {
+                    if (current != null && browsers[list] === current) {
+                        current.overlay.visibility = View.VISIBLE
+                    }
+                } else {
+                    list.post {
+                        if (current != null && browsers[list] === current) {
+                            positionOverlay(current)
+                        }
+                    }
                 }
                 Log.i(
                     TAG,
@@ -861,9 +1115,25 @@ internal class PlaylistFolderPreviewController(
                 holderGetter.invoke(list, nativeRow)
             }.getOrNull() ?: continue
             if (holder.javaClass.name != expected) continue
-            val title = findNativeTitleTextView(nativeRow) ?: continue
+            val boundModel = runCatching {
+                holder.javaClass.getDeclaredField("A").apply {
+                    isAccessible = true
+                }.get(holder)
+            }.getOrNull() ?: continue
+            val name = runCatching {
+                boundModel.javaClass.getDeclaredField("p").apply {
+                    isAccessible = true
+                }.get(boundModel) as? String
+            }.getOrNull()
+            val title = findNativeTitleTextView(nativeRow, name) ?: continue
+            val matchedNativeTitle = !name.isNullOrBlank() &&
+                title.text?.toString()?.trim().equals(name.trim(), true)
+            val normalTextSize = if (matchedNativeTitle) title.textSize
+                else title.textSize.coerceAtLeast(
+                    16f * list.resources.displayMetrics.scaledDensity
+                )
             val color = title.currentTextColor
-            val size = title.textSize
+            val size = normalTextSize
             val height = nativeRow.height.coerceAtLeast(dp(list, 44))
             val nativeRowPos = IntArray(2)
             val titlePos = IntArray(2)
@@ -877,7 +1147,8 @@ internal class PlaylistFolderPreviewController(
             val rowBackground = nativeRow.background?.constantState
             val signature = listOf(
                 color, size.toInt(), height, inset, backgroundColor, accent,
-                title.typeface?.style ?: 0, rowBackground?.javaClass?.name
+                title.typeface?.style ?: 0, rowBackground?.javaClass?.name,
+                nativeRow.sourceLayoutResId, title.id, matchedNativeTitle
             ).joinToString(":")
             if (observedMenus.add("native-row-style-" + surface(list))) {
                 val layoutName = runCatching {
@@ -892,6 +1163,10 @@ internal class PlaylistFolderPreviewController(
                         " | row=" + nativeRow.javaClass.name +
                         " | title=" + title.javaClass.name +
                         " | titleId=" + resourceName(title) +
+                        " | matchedTitle=" + matchedNativeTitle +
+                        " | modelName=" + name?.take(60) +
+                        " | nativePx=" + title.textSize +
+                        " | chosenPx=" + size,
                         " | bg=" +
                             (nativeRow.background?.javaClass?.name ?: "none") +
                         " | style=" + signature
@@ -906,16 +1181,24 @@ internal class PlaylistFolderPreviewController(
                 backgroundColor = backgroundColor,
                 accentColor = accent,
                 rowBackground = rowBackground,
-                signature = signature
+                signature = signature,
+                nativeRowLayoutId = nativeRow.sourceLayoutResId,
+                titleViewId = title.id,
+                titleGravity = title.gravity,
+                titlePaddingStart = title.paddingStart,
+                titlePaddingEnd = title.paddingEnd
             )
         }
         return null
     }
 
-    private fun findNativeTitleTextView(root: View): TextView? {
+    private fun findNativeTitleTextView(
+        root: View,
+        nativeName: String? = null
+    ): TextView? {
         val options = arrayListOf<TextView>()
         fun descend(node: View, depth: Int) {
-            if (depth > 7 || options.size >= 32) return
+            if (depth > 8 || options.size >= 40) return
             if (node is TextView) {
                 val text = node.text?.toString()?.trim().orEmpty()
                 if (text.isNotBlank() && text.any(Char::isLetterOrDigit)) {
@@ -929,7 +1212,15 @@ internal class PlaylistFolderPreviewController(
             }
         }
         descend(root, 0)
-        return options.maxByOrNull { it.textSize }
+        if (!nativeName.isNullOrBlank()) {
+            options.firstOrNull {
+                it.text?.toString()?.trim().equals(nativeName.trim(), true)
+            }?.let { return it }
+        }
+        return options.filterNot {
+            resourceName(it) == "metadataTextEntry"
+        }.maxByOrNull { it.textSize }
+            ?: options.maxByOrNull { it.textSize }
     }
 
     private fun nativeSurfaceBackground(list: View): Int {
@@ -943,6 +1234,170 @@ internal class PlaylistFolderPreviewController(
             current = view.parent as? View
         }
         return resolveBackground(list)
+    }
+
+    /** Find the nearest GMMP page/dialog host, NEVER the DecorView. */
+    private fun safeOverlayHost(list: ViewGroup): ViewGroup? {
+        var parent = list.parent as? ViewGroup
+        while (parent != null && parent !== list.rootView) {
+            if (parent.javaClass.simpleName.contains(
+                    "CoordinatorLayout", ignoreCase = true
+                )
+            ) {
+                Log.i(
+                    TAG,
+                    "FOLDER INLINE HOST | surface=" + surface(list) +
+                        " | class=" + parent.javaClass.name +
+                        " | id=" + resourceName(parent)
+                )
+                return parent
+            }
+            parent = parent.parent as? ViewGroup
+        }
+        return null
+    }
+
+    private fun directChildInHost(
+        list: View,
+        host: ViewGroup
+    ): View? {
+        var node: View = list
+        while (node.parent != null && node.parent !== host) {
+            node = node.parent as? View ?: return null
+        }
+        return node.takeIf { it.parent === host }
+    }
+
+    private fun nativeContentBackground(
+        list: View,
+        host: ViewGroup,
+        style: NativeRowStyle
+    ): Drawable {
+        var node: View? = list
+        while (node != null) {
+            val original = node.background
+            if (original != null) {
+                val clone = runCatching {
+                    original.constantState?.newDrawable(list.resources)?.mutate()
+                }.getOrNull()
+                if (clone != null) return clone
+            }
+            if (node === host) break
+            node = node.parent as? View
+        }
+        return ColorDrawable(style.backgroundColor)
+    }
+
+    private fun currentBrowser(
+        picker: Boolean
+    ): Browser? = browsers.values.firstOrNull {
+        isPicker(it.list) == picker &&
+            it.list.isAttachedToWindow &&
+            it.overlay.visibility == View.VISIBLE
+    }
+
+    private fun creationDestination(browser: Browser): String? =
+        PlaylistCreationPolicy.destination(
+            browser.currentFolderId,
+            browser.rootPath,
+            settings.groupRoot
+        )
+
+    private fun updatePlaylistMenu() {
+        val menu = playlistTabMenu?.get() ?: return
+        val normal = currentBrowser(picker = false)
+        val destination = normal?.let(::creationDestination)
+        // A root-target creation is fully native. Physical subfolders need
+        // their native GMMP creation destination hook before they can write.
+        val allowRootNativeCreate = if (normal == null) {
+            !settings.enabled || !settings.groupRoot
+        } else {
+            !settings.enabled || destination == normal.rootPath
+        }
+        for (i in 0 until menu.size()) {
+            val item = menu.getItem(i)
+            val id = runCatching {
+                val context = normal?.list?.context
+                    ?: knownLists.keys.firstOrNull()?.context
+                context?.resources?.getResourceEntryName(item.itemId)
+            }.getOrNull()
+            if (id == "menuAdd") {
+                if (item.isVisible == allowRootNativeCreate) break
+                item.isVisible = allowRootNativeCreate
+                Log.i(
+                    TAG,
+                    "FOLDER CREATE MENU | visible=" + allowRootNativeCreate +
+                        " | folder=" + (normal?.currentFolderId ?: "root") +
+                        " | rootGrouping=" + settings.groupRoot
+                )
+                break
+            }
+        }
+    }
+
+    private fun updatePickerFab(browser: Browser) {
+        val list = browser.list
+        if (!isPicker(list)) return
+        val fab = multiSelect.folderNativeFab(list) ?: return
+        val selected = multiSelect.hasFolderSelection(list)
+        val destination = creationDestination(browser)
+        val show = selected || destination != null
+        if (show) {
+            if (fab.visibility != View.VISIBLE ||
+                fab.alpha < 1f || fab.translationY != 0f
+            ) {
+                fab.animate().cancel()
+                fab.clearAnimation()
+                fab.visibility = View.VISIBLE
+                fab.alpha = 1f
+                fab.translationY = 0f
+            }
+            // Bringing the native FAB to the front on every global
+            // layout would create a layout loop. Reorder only if needed.
+            val fabHost = fab.parent as? ViewGroup
+            if (fabHost != null &&
+                fabHost.indexOfChild(fab) < fabHost.childCount - 1
+            ) {
+                fab.bringToFront()
+            }
+            fab.invalidate()
+        } else if (fab.visibility != View.GONE) {
+            fab.animate().cancel()
+            fab.clearAnimation()
+            fab.visibility = View.GONE
+        }
+    }
+
+    /**
+     * Guard the native creation callback when the physical destination
+     * cannot yet be passed to GMMP. Confirmation remains fully native.
+     */
+    fun interceptNativePickerFabClick(fab: View?): Boolean {
+        if (!settings.enabled || fab == null ||
+            resourceName(fab) != "playlistFab"
+        ) return false
+        val browser = currentBrowser(picker = true) ?: return false
+        if (multiSelect.hasFolderSelection(browser.list)) return false
+        val destination = creationDestination(browser)
+        if (destination == null) {
+            Log.i(TAG, "FOLDER CREATE BLOCK | location forbids creation")
+            return true
+        }
+        if (destination != browser.rootPath) {
+            Toast.makeText(
+                browser.list.context,
+                "Creating playlists in subfolders is not supported in " +
+                    "this build yet. No playlist was created.",
+                Toast.LENGTH_LONG
+            ).show()
+            Log.i(
+                TAG,
+                "FOLDER CREATE GUARD | native root-only callback; " +
+                    "physicalFolder=" + destination
+            )
+            return true
+        }
+        return false
     }
 
     private fun typedSelectableBackground(

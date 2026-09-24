@@ -354,6 +354,56 @@ applies to the native Add-picker FAB until native folder creation is
 implemented. GoneSmart's multi-destination confirmation remains intact.
 
 
+
+### Scoped inline UI and selection stabilization (25 September)
+
+The next device log confirms 248 native models and names in both views.
+The previous inline browser used DecorView as an overlay host and
+therefore covered GMMP's navigation drawer, mini player and native picker
+FAB. Native style sampling also chose `metadataTextEntry`
+(30px at a 3x display density) instead of checking that the sampled
+TextView actually displayed `xn3.p`. The native menu probe
+established `menu_gm_playlist_list → menuAdd` (`Hinzufügen`).
+Both picker FAB and native Aesthetic dynamic color were already
+captured, but the DecorView overlay obscured them. There was no
+`FATAL EXCEPTION` stack in the latest filtered attachment;
+AndroidX OnBackPressedDispatcher is also absent from GMMP's optimized
+classloader.
+
+The stabilizing build now hosts the browser inside the nearest native
+AestheticCoordinatorLayout, after its own fragment contents but before
+the native picker FAB. This confines it to the actual playlist-list bounds
+inside the drawer and mini-player content. It inflates GMMP's own
+`rv_listitem_metadata_compact` layout for folder and playlist
+rows when the native template is available, identifies the playlist
+title by matching the real bound `xn3.p`, and copies live
+title typography, text color, padding, height and row ripple/background.
+GoneSmart's extra row dividers are removed, and folder-only icons now
+use a GMMP drawable when present, otherwise an outline vector tinted
+from the current native row text. Overlay background is sourced from the
+native content host. The layout observer refreshes style after native
+theme changes.
+
+The native picker FAB is now brought in front of the scoped browser.
+It is visible for a physical folder and virtual Other Locations when
+the corresponding creation policy permits, hidden at a forbidden
+location, and ALWAYS shown for active multi-destination confirmation.
+The selected row overlay comes from the existing picker controller's
+live native Aesthetic primary/FAB palette, and all selection exit paths
+notify the browser to repaint stale rows. A platform Activity
+onBackPressed hook is the fallback when the public AndroidX dispatcher
+class is missing.
+
+The normal playlist overflow menu remains intact. Only its verified
+`menuAdd` item is hidden when root creation is forbidden,
+and its visibility is refreshed as the folder changes. Native creation
+is currently verified to target GMMP's main root only: in a physical
+folder the menu item is kept hidden and the picker's visible creation
+FAB displays an explicit unsupported-action message instead of silently
+creating a playlist in the wrong folder. Actual in-folder native
+creation needs a separately verified GMMP destination hook. Existing
+playlist clicks and native multi-destination writes remain native.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

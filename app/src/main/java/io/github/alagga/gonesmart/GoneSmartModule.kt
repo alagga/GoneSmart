@@ -1101,7 +1101,8 @@ class GoneSmartModule : XposedModule() {
         hook(clickMethod).intercept { chain ->
             val view = chain.getArg(0) as? android.view.View
             val intercepted = runCatching {
-                playlistController.onClick(view)
+                playlistController.onClick(view) ||
+                    playlistFolderPreview.interceptNativePickerFabClick(view)
             }.getOrElse { error ->
                 Log.e(TAG, "Playlist click interception failed", error)
                 false
@@ -1224,7 +1225,30 @@ class GoneSmartModule : XposedModule() {
                 }
             }
         }.onFailure { error ->
-            Log.w(TAG, "Playlist back-gesture hook unavailable", error)
+            // GMMP's optimized APK may not ship the public AndroidX
+            // dispatcher class. Fall back to the platform callback,
+            // scoped to this injected GMMP process, so nested folder
+            // navigation and multi-selection can still consume Back.
+            Log.i(
+                TAG,
+                "Playlist AndroidX back dispatcher unavailable; " +
+                    "trying Activity.onBackPressed"
+            )
+            runCatching {
+                val method = android.app.Activity::class.java
+                    .getDeclaredMethod("onBackPressed").apply {
+                        isAccessible = true
+                    }
+                hook(method).intercept { chain ->
+                    if (
+                        playlistController.consumeBack() ||
+                        playlistFolderPreview.consumeBack()
+                    ) null else chain.proceed()
+                }
+                Log.i(TAG, "Playlist platform back hook ready")
+            }.onFailure {
+                Log.w(TAG, "Playlist platform back hook unavailable", it)
+            }
         }
 
         Log.i(
