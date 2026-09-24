@@ -20,6 +20,7 @@ import java.lang.reflect.Proxy
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
@@ -80,6 +81,11 @@ internal class TrackMixController(
         Thread(task, "GoneSmartTrackMix").apply { isDaemon = true }
     }
     private val tokens = AtomicLong()
+    // Hard barrier around native Play -> Clear Queue. This is activated
+    // synchronously before dispatching GMMP's Play action, so selecting a
+    // queue row cannot trigger an old-queue Auto-DJ refill before the
+    // selected song has been isolated as the new seed.
+    private val refillHold = AtomicBoolean(false)
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
 
@@ -102,18 +108,14 @@ internal class TrackMixController(
     }
 
     fun shouldSuppressNativeRefill(): Boolean {
-        val request = pending ?: return false
-        val age = SystemClock.elapsedRealtime() - request.createdAt
-        val suppress = age < 20_000L &&
-            (request.stage == "WAIT_PLAY" || request.stage == "CLEARING")
-        if (suppress) {
-            Log.i(
-                TAG,
-                "MIX AUTO-DJ HOLD | stage=${request.stage} | " +
-                    "deferring native refill until selected seed is isolated"
-            )
-        }
-        return suppress
+        if (!refillHold.get()) return false
+        val request = pending
+        Log.i(
+            TAG,
+            "MIX AUTO-DJ HOLD | stage=${request?.stage ?: "pre-play"} | " +
+                "deferring native refill until selected seed is isolated"
+        )
+        return true
     }
 
     private fun shouldSuppressIntermediatePopup(): Boolean {
@@ -270,6 +272,11 @@ internal class TrackMixController(
                 .get(350, TimeUnit.MILLISECONDS)
         }.getOrNull()
 
+        // Arm the refill barrier BEFORE native Play. Queue-row Play can
+        // synchronously move the current position to the end of the old
+        // queue, which makes GMMP request Auto-DJ immediately.
+        refillHold.set(true)
+
         val request = Pending(
             token = tokens.incrementAndGet(),
             context = context.applicationContext,
@@ -285,6 +292,7 @@ internal class TrackMixController(
 
         if (!enableSmartDj(context)) {
             pending = null
+            refillHold.set(false)
             fail("Smart DJ could not be enabled.", context)
             return
         }
@@ -314,6 +322,7 @@ internal class TrackMixController(
 
         if (!started) {
             if (pending === request) pending = null
+            refillHold.set(false)
             fail("Could not start this song.", context)
             return
         }
@@ -338,18 +347,24 @@ internal class TrackMixController(
             }
 
             request.stage = "CLEARING"
-            // GMMP's CLEAR_QUEUE broadcast is asynchronous. A native
-            // Auto-DJ refill already running before this click can append
-            // between its delivery and our queue read. Repeated broadcasts
-            // cannot make that atomic. Instead, isolate exactly the
-            // currently playing QUEUE ENTRY by its unique queue_id inside
-            // GMMP's own native database transaction.
-            val cleared = runCatching {
-                if (loaded.ids.size == 1) loaded
-                else isolateNativeSeed(request, selectedId)
-            }.onFailure {
-                Log.e(TAG, "MIX ISOLATE FAILED | native transaction", it)
-            }.getOrNull()
+            val cleared = if (loaded.ids.size == 1) {
+                loaded
+            } else {
+                // The refill barrier is still armed here. One native Clear
+                // is enough once old-queue Auto-DJ can no longer race it.
+                Log.i(
+                    TAG,
+                    "MIX CLEAR | queueSize=${loaded.ids.size} | " +
+                        "selected=$selectedId"
+                )
+                sendCommand(request.context, COMMAND_CLEAR_QUEUE)
+                awaitQueue(request, 4_500L) {
+                    TrackMixPlan.isSeedIsolated(
+                        selectedId, loaded.ids, loaded.currentIndex,
+                        it.ids, it.currentIndex
+                    )
+                }
+            }
             if (cleared == null) {
                 val finalSnapshot = queueSnapshot()
                 Log.w(
@@ -370,6 +385,10 @@ internal class TrackMixController(
                 "MIX SEED | queueSize=${cleared.ids.size} | " +
                     "currentPreserved=true"
             )
+            // Seed isolation is now complete. Release the barrier before
+            // explicitly switching GMMP into Auto-DJ so that THIS new
+            // queue's native refill is allowed through.
+            refillHold.set(false)
             request.stage = "FILLING"
             val nativeSettings = settings.read()
             val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
@@ -437,6 +456,7 @@ internal class TrackMixController(
             Log.e(TAG, "Track Mix failed", failure)
             fail("Could not complete ${request.menuLabel}.", request.context)
         } finally {
+            refillHold.set(false)
             request.stage = "DONE"
             if (pending === request) pending = null
         }
