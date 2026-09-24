@@ -308,6 +308,52 @@ will be integrated only after inline navigation, native playlist opening,
 picker single-add, multi-add, long-press and Back have passed together.
 
 
+
+### Inline stability and native visual style (25 September)
+
+The first inline-device test demonstrated that folder navigation reaches
+nested levels and virtual Other Locations in the Add picker (248 native
+models), but the normal Playlists tab crashed. In that view the playlist
+RecyclerView is a direct child of FragmentContainerView; adding a custom
+overlay there violates FragmentContainerView's child restrictions.
+The stabilizing build attaches the browser to the safe DecorView
+FrameLayout instead and positions it using absolute screen coordinates.
+Every attachment, layout and rendering operation now catches errors and
+restores the original GMMP list if inline rendering fails. A layout
+observer also resumes attachment after GMMP populates a previously empty
+adapter.
+
+The first inline build also used standalone TextViews with hard-coded
+sizes/insets and theme attributes that did not match GMMP's dynamic
+Aesthetic palette. The stabilizing build now samples the actual bound
+native wp3/jo3 row for its text color, pixel font size, typeface, row
+height, title inset, row background and enclosing surface color. The
+browser refreshes on native style changes. Logging records the original
+native row's XML layout resource when Android exposes it; using the
+actual native row layout/binder for a truly pixel-identical final UI
+remains the next integration objective.
+
+Critically, setting a DIFFERENT xn3 model into an arbitrary visible
+ViewHolder before calling performClick was unsafe: native click lambdas
+may capture the original playlist independently of the mutable
+holder.A field. The stabilizing build no longer swaps native models for
+single-playlist actions. It searches for an actually-bound holder with
+the target xn3.q path and invokes only its own native click. For
+off-screen targets, it scrolls the original RecyclerView to the
+candidate native position and verifies the rebound path before clicking.
+If the actual native row does not match, it refuses the action instead
+of opening/adding to the wrong playlist.
+
+The native overflow menu must remain available. Eventually, ONLY its
+individual Add/Create Playlist MenuItem may be hidden according to the
+documented creation policy. Since GMMP's exact native menu item ID and
+creation-destination callback have not yet been verified, the stabilizing
+build only logs the actual menu resources and items; it does not remove
+the menu or change any creation destination. The same restriction
+applies to the native Add-picker FAB until native folder creation is
+implemented. GoneSmart's multi-destination confirmation remains intact.
+
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

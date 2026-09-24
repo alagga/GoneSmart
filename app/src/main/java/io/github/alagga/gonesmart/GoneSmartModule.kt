@@ -641,6 +641,20 @@ class GoneSmartModule : XposedModule() {
                     } catch (error: Throwable) {
                         Log.e(TAG, "Track Mix menu insertion failed", error)
                     }
+                    if (BuildConfig.DEBUG) {
+                        runCatching {
+                            playlistFolderPreview.onMenuInflated(
+                                chain.getArg(0) as? Int ?: 0,
+                                chain.getArg(1) as? android.view.Menu
+                            )
+                        }.onFailure {
+                            Log.w(
+                                "GoneSmartPlaylist",
+                                "FOLDER NATIVE MENU | observer failed",
+                                it
+                            )
+                        }
+                    }
                     result
                 }
                 installed++
