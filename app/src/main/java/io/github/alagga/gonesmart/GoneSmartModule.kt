@@ -479,6 +479,18 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
+            // Read-only folder diagnostics are independent of Multi-playlist
+            // selection and do not modify the native playlist database/UI.
+            try {
+                installPlaylistSurfaceDiscoveryHooks(param)
+            } catch (folderDiscoveryError: Throwable) {
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "FOLDER SURFACE | RecyclerView observer unavailable",
+                    folderDiscoveryError
+                )
+            }
+
             // Native queue and reverse-playlist playback hooks are
             // independently controlled by the companion UI setting.
             // Install even while disabled so it can be enabled live.
@@ -799,6 +811,56 @@ class GoneSmartModule : XposedModule() {
      * Hooks only native picker methods and the three verified UI callbacks.
      * The native io3 handler performs all actual playlist writes.
      */
+
+    /**
+     * Observe RecyclerView adapter installation and attachment without
+     * assuming the normal Playlists tab shares the picker's zn3 adapter.
+     * This is instrumentation only; the original native methods still run.
+     */
+    private fun installPlaylistSurfaceDiscoveryHooks(
+        param: PackageReadyParam
+    ) {
+        val recycler = param.classLoader.loadClass(
+            "androidx.recyclerview.widget.RecyclerView"
+        )
+        val setAdapter = recycler.declaredMethods.firstOrNull {
+            it.name == "setAdapter" && it.parameterCount == 1
+        } ?: throw NoSuchMethodException("RecyclerView.setAdapter")
+        setAdapter.isAccessible = true
+        hook(setAdapter).intercept { chain ->
+            val result = chain.proceed()
+            runCatching {
+                playlistController.onNativeRecyclerAdapterSet(
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(0)
+                )
+            }.onFailure {
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter probe failed", it)
+            }
+            result
+        }
+
+        val attach = recycler.declaredMethods.firstOrNull {
+            it.name == "onAttachedToWindow" && it.parameterCount == 0
+        } ?: throw NoSuchMethodException("RecyclerView.onAttachedToWindow")
+        attach.isAccessible = true
+        hook(attach).intercept { chain ->
+            val result = chain.proceed()
+            runCatching {
+                playlistController.onNativeRecyclerAttached(
+                    chain.getThisObject() as? android.view.View
+                )
+            }.onFailure {
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach probe failed", it)
+            }
+            result
+        }
+        Log.i(
+            "GoneSmartPlaylist",
+            "FOLDER SURFACE READY | native RecyclerView setAdapter/attach hooks"
+        )
+    }
+
     private fun installPlaylistMultiSelectHooks(
         param: PackageReadyParam
     ) {
@@ -1030,9 +1092,23 @@ class GoneSmartModule : XposedModule() {
                 method.isAccessible = true
                 hook(method).intercept { chain ->
                     val result = chain.proceed()
-                    val holder = (0 until method.parameterCount)
+                    val args = (0 until method.parameterCount)
                         .map { index -> chain.getArg(index) }
-                        .firstOrNull { it?.javaClass?.name == "jo3" }
+                    runCatching {
+                        playlistController.onNativeRowBindObserved(
+                            method.toGenericString(),
+                            args
+                        )
+                    }.onFailure {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "FOLDER N0 CALL | probe failed",
+                            it
+                        )
+                    }
+                    val holder = args.firstOrNull {
+                        it?.javaClass?.name == "jo3"
+                    }
                     if (holder != null) {
                         playlistController.onRowBound(holder)
                     }

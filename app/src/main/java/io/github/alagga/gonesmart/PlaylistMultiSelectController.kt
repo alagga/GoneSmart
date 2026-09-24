@@ -92,7 +92,10 @@ internal class PlaylistMultiSelectController {
     // zn3/jo3 row binding hook already exists for multi-select, so reuse it
     // to identify playlist surfaces without changing any native view.
     private val playlistSurfaceDiagnostics = linkedSetOf<String>()
-    private val maxPlaylistSurfaceDiagnostics = 12
+    private val maxPlaylistSurfaceDiagnostics = 24
+    private val nativeAdapterSurfaces = linkedSetOf<String>()
+    private var nativeRowBindProbeCount = 0
+    private val maxNativeRowBindProbes = 8
 
     @Volatile
     private var enabled = false
@@ -348,6 +351,12 @@ internal class PlaylistMultiSelectController {
         if (session.list === group) return
 
         session.list = group
+        diagnoseNativeRecycler(group, "picker-list-found")
+        group.post {
+            if (active === session) {
+                diagnoseNativeRecycler(group, "picker-list-rendered")
+            }
+        }
         group.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) = Unit
@@ -1370,6 +1379,99 @@ internal class PlaylistMultiSelectController {
             val holder = getPlaylistItem(session, row)
             refreshRow(session, row, holder)
         }
+    }
+
+
+    /**
+     * Collect the first few actual native zn3.N0 invocations, even when the
+     * assumed jo3 holder is not among the method arguments. This determines
+     * why the earlier holder-only FOLDER DISCOVERY diagnostic was silent.
+     */
+    fun onNativeRowBindObserved(signature: String, arguments: List<Any?>) {
+        if (nativeRowBindProbeCount >= maxNativeRowBindProbes) return
+        nativeRowBindProbeCount++
+        Log.i(
+            TAG,
+            "FOLDER N0 CALL | signature=$signature" +
+                " | args=" + arguments.joinToString(",") {
+                    it?.javaClass?.name ?: "null"
+                }
+        )
+    }
+
+    /**
+     * Read-only mapping of all distinct native RecyclerView adapters.
+     * GMMP's normal playlist list may not use the same zn3 binder as the
+     * picker. Observing RecyclerView itself avoids that assumption.
+     */
+    fun onNativeRecyclerAttached(view: View?) {
+        val list = view as? ViewGroup ?: return
+        diagnoseNativeRecycler(list, "attached")
+        list.post { diagnoseNativeRecycler(list, "attached-rendered") }
+    }
+
+    fun onNativeRecyclerAdapterSet(view: View?, adapter: Any?) {
+        val list = view as? ViewGroup ?: return
+        diagnoseNativeRecycler(list, "setAdapter", adapter)
+        list.post { diagnoseNativeRecycler(list, "adapter-rendered") }
+    }
+
+    private fun diagnoseNativeRecycler(
+        list: ViewGroup,
+        reason: String,
+        suppliedAdapter: Any? = null
+    ) {
+        val adapter = suppliedAdapter ?: runCatching {
+            list.javaClass.getMethod("getAdapter").invoke(list)
+        }.getOrNull()
+        val resource = resourceName(list)
+        val adapterClass = adapter?.javaClass?.name ?: "null"
+        // A native picker can be identified by its verified resource ID,
+        // even if setAdapter ran before bo3.D1 exposed the view.
+        val surface = when {
+            active?.list === list || resource == "playlistListRecyclerView" ->
+                "add-picker"
+            else -> "candidate-other"
+        }
+        val ancestry = buildList {
+            var current: View? = list
+            repeat(5) {
+                val view = current ?: return@repeat
+                add(
+                    view.javaClass.simpleName + "#" +
+                        resourceName(view).ifEmpty { "-" }
+                )
+                current = view.parent as? View
+            }
+        }.joinToString(" > ")
+        val signature = "$surface|$resource|$adapterClass|$reason"
+        // Keep startup diagnostics bounded even on a large music library.
+        if (nativeAdapterSurfaces.size >= 32 ||
+            !nativeAdapterSurfaces.add(signature)
+        ) return
+        val itemCount = adapter?.let {
+            runCatching {
+                it.javaClass.getMethod("getItemCount").invoke(it) as? Int
+            }.getOrNull()
+        }
+        val sampleHolders = (0 until minOf(2, list.childCount)).map { index ->
+            val child = list.getChildAt(index)
+            runCatching {
+                list.javaClass.getMethod(
+                    "getChildViewHolder",
+                    View::class.java
+                ).invoke(list, child)?.javaClass?.name ?: "null"
+            }.getOrDefault("unknown")
+        }
+        Log.i(
+            TAG,
+            "FOLDER SURFACE | reason=$reason | surface=$surface" +
+                " | recycler=${list.javaClass.name}#$resource" +
+                " | adapter=$adapterClass | items=${itemCount ?: -1}" +
+                " | visibleRows=${list.childCount}" +
+                " | holders=${sampleHolders.joinToString(",")}" +
+                " | hierarchy=$ancestry"
+        )
     }
 
     /**

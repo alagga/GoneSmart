@@ -85,6 +85,23 @@ are implemented. The two options are intentionally not exposed as
 working GoneSmart UI controls until there are actual native folder
 navigation hooks to consume them.
 
+### Device diagnostic: normal tab vs Add picker
+
+The first read-only diagnostic APK was tested on 24 September. It logged
+`MULTI ROW BIND | native zn3.N0 hooks=1` and a fully initialized native
+Add picker, but **no `FOLDER DISCOVERY` lines**. This does not establish
+that the two native views use different adapters: the original probe only
+logged when a `jo3` holder was both passed to `zn3.N0` and already
+contained a readable `xn3.q` path.
+
+The next diagnostic build logs bounded `FOLDER N0 CALL` argument types
+whether or not a holder is present; observes RecyclerView
+`setAdapter` and `onAttachedToWindow` independently of the known picker
+adapter; and logs the picker's RecyclerView directly when captured by
+`bo3.D1`. Inspect `FOLDER SURFACE`, `FOLDER N0 CALL` and
+`FOLDER DISCOVERY` while opening the normal Playlists tab and the
+native Add to Playlist picker. No playlist data or view changes occur.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a
