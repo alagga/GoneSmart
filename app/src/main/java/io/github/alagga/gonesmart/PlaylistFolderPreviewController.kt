@@ -127,10 +127,19 @@ internal class PlaylistFolderPreviewController {
 
     private fun positionChip(list: ViewGroup) {
         val chip = chips[list] ?: return
-        if (!settings.enabled || !list.isAttachedToWindow || !list.isShown) {
+        // GMMP can keep the normal page attached behind its add dialog.
+        // In that case only the dialog's Folders chip should be visible.
+        val coveredByPicker = !isPicker(list) && knownLists.keys.any {
+            it !== list && isPicker(it) &&
+                it.isAttachedToWindow && it.isShown
+        }
+        if (!settings.enabled || !list.isAttachedToWindow ||
+            !list.isShown || coveredByPicker
+        ) {
             chip.view.visibility = View.GONE
             return
         }
+        observedPaths.addAll(currentlyVisiblePaths(list))
         val root = chip.root
         if (root.width == 0 || list.width == 0) return
         val listPosition = IntArray(2)
