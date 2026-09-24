@@ -1,6 +1,8 @@
-# Track Auto-DJ / Titel Auto-DJ — GMMP 4.2.0
+# Track Auto-DJ — GMMP 4.2.0
 
-**Development status (24 September 2026):** The supplied phone log recorded six
+**Feature status:** Complete in the v0.4.x development branch following the maintainer's report that the latest Track Auto-DJ build works on-device. The companion app uses English **Track Auto-DJ**, while GMMP's own menus retain native translations. A targeted concurrent-refill regression check remains on the pre-release checklist.
+
+**Earlier development diagnostics (24 September 2026):** The supplied phone log recorded six
 verified five-track starts and one intermittent queue-isolation failure from a
 queue-row Play action. Immediately after that Play action GMMP requested a
 refill of its existing Auto-DJ queue. The original implementation broadcast
@@ -21,9 +23,10 @@ queue change aborts safely rather than deleting a different queue.
 The old pre-clear refill hook remains a safeguard against *new* old-session
 refills, but a refill already running when the user taps Play cannot be canceled
 retroactively. The direct native transaction eliminates repeated asynchronous
-clear attempts and the failure mode they caused. **This new path requires one
-combined GMMP on-device validation; source inspection and unit tests are not
-equivalent to live playback verification.** Save any queue you need before testing.
+clear attempts and the failure mode they caused. **The maintainer reports the current feature working on-device; the specific
+concurrent-refill race should still be rechecked before the bundled release.**
+Source inspection and unit tests are not substitutes for that regression check.
+Save any queue you need before testing.
 
 ## User behavior
 
@@ -33,8 +36,9 @@ independently switchable in **GoneSmart → UI**, and can enable Smart DJ
 when it was previously disabled. The chosen song plays as the first entry
 of a fresh queue and GMMP Auto-DJ fills the rest to **Initial Size**.
 
-The menu name is built from the installed GMMP translations of its
-`track` and `auto_dj` resources in **every** player language.
+The English-only GoneSmart companion app always displays **Track Auto-DJ**.
+The menu name inside GMMP is built from the installed player's own translations
+of its `track` and `auto_dj` resources in **every** player language.
 For example, native German: **Titel Auto-DJ**; native English: **Track Auto-DJ**.
 A localized native `started` resource is used for the one visible success
 confirmation where available; otherwise GoneSmart uses a checkmark
@@ -48,8 +52,8 @@ diagnostics go to **GoneSmart → Logs** and Logcat `GoneSmartTrackMix`.
 
 ## One combined regression check
 
-After the next green feature-branch APK, restart GMMP once and test
-**two cases on a disposable queue**: (1) from a middle Queue row while
+Before publishing the combined v0.4.x release, use a green feature-branch APK,
+restart GMMP once and check **two cases on a disposable queue**: (1) from a middle Queue row while
 Auto-DJ is already on and (2) from an ordinary Library track with Smart DJ
 initially off. The chosen track must continue playing at queue position 1;
 GMMP must fill to its own Initial Size; one confirmation must appear.

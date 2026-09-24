@@ -32,6 +32,14 @@ class TrackMixPlanTest {
         }
     }
 
+    @Test fun companionLabelIsAlwaysEnglishWhileNativeMenuCanBeLocalized() {
+        assertEquals("Track Auto-DJ", TrackMixPlan.COMPANION_LABEL)
+        assertEquals(
+            "Titel Auto-DJ",
+            TrackMixPlan.localizedMenuLabel("de", "Titel", "Auto-DJ")
+        )
+    }
+
     @Test fun combinesOnlyNativeGmmpTrackAndAutoDjWordsInAllLanguages() {
         assertEquals(
             "Titel Auto-DJ",

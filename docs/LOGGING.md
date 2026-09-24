@@ -15,6 +15,8 @@ without confusing UI activity with Smart DJ health.
 | `[Flip]` | Existing queue fully reversed and verified; Playlist/Smart Playlist fully reversed and verified; native failure or rollback result | After verified outcome, never on speculative invocation |
 | `[Track Mix]` | Selected song started, new Auto-DJ queue verified, initial fill incomplete or native action failed | Only after playback/queue verification or an explicit failure |
 
+**Companion-language rule:** Internal event category `[Track Mix]` remains stable for stored records, but the English-only GoneSmart companion app displays **Track Auto-DJ** in its Logs labels and Help. GMMP context menus continue using native localized resources.
+
 **Status isolation:** `GoneSmartRuntimeReporter.report()` continues to
 update the Home tab's Smart DJ readiness and fallback state.
 `reportEvent(category, message)` uses an **event-only** broadcast. The

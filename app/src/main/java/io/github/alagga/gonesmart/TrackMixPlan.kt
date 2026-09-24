@@ -6,6 +6,9 @@ package io.github.alagga.gonesmart
  * already met, and never treat a negative/empty queue as complete.
  */
 internal object TrackMixPlan {
+    /** GoneSmart's own UI stays English, regardless of GMMP's language. */
+    const val COMPANION_LABEL = "Track Auto-DJ"
+
     fun additionalTracksNeeded(initialSize: Int, actualQueueSize: Int): Int {
         require(initialSize > 0) { "Initial queue size must be positive" }
         require(actualQueueSize >= 0) { "Queue size must not be negative" }

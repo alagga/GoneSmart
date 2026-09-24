@@ -84,17 +84,9 @@ Yes. Multi-playlist selection has its own switch and works when Smart DJ is turn
 
 After a successful, verified mix, GoneSmart displays just **one short confirmation**. GMMP's intermediate Play/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed status UI—are suppressed only during the bounded Track Auto-DJ startup window. A genuine error still produces one warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers further old-session refills, then atomically removes the other native queue entries by their unique queue IDs. No repeated asynchronous queue-clearing commands are needed; the selected song and native playback pointer are verified before filling.
 
-## Is “Track Auto-DJ” localized in every GMMP language?
+## Why does the GoneSmart app say “Track Auto-DJ” when GMMP is German?
 
-Yes, the feature name is composed of the two **existing native GMMP
-translations** for *track* and *Auto-DJ*, separated by a normal space.
-German is **Titel Auto-DJ** and English is **Track Auto-DJ**. Other
-languages use their own GMMP strings instead of a separately invented
-translation for *Mix*. If GMMP provides a translated *started* string,
-GoneSmart uses it for the sole success confirmation; otherwise it
-appends a language-neutral checkmark. The companion UI reads the
-installed GMMP's strings where available; an explicit in-player
-language override is always honored inside GMMP's own context menus.
+GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it shows a language-neutral checkmark. No copied GMMP translations are maintained in GoneSmart.
 
 ## How are GoneSmart updates handled?
 

@@ -22,7 +22,7 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
   reported the feature working on-device. Other GMMP versions and every
   possible playback/queue race have not been tested.
 
-## In development: Track Auto-DJ / Titel Auto-DJ
+## New: Track Auto-DJ
 
 - Third item after **Play** and **Play next** in individual-song
   three-dot menus (queue, track library, playlist details, search,
@@ -37,8 +37,8 @@ Smart Auto-DJ remains the core feature; this update adds a separately controlled
 - **Track Auto-DJ** now has an independent live switch under **UI → Playback & Queue** (enabled by default for existing users).
 - The selected seed and its exact native queue-entry ID are preserved in one native Room transaction. New old-session Auto-DJ refills are held briefly during native Play and isolation. Instead of retrying an asynchronous Clear Queue command, GoneSmart atomically removes every other queue entry and updates the playback pointer before native Auto-DJ fills the queue.
 - **One localized confirmation only** after verified success; native GMMP Play/Clear/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed UI—are suppressed only during the bounded Track Auto-DJ transition. Important failures still produce one warning and are recorded in Logs.
-- Every GMMP language now composes the action name from its own translated **track** and **Auto-DJ** terms with a normal space: German **Titel Auto-DJ**, English **Track Auto-DJ**. The confirmation reuses GMMP's translated *started* resource when available.
-- **Six successful five-track mixes and one intermittent pre-clear error** appeared in the 24 September device log. The direct native transaction and localized-label changes still require one combined on-device regression check before public release.
+- The GoneSmart companion app always uses English **Track Auto-DJ** in its UI, Logs and Help. GMMP's own context menus compose the name from its localized **track** and **Auto-DJ** resources (for example, German **Titel Auto-DJ**). The confirmation reuses GMMP's translated *started* resource when available.
+- **Feature complete in the development branch:** the maintainer reports Track Auto-DJ working on-device with GMMP 4.2.0. The 24 September development log contained six successful five-track starts and one intermittent failure with the older asynchronous queue-clearing path, now replaced by atomic native queue-ID isolation. Repeat the targeted concurrent-refill regression check before publishing the combined v0.4.x release.
 
 ## Expanded companion Logs
 
