@@ -277,6 +277,37 @@ All diagnostics are debug-only and read-only; there is no playlist
 file scan, DB write, file move or native adapter replacement.
 
 
+
+### First inline integration build
+
+After the complete native dataset and display-name checks passed on both
+surfaces, the next debug build removes the separate Folders-preview button.
+When Playlist folders is enabled, GoneSmart places a scrollable folder view
+directly over the native `playlistListRecyclerView` in both the normal
+Playlists tab and Add to Playlist picker. The underlying `zn3` RecyclerView
+stays VISIBLE, laid out and populated, but is rendered transparent. This
+preserves GMMP's native `wp3`/`jo3` holders and click/add handlers.
+
+Folder navigation itself is GoneSmart presentation state. Playlist identity
+and titles come from the proven complete native `xn3` dataset. A playlist click
+temporarily rebinds one already-bound native holder's `A:xn3` field to the
+target model, invokes the row's native click/long-click synchronously, and
+then restores the original model. The Add picker can also route inline
+long-press/toggle selection into the existing GoneSmart multi-destination
+state, whose final write still uses native `io3.r(Context, ie0)`.
+
+Android Back first cancels an active multi-selection as before, then moves
+one folder level up; at the folder root GMMP receives Back normally. If the
+complete 248-model native snapshot, model objects or all native titles are
+not available, the inline browser fails closed and leaves the original GMMP
+list visible. No playlist file or GMMP database record is modified.
+
+This build intentionally does **not** make native playlist creation
+folder-aware yet. The already-defined creation visibility/destination policy
+will be integrated only after inline navigation, native playlist opening,
+picker single-add, multi-add, long-press and Back have passed together.
+
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

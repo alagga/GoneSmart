@@ -491,6 +491,84 @@ internal class PlaylistMultiSelectController {
         return true
     }
 
+    /**
+     * Folder-browser rows are GoneSmart views, but the selection and final
+     * write path remain the existing native GMMP multi-playlist flow.
+     */
+    fun onFolderPlaylistLongClick(
+        list: ViewGroup,
+        model: Any
+    ): Boolean {
+        if (!enabled) return false
+        val session = visibleSession() ?: return false
+        if (session.list !== list) return false
+        val path = modelPath(model) ?: return false
+        val holder = findDispatchHolder(list) ?: return false
+
+        session.dispatchHolder = holder
+        session.selectedModels[path] = model
+        session.selectedPaths.add(path)
+        enableFab(session)
+        updateSelectionBar(session)
+        refreshVisibleRows(session)
+        Log.i(TAG, "MULTI FOLDER SELECT | added=$path")
+        return true
+    }
+
+    fun onFolderPlaylistClick(
+        list: ViewGroup,
+        model: Any
+    ): Boolean {
+        if (!enabled) return false
+        val session = visibleSession() ?: return false
+        if (session.list !== list || session.selectedPaths.isEmpty()) {
+            return false
+        }
+        val path = modelPath(model) ?: return false
+        val holder = findDispatchHolder(list) ?: return false
+        session.dispatchHolder = holder
+
+        if (!session.selectedPaths.add(path)) {
+            session.selectedPaths.remove(path)
+            session.selectedModels.remove(path)
+            Log.i(TAG, "MULTI FOLDER SELECT | removed=$path")
+        } else {
+            session.selectedModels[path] = model
+            Log.i(TAG, "MULTI FOLDER SELECT | added=$path")
+        }
+
+        if (session.selectedPaths.isEmpty()) {
+            exitSelection(session)
+        } else {
+            enableFab(session)
+            updateSelectionBar(session)
+        }
+        refreshVisibleRows(session)
+        return true
+    }
+
+    fun isFolderPlaylistSelected(path: String): Boolean =
+        active?.selectedPaths?.contains(path) == true
+
+    fun hasFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        return enabled && session.list === list &&
+            session.selectedPaths.isNotEmpty()
+    }
+
+    private fun findDispatchHolder(list: ViewGroup): Any? {
+        val holderMethod = runCatching {
+            list.javaClass.getMethod("getChildViewHolder", View::class.java)
+        }.getOrNull() ?: return null
+        for (index in 0 until list.childCount) {
+            val holder = runCatching {
+                holderMethod.invoke(list, list.getChildAt(index))
+            }.getOrNull()
+            if (holder?.javaClass?.name == "jo3") return holder
+        }
+        return null
+    }
+
     fun consumeBack(): Boolean {
         if (!enabled) return false
         val session = visibleSession() ?: return false

@@ -542,9 +542,9 @@ class MainActivity : AppCompatActivity() {
                 SettingSpec(
                     GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
                     "▣",
-                    "Playlist folders (preview)",
-                    "Show a read-only folder browser in both GMMP playlist " +
-                        "views. Native playlist rows and creation stay unchanged for now.",
+                    "Playlist folders",
+                    "Group GMMP playlists into navigable folders directly " +
+                        "inside both native playlist views.",
                     COLOR_ACCENT
                 ),
                 SettingSpec(
@@ -566,12 +566,11 @@ class MainActivity : AppCompatActivity() {
             )))
             container.addView(verticalGap(12))
             container.addView(infoCard(
-                title = "Experimental folder preview",
-                body = "Open the Folders chip in GMMP's Playlists or Add to " +
-                    "Playlist view to browse folders without moving files. " +
-                    "The native list and playlist creation controls are " +
-                    "not yet filtered. This preview may omit playlists " +
-                    "that GMMP's adapter has not exposed."
+                title = "Experimental inline folders",
+                body = "Folders now replace the visible playlist list while " +
+                    "GMMP's original native adapter stays attached behind it. " +
+                    "Playlist files and the database are not moved or rewritten. " +
+                    "Creation controls are not folder-aware yet."
             ))
         }
         container.addView(verticalGap(24))

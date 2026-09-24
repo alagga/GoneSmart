@@ -18,7 +18,8 @@ internal object NativePlaylistSourceInspector {
         val traces: List<String>,
         val visitedObjects: Int,
         val truncated: Boolean,
-        val models: List<NativePlaylistTitleResolver.Model> = emptyList()
+        val models: List<NativePlaylistTitleResolver.Model> = emptyList(),
+        val nativeObjects: Map<String, Any> = emptyMap()
     )
 
     private data class Entry(val value: Any, val via: String, val depth: Int)
@@ -30,6 +31,7 @@ internal object NativePlaylistSourceInspector {
     fun inspect(adapter: Any, expectedRows: Int = -1): Result {
         val paths = linkedSetOf<String>()
         val models = linkedMapOf<String, NativePlaylistTitleResolver.Model>()
+        val nativeObjects = linkedMapOf<String, Any>()
         val traces = linkedSetOf<String>()
         val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
         val queue = java.util.ArrayDeque<Entry>()
@@ -67,6 +69,7 @@ internal object NativePlaylistSourceInspector {
                             path, textFields(value)
                         )
                     }
+                    nativeObjects.putIfAbsent(path, value)
                 }
                 continue
             }
@@ -164,6 +167,7 @@ internal object NativePlaylistSourceInspector {
                                 path, textFields(model)
                             )
                         }
+                        nativeObjects.putIfAbsent(path, model)
                     }
                 }
             }
@@ -172,7 +176,8 @@ internal object NativePlaylistSourceInspector {
             " expectedAdapterRows=" + expectedRows)
         return Result(
             paths.toList(), traces.toList(), visited.size, truncated,
-            models.values.toList()
+            models.values.toList(),
+            nativeObjects.toMap()
         )
     }
 

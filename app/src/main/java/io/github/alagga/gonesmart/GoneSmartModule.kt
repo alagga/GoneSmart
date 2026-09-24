@@ -305,7 +305,7 @@ class GoneSmartModule : XposedModule() {
         PlaylistMultiSelectController()
 
     private val playlistFolderPreview =
-        PlaylistFolderPreviewController()
+        PlaylistFolderPreviewController(playlistController)
 
     private val queueFlipController =
         QueueFlipController()
@@ -498,8 +498,9 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
-            // Read-only folder diagnostics are independent of Multi-playlist
-            // selection and do not modify the native playlist database/UI.
+            // Playlist folders are debug-only while the inline integration
+            // is validated. GMMP's native adapter remains attached and owns
+            // all playlist actions; GoneSmart only changes presentation.
             try {
                 if (BuildConfig.DEBUG) {
                     playlistFolderPreview.setOptions(
@@ -1199,7 +1200,10 @@ class GoneSmartModule : XposedModule() {
             val backMethod = backClass.getDeclaredMethod("onBackPressed")
             backMethod.isAccessible = true
             hook(backMethod).intercept { chain ->
-                if (playlistController.consumeBack()) {
+                if (
+                    playlistController.consumeBack() ||
+                    playlistFolderPreview.consumeBack()
+                ) {
                     null
                 } else {
                     chain.proceed()
