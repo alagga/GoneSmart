@@ -241,10 +241,9 @@ internal class PlaylistFolderPreviewController {
             folder.virtual -> folder.name
             else -> folder.name
         }
-        val subtitle = if (complete) "" else
-            "\nPreview may omit uncached native playlists."
+        val displayTitle = if (complete) title else "$title · partial"
         val dialog = AlertDialog.Builder(list.context)
-            .setTitle(title)
+            .setTitle(displayTitle)
             .setItems(
                 if (choices.isEmpty()) arrayOf("This folder is empty")
                 else choices.toTypedArray()
@@ -265,13 +264,8 @@ internal class PlaylistFolderPreviewController {
                     }
                 }
             }
-            .setMessage(
-                if (folder == null) {
-                    "Physical folders and virtual Other Locations.$subtitle"
-                } else {
-                    "Read-only folder navigation.$subtitle"
-                }
-            )
+            // Android's AlertDialog can hide setItems when setMessage is
+            // also supplied. Keep the folder/playlist choices visible.
             .setNegativeButton(
                 if (parents.isEmpty()) "Close" else "Back"
             ) { _, _ ->
@@ -375,17 +369,9 @@ internal class PlaylistFolderPreviewController {
         }.getOrDefault(emptyList())
     }
 
-    private fun isPicker(list: ViewGroup): Boolean {
-        var parent: View? = list.parent as? View
-        repeat(3) {
-            val current = parent ?: return false
-            if (current.javaClass.simpleName.contains("Coordinator")) {
-                return true
-            }
-            parent = current.parent as? View
-        }
-        return false
-    }
+    private fun isPicker(list: ViewGroup): Boolean =
+        (list.parent as? View)?.javaClass?.simpleName
+            ?.contains("Coordinator") == true
 
     private fun dp(view: View, value: Int): Int =
         (view.resources.displayMetrics.density * value + 0.5f).toInt()
