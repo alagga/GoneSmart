@@ -453,6 +453,17 @@ FragmentManager teardown and visual skin parity still require one
 on-device verification: JVM unit tests cannot simulate GMMP's actual
 obfuscated runtime and FragmentContainerView lifecycle.
 
+An additional front-page guard compares the playlist tab's own
+`baseMiniPlayerRoot` child against the top visible child of GMMP's
+`mainFragmentSlot`. The stale playlist RecyclerView can remain
+attached and even report a nonempty global rectangle underneath
+Now Playing or playlist-details. The browser now hides whenever a
+later fullscreen fragment occupies that host. After native navigation,
+the previous list is held from reattachment until it has been seen
+behind another fragment and subsequently returns to the foreground.
+An actual list detach always clears the hold. The Add picker uses
+its own independent window and does not apply this tab-only guard.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

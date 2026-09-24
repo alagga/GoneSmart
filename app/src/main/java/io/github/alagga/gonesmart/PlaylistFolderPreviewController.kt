@@ -41,6 +41,10 @@ internal class PlaylistFolderPreviewController(
         val groupRoot: Boolean = true
     )
 
+    private data class NavigationHold(
+        var leftForeground: Boolean = false
+    )
+
     private data class NativeRowStyle(
         val textColor: Int,
         val textSizePx: Float,
@@ -81,7 +85,7 @@ internal class PlaylistFolderPreviewController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val styles = WeakHashMap<ViewGroup, NativeRowStyle>()
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
-    private val suspendedNativeLists = WeakHashMap<ViewGroup, Boolean>()
+    private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingLayoutObservers = WeakHashMap<
         ViewGroup,
@@ -147,6 +151,24 @@ internal class PlaylistFolderPreviewController(
             val weakList = WeakReference(list)
             val observer = android.view.ViewTreeObserver.OnGlobalLayoutListener {
                 weakList.get()?.let { current ->
+                    // After a native playlist click, wait until we have
+                    // actually seen the old list go behind another fragment
+                    // before allowing it to regain folders on Back. This
+                    // prevents our browser from covering the new screen.
+                    suspendedNativeLists[current]?.let { hold ->
+                        val front = current.isAttachedToWindow &&
+                            current.isShown &&
+                            isFrontFragmentView(current)
+                        if (!front) {
+                            hold.leftForeground = true
+                        } else if (hold.leftForeground) {
+                            suspendedNativeLists.remove(current)
+                            Log.i(
+                                TAG,
+                                "FOLDER INLINE RETURN | old list visible again"
+                            )
+                        }
+                    }
                     if (settings.enabled && browsers[current] == null &&
                         !suspendedNativeLists.containsKey(current) &&
                         pendingRetries[current] == null &&
@@ -499,7 +521,8 @@ internal class PlaylistFolderPreviewController(
         // Offscreen ViewPager pages may remain attached: they must not
         // intercept input on Now Playing or other library tabs.
         val visibleBounds = Rect()
-        val nativeVisible = list.isShown &&
+        val frontFragment = isFrontFragmentView(list)
+        val nativeVisible = frontFragment && list.isShown &&
             list.getGlobalVisibleRect(visibleBounds) &&
             visibleBounds.width() > dp(list, 30) &&
             visibleBounds.height() > dp(list, 30) &&
@@ -507,6 +530,13 @@ internal class PlaylistFolderPreviewController(
         val nextVisibility = if (nativeVisible) View.VISIBLE else View.GONE
         if (overlay.visibility != nextVisibility) {
             overlay.visibility = nextVisibility
+            Log.i(
+                TAG,
+                "FOLDER INLINE VISIBILITY | surface=" + surface(list) +
+                    " | visible=" + nativeVisible +
+                    " | frontFragment=" + frontFragment +
+                    " | nativeShown=" + list.isShown
+            )
         }
         if (!nativeVisible) return
         updatePickerFab(browser)
@@ -1043,7 +1073,7 @@ internal class PlaylistFolderPreviewController(
                         positionOverlay(current)
                     }
                 } else if (handled && !longClick && current != null) {
-                    suspendedNativeLists[list] = true
+                    suspendedNativeLists[list] = NavigationHold()
                     removeBrowser(list)
                 }
                 Log.i(
@@ -1324,6 +1354,39 @@ internal class PlaylistFolderPreviewController(
             current = view.parent as? View
         }
         return resolveBackground(list)
+    }
+
+    /**
+     * GMMP keeps the former Playlists fragment alive behind Now Playing
+     * and playlist-details screens. getGlobalVisibleRect() does not detect
+     * a later full-screen sibling occluding that old fragment, so look at
+     * the actual topmost page in GMMP's mainFragmentSlot as well.
+     */
+    private fun isFrontFragmentView(list: ViewGroup): Boolean {
+        if (isPicker(list)) return true
+        var cursor: View? = list
+        var slot: ViewGroup? = null
+        while (cursor != null) {
+            if (cursor is ViewGroup &&
+                resourceName(cursor) == "mainFragmentSlot"
+            ) {
+                slot = cursor
+                break
+            }
+            cursor = cursor.parent as? View
+        }
+        val host = slot ?: return true
+        val ownPage = directChildInHost(list, host) ?: return false
+        for (index in host.childCount - 1 downTo 0) {
+            val candidate = host.getChildAt(index) ?: continue
+            if (candidate.visibility != View.VISIBLE ||
+                candidate.alpha <= 0.01f ||
+                !candidate.isAttachedToWindow ||
+                candidate.width <= 0 || candidate.height <= 0
+            ) continue
+            return candidate === ownPage
+        }
+        return false
     }
 
     /** Find the nearest GMMP page/dialog host, NEVER the DecorView. */
