@@ -72,7 +72,7 @@ internal object NativePlaylistTitleResolver {
         val requiredCoverage = (unique.size * 65 + 99) / 100
         val field = candidates.firstOrNull { candidate ->
             candidate.coverage >= requiredCoverage &&
-                candidate.matches >= if (observedCount >= 2) 2 else 1 &&
+                candidate.matches >= (if (observedCount >= 2) 2 else 1) &&
                 candidate.matches * 100 >=
                     (candidate.matches + candidate.mismatches) * 80
         }?.field ?: if (observedCount == 0) {
