@@ -1240,9 +1240,13 @@ internal class PlaylistFolderPreviewController(
         }
         descend(root, 0)
         if (!nativeName.isNullOrBlank()) {
-            options.firstOrNull {
+            options.filter {
                 it.text?.toString()?.trim().equals(nativeName.trim(), true)
-            }?.let { return it }
+            }.maxWithOrNull(
+                compareBy<TextView> {
+                    resourceName(it) != "metadataTextEntry"
+                }.thenBy { it.textSize }
+            )?.let { return it }
         }
         return options.filterNot {
             resourceName(it) == "metadataTextEntry"
