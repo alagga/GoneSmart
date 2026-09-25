@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -83,6 +84,8 @@ internal class PlaylistFolderPreviewController(
         val parent: ViewGroup,
         val overlay: FrameLayout,
         val rows: LinearLayout,
+        val breadcrumbScroller: HorizontalScrollView,
+        val breadcrumbRows: LinearLayout,
         val rootPath: String,
         var index: PlaylistFolderIndex.Result,
         var modelsByPath: Map<String, Any>,
@@ -418,8 +421,44 @@ internal class PlaylistFolderPreviewController(
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         )
-        overlay.addView(
+        // Match GMMP's Files tab: a fixed horizontal navigation strip
+        // above the scrollable contents, not a fake Back playlist row.
+        // The strip is GONE in root, preserving its original height.
+        val breadcrumbScroller = HorizontalScrollView(list.context).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.GONE
+        }
+        val breadcrumbRows = LinearLayout(list.context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        breadcrumbScroller.addView(
+            breadcrumbRows,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        val contentColumn = LinearLayout(list.context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        contentColumn.addView(
+            breadcrumbScroller,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        contentColumn.addView(
             scroller,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        )
+        overlay.addView(
+            contentColumn,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -486,6 +525,8 @@ internal class PlaylistFolderPreviewController(
             parent = parent,
             overlay = overlay,
             rows = rows,
+            breadcrumbScroller = breadcrumbScroller,
+            breadcrumbRows = breadcrumbRows,
             rootPath = root,
             index = index,
             modelsByPath = native.nativeObjects,
@@ -725,21 +766,126 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
-    private fun folderBreadcrumb(browser: Browser, folder: PlaylistFolderIndex.Folder): String {
-        val names = mutableListOf<String>()
-        val visited = hashSetOf<String>()
-        var current: PlaylistFolderIndex.Folder? = folder
-        while (current != null && visited.add(current.id)) {
-            names.add(current.name)
-            val parentId = parentFolderId(browser, current)
-            current = if (parentId == null) null else findFolder(browser.index, parentId)
-        }
-        val context = browser.list.context
-        val rootId = context.resources.getIdentifier(
-            "playlists", "string", context.packageName
+    /**
+     * GMMP's Files page uses a persistent row of individually clickable
+     * ancestor segments. Reuse its localized "storage" string and its
+     * observed quickNav typography when available; the already-sampled
+     * native playlist headline is the documented defensive fallback.
+     */
+    private fun renderBreadcrumb(browser: Browser) {
+        val list = browser.list
+        val strip = browser.breadcrumbScroller
+        val segments = PlaylistBreadcrumbPath.forFolder(
+            browser.index, browser.currentFolderId
         )
-        val rootName = if (rootId != 0) context.getString(rootId) else "⌂"
-        return (listOf(rootName) + names.asReversed()).joinToString("  ›  ")
+        if (segments.isEmpty()) {
+            strip.visibility = View.GONE
+            browser.breadcrumbRows.removeAllViews()
+            return
+        }
+
+        val native = styles[list]
+        val nav = observedNativeBreadcrumbStyle
+        val height = nav?.rowHeightPx ?: native?.rowHeight ?: dp(list, 48)
+        strip.layoutParams = strip.layoutParams.apply { this.height = height }
+        strip.visibility = View.VISIBLE
+        val foreground = native?.textColor
+            ?: nav?.effectivePaint?.color ?: resolveTextColor(list)
+        val background = native?.let {
+            nativeContentBackground(list, browser.parent, it)
+        }
+        if (background != null) strip.background = background
+
+        val storageResource = list.resources.getIdentifier(
+            "storage", "string", list.context.packageName
+        )
+        val storageLabel = if (storageResource != 0) {
+            list.context.getString(storageResource)
+        } else {
+            // Neutral icon if a future GMMP version removes its native
+            // "storage" string. Never insert an untranslated English label.
+            "⌂"
+        }
+        browser.breadcrumbRows.removeAllViews()
+        segments.forEachIndexed { position, segment ->
+            if (position != 0) {
+                val separator = ImageView(list.context).apply {
+                    val arrow = resources.getIdentifier(
+                        "ic_gm_keyboard_arrow_right", "drawable",
+                        context.packageName
+                    )
+                    if (arrow != 0) {
+                        setImageResource(arrow)
+                        imageTintList = android.content.res.ColorStateList
+                            .valueOf(foreground)
+                    } else {
+                        setImageDrawable(null)
+                    }
+                    importantForAccessibility =
+                        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+                browser.breadcrumbRows.addView(
+                    separator,
+                    LinearLayout.LayoutParams(dp(list, 24), dp(list, 24)).apply {
+                        marginStart = dp(list, 8)
+                        marginEnd = dp(list, 8)
+                    }
+                )
+            }
+            val title = if (position == 0) storageLabel else segment.name
+            val label = TextView(list.context).apply {
+                text = title
+                val paintSource = nav?.effectivePaint ?: native?.effectivePaint
+                if (paintSource != null) {
+                    paint.set(paintSource)
+                    setTextSize(
+                        TypedValue.COMPLEX_UNIT_PX, paintSource.textSize
+                    )
+                }
+                typeface = nav?.effectivePaint?.typeface
+                    ?: Typeface.create(native?.typeface, Typeface.BOLD)
+                setTextColor(foreground)
+                letterSpacing = nav?.letterSpacing ?: native?.letterSpacing ?: 0f
+                includeFontPadding = nav?.includeFontPadding
+                    ?: native?.includeFontPadding ?: true
+                gravity = Gravity.CENTER_VERTICAL
+                setPaddingRelative(
+                    nav?.paddingStartPx ?: dp(list, 6), 0,
+                    nav?.paddingEndPx ?: dp(list, 6), 0
+                )
+                background = typedSelectableBackground(list)
+                isClickable = segment.folderId != browser.currentFolderId
+                isFocusable = isClickable
+                if (isClickable) {
+                    setOnClickListener {
+                        if (browsers[list] !== browser) {
+                            return@setOnClickListener
+                        }
+                        browser.currentFolderId = segment.folderId
+                        rememberFolder(browser)
+                        activeBrowser = WeakReference(list)
+                        safeRender(browser)
+                        updatePlaylistMenu()
+                        updatePickerFab(browser)
+                    }
+                }
+            }
+            browser.breadcrumbRows.addView(
+                label,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        strip.post {
+            if (browsers[list] === browser && strip.visibility == View.VISIBLE) {
+                strip.scrollTo(
+                    (browser.breadcrumbRows.width - strip.width)
+                        .coerceAtLeast(0), 0
+                )
+            }
+        }
     }
 
     private fun safeRender(browser: Browser) {
@@ -762,28 +908,8 @@ internal class PlaylistFolderPreviewController(
         val folders = folder?.children ?: browser.index.topLevelFolders
         val playlists = folder?.playlists ?: browser.index.ungroupedPlaylists
         browser.rows.removeAllViews()
+        renderBreadcrumb(browser)
         updatePickerFab(browser)
-
-        if (folder != null) {
-            browser.rows.addView(
-                row(
-                    list,
-                    "‹  " + folderBreadcrumb(browser, folder),
-                    folder = true,
-                    selected = false
-                ).apply {
-                    setOnClickListener {
-                        browser.currentFolderId =
-                            parentFolderId(browser, folder)
-                        rememberFolder(browser)
-                        activeBrowser = WeakReference(list)
-                        safeRender(browser)
-                        updatePlaylistMenu()
-                        updatePickerFab(browser)
-                    }
-                }
-            )
-        }
 
         for (child in folders) {
             browser.rows.addView(
