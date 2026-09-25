@@ -131,6 +131,7 @@ internal class PlaylistFolderPreviewController(
         var nativeRefreshPending: Boolean = false,
         var renderedBreadcrumbSignature: String? = null,
         var breadcrumbRefreshPending: Boolean = false,
+        var breadcrumbContentSignature: String? = null,
         var lastBreadcrumbFolderId: String? = null,
         var breadcrumbRenderGeneration: Long = 0L
     )
@@ -1006,6 +1007,7 @@ internal class PlaylistFolderPreviewController(
             observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
         if (segments.isEmpty()) {
             strip.visibility = View.GONE
+            browser.breadcrumbContentSignature = null
             browser.breadcrumbRows.removeAllViews()
             return
         }
@@ -1032,6 +1034,19 @@ internal class PlaylistFolderPreviewController(
             // "storage" string. Never insert an untranslated English label.
             "⌂"
         }
+        // A selection/list refresh must not tear down the clickable
+        // breadcrumb while the user is physically swiping it.
+        val contentSignature = listOf(
+            browser.renderedBreadcrumbSignature,
+            native?.signature ?: "-",
+            storageLabel,
+            segments.joinToString("|") { (it.folderId ?: "root") + "=" + it.name }
+        ).joinToString("::")
+        if (browser.breadcrumbContentSignature == contentSignature &&
+            strip.visibility == View.VISIBLE &&
+            browser.breadcrumbRows.childCount > 0
+        ) return
+        browser.breadcrumbContentSignature = contentSignature
         browser.breadcrumbRows.removeAllViews()
         segments.forEachIndexed { position, segment ->
             if (position != 0) {
@@ -1082,13 +1097,19 @@ internal class PlaylistFolderPreviewController(
                 this.background = nav?.nativeTouchBackground
                     ?.newDrawable(list.resources)?.mutate()
                     ?: typedSelectableBackground(list, borderless = true)
-                isClickable = segment.folderId != browser.currentFolderId
-                isFocusable = isClickable
-                if (isClickable) {
-                    setOnClickListener {
-                        if (browsers[list] !== browser) {
-                            return@setOnClickListener
-                        }
+                // The native Files quickNav also responds visually when
+                // its CURRENT (last) segment is tapped. Keep all segments
+                // clickable, but do not navigate/rebuild when already there.
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (browsers[list] !== browser ||
+                        browser.currentFolderId == segment.folderId
+                    ) return@setOnClickListener
+                    // Let the native rounded ripple render before replacing
+                    // the row tree with a different breadcrumb destination.
+                    postOnAnimation {
+                        if (browsers[list] !== browser) return@postOnAnimation
                         browser.currentFolderId = segment.folderId
                         rememberFolder(browser)
                         activeBrowser = WeakReference(list)

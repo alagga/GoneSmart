@@ -1,6 +1,6 @@
 # GMMP 4.2.0 native playlist creation — APK investigation (2026-09-25)
 
-Status: **reverse engineering in progress; no write hook enabled**. This document describes observations from the GMMP APK supplied privately by the maintainer. Do not commit or redistribute the proprietary APK.
+Status: **debug-only scoped native create redirection implemented for both Playlists and Add picker; real-device verification still pending**. Earlier investigation gates below are historical and superseded by the dated findings at the end. This document describes observations from the GMMP APK supplied privately by the maintainer. Do not commit or redistribute the proprietary APK.
 
 ## Input and scope
 
@@ -20,7 +20,7 @@ SHA-256 of supplied `base(1).apk`: `3299c96a558e10ed421dadcfce032442b6758a896d82
 
 These observations were obtained by parsing DEX string/type/method/class tables and inspecting method-code references in the supplied APK. A code-unit scan is useful for mapping candidates but is not a complete control-flow decompilation; conclusions about method *purpose* beyond concrete invocations must be tested.
 
-## Next implementation gate
+## Historical investigation gates (superseded by subsequent verified APK findings)
 
 1. Trace the `tp3.onAddNewPlaylist` event subscriber through the actual user-entered filename and creation callback. Trace the picker FAB create callback separately, and establish whether both delegate to one native create primitive.
 2. Identify the real configured playlist root and exact destination parameter in the create path. Distinguish file writing (`hp3.d`), DB registration/refresh (possible `x6.b`) and success UI. Do not inject an unverified guessed method or write GMMP DB rows directly.
@@ -28,7 +28,7 @@ These observations were obtained by parsing DEX string/type/method/class tables 
 4. Keep only `menuAdd` hidden in forbidden locations; all other overflow items remain. Show it in physical folders **only when the redirect is active and verified**. Picker FAB always confirms selected destinations before considering creation.
 5. Regression-test root and virtual Other Locations both ways, physical folders at multiple depths, duplicate filename, invalid/vanished destination, picker and tab create, database row identity and list refresh. Device verification is required; unit/CI green alone cannot certify GMMP internals.
 
-The current branch intentionally retains the physical-creation guard and the working root flow. Do not enable subfolder creation based on `hp3.d` or `x6.b` alone.
+At the time of this original investigation the physical-creation guard was active and root creation was preserved. A later dated section documents the additional configured-root delegate proof, scoped redirection and current debug-only runtime guards. Do not enable subfolder creation based on `hp3.d` or `x6.b` alone.
 
 ## 2026-09-25 follow-up: both native create lambdas located
 
