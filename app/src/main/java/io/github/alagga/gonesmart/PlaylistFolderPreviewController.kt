@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import android.animation.ValueAnimator
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -42,6 +43,13 @@ internal class PlaylistFolderPreviewController(
         private const val TAG = "GoneSmartPlaylist"
         private const val MAX_ATTACH_RETRIES = 20
         private const val ATTACH_RETRY_MS = 150L
+        // GMMP 4.2.0 native quickNav measured 58.8px on the same skin
+        // whose bound playlist title measured 48px. Use this ratio only
+        // until a real native quickNav row can be sampled.
+        private const val GMMP_420_QUICK_NAV_TITLE_RATIO = 1.225f
+        private const val QUICK_NAV_METRICS_PREFS =
+            "gonesmart_gmmp_quicknav_metrics"
+        private const val QUICK_NAV_TITLE_RATIO_KEY = "title_ratio"
     }
 
     private data class Settings(
@@ -133,7 +141,9 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbRefreshPending: Boolean = false,
         var breadcrumbContentSignature: String? = null,
         var lastBreadcrumbFolderId: String? = null,
-        var breadcrumbRenderGeneration: Long = 0L
+        var breadcrumbRenderGeneration: Long = 0L,
+        var lastRenderedFolderId: String? = null,
+        var lastRenderedOrder: List<String>? = null
     )
 
     private var settings = Settings()
@@ -205,6 +215,8 @@ internal class PlaylistFolderPreviewController(
     private var activeBrowser = WeakReference<ViewGroup>(null)
     private var observedNativeBreadcrumbStyle: NativeBreadcrumbStyle? = null
     private val observedNativeNavLists = WeakHashMap<ViewGroup, Boolean>()
+    private var lastNativePlaylistTitlePx: Float? = null
+    private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
 
@@ -306,6 +318,16 @@ internal class PlaylistFolderPreviewController(
         list.post(retry)
     }
 
+    private fun nativeQuickNavTitleRatio(list: View): Float {
+        sampledQuickNavRatio?.let { return it }
+        val cached = list.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+        ).getFloat(QUICK_NAV_TITLE_RATIO_KEY, Float.NaN)
+        return if (cached.isFinite() && cached in 0.8f..1.8f) {
+            cached.also { sampledQuickNavRatio = it }
+        } else GMMP_420_QUICK_NAV_TITLE_RATIO
+    }
+
     private fun captureNativeBreadcrumbStyle(list: ViewGroup): Boolean {
         val candidates = arrayListOf<TextView>()
         fun scan(view: View, depth: Int) {
@@ -340,6 +362,15 @@ internal class PlaylistFolderPreviewController(
         ).joinToString(":")
         if (observedNativeBreadcrumbStyle?.signature == signature) {
             return true
+        }
+        lastNativePlaylistTitlePx?.takeIf { it > 0f }?.let { titlePx ->
+            val ratio = paint.textSize / titlePx
+            if (ratio.isFinite() && ratio in 0.8f..1.8f) {
+                sampledQuickNavRatio = ratio
+                list.context.getSharedPreferences(
+                    QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+                ).edit().putFloat(QUICK_NAV_TITLE_RATIO_KEY, ratio).apply()
+            }
         }
         observedNativeBreadcrumbStyle = NativeBreadcrumbStyle(
             effectivePaint = paint,
@@ -632,12 +663,27 @@ internal class PlaylistFolderPreviewController(
         val breadcrumbScroller = HorizontalScrollView(list.context).apply {
             isHorizontalScrollBarEnabled = false
             isFillViewport = false
-            overScrollMode = View.OVER_SCROLL_NEVER
+            // Native Files quickNav stretches at both ends, even if the
+            // two-segment path would otherwise fit inside the viewport.
+            overScrollMode = View.OVER_SCROLL_ALWAYS
             visibility = View.GONE
         }
         val breadcrumbRows = LinearLayout(list.context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }
+        breadcrumbScroller.addOnLayoutChangeListener {
+                _, left, _, right, _, _, _, _, _ ->
+            val width = right - left
+            if (width > 0) {
+                // A 1px scroll range lets HorizontalScrollView intercept
+                // swipes and dispatch native Android 12+ stretch EdgeEffects
+                // for short paths, just like GMMP's native RecyclerView.
+                val min = width + 1
+                if (breadcrumbRows.minimumWidth != min) {
+                    breadcrumbRows.minimumWidth = min
+                }
+            }
         }
         breadcrumbScroller.addView(
             breadcrumbRows,
@@ -996,10 +1042,13 @@ internal class PlaylistFolderPreviewController(
         val list = browser.list
         val strip = browser.breadcrumbScroller
         val previousScrollX = strip.scrollX
+        val previousMaxScrollX =
+            (browser.breadcrumbRows.width - strip.width).coerceAtLeast(0)
+        val previousWasAtEnd =
+            previousScrollX >= (previousMaxScrollX - dp(list, 6)).coerceAtLeast(0)
         val folderChanged =
             browser.lastBreadcrumbFolderId != browser.currentFolderId
         browser.lastBreadcrumbFolderId = browser.currentFolderId
-        val generation = ++browser.breadcrumbRenderGeneration
         val segments = PlaylistBreadcrumbPath.forFolder(
             browser.index, browser.currentFolderId
         )
@@ -1045,7 +1094,14 @@ internal class PlaylistFolderPreviewController(
         if (browser.breadcrumbContentSignature == contentSignature &&
             strip.visibility == View.VISIBLE &&
             browser.breadcrumbRows.childCount > 0
-        ) return
+        ) {
+            // CRITICAL: do not increment generation for a no-op render.
+            // An extra native layout pass previously invalidated the
+            // pending scroll-to-last callback before it ever ran.
+            return
+        }
+        val contentChanged = browser.breadcrumbContentSignature != contentSignature
+        val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = contentSignature
         browser.breadcrumbRows.removeAllViews()
         segments.forEachIndexed { position, segment ->
@@ -1079,9 +1135,13 @@ internal class PlaylistFolderPreviewController(
                 val paintSource = nav?.effectivePaint ?: native?.effectivePaint
                 if (paintSource != null) {
                     paint.set(paintSource)
-                    setTextSize(
-                        TypedValue.COMPLEX_UNIT_PX, paintSource.textSize
-                    )
+                    // The original native quickNav can be observed only
+                    // after visiting GMMP's Files tab. Do not show a visibly
+                    // smaller font the FIRST time an Add picker is opened.
+                    val px = if (nav != null) paintSource.textSize else {
+                        paintSource.textSize * nativeQuickNavTitleRatio(list)
+                    }
+                    setTextSize(TypedValue.COMPLEX_UNIT_PX, px)
                 }
                 typeface = nav?.effectivePaint?.typeface
                     ?: Typeface.create(native?.typeface, Typeface.BOLD)
@@ -1138,14 +1198,17 @@ internal class PlaylistFolderPreviewController(
                     strip.visibility != View.VISIBLE ||
                     !strip.isAttachedToWindow
                 ) return
-                if ((strip.width == 0 || browser.breadcrumbRows.width == 0) &&
-                    ++retries <= 3
+                if ((strip.width <= 0 ||
+                        browser.breadcrumbRows.width <= 0 ||
+                        strip.isLayoutRequested ||
+                        browser.breadcrumbRows.isLayoutRequested) &&
+                    ++retries <= 10
                 ) {
                     strip.postOnAnimation(this)
                     return
                 }
                 val x = PlaylistBreadcrumbScrollPolicy.targetX(
-                    folderChanged,
+                    folderChanged || (contentChanged && previousWasAtEnd),
                     previousScrollX,
                     browser.breadcrumbRows.width,
                     strip.width
@@ -1175,6 +1238,16 @@ internal class PlaylistFolderPreviewController(
         val folder = findFolder(browser.index, browser.currentFolderId)
         val folders = folder?.children ?: browser.index.topLevelFolders
         val playlists = folder?.playlists ?: browser.index.ungroupedPlaylists
+        val nextOrder = folders.map { "folder:" + it.id } +
+            playlists.map { "playlist:" + it.path }
+        val insertions = if (
+            browser.lastRenderedOrder != null &&
+            browser.lastRenderedFolderId == browser.currentFolderId
+        ) {
+            PlaylistFolderInsertionPlanner.plan(
+                browser.lastRenderedOrder!!, nextOrder
+            )
+        } else null
         // The native row's rvContextMenu is an actual GMMP-bound click
         // target. Preserve that control on every synthetic playlist row;
         // folder navigation and the Add picker do not get a fake menu.
@@ -1193,15 +1266,15 @@ internal class PlaylistFolderPreviewController(
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
+        val renderedRows = arrayListOf<View>()
 
         for (child in folders) {
-            browser.rows.addView(
-                row(
-                    list,
-                    child.name,
-                    folder = true,
-                    selected = false
-                ).apply {
+            val item = row(
+                list,
+                child.name,
+                folder = true,
+                selected = false
+            ).apply {
                     setOnClickListener {
                         browser.currentFolderId = child.id
                         rememberFolder(browser)
@@ -1216,15 +1289,15 @@ internal class PlaylistFolderPreviewController(
                         )
                     }
                 }
-            )
+            browser.rows.addView(item)
+            renderedRows.add(item)
         }
 
         for (playlist in playlists) {
             val model = browser.modelsByPath[playlist.path]
             val selected =
                 multiSelect.isFolderPlaylistSelected(playlist.path)
-            browser.rows.addView(
-                row(
+            val item = row(
                     list,
                     playlist.name,
                     folder = false,
@@ -1277,7 +1350,8 @@ internal class PlaylistFolderPreviewController(
                         handled
                     }
                 }
-            )
+            browser.rows.addView(item)
+            renderedRows.add(item)
         }
 
         if (folders.isEmpty() && playlists.isEmpty()) {
@@ -1293,6 +1367,77 @@ internal class PlaylistFolderPreviewController(
                 }
             )
         }
+        browser.lastRenderedFolderId = browser.currentFolderId
+        browser.lastRenderedOrder = nextOrder
+        if (insertions != null) {
+            animateNativePlaylistInsertion(browser, insertions, renderedRows)
+        }
+    }
+
+    /**
+     * Mirror the *bound native* RecyclerView ItemAnimator's actual add/move
+     * durations rather than inventing an unrelated GoneSmart animation.
+     * The overlay still uses native row XML; a newly inserted row fades
+     * in while rows below it move into place. Initial attach, folder changes,
+     * selection and theme-only renders never play an insertion animation.
+     */
+    private fun animateNativePlaylistInsertion(
+        browser: Browser,
+        plan: PlaylistFolderInsertionPlanner.Plan,
+        rowViews: List<View>
+    ) {
+        val list = browser.list
+        val nativeAnimator = runCatching {
+            list.javaClass.getMethod("getItemAnimator").invoke(list)
+        }.getOrNull()
+        fun duration(name: String, fallback: Long): Long = runCatching {
+            (nativeAnimator?.javaClass?.getMethod(name)
+                ?.invoke(nativeAnimator) as? Number)?.toLong()
+        }.getOrNull()?.coerceIn(0L, 2_000L) ?: fallback
+
+        val addMs = duration("getAddDuration", 120L)
+        val moveMs = duration("getMoveDuration", 250L)
+        val interpolator = ValueAnimator().interpolator
+        val moved = plan.shiftBefore.any { it > 0 }
+        val expectedOrder = browser.lastRenderedOrder
+        rowViews.forEachIndexed { index, item ->
+            if (plan.newKeys.contains(plan.nextOrder[index])) {
+                item.alpha = 0f
+            } else if (plan.shiftBefore[index] > 0) {
+                val itemHeight = styles[list]?.rowHeight ?: dp(list, 48)
+                item.translationY =
+                    -(itemHeight * plan.shiftBefore[index]).toFloat()
+            }
+        }
+        browser.rows.postOnAnimation {
+            if (browsers[list] !== browser ||
+                browser.lastRenderedOrder != expectedOrder ||
+                browser.lastRenderedFolderId != browser.currentFolderId
+            ) return@postOnAnimation
+            rowViews.forEachIndexed { index, item ->
+                if (item.parent !== browser.rows) return@forEachIndexed
+                if (plan.newKeys.contains(plan.nextOrder[index])) {
+                    item.animate().alpha(1f)
+                        .setStartDelay(if (moved) moveMs else 0L)
+                        .setDuration(addMs)
+                        .setInterpolator(interpolator)
+                        .start()
+                } else if (plan.shiftBefore[index] > 0) {
+                    item.animate().translationY(0f)
+                        .setDuration(moveMs)
+                        .setInterpolator(interpolator)
+                        .start()
+                }
+            }
+        }
+        Log.i(
+            TAG,
+            "FOLDER INLINE INSERT | surface=" + surface(list) +
+                " | inserted=" + plan.newKeys.size +
+                " | nativeAnimator=" +
+                (nativeAnimator?.javaClass?.simpleName ?: "unavailable") +
+                " | addMs=" + addMs + " | moveMs=" + moveMs
+        )
     }
 
     private fun row(
@@ -2093,6 +2238,7 @@ internal class PlaylistFolderPreviewController(
             // (30px base was visibly undersized on this GMMP skin).
             val textTemplate = title.text
             val nativePaint = effectiveNativeTitlePaint(title)
+            lastNativePlaylistTitlePx = nativePaint.textSize
             val color = nativePaint.color
             val size = nativePaint.textSize
             val height = nativeRow.height.coerceAtLeast(dp(list, 44))
