@@ -509,6 +509,7 @@ class GoneSmartModule : XposedModule() {
                         options.groupRootPlaylists
                     )
                     installPlaylistSurfaceDiscoveryHooks(param)
+                    installNativePlaylistCreationProbeHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {
                 Log.w(
@@ -907,6 +908,59 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylist",
             "FOLDER SURFACE READY | native RecyclerView setAdapter/attach hooks"
         )
+    }
+
+    /**
+     * Read-only GMMP 4.2.0 diagnostics. The two presenters each construct
+     * a separate File(parent, name + ".m3u") inside this lambda. Do not
+     * redirect either destination before both native transactions are known.
+     * No user-entered name, path or playlist contents are logged.
+     */
+    private fun installNativePlaylistCreationProbeHooks(
+        param: PackageReadyParam
+    ) {
+        listOf("sp3" to "main", "fo3" to "picker").forEach { (name, surface) ->
+            runCatching {
+                val native = param.classLoader.loadClass(name)
+                val invoke = native.getDeclaredMethod(
+                    "invoke",
+                    Any::class.java,
+                    Any::class.java,
+                    Any::class.java
+                ).apply { isAccessible = true }
+                hook(invoke).intercept { chain ->
+                    Log.i(
+                        "GoneSmartPlaylist",
+                        "NATIVE CREATE PROBE | surface=$surface | entered"
+                    )
+                    try {
+                        val result = chain.proceed()
+                        Log.i(
+                            "GoneSmartPlaylist",
+                            "NATIVE CREATE PROBE | surface=$surface | returned"
+                        )
+                        result
+                    } catch (error: Throwable) {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "NATIVE CREATE PROBE | surface=$surface | native exception",
+                            error
+                        )
+                        throw error
+                    }
+                }
+                Log.i(
+                    "GoneSmartPlaylist",
+                    "NATIVE CREATE PROBE | surface=$surface | hook installed"
+                )
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "NATIVE CREATE PROBE | surface=$surface | unavailable",
+                    error
+                )
+            }
+        }
     }
 
     private fun installPlaylistMultiSelectHooks(
