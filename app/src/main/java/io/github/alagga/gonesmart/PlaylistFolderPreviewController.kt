@@ -713,7 +713,7 @@ internal class PlaylistFolderPreviewController(
             clipToPadding = false
             itemAnimator = null // path updates themselves are not insertions
             visibility = View.GONE
-            adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            this.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                 override fun getItemCount() = 1
 
                 override fun onCreateViewHolder(
@@ -1456,20 +1456,18 @@ internal class PlaylistFolderPreviewController(
      */
     private fun cloneNativeItemAnimator(
         source: RecyclerView.ItemAnimator?
-    ): RecyclerView.ItemAnimator? {
-        if (source == null) return null
+    ): SimpleItemAnimator? {
+        val native = source as? SimpleItemAnimator ?: return null
         return runCatching {
-            val clone = source.javaClass.getDeclaredConstructor()
+            val clone = native.javaClass.getDeclaredConstructor()
                 .apply { isAccessible = true }.newInstance()
-                as? RecyclerView.ItemAnimator ?: return@runCatching null
+                as? SimpleItemAnimator ?: return@runCatching null
             clone.addDuration = source.addDuration
             clone.moveDuration = source.moveDuration
             clone.changeDuration = source.changeDuration
             clone.removeDuration = source.removeDuration
-            if (clone is SimpleItemAnimator && source is SimpleItemAnimator) {
-                clone.supportsChangeAnimations =
-                    source.supportsChangeAnimations
-            }
+            clone.supportsChangeAnimations =
+                native.supportsChangeAnimations
             clone
         }.onFailure {
             Log.w(
