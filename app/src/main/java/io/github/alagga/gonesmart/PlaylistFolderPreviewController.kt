@@ -730,7 +730,12 @@ internal class PlaylistFolderPreviewController(
             val parentId = parentFolderId(browser, current)
             current = if (parentId == null) null else findFolder(browser.index, parentId)
         }
-        return (listOf("Playlists") + names.asReversed()).joinToString("  ›  ")
+        val context = browser.list.context
+        val rootId = context.resources.getIdentifier(
+            "playlists", "string", context.packageName
+        )
+        val rootName = if (rootId != 0) context.getString(rootId) else "⌂"
+        return (listOf(rootName) + names.asReversed()).joinToString("  ›  ")
     }
 
     private fun safeRender(browser: Browser) {
