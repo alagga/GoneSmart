@@ -1507,13 +1507,17 @@ internal class PlaylistFolderPreviewController(
     private fun dispatchNativeAction(
         browser: Browser,
         model: Any,
-        longClick: Boolean
+        longClick: Boolean,
+        contextMenu: Boolean = false
     ): Boolean {
         val path = modelPath(model) ?: return false
         val list = browser.list
         if (browser.actionPending || !list.isAttachedToWindow) return false
 
-        if (performMatchingNativeAction(list, path, longClick)) {
+        if (performMatchingNativeAction(
+                list, path, longClick, contextMenu
+            )
+        ) {
             return true
         }
 
@@ -1546,7 +1550,10 @@ internal class PlaylistFolderPreviewController(
                 if (browsers[list] !== browser || !list.isAttachedToWindow) {
                     return@postOnAnimation
                 }
-                if (!performMatchingNativeAction(list, path, longClick)) {
+                if (!performMatchingNativeAction(
+                        list, path, longClick, contextMenu
+                    )
+                ) {
                     Log.w(
                         TAG,
                         "FOLDER INLINE ACTION | target not bound" +
@@ -1563,7 +1570,8 @@ internal class PlaylistFolderPreviewController(
     private fun performMatchingNativeAction(
         list: ViewGroup,
         targetPath: String,
-        longClick: Boolean
+        longClick: Boolean,
+        contextMenu: Boolean
     ): Boolean {
         val getHolder = runCatching {
             list.javaClass.getMethod(
@@ -1591,32 +1599,54 @@ internal class PlaylistFolderPreviewController(
                 // performClick() caused a one-frame flash of the original
                 // native playlist list.
                 val current = browsers[list]
-                if (!longClick) {
+                val opensPlaylist = !longClick && !contextMenu
+                if (opensPlaylist) {
                     current?.nativeNavigationInProgress = true
                     current?.overlay?.isClickable = false
                     current?.overlay?.isFocusable = false
                     current?.let(::rememberFolder)
                 }
-                val handled = if (longClick) {
-                    nativeRow.performLongClick()
-                } else {
-                    nativeRow.performClick()
+                val handled = when {
+                    contextMenu -> {
+                        val menuId = list.resources.getIdentifier(
+                            "rvContextMenu", "id", list.context.packageName
+                        )
+                        val button = if (menuId != 0) {
+                            nativeRow.findViewById<View>(menuId)
+                        } else null
+                        if (button?.visibility == View.VISIBLE &&
+                            button.hasOnClickListeners()
+                        ) {
+                            button.performClick()
+                        } else {
+                            Log.w(
+                                TAG,
+                                "FOLDER CONTEXT MENU | native target missing" +
+                                    " | holder=" + holder.javaClass.name
+                            )
+                            false
+                        }
+                    }
+                    longClick -> nativeRow.performLongClick()
+                    else -> nativeRow.performClick()
                 }
-                if (!handled && !longClick) {
+                if (!handled && opensPlaylist) {
                     current?.nativeNavigationInProgress = false
                     if (current != null && browsers[list] === current) {
                         current.overlay.isClickable = true
                         current.overlay.isFocusable = true
                         positionOverlay(current)
                     }
-                } else if (handled && !longClick && current != null) {
+                } else if (handled && opensPlaylist && current != null) {
                     waitForNativeNavigationThenRetire(list, current, 0)
                 }
                 Log.i(
                     TAG,
                     "FOLDER INLINE ACTION | surface=" + surface(list) +
                         " | type=" +
-                        (if (longClick) "long" else "click") +
+                        (if (contextMenu) "context" else if (longClick) {
+                            "long"
+                        } else "click") +
                         " | verifiedNativePath=" + targetPath +
                         " | handled=" + handled
                 )
