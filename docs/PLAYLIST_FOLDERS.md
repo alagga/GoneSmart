@@ -533,3 +533,10 @@ because their display grouping changed.
 
 Smart Playlists are separate native objects; do not treat them as
 ordinary physical M3U files without confirming their native behavior.
+
+
+### 2026-09-25 — supplied GMMP APK: native create-path investigation
+
+The maintainer provided the installed GMMP APK for direct offline investigation (do not commit or redistribute it). DEX inspection confirmed a dedicated `onAddNewPlaylist` event in `tp3` / `PlaylistListPresenter`, a native `hp3.d()` playlist-file save implementation that creates parent folders, a separate `x6.b(Context,File)` file-registration/notification candidate, and generated playlist-file database insert/update methods. The picker has its own `go3` presenter and `bo3.k2()` FAB path; common new-playlist creation across the two surfaces is not yet proved.
+
+See [GMMP 4.2.0 native playlist creation — APK investigation](GMMP_420_PLAYLIST_CREATION_RE.md) for the exact observed obfuscated signatures, limitations, verification gates and disposable on-device regression cases. **This does not lift the physical-create safety guard:** the event subscriber, configured root and original file+DB creation transaction must be traced first. The installed GMMP APK remains private.
