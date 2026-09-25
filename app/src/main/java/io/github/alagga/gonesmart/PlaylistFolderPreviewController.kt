@@ -467,7 +467,11 @@ internal class PlaylistFolderPreviewController(
                 weakList.get()?.let { list ->
                     removeBrowser(
                         list,
-                        preserveNativeAlpha = settings.enabled && !isPicker(list)
+                        // Keep the native ungrouped picker list hidden as well
+                        // while GMMP replaces its fragment after creation.
+                        // The next attached browser reuses originalAlpha;
+                        // bounded attach failure restores it explicitly.
+                        preserveNativeAlpha = settings.enabled
                     )
                 }
             }
