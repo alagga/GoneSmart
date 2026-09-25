@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.view.LayoutInflater
 import android.widget.ImageView
+import android.widget.ImageButton
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -1027,6 +1028,12 @@ internal class PlaylistFolderPreviewController(
         val folder = findFolder(browser.index, browser.currentFolderId)
         val folders = folder?.children ?: browser.index.topLevelFolders
         val playlists = folder?.playlists ?: browser.index.ungroupedPlaylists
+        // The native row's rvContextMenu is an actual GMMP-bound click
+        // target. Preserve that control on every synthetic playlist row;
+        // folder navigation and the Add picker do not get a fake menu.
+        val nativeMenu = if (isPicker(list)) null else {
+            firstBoundNativeContextMenu(list)
+        }
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
@@ -1065,7 +1072,18 @@ internal class PlaylistFolderPreviewController(
                     list,
                     playlist.name,
                     folder = false,
-                    selected = selected
+                    selected = selected,
+                    nativeMenuButton = nativeMenu,
+                    onNativeContextMenu = if (model != null && nativeMenu != null) {
+                        {
+                            activeBrowser = WeakReference(list)
+                            dispatchNativeAction(
+                                browser, model,
+                                longClick = false, contextMenu = true
+                            )
+                            Unit
+                        }
+                    } else null
                 ).apply {
                     setOnClickListener {
                         activeBrowser = WeakReference(list)
@@ -1125,7 +1143,9 @@ internal class PlaylistFolderPreviewController(
         view: View,
         text: String,
         folder: Boolean,
-        selected: Boolean
+        selected: Boolean,
+        nativeMenuButton: ImageView? = null,
+        onNativeContextMenu: (() -> Unit)? = null
     ): View {
         val native = styles[view]
         val parent = browsers[view as? ViewGroup]?.rows
@@ -1191,6 +1211,9 @@ internal class PlaylistFolderPreviewController(
             // A bare inflation is not bound by zn3. Hide unused template
             // metadata until we have real native metadata for this model.
             hideOtherTemplateLabels(root, target)
+            configureNativeContextMenu(
+                root, view, nativeMenuButton, onNativeContextMenu
+            )
             if (folder) {
                 addNativeFolderIcon(root, native, view)
             }
@@ -1200,7 +1223,7 @@ internal class PlaylistFolderPreviewController(
             return root
         }
         // Defensive fallback on custom native view modes without XML IDs.
-        return TextView(view.context).apply {
+        val fallback = TextView(view.context).apply {
             this.text = text
             setTextColor(native?.textColor ?: resolveTextColor(view))
             setTextSize(
@@ -1240,6 +1263,111 @@ internal class PlaylistFolderPreviewController(
                 )
             }
         }
+        if (onNativeContextMenu == null || nativeMenuButton == null) {
+            return fallback
+        }
+        val height = native?.rowHeight ?: dp(view, 54)
+        val wrapper = FrameLayout(view.context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, height
+            )
+            minimumHeight = height
+        }
+        wrapper.addView(
+            fallback,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, height
+            )
+        )
+        val nativeWidth = nativeMenuButton.width
+            .takeIf { it > 0 } ?: dp(view, 48)
+        val button = ImageButton(view.context).apply {
+            id = view.resources.getIdentifier(
+                "rvContextMenu", "id", view.context.packageName
+            )
+            background = typedSelectableBackground(view)
+            imageTintList = nativeMenuButton.imageTintList
+                ?: android.content.res.ColorStateList.valueOf(
+                    native?.textColor ?: resolveTextColor(view)
+                )
+        }
+        configureNativeContextMenu(
+            button, view, nativeMenuButton, onNativeContextMenu
+        )
+        wrapper.addView(
+            button,
+            FrameLayout.LayoutParams(
+                nativeWidth, ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.END or Gravity.CENTER_VERTICAL
+            )
+        )
+        return wrapper
+    }
+
+    /** Never synthesize a guessed menu: reuse the native row's own button. */
+    private fun firstBoundNativeContextMenu(list: ViewGroup): ImageView? {
+        val id = list.resources.getIdentifier(
+            "rvContextMenu", "id", list.context.packageName
+        )
+        if (id == 0) return null
+        for (i in 0 until list.childCount) {
+            val native = list.getChildAt(i) ?: continue
+            val button = native.findViewById<ImageView>(id) ?: continue
+            if (button.visibility == View.VISIBLE &&
+                button.hasOnClickListeners()
+            ) return button
+        }
+        return null
+    }
+
+    /**
+     * The installed GMMP 4.2.0 APK's rv_listitem_metadata_compact XML
+     * contains rvContextMenu, an AestheticTintedImageButton. An unbound
+     * inflation lacks its icon and original click callback. Clone the
+     * icon from the live bound native view and forward clicks only after
+     * verifying the matching wp3.A -> xn3.q model.
+     */
+    private fun configureNativeContextMenu(
+        root: View,
+        host: View,
+        source: ImageView?,
+        onClick: (() -> Unit)?
+    ) {
+        val id = host.resources.getIdentifier(
+            "rvContextMenu", "id", host.context.packageName
+        )
+        val button = if (id != 0) {
+            root.findViewById<ImageView>(id)
+        } else null
+        if (button == null) return
+        if (onClick == null || source == null) {
+            button.visibility = View.GONE
+            button.setOnClickListener(null)
+            return
+        }
+        val original = source.drawable?.constantState
+            ?.newDrawable(host.resources)?.mutate()
+        if (original != null) {
+            button.setImageDrawable(original)
+        } else {
+            val moreIcon = host.resources.getIdentifier(
+                "ic_gm_more_vert", "drawable", host.context.packageName
+            )
+            if (moreIcon != 0) button.setImageResource(moreIcon)
+        }
+        button.visibility = View.VISIBLE
+        button.isEnabled = true
+        button.isClickable = true
+        button.isFocusable = true
+        source.imageTintList?.let { button.imageTintList = it }
+        val description = source.contentDescription ?: run {
+            val nativeString = host.resources.getIdentifier(
+                "menu", "string", host.context.packageName
+            )
+            if (nativeString != 0) host.context.getString(nativeString) else null
+        }
+        button.contentDescription = description
+        button.setOnClickListener { onClick() }
     }
 
     private fun hideOtherTemplateLabels(root: View, title: TextView) {
