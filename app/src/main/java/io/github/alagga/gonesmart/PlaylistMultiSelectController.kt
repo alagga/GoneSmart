@@ -136,8 +136,43 @@ internal class PlaylistMultiSelectController {
     private val observedPlaylistLists =
         WeakHashMap<ViewGroup, android.view.ViewTreeObserver.OnGlobalLayoutListener>()
 
+    private val pickerCreateOnlyScope = PlaylistPickerCreateOnlyScope()
+
+    @Volatile private var pickerCloseGuardReady = false
     @Volatile
     private var enabled = false
+
+    fun setPickerCloseGuardReady(ready: Boolean) {
+        pickerCloseGuardReady = ready
+    }
+
+    /**
+     * Only the currently visible, unselected Add picker may opt into
+     * create-only. Never change the source-selection handler's stored mode
+     * or intercept a multi-destination confirmation.
+     */
+    fun canCreatePlaylistWithoutAdding(): Boolean {
+        val session = active ?: return false
+        return pickerCreateOnlyScope.eligible(
+            enabled = enabled,
+            closeGuardInstalled = pickerCloseGuardReady,
+            pickerAttached = session.list?.isAttachedToWindow == true,
+            selectedDestinations = session.selectedPaths.size
+        )
+    }
+
+    fun aroundPickerCreateOnly(proceed: () -> Any?): Any? =
+        pickerCreateOnlyScope.duringCreate(proceed)
+
+    fun shouldSuppressPickerCreateCloseEvent(event: Any?): Boolean {
+        val suppress = pickerCreateOnlyScope.shouldSuppressClose(
+            event?.javaClass?.name
+        )
+        if (suppress) {
+            Log.i(TAG, "PICKER CREATE ONLY | native close event suppressed")
+        }
+        return suppress
+    }
 
     /**
      * UI feature is separate from the Smart DJ recommendation switch.

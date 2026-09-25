@@ -1014,7 +1014,7 @@ internal class PlaylistFolderPreviewController(
                     nav?.paddingStartPx ?: dp(list, 6), 0,
                     nav?.paddingEndPx ?: dp(list, 6), 0
                 )
-                background = typedSelectableBackground(list)
+                this.background = typedSelectableBackground(list)
                 isClickable = segment.folderId != browser.currentFolderId
                 isFocusable = isClickable
                 if (isClickable) {

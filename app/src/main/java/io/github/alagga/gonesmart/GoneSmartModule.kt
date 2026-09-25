@@ -483,6 +483,10 @@ class GoneSmartModule : XposedModule() {
                 try {
                     playlistController.setEnabled(options.multiPlaylistEnabled)
                     installPlaylistMultiSelectHooks(param)
+                    // fo3's create callback also operates without Playlist
+                    // folders; install its version-checked hook alongside
+                    // Multi-playlist selection in release and debug builds.
+                    installNativePlaylistCreationProbeHooks(param)
                     if (options.multiPlaylistEnabled) {
                         runtimeReporter.reportEvent(
                             GoneSmartRuntimeContract.CATEGORY_SYSTEM,
@@ -509,7 +513,6 @@ class GoneSmartModule : XposedModule() {
                         options.groupRootPlaylists
                     )
                     installPlaylistSurfaceDiscoveryHooks(param)
-                    installNativePlaylistCreationProbeHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {
                 Log.w(
@@ -936,7 +939,71 @@ class GoneSmartModule : XposedModule() {
                         "NATIVE CREATE PROBE | surface=$surface | entered"
                     )
                     try {
-                        val result = chain.proceed()
+                        val createOnly = surface == "picker" &&
+                            playlistController.canCreatePlaylistWithoutAdding()
+                        val result = if (!createOnly) {
+                            chain.proceed()
+                        } else {
+                            // The supplied GMMP 4.2.0 DEX proves:
+                            // fo3.o -> go3, go3.z is the Boolean
+                            // playlistAppend switch. When true, fo3 skips
+                            // copying ho3.a into hp3.r, but still calls the
+                            // ORIGINAL hp3.d() and t6.f() writers.
+                            // Restore go3.z so subsequent normal additions
+                            // keep the mode the picker started with.
+                            val nativeLambda = chain.getThisObject()
+                            val target = runCatching {
+                                val owner = nativeLambda.javaClass
+                                    .getDeclaredField("o")
+                                    .apply { isAccessible = true }
+                                    .get(nativeLambda)
+                                if (owner?.javaClass?.name != "go3") {
+                                    return@runCatching null
+                                }
+                                val flag = owner.javaClass
+                                    .getDeclaredField("z")
+                                    .apply { isAccessible = true }
+                                if (flag.type != Boolean::class.javaPrimitiveType) {
+                                    return@runCatching null
+                                }
+                                owner to flag
+                            }.onFailure {
+                                Log.w(
+                                    "GoneSmartPlaylist",
+                                    "PICKER CREATE ONLY | unsupported native fields",
+                                    it
+                                )
+                            }.getOrNull()
+
+                            if (target == null) {
+                                // Unrecognized GMMP version: fail closed to
+                                // its original behavior, not a guessed write.
+                                chain.proceed()
+                            } else {
+                                val (presenter, flag) = target
+                                val oldAppend = flag.getBoolean(presenter)
+                                flag.setBoolean(presenter, true)
+                                Log.i(
+                                    "GoneSmartPlaylist",
+                                    "PICKER CREATE ONLY | native create without tracks"
+                                )
+                                try {
+                                    playlistController.aroundPickerCreateOnly {
+                                        chain.proceed()
+                                    }
+                                } finally {
+                                    runCatching {
+                                        flag.setBoolean(presenter, oldAppend)
+                                    }.onFailure {
+                                        Log.e(
+                                            "GoneSmartPlaylist",
+                                            "PICKER CREATE ONLY | restore native mode",
+                                            it
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         Log.i(
                             "GoneSmartPlaylist",
                             "NATIVE CREATE PROBE | surface=$surface | returned"
@@ -1062,16 +1129,17 @@ class GoneSmartModule : XposedModule() {
             ).apply { isAccessible = true }
 
             hook(emitEvent).intercept { chain ->
+                val event = chain.getArg(0)
                 if (
-                    playlistController.shouldSuppressNativeCloseEvent(
-                        chain.getArg(0)
-                    )
+                    playlistController.shouldSuppressPickerCreateCloseEvent(event) ||
+                    playlistController.shouldSuppressNativeCloseEvent(event)
                 ) {
                     null
                 } else {
                     chain.proceed()
                 }
             }
+            playlistController.setPickerCloseGuardReady(true)
 
             Log.i(
                 "GoneSmartPlaylist",
