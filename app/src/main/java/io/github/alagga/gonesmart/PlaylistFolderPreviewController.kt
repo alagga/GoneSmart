@@ -106,6 +106,7 @@ internal class PlaylistFolderPreviewController(
         val rowHeightPx: Int,
         val paddingStartPx: Int,
         val paddingEndPx: Int,
+        val nativeTouchBackground: Drawable.ConstantState?,
         val signature: String
     )
 
@@ -129,7 +130,9 @@ internal class PlaylistFolderPreviewController(
         var nativeNavigationInProgress: Boolean = false,
         var nativeRefreshPending: Boolean = false,
         var renderedBreadcrumbSignature: String? = null,
-        var breadcrumbRefreshPending: Boolean = false
+        var breadcrumbRefreshPending: Boolean = false,
+        var lastBreadcrumbFolderId: String? = null,
+        var breadcrumbRenderGeneration: Long = 0L
     )
 
     private var settings = Settings()
@@ -273,10 +276,13 @@ internal class PlaylistFolderPreviewController(
         val paint = effectiveNativeTitlePaint(original)
         val height = list.height.takeIf { it > 0 }
             ?: original.height.coerceAtLeast(dp(list, 44))
+        val nativeTouch = original.background?.constantState
+            ?: (original.parent as? View)?.background?.constantState
         val signature = listOf(
             paint.textSize, paint.color, paint.typeface?.style ?: 0,
             original.letterSpacing, original.includeFontPadding, height,
-            original.paddingStart, original.paddingEnd
+            original.paddingStart, original.paddingEnd,
+            nativeTouch?.javaClass?.name
         ).joinToString(":")
         if (observedNativeBreadcrumbStyle?.signature == signature) {
             return true
@@ -288,6 +294,7 @@ internal class PlaylistFolderPreviewController(
             rowHeightPx = height,
             paddingStartPx = original.paddingStart,
             paddingEndPx = original.paddingEnd,
+            nativeTouchBackground = nativeTouch,
             signature = signature
         )
         Log.i(
@@ -934,6 +941,11 @@ internal class PlaylistFolderPreviewController(
     private fun renderBreadcrumb(browser: Browser) {
         val list = browser.list
         val strip = browser.breadcrumbScroller
+        val previousScrollX = strip.scrollX
+        val folderChanged =
+            browser.lastBreadcrumbFolderId != browser.currentFolderId
+        browser.lastBreadcrumbFolderId = browser.currentFolderId
+        val generation = ++browser.breadcrumbRenderGeneration
         val segments = PlaylistBreadcrumbPath.forFolder(
             browser.index, browser.currentFolderId
         )
@@ -1014,7 +1026,9 @@ internal class PlaylistFolderPreviewController(
                     nav?.paddingStartPx ?: dp(list, 6), 0,
                     nav?.paddingEndPx ?: dp(list, 6), 0
                 )
-                this.background = typedSelectableBackground(list)
+                this.background = nav?.nativeTouchBackground
+                    ?.newDrawable(list.resources)?.mutate()
+                    ?: typedSelectableBackground(list, borderless = true)
                 isClickable = segment.folderId != browser.currentFolderId
                 isFocusable = isClickable
                 if (isClickable) {
@@ -1039,14 +1053,33 @@ internal class PlaylistFolderPreviewController(
                 )
             )
         }
-        strip.post {
-            if (browsers[list] === browser && strip.visibility == View.VISIBLE) {
-                strip.scrollTo(
-                    (browser.breadcrumbRows.width - strip.width)
-                        .coerceAtLeast(0), 0
+        // Do not snap back to the right on an ordinary theme/layout
+        // refresh; this previously made manual breadcrumb swipes unreliable.
+        // Only navigation changes should reveal the newest path component.
+        val reposition = object : Runnable {
+            var retries = 0
+            override fun run() {
+                if (browsers[list] !== browser ||
+                    browser.breadcrumbRenderGeneration != generation ||
+                    strip.visibility != View.VISIBLE ||
+                    !strip.isAttachedToWindow
+                ) return
+                if ((strip.width == 0 || browser.breadcrumbRows.width == 0) &&
+                    ++retries <= 3
+                ) {
+                    strip.postOnAnimation(this)
+                    return
+                }
+                val x = PlaylistBreadcrumbScrollPolicy.targetX(
+                    folderChanged,
+                    previousScrollX,
+                    browser.breadcrumbRows.width,
+                    strip.width
                 )
+                strip.scrollTo(x, 0)
             }
         }
+        strip.postOnAnimation(reposition)
     }
 
     private fun safeRender(browser: Browser) {
@@ -1091,7 +1124,7 @@ internal class PlaylistFolderPreviewController(
             browser.rows.addView(
                 row(
                     list,
-                    child.name + "  ›",
+                    child.name,
                     folder = true,
                     selected = false
                 ).apply {
@@ -2356,11 +2389,15 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun typedSelectableBackground(
-        view: View
+        view: View,
+        borderless: Boolean = false
     ): android.graphics.drawable.Drawable? {
         val out = TypedValue()
+        val attribute = if (borderless) {
+            android.R.attr.selectableItemBackgroundBorderless
+        } else android.R.attr.selectableItemBackground
         return if (view.context.theme.resolveAttribute(
-                android.R.attr.selectableItemBackground,
+                attribute,
                 out,
                 true
             )

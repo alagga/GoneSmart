@@ -944,62 +944,82 @@ class GoneSmartModule : XposedModule() {
                         val result = if (!createOnly) {
                             chain.proceed()
                         } else {
-                            // The supplied GMMP 4.2.0 DEX proves:
-                            // fo3.o -> go3, go3.z is the Boolean
-                            // playlistAppend switch. When true, fo3 skips
-                            // copying ho3.a into hp3.r, but still calls the
-                            // ORIGINAL hp3.d() and t6.f() writers.
-                            // Restore go3.z so subsequent normal additions
-                            // keep the mode the picker started with.
-                            val nativeLambda = chain.getThisObject()
+                            // fo3.invoke ALWAYS copies ho3.a into hp3.r,
+                            // regardless of go3.z. Temporarily substitute an
+                            // empty source-list for THIS synchronous original
+                            // GMMP create transaction and restore in finally.
+                            // This preserves hp3.d, t6.f and GMMP's own
+                            // filename validation / DB registration.
                             val target = runCatching {
-                                val owner = nativeLambda.javaClass
+                                val owner = chain.getThisObject().javaClass
                                     .getDeclaredField("o")
                                     .apply { isAccessible = true }
-                                    .get(nativeLambda)
+                                    .get(chain.getThisObject())
                                 if (owner?.javaClass?.name != "go3") {
                                     return@runCatching null
                                 }
-                                val flag = owner.javaClass
-                                    .getDeclaredField("z")
+                                val source = owner.javaClass
+                                    .getDeclaredField("A")
                                     .apply { isAccessible = true }
-                                if (flag.type != Boolean::class.javaPrimitiveType) {
+                                    .get(owner)
+                                if (source?.javaClass?.name != "ho3") {
                                     return@runCatching null
                                 }
-                                owner to flag
+                                val field = source.javaClass
+                                    .getDeclaredField("a")
+                                    .apply { isAccessible = true }
+                                val original = field.get(source) as? List<*>
+                                    ?: return@runCatching null
+                                Triple(source, field, original)
                             }.onFailure {
                                 Log.w(
                                     "GoneSmartPlaylist",
-                                    "PICKER CREATE ONLY | unsupported native fields",
+                                    "PICKER CREATE ONLY | native source unavailable",
                                     it
                                 )
                             }.getOrNull()
 
                             if (target == null) {
-                                // Unrecognized GMMP version: fail closed to
-                                // its original behavior, not a guessed write.
+                                Log.w(
+                                    "GoneSmartPlaylist",
+                                    "PICKER CREATE ONLY | retaining native fallback"
+                                )
                                 chain.proceed()
                             } else {
-                                val (presenter, flag) = target
-                                val oldAppend = flag.getBoolean(presenter)
-                                flag.setBoolean(presenter, true)
-                                Log.i(
-                                    "GoneSmartPlaylist",
-                                    "PICKER CREATE ONLY | native create without tracks"
-                                )
-                                try {
-                                    playlistController.aroundPickerCreateOnly {
-                                        chain.proceed()
-                                    }
-                                } finally {
-                                    runCatching {
-                                        flag.setBoolean(presenter, oldAppend)
-                                    }.onFailure {
-                                        Log.e(
-                                            "GoneSmartPlaylist",
-                                            "PICKER CREATE ONLY | restore native mode",
-                                            it
-                                        )
+                                val (source, field, original) = target
+                                val substituted = runCatching {
+                                    field.set(source, emptyList<Any>())
+                                    (field.get(source) as? List<*>)?.isEmpty() == true
+                                }.getOrElse {
+                                    Log.w(
+                                        "GoneSmartPlaylist",
+                                        "PICKER CREATE ONLY | source substitution blocked",
+                                        it
+                                    )
+                                    false
+                                }
+                                if (!substituted) {
+                                    runCatching { field.set(source, original) }
+                                    chain.proceed()
+                                } else {
+                                    Log.i(
+                                        "GoneSmartPlaylist",
+                                        "PICKER CREATE ONLY | native source emptied for create"
+                                    )
+                                    try {
+                                        playlistController.aroundPickerCreateOnly {
+                                            chain.proceed()
+                                        }
+                                    } finally {
+                                        runCatching {
+                                            field.set(source, original)
+                                        }.onFailure {
+                                            Log.e(
+                                                "GoneSmartPlaylist",
+                                                "PICKER CREATE ONLY | restore source selection",
+                                                it
+                                            )
+                                        }
                                     }
                                 }
                             }

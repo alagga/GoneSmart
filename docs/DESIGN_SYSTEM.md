@@ -118,3 +118,5 @@ The maintainer explicitly wants **both**, not one substituted for the other:
 - Were related UI/logic fixes combined into a single CI-tested device build where safe, rather than producing numerous one-line APKs?
 
 **Use the repository code to verify currently implemented details, and [AGENTS.md](../AGENTS.md) for cross-feature collaboration rules.**
+
+**2026-09-25 interaction parity:** folder rows have the native outline icon and **no trailing arrow** after their label; the breadcrumb alone shows clickable ancestry separators. Native Files-tab quickNav style samples include the original pressed-state background where available. Swiping the breadcrumb must retain the user's horizontal offset across normal overlays/theme refreshes, while direct navigation may scroll to reveal the current folder. This interaction rule applies equally to the normal Playlists tab and Add picker.
