@@ -23,6 +23,8 @@
   </p>
 </div>
 
+> **Working on GoneSmart or resuming in a new chat?** Read [AGENTS.md](AGENTS.md) first. It records the maintainer's persistent coding, translation, GMMP design/theme, GitHub/CI and device-testing rules, plus the current development-branch handoff. Follow the feature-specific documents it links.
+
 ---
 
 ## What is GoneSmart?

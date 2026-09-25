@@ -2,6 +2,8 @@
 
 Thanks for helping improve GoneSmart.
 
+**Read [AGENTS.md](AGENTS.md) before editing.** It is the maintained source of truth for the project's coding conventions, English companion versus native GMMP translations, dynamic GMMP styling, branch/CI/device-test workflow and current feature handoff. When a lasting rule is agreed or changed, update AGENTS.md in the same development commit along with relevant tests and docs.
+
 ## Bug reports
 
 Please include:
