@@ -66,4 +66,18 @@ class PlaylistCreationUiPolicyTest {
         assertTrue(state.normalMenuVisible)
         assertTrue(state.pickerFabVisible)
     }
+    @Test fun nativeRedirectEnablesBothPhysicalFolderCreationControls() {
+        val state = PlaylistCreationUiPolicy.state(
+            foldersEnabled = true,
+            currentFolderId = "$root/Music/Progressive",
+            mainPlaylistDirectory = root,
+            groupRootPlaylists = true,
+            hasPickerSelection = false,
+            nativePhysicalCreateReady = true
+        )
+        assertTrue(state.normalMenuVisible)
+        assertTrue(state.pickerFabVisible)
+        assertFalse(state.physicalDestinationUnsupported)
+        assertEquals("$root/Music/Progressive", state.destination)
+    }
 }

@@ -136,6 +136,59 @@ internal class PlaylistFolderPreviewController(
     )
 
     private var settings = Settings()
+    private var nativeMainCreateRedirectReady = false
+    private var nativePickerCreateRedirectReady = false
+
+    data class PhysicalCreationTarget(
+        val nativeRoot: String,
+        val destination: String
+    )
+
+    fun setNativeCreateRedirectReady(main: Boolean, picker: Boolean) {
+        nativeMainCreateRedirectReady = main
+        nativePickerCreateRedirectReady = picker
+        updatePlaylistMenu()
+        browsers.values.toList().forEach(::updatePickerFab)
+    }
+
+    fun nativeCreateRedirectReady(picker: Boolean): Boolean =
+        if (picker) nativePickerCreateRedirectReady else nativeMainCreateRedirectReady
+
+    /**
+     * Resolve the current PHYSICAL folder only from the live native-model
+     * folder index. Root / virtual Other Locations return null so their
+     * verified original GMMP creation remains unchanged.
+     */
+    fun physicalCreationTarget(picker: Boolean): PhysicalCreationTarget? {
+        if (!settings.enabled) return null
+        val browser = currentBrowser(picker) ?: return null
+        val destination = creationDestination(browser) ?: return null
+        val root = runCatching {
+            java.io.File(browser.rootPath).canonicalPath
+        }.getOrNull() ?: return null
+        if (destination == root ||
+            browser.currentFolderId == PlaylistFolderIndex.OTHER_LOCATIONS_ID ||
+            findFolder(browser.index, browser.currentFolderId) == null
+        ) return null
+        val folder = java.io.File(destination)
+        return PhysicalCreationTarget(
+            nativeRoot = root,
+            destination = folder.canonicalPath
+        )
+    }
+
+    fun blockUnsafeNativeCreation(picker: Boolean) {
+        val browser = currentBrowser(picker)
+        browser?.list?.let { list ->
+            Toast.makeText(
+                list.context,
+                "Playlist folder destination could not be verified. " +
+                    "No playlist was created.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        Log.w(TAG, "FOLDER CREATE BLOCK | native destination verification failed")
+    }
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val styles = WeakHashMap<ViewGroup, NativeRowStyle>()
@@ -2281,7 +2334,8 @@ internal class PlaylistFolderPreviewController(
                 currentFolderId = folderId,
                 mainPlaylistDirectory = normal.rootPath,
                 groupRootPlaylists = settings.groupRoot,
-                hasPickerSelection = false
+                hasPickerSelection = false,
+                nativePhysicalCreateReady = nativeMainCreateRedirectReady
             )
         }
         for (i in 0 until menu.size()) {
@@ -2320,7 +2374,8 @@ internal class PlaylistFolderPreviewController(
             currentFolderId = browser.currentFolderId,
             mainPlaylistDirectory = browser.rootPath,
             groupRootPlaylists = settings.groupRoot,
-            hasPickerSelection = selected
+            hasPickerSelection = selected,
+            nativePhysicalCreateReady = nativePickerCreateRedirectReady
         )
         val show = state.pickerFabVisible
         if (show) {
@@ -2364,7 +2419,8 @@ internal class PlaylistFolderPreviewController(
             currentFolderId = browser.currentFolderId,
             mainPlaylistDirectory = browser.rootPath,
             groupRootPlaylists = settings.groupRoot,
-            hasPickerSelection = false
+            hasPickerSelection = false,
+            nativePhysicalCreateReady = nativePickerCreateRedirectReady
         )
         val destination = state.destination
         if (destination == null) {

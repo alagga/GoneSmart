@@ -21,7 +21,8 @@ internal object PlaylistCreationUiPolicy {
         currentFolderId: String?,
         mainPlaylistDirectory: String,
         groupRootPlaylists: Boolean,
-        hasPickerSelection: Boolean
+        hasPickerSelection: Boolean,
+        nativePhysicalCreateReady: Boolean = false
     ): State {
         if (!foldersEnabled) {
             return State(
@@ -41,12 +42,14 @@ internal object PlaylistCreationUiPolicy {
             java.io.File(mainPlaylistDirectory).canonicalPath
         }.getOrNull()
         val physicalUnsupported =
-            destination != null && root != null && destination != root
+            destination != null && root != null && destination != root &&
+                !nativePhysicalCreateReady
 
         return State(
-            // Do not expose GMMP's root-only native menu callback inside a
-            // physical subfolder until its destination can be redirected
-            // without desynchronizing GMMP's DB and M3U file.
+            // Show inside a real subfolder only when BOTH the original
+            // native create lambda and the scoped root-getter hook installed.
+            // The callback revalidates the configured native root before
+            // any file is written, and otherwise cancels safely.
             normalMenuVisible =
                 destination != null && !physicalUnsupported,
             // In the picker, confirmation must always win. Physical folders

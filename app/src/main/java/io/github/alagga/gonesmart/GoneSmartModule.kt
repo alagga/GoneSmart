@@ -9,6 +9,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.io.File
 import java.lang.ref.WeakReference
 import java.util.ArrayList
 import java.util.concurrent.Executors
@@ -306,6 +307,8 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistFolderPreview =
         PlaylistFolderPreviewController(playlistController)
+    private val nativePlaylistDestinationScope =
+        NativePlaylistDestinationScope()
 
     private val queueFlipController =
         QueueFlipController()
@@ -913,8 +916,118 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+
     /**
-     * Read-only GMMP 4.2.0 diagnostics. The two presenters each construct
+     * This GMMP version's vp3.F lazy delegate resolves the configured
+     * playlist_saveLocation via va4.getValue(). Unlike changing the global
+     * setting or moving a newly-written M3U, a targeted thread-local
+     * override affects ONLY the original create lambda's File(parent,name).
+     * File writing (hp3.d) and GMMP's own rescan (t6.f) run untouched.
+     */
+    private fun aroundNativePhysicalCreation(
+        param: PackageReadyParam,
+        surface: String,
+        nativeLambda: Any,
+        proceed: () -> Any?
+    ): Any? {
+        val picker = surface == "picker"
+        val target = playlistFolderPreview.physicalCreationTarget(picker)
+            ?: return proceed()
+        fun cancel(): Any? {
+            playlistFolderPreview.blockUnsafeNativeCreation(picker)
+            return runCatching {
+                param.classLoader.loadClass("uf5")
+                    .getDeclaredField("a").apply { isAccessible = true }
+                    .get(null)
+            }.getOrNull()
+        }
+        if (!playlistFolderPreview.nativeCreateRedirectReady(picker) ||
+            !File(target.destination).isDirectory
+        ) return cancel()
+
+        val delegate = runCatching {
+            val owner = nativeLambda.javaClass.getDeclaredField("o")
+                .apply { isAccessible = true }
+                .get(nativeLambda) ?: return@runCatching null
+            var holder: Class<*>? = owner.javaClass
+            var state: Any? = null
+            while (holder != null && state == null) {
+                val type = holder
+                state = runCatching {
+                    type.getDeclaredField("x")
+                        .apply { isAccessible = true }
+                        .get(owner)
+                }.getOrNull()
+                holder = type.superclass
+            }
+            if (state?.javaClass?.name != "vp3") {
+                return@runCatching null
+            }
+            val lazy = state.javaClass.getDeclaredField("F")
+                .apply { isAccessible = true }.get(state)
+                ?: return@runCatching null
+            val nativeRootDelegate = lazy.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }.invoke(lazy)
+            nativeRootDelegate?.takeIf { it.javaClass.name == "va4" }
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | configured root delegate unavailable",
+                it
+            )
+        }.getOrNull() ?: return cancel()
+
+        val originalRoot = runCatching {
+            delegate.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }
+                .invoke(delegate) as? String
+        }.getOrNull() ?: return cancel()
+        if (originalRoot.contains("://") ||
+            runCatching { File(originalRoot).canonicalPath }
+                .getOrNull() != target.nativeRoot
+        ) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | actual GMMP root differs from indexed root"
+            )
+            return cancel()
+        }
+
+        // Check that the precisely targeted native getter is REALLY hooked,
+        // before executing the original callback that would write a file.
+        val probe = nativePlaylistDestinationScope.withDestination(
+            delegate, originalRoot, target.destination
+        ) {
+            delegate.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }.invoke(delegate)
+        }
+        if (probe.value != target.destination || probe.substitutions == 0) {
+            Log.w("GoneSmartPlaylist", "FOLDER CREATE | getter probe failed")
+            return cancel()
+        }
+
+        val operation = nativePlaylistDestinationScope.withDestination(
+            delegate, originalRoot, target.destination, proceed
+        )
+        if (operation.substitutions == 0) {
+            // Not a false success: investigate if the native create callback
+            // changes in a future GMMP version. Never move the file after.
+            Log.e(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | native callback did not read intended delegate"
+            )
+        } else {
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | native destination substituted | surface=" +
+                    surface
+            )
+        }
+        return operation.value
+    }
+
+    /**
+     * Version-checked GMMP 4.2.0 native create hooks. The two presenters each construct
      * a separate File(parent, name + ".m3u") inside this lambda. Do not
      * redirect either destination before both native transactions are known.
      * No user-entered name, path or playlist contents are logged.
@@ -922,6 +1035,27 @@ class GoneSmartModule : XposedModule() {
     private fun installNativePlaylistCreationProbeHooks(
         param: PackageReadyParam
     ) {
+        val getterReady = BuildConfig.DEBUG && runCatching {
+            val nativeGetter = param.classLoader.loadClass("va4")
+                .getDeclaredMethod("getValue").apply { isAccessible = true }
+            hook(nativeGetter).intercept { chain ->
+                nativePlaylistDestinationScope.overrideNativeGetter(
+                    chain.getThisObject()
+                ) { chain.proceed() }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | scoped native getter hook installed"
+            )
+            true
+        }.onFailure {
+            Log.e(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | scoped native getter unavailable",
+                it
+            )
+        }.getOrDefault(false)
+        val installedSurfaces = mutableSetOf<String>()
         listOf("sp3" to "main", "fo3" to "picker").forEach { (name, surface) ->
             runCatching {
                 val native = param.classLoader.loadClass(name)
@@ -941,7 +1075,10 @@ class GoneSmartModule : XposedModule() {
                     try {
                         val createOnly = surface == "picker" &&
                             playlistController.canCreatePlaylistWithoutAdding()
-                        val result = if (!createOnly) {
+                        val result = aroundNativePhysicalCreation(
+                            param, surface, chain.getThisObject()
+                        ) {
+                        if (!createOnly) {
                             chain.proceed()
                         } else {
                             // fo3.invoke ALWAYS copies ho3.a into hp3.r,
@@ -1024,6 +1161,7 @@ class GoneSmartModule : XposedModule() {
                                 }
                             }
                         }
+                        }
                         Log.i(
                             "GoneSmartPlaylist",
                             "NATIVE CREATE PROBE | surface=$surface | returned"
@@ -1038,6 +1176,7 @@ class GoneSmartModule : XposedModule() {
                         throw error
                     }
                 }
+                installedSurfaces.add(surface)
                 Log.i(
                     "GoneSmartPlaylist",
                     "NATIVE CREATE PROBE | surface=$surface | hook installed"
@@ -1050,6 +1189,10 @@ class GoneSmartModule : XposedModule() {
                 )
             }
         }
+        playlistFolderPreview.setNativeCreateRedirectReady(
+            main = getterReady && "main" in installedSurfaces,
+            picker = getterReady && "picker" in installedSurfaces
+        )
     }
 
     private fun installPlaylistMultiSelectHooks(
