@@ -464,6 +464,14 @@ behind another fragment and subsequently returns to the foreground.
 An actual list detach always clears the hold. The Add picker uses
 its own independent window and does not apply this tab-only guard.
 
+### 2026-09-25 — runtime-native typography and folder-return state
+
+The maintainer's latest device test confirms the thin folder outline, corrected Add-picker background, picker plus FAB, live selection color and two-destination multi-add. The remaining visual mismatch is typography: the native bound compact row reports a 30 px base `metadataTextEntry`, but GMMP renders its playlist headline differently. The previous GoneSmart 30→45 px proportional correction is therefore removed as a primary strategy.
+
+The folder browser must copy the **actual bound GMMP title rendering**, including styled CharSequence / TextAppearance spans and exact TextView runtime metrics (base textSize, Typeface, letterSpacing, textScaleX, line spacing, includeFontPadding, maxLines/ellipsize and padding). This is intentionally device/theme/view-mode adaptive; fixed px/sp conversions are only defensive fallbacks when no native source exists.
+
+Navigation polish in the same iteration: remember the current folder separately per surface, restore it after returning from a native playlist-details page if that folder still exists, and keep the folder overlay visually present (but non-interactive) until GMMP's native detail fragment has actually taken foreground. This avoids briefly revealing the underlying ungrouped native playlist list during the transition. Grouping-option changes validate remembered folder IDs against the rebuilt index before restoring them.
+
 ## Step 2 — native GMMP navigation
 
 Determine the actual GMMP main-root setting without hardcoding a

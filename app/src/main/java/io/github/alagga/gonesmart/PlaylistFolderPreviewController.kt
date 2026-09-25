@@ -13,6 +13,10 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.graphics.Rect
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.CharacterStyle
+import android.text.style.MetricAffectingSpan
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -59,7 +63,15 @@ internal class PlaylistFolderPreviewController(
         val titleViewId: Int,
         val titleGravity: Int,
         val titlePaddingStart: Int,
-        val titlePaddingEnd: Int
+        val titlePaddingEnd: Int,
+        val textTemplate: CharSequence?,
+        val letterSpacing: Float,
+        val textScaleX: Float,
+        val includeFontPadding: Boolean,
+        val lineSpacingExtra: Float,
+        val lineSpacingMultiplier: Float,
+        val maxLines: Int,
+        val ellipsize: android.text.TextUtils.TruncateAt?
     )
 
     private data class Browser(
@@ -86,6 +98,7 @@ internal class PlaylistFolderPreviewController(
     private val styles = WeakHashMap<ViewGroup, NativeRowStyle>()
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
     private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
+    private val folderMemory = PlaylistFolderNavigationMemory()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingLayoutObservers = WeakHashMap<
         ViewGroup,
@@ -135,6 +148,9 @@ internal class PlaylistFolderPreviewController(
         }
 
         if (groupingChanged) {
+            // Folder IDs are stable for physical directories, but a virtual
+            // node can disappear when its grouping option changes. Validate
+            // the remembered location against the freshly rebuilt index.
             browsers.keys.toList().forEach(::removeBrowser)
         }
         knownLists.keys.toList().forEach { scheduleAttach(it, 0) }
@@ -256,6 +272,7 @@ internal class PlaylistFolderPreviewController(
         if (browser.currentFolderId == null) return false
         val folder = findFolder(browser.index, browser.currentFolderId)
         browser.currentFolderId = parentFolderId(browser, folder)
+        rememberFolder(browser)
         safeRender(browser)
         activeBrowser = WeakReference(browser.list)
         Log.i(
@@ -437,6 +454,10 @@ internal class PlaylistFolderPreviewController(
             }
         }
 
+        val rememberedFolder = folderMemory.restore(surface(list)) {
+            findFolder(index, it) != null
+        }
+
         val browser = Browser(
             list = list,
             parent = parent,
@@ -449,7 +470,8 @@ internal class PlaylistFolderPreviewController(
             originalAlpha = list.alpha,
             layoutListener = layoutListener,
             themeListener = themeListener,
-            detachListener = detachListener
+            detachListener = detachListener,
+            currentFolderId = rememberedFolder
         )
         browsers[list] = browser
         styles[list] = nativeStyle
@@ -641,6 +663,7 @@ internal class PlaylistFolderPreviewController(
                     setOnClickListener {
                         browser.currentFolderId =
                             parentFolderId(browser, folder)
+                        rememberFolder(browser)
                         activeBrowser = WeakReference(list)
                         safeRender(browser)
                         updatePlaylistMenu()
@@ -660,6 +683,7 @@ internal class PlaylistFolderPreviewController(
                 ).apply {
                     setOnClickListener {
                         browser.currentFolderId = child.id
+                        rememberFolder(browser)
                         activeBrowser = WeakReference(list)
                         safeRender(browser)
                         updatePlaylistMenu()
@@ -762,20 +786,34 @@ internal class PlaylistFolderPreviewController(
             } else null
         } else null
         if (target != null && template != null) {
-            target.text = text
             if (native != null) {
+                // Reuse GMMP's exact currently-rendered title style. The
+                // source CharSequence may contain TextAppearance/size spans
+                // that are NOT represented by TextView.textSize alone.
+                target.text = nativeStyledText(native.textTemplate, text)
                 target.setTextSize(
                     TypedValue.COMPLEX_UNIT_PX, native.textSizePx
                 )
                 target.setTextColor(native.textColor)
                 if (native.typeface != null) target.typeface = native.typeface
                 target.gravity = native.titleGravity
+                target.letterSpacing = native.letterSpacing
+                target.textScaleX = native.textScaleX
+                target.includeFontPadding = native.includeFontPadding
+                target.setLineSpacing(
+                    native.lineSpacingExtra,
+                    native.lineSpacingMultiplier
+                )
+                target.maxLines = native.maxLines
+                target.ellipsize = native.ellipsize
                 target.setPaddingRelative(
                     native.titlePaddingStart,
                     target.paddingTop,
                     native.titlePaddingEnd,
                     target.paddingBottom
                 )
+            } else {
+                target.text = text
             }
             val root = template
             root.layoutParams = LinearLayout.LayoutParams(
@@ -800,7 +838,8 @@ internal class PlaylistFolderPreviewController(
             setTextColor(native?.textColor ?: resolveTextColor(view))
             setTextSize(
                 TypedValue.COMPLEX_UNIT_PX,
-                native?.textSizePx ?: (view.resources.displayMetrics.scaledDensity * 16f)
+                native?.textSizePx
+                    ?: (view.resources.displayMetrics.scaledDensity * 16f)
             )
             typeface = native?.typeface
             gravity = Gravity.CENTER_VERTICAL
@@ -1052,14 +1091,16 @@ internal class PlaylistFolderPreviewController(
             }.getOrNull() ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
-                // Native clicks navigate GMMP's fragment stack. Retire
-                // the overlay before the native FragmentManager transition,
-                // and do not automatically reattach over the new screen.
+                // Keep the folder browser visible until GMMP's NEW
+                // fragment actually reaches the foreground. Hiding it before
+                // performClick() caused a one-frame flash of the original
+                // native playlist list.
                 val current = browsers[list]
                 if (!longClick) {
                     current?.nativeNavigationInProgress = true
-                    current?.overlay?.visibility = View.GONE
                     current?.overlay?.isClickable = false
+                    current?.overlay?.isFocusable = false
+                    current?.let(::rememberFolder)
                 }
                 val handled = if (longClick) {
                     nativeRow.performLongClick()
@@ -1070,11 +1111,11 @@ internal class PlaylistFolderPreviewController(
                     current?.nativeNavigationInProgress = false
                     if (current != null && browsers[list] === current) {
                         current.overlay.isClickable = true
+                        current.overlay.isFocusable = true
                         positionOverlay(current)
                     }
                 } else if (handled && !longClick && current != null) {
-                    suspendedNativeLists[list] = NavigationHold()
-                    removeBrowser(list)
+                    waitForNativeNavigationThenRetire(list, current, 0)
                 }
                 Log.i(
                     TAG,
@@ -1094,6 +1135,116 @@ internal class PlaylistFolderPreviewController(
             }.getOrDefault(false)
         }
         return false
+    }
+
+    private fun rememberFolder(browser: Browser) {
+        folderMemory.remember(
+            surface(browser.list),
+            browser.currentFolderId
+        )
+    }
+
+    private fun waitForNativeNavigationThenRetire(
+        list: ViewGroup,
+        browser: Browser,
+        frame: Int
+    ) {
+        if (browsers[list] !== browser) return
+        val stillFront = list.isAttachedToWindow &&
+            list.isShown &&
+            isFrontFragmentView(list)
+
+        if (!stillFront) {
+            // We have now observed the native detail page taking over, so
+            // retiring the old browser cannot reveal the native root list.
+            suspendedNativeLists[list] = NavigationHold(leftForeground = true)
+            browser.overlay.visibility = View.GONE
+            removeBrowser(list)
+            return
+        }
+
+        if (frame >= 32) {
+            // Native click reported handled but no navigation appeared.
+            // Restore the browser rather than leaving an inert overlay.
+            browser.nativeNavigationInProgress = false
+            browser.overlay.isClickable = true
+            browser.overlay.isFocusable = true
+            positionOverlay(browser)
+            Log.w(
+                TAG,
+                "FOLDER INLINE ACTION | native navigation not observed; " +
+                    "browser restored"
+            )
+            return
+        }
+
+        list.postOnAnimation {
+            waitForNativeNavigationThenRetire(list, browser, frame + 1)
+        }
+    }
+
+    /**
+     * Preserve the actual styling spans from GMMP's bound title while
+     * substituting only its text. This follows Android font scale, GMMP
+     * TextAppearance and alternate native view modes without a GoneSmart
+     * pixel/sp multiplier.
+     */
+    private fun nativeStyledText(
+        source: CharSequence?,
+        replacement: String
+    ): CharSequence {
+        val spanned = source as? Spanned ?: return replacement
+        if (replacement.isEmpty() || spanned.isEmpty()) return replacement
+
+        val out = SpannableString(replacement)
+        val oldLength = spanned.length
+        val newLength = out.length
+        val spans = spanned.getSpans(
+            0,
+            oldLength,
+            CharacterStyle::class.java
+        )
+        spans.forEach { span ->
+            if (span !is MetricAffectingSpan &&
+                span !is android.text.style.ForegroundColorSpan
+            ) return@forEach
+            val oldStart = spanned.getSpanStart(span).coerceAtLeast(0)
+            val oldEnd = spanned.getSpanEnd(span).coerceAtMost(oldLength)
+            if (oldEnd <= oldStart) return@forEach
+            val newStart = if (oldStart == 0) 0 else {
+                ((oldStart.toDouble() / oldLength) * newLength)
+                    .toInt().coerceIn(0, newLength)
+            }
+            val newEnd = if (oldEnd == oldLength) newLength else {
+                kotlin.math.ceil(
+                    (oldEnd.toDouble() / oldLength) * newLength
+                ).toInt().coerceIn(newStart, newLength)
+            }
+            if (newEnd <= newStart) return@forEach
+            val copy = CharacterStyle.wrap(span)
+            runCatching {
+                out.setSpan(
+                    copy,
+                    newStart,
+                    newEnd,
+                    spanned.getSpanFlags(span)
+                )
+            }
+        }
+        return out
+    }
+
+    private fun nativeSpanSignature(text: CharSequence?): String {
+        val spanned = text as? Spanned ?: return "none"
+        return spanned.getSpans(
+            0,
+            spanned.length,
+            CharacterStyle::class.java
+        ).map { it.javaClass.simpleName }
+            .distinct()
+            .sorted()
+            .joinToString(",")
+            .ifBlank { "none" }
     }
 
     private fun findFolder(
@@ -1232,17 +1383,12 @@ internal class PlaylistFolderPreviewController(
             val title = findNativeTitleTextView(nativeRow, name) ?: continue
             val matchedNativeTitle = !name.isNullOrBlank() &&
                 title.text?.toString()?.trim().equals(name.trim(), true)
-            // The compact GMMP metadata layout reports a 30px metadata
-            // font here while its visible playlist headline is about 45px
-            // on this device. Correct that known view only; other GMMP
-            // skins retain their native headline typography unchanged.
-            val normalTextSize = NativePlaylistRowTypography.titleSizePx(
-                title.textSize,
-                nativeRow.height,
-                resourceName(title)
-            )
+            // Do not scale or guess this value. GMMP can encode the visible
+            // headline size in spans/TextAppearance on top of this base
+            // TextView size. We copy both the base value and its spans.
             val color = title.currentTextColor
-            val size = normalTextSize
+            val size = title.textSize
+            val textTemplate = title.text
             val height = nativeRow.height.coerceAtLeast(dp(list, 44))
             val nativeRowPos = IntArray(2)
             val titlePos = IntArray(2)
@@ -1257,7 +1403,12 @@ internal class PlaylistFolderPreviewController(
             val signature = listOf(
                 color, size.toInt(), height, inset, backgroundColor, accent,
                 title.typeface?.style ?: 0, rowBackground?.javaClass?.name,
-                nativeRow.sourceLayoutResId, title.id, matchedNativeTitle
+                nativeRow.sourceLayoutResId, title.id, matchedNativeTitle,
+                textTemplate?.javaClass?.name,
+                nativeSpanSignature(textTemplate),
+                title.letterSpacing,
+                title.textScaleX,
+                title.includeFontPadding
             ).joinToString(":")
             if (observedMenus.add("native-row-style-" + surface(list))) {
                 val layoutName = runCatching {
@@ -1275,7 +1426,10 @@ internal class PlaylistFolderPreviewController(
                         " | matchedTitle=" + matchedNativeTitle +
                         " | modelName=" + name?.take(60) +
                         " | nativePx=" + title.textSize +
-                        " | chosenPx=" + size +
+                        " | appliedBasePx=" + size +
+                        " | textClass=" +
+                            (textTemplate?.javaClass?.name ?: "null") +
+                        " | spans=" + nativeSpanSignature(textTemplate) +
                         " | bg=" +
                             (nativeRow.background?.javaClass?.name ?: "none") +
                         " | style=" + signature
@@ -1295,7 +1449,15 @@ internal class PlaylistFolderPreviewController(
                 titleViewId = title.id,
                 titleGravity = title.gravity,
                 titlePaddingStart = title.paddingStart,
-                titlePaddingEnd = title.paddingEnd
+                titlePaddingEnd = title.paddingEnd,
+                textTemplate = textTemplate,
+                letterSpacing = title.letterSpacing,
+                textScaleX = title.textScaleX,
+                includeFontPadding = title.includeFontPadding,
+                lineSpacingExtra = title.lineSpacingExtra,
+                lineSpacingMultiplier = title.lineSpacingMultiplier,
+                maxLines = title.maxLines,
+                ellipsize = title.ellipsize
             )
         }
         return null
