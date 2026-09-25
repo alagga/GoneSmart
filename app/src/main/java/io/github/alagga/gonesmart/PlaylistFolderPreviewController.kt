@@ -79,6 +79,16 @@ internal class PlaylistFolderPreviewController(
         val ellipsize: android.text.TextUtils.TruncateAt?
     )
 
+    private data class NativeBreadcrumbStyle(
+        val effectivePaint: TextPaint,
+        val letterSpacing: Float,
+        val includeFontPadding: Boolean,
+        val rowHeightPx: Int,
+        val paddingStartPx: Int,
+        val paddingEndPx: Int,
+        val signature: String
+    )
+
     private data class Browser(
         val list: ViewGroup,
         val parent: ViewGroup,
@@ -114,6 +124,8 @@ internal class PlaylistFolderPreviewController(
         android.view.ViewTreeObserver.OnGlobalLayoutListener
     >()
     private var activeBrowser = WeakReference<ViewGroup>(null)
+    private var observedNativeBreadcrumbStyle: NativeBreadcrumbStyle? = null
+    private val observedNativeNavLists = WeakHashMap<ViewGroup, Boolean>()
     private val observedMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
 
@@ -170,8 +182,116 @@ internal class PlaylistFolderPreviewController(
         knownLists.keys.toList().forEach { scheduleAttach(it, 0) }
     }
 
+    /**
+     * Reuse GMMP's *bound* Files-tab quickNav typography. Its native
+     * MetadataTextView can have font/size spans not present in XML. The
+     * actual sample is optional because the Files tab might never be opened
+     * in a session; in that case the live playlist headline is the fallback.
+     */
+    private fun observeNativeBreadcrumb(list: ViewGroup) {
+        if (observedNativeNavLists.containsKey(list)) {
+            captureNativeBreadcrumbStyle(list)
+            return
+        }
+        observedNativeNavLists[list] = true
+        val weak = WeakReference(list)
+        val listener = object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(
+                v: View, left: Int, top: Int, right: Int, bottom: Int,
+                oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
+            ) {
+                weak.get()?.let(::captureNativeBreadcrumbStyle)
+            }
+        }
+        list.addOnLayoutChangeListener(listener)
+        list.addOnAttachStateChangeListener(
+            object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) = Unit
+                override fun onViewDetachedFromWindow(view: View) {
+                    weak.get()?.let {
+                        it.removeOnLayoutChangeListener(listener)
+                        observedNativeNavLists.remove(it)
+                    }
+                }
+            }
+        )
+        var attempts = 0
+        val retry = object : Runnable {
+            override fun run() {
+                val active = weak.get() ?: return
+                if (!active.isAttachedToWindow) return
+                if (captureNativeBreadcrumbStyle(active)) return
+                if (++attempts < 8) active.postDelayed(this, ATTACH_RETRY_MS)
+            }
+        }
+        list.post(retry)
+    }
+
+    private fun captureNativeBreadcrumbStyle(list: ViewGroup): Boolean {
+        val candidates = arrayListOf<TextView>()
+        fun scan(view: View, depth: Int) {
+            if (depth > 5 || candidates.size >= 20) return
+            if (view is TextView &&
+                view.visibility == View.VISIBLE &&
+                view.text?.any(Char::isLetterOrDigit) == true
+            ) {
+                candidates.add(view)
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    scan(view.getChildAt(index), depth + 1)
+                }
+            }
+        }
+        for (i in 0 until minOf(list.childCount, 4)) {
+            scan(list.getChildAt(i), 0)
+        }
+        val original = candidates.maxByOrNull { it.textSize }
+            ?: return false
+        val paint = effectiveNativeTitlePaint(original)
+        val height = list.height.takeIf { it > 0 }
+            ?: original.height.coerceAtLeast(dp(list, 44))
+        val signature = listOf(
+            paint.textSize, paint.color, paint.typeface?.style ?: 0,
+            original.letterSpacing, original.includeFontPadding, height,
+            original.paddingStart, original.paddingEnd
+        ).joinToString(":")
+        if (observedNativeBreadcrumbStyle?.signature == signature) {
+            return true
+        }
+        observedNativeBreadcrumbStyle = NativeBreadcrumbStyle(
+            effectivePaint = paint,
+            letterSpacing = original.letterSpacing,
+            includeFontPadding = original.includeFontPadding,
+            rowHeightPx = height,
+            paddingStartPx = original.paddingStart,
+            paddingEndPx = original.paddingEnd,
+            signature = signature
+        )
+        Log.i(
+            TAG,
+            "FOLDER NATIVE BREADCRUMB | quickNav style captured" +
+                " | sizePx=" + paint.textSize +
+                " | typeface=" + (paint.typeface?.style ?: 0) +
+                " | height=" + height
+        )
+        // Never rebuild overlays inside GMMP's RecyclerView layout pass.
+        mainHandler.post {
+            browsers.values.toList().forEach { browser ->
+                if (browser.list.isAttachedToWindow &&
+                    browser.currentFolderId != null
+                ) safeRender(browser)
+            }
+        }
+        return true
+    }
+
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
+        if (resourceName(list) == "quickNavRecyclerView") {
+            observeNativeBreadcrumb(list)
+            return
+        }
         if (resourceName(list) != "playlistListRecyclerView") return
         val adapter = nativeAdapter(list)
         if (adapter != null && adapter.javaClass.name != "zn3") return
