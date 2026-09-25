@@ -68,6 +68,7 @@ internal class PlaylistFolderPreviewController(
         val titlePaddingStart: Int,
         val titlePaddingEnd: Int,
         val textTemplate: CharSequence?,
+        val effectivePaint: TextPaint,
         val letterSpacing: Float,
         val textScaleX: Float,
         val includeFontPadding: Boolean,
@@ -835,6 +836,11 @@ internal class PlaylistFolderPreviewController(
                     native.titlePaddingEnd,
                     target.paddingBottom
                 )
+                // Copy all current font features (fake bold, skew, font
+                // variation, hinting and decoration) from the actual
+                // native glyph paint rather than approximating them.
+                target.paint.set(native.effectivePaint)
+                target.requestLayout()
             } else {
                 target.text = text
             }
@@ -1514,6 +1520,7 @@ internal class PlaylistFolderPreviewController(
                 titlePaddingStart = title.paddingStart,
                 titlePaddingEnd = title.paddingEnd,
                 textTemplate = textTemplate,
+                effectivePaint = nativePaint,
                 letterSpacing = title.letterSpacing,
                 textScaleX = title.textScaleX,
                 includeFontPadding = title.includeFontPadding,
