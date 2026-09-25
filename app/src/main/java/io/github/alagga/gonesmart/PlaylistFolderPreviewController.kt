@@ -80,6 +80,25 @@ internal class PlaylistFolderPreviewController(
         val ellipsize: android.text.TextUtils.TruncateAt?
     )
 
+    private data class NativeMenuResources(
+        val buttonId: Int,
+        val iconId: Int,
+        val descriptionId: Int
+    )
+
+    private var nativeMenuResources: NativeMenuResources? = null
+
+    private fun nativeMenuResources(host: View): NativeMenuResources {
+        nativeMenuResources?.let { return it }
+        val resources = host.resources
+        val pkg = host.context.packageName
+        return NativeMenuResources(
+            buttonId = resources.getIdentifier("rvContextMenu", "id", pkg),
+            iconId = resources.getIdentifier("ic_gm_more_vert", "drawable", pkg),
+            descriptionId = resources.getIdentifier("menu", "string", pkg)
+        ).also { nativeMenuResources = it }
+    }
+
     private data class NativeBreadcrumbStyle(
         val effectivePaint: TextPaint,
         val letterSpacing: Float,
@@ -1312,9 +1331,7 @@ internal class PlaylistFolderPreviewController(
         val nativeWidth = nativeMenuButton.width
             .takeIf { it > 0 } ?: dp(view, 48)
         val button = ImageButton(view.context).apply {
-            id = view.resources.getIdentifier(
-                "rvContextMenu", "id", view.context.packageName
-            )
+            id = nativeMenuResources(view).buttonId
             background = typedSelectableBackground(view)
             imageTintList = nativeMenuButton.imageTintList
                 ?: android.content.res.ColorStateList.valueOf(
@@ -1336,9 +1353,7 @@ internal class PlaylistFolderPreviewController(
 
     /** Never synthesize a guessed menu: reuse the native row's own button. */
     private fun firstBoundNativeContextMenu(list: ViewGroup): ImageView? {
-        val id = list.resources.getIdentifier(
-            "rvContextMenu", "id", list.context.packageName
-        )
+        val id = nativeMenuResources(list).buttonId
         if (id == 0) return null
         for (i in 0 until list.childCount) {
             val native = list.getChildAt(i) ?: continue
@@ -1363,11 +1378,9 @@ internal class PlaylistFolderPreviewController(
         source: ImageView?,
         onClick: (() -> Unit)?
     ) {
-        val id = host.resources.getIdentifier(
-            "rvContextMenu", "id", host.context.packageName
-        )
-        val button = if (id != 0) {
-            root.findViewById<ImageView>(id)
+        val ids = nativeMenuResources(host)
+        val button = if (ids.buttonId != 0) {
+            root.findViewById<ImageView>(ids.buttonId)
         } else null
         if (button == null) return
         if (onClick == null || source == null) {
@@ -1380,10 +1393,7 @@ internal class PlaylistFolderPreviewController(
         if (original != null) {
             button.setImageDrawable(original)
         } else {
-            val moreIcon = host.resources.getIdentifier(
-                "ic_gm_more_vert", "drawable", host.context.packageName
-            )
-            if (moreIcon != 0) button.setImageResource(moreIcon)
+            if (ids.iconId != 0) button.setImageResource(ids.iconId)
         }
         button.visibility = View.VISIBLE
         button.isEnabled = true
@@ -1391,10 +1401,9 @@ internal class PlaylistFolderPreviewController(
         button.isFocusable = true
         source.imageTintList?.let { button.imageTintList = it }
         val description = source.contentDescription ?: run {
-            val nativeString = host.resources.getIdentifier(
-                "menu", "string", host.context.packageName
-            )
-            if (nativeString != 0) host.context.getString(nativeString) else null
+            if (ids.descriptionId != 0) {
+                host.context.getString(ids.descriptionId)
+            } else null
         }
         button.contentDescription = description
         button.setOnClickListener { onClick() }
@@ -1638,9 +1647,7 @@ internal class PlaylistFolderPreviewController(
                 }
                 val handled = when {
                     contextMenu -> {
-                        val menuId = list.resources.getIdentifier(
-                            "rvContextMenu", "id", list.context.packageName
-                        )
+                        val menuId = nativeMenuResources(list).buttonId
                         val button = if (menuId != 0) {
                             nativeRow.findViewById<View>(menuId)
                         } else null
