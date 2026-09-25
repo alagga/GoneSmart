@@ -1628,13 +1628,25 @@ internal class PlaylistFolderPreviewController(
     private fun updatePlaylistMenu() {
         val menu = playlistTabMenu?.get() ?: return
         val normal = currentBrowser(picker = false)
-        val destination = normal?.let(::creationDestination)
-        // A root-target creation is fully native. Physical subfolders need
-        // their native GMMP creation destination hook before they can write.
-        val allowRootNativeCreate = if (normal == null) {
-            !settings.enabled || !settings.groupRoot
+        val folderId = normal?.currentFolderId
+        val state = if (normal == null) {
+            // Before the folder browser attaches we cannot safely infer a
+            // writable root. Only apply the one rule that is independent of
+            // that path: root creation is hidden while root grouping is on.
+            PlaylistCreationUiPolicy.State(
+                normalMenuVisible = !settings.enabled || !settings.groupRoot,
+                pickerFabVisible = true,
+                destination = null,
+                physicalDestinationUnsupported = false
+            )
         } else {
-            !settings.enabled || destination == normal.rootPath
+            PlaylistCreationUiPolicy.state(
+                foldersEnabled = settings.enabled,
+                currentFolderId = folderId,
+                mainPlaylistDirectory = normal.rootPath,
+                groupRootPlaylists = settings.groupRoot,
+                hasPickerSelection = false
+            )
         }
         for (i in 0 until menu.size()) {
             val item = menu.getItem(i)
@@ -1644,13 +1656,18 @@ internal class PlaylistFolderPreviewController(
                 context?.resources?.getResourceEntryName(item.itemId)
             }.getOrNull()
             if (id == "menuAdd") {
-                if (item.isVisible == allowRootNativeCreate) break
-                item.isVisible = allowRootNativeCreate
+                if (item.isVisible == state.normalMenuVisible) break
+                item.isVisible = state.normalMenuVisible
                 Log.i(
                     TAG,
-                    "FOLDER CREATE MENU | visible=" + allowRootNativeCreate +
-                        " | folder=" + (normal?.currentFolderId ?: "root") +
-                        " | rootGrouping=" + settings.groupRoot
+                    "FOLDER CREATE MENU | visible=" +
+                        state.normalMenuVisible +
+                        " | folder=" + (folderId ?: "root") +
+                        " | destination=" + state.destination +
+                        " | rootGrouping=" + settings.groupRoot +
+                        " | externalGrouping=" + settings.groupExternal +
+                        " | physicalUnsupported=" +
+                            state.physicalDestinationUnsupported
                 )
                 break
             }
@@ -1662,8 +1679,14 @@ internal class PlaylistFolderPreviewController(
         if (!isPicker(list)) return
         val fab = multiSelect.folderNativeFab(list) ?: return
         val selected = multiSelect.hasFolderSelection(list)
-        val destination = creationDestination(browser)
-        val show = selected || destination != null
+        val state = PlaylistCreationUiPolicy.state(
+            foldersEnabled = settings.enabled,
+            currentFolderId = browser.currentFolderId,
+            mainPlaylistDirectory = browser.rootPath,
+            groupRootPlaylists = settings.groupRoot,
+            hasPickerSelection = selected
+        )
+        val show = state.pickerFabVisible
         if (show) {
             if (fab.visibility != View.VISIBLE ||
                 fab.alpha < 1f || fab.translationY != 0f
@@ -1700,12 +1723,19 @@ internal class PlaylistFolderPreviewController(
         ) return false
         val browser = currentBrowser(picker = true) ?: return false
         if (multiSelect.hasFolderSelection(browser.list)) return false
-        val destination = creationDestination(browser)
+        val state = PlaylistCreationUiPolicy.state(
+            foldersEnabled = settings.enabled,
+            currentFolderId = browser.currentFolderId,
+            mainPlaylistDirectory = browser.rootPath,
+            groupRootPlaylists = settings.groupRoot,
+            hasPickerSelection = false
+        )
+        val destination = state.destination
         if (destination == null) {
             Log.i(TAG, "FOLDER CREATE BLOCK | location forbids creation")
             return true
         }
-        if (destination != browser.rootPath) {
+        if (state.physicalDestinationUnsupported) {
             Toast.makeText(
                 browser.list.context,
                 "Creating playlists in subfolders is not supported in " +

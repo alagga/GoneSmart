@@ -464,6 +464,18 @@ behind another fragment and subsequently returns to the foreground.
 An actual list detach always clears the hold. The Add picker uses
 its own independent window and does not apply this tab-only guard.
 
+### 2026-09-25 — unified create-control matrix
+
+The same pure creation UI policy now drives both native surfaces so they cannot drift apart during folder navigation or option changes. The intended matrix for **Group root playlists** is:
+
+| Location | Group root ON | Group root OFF |
+| --- | --- | --- |
+| Root | hide `menuAdd` and picker creation `+` | show native root creation |
+| Virtual Other Locations | show native root creation | hide create control |
+| Physical subfolder | normal overflow item hidden until native subfolder destination is verified; picker `+` remains visible but its create click is guarded | same |
+
+**Group external playlists is deliberately irrelevant to creation permission**; it changes only whether external playlists appear inside virtual Other Locations. Active multi-destination selection always keeps the picker FAB visible as the confirmation control, even where playlist creation itself is hidden. Unit tests cover root, virtual, physical, selection override, and folders-disabled behavior.
+
 ### 2026-09-25 — runtime-native typography and folder-return state
 
 The maintainer's latest device test confirms the thin folder outline, corrected Add-picker background, picker plus FAB, live selection color and two-destination multi-add. The remaining visual mismatch is typography: the native bound compact row reports a 30 px base `metadataTextEntry`, but GMMP renders its playlist headline differently. The previous GoneSmart 30→45 px proportional correction is therefore removed as a primary strategy.
