@@ -122,6 +122,10 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    // Match the exact AndroidX RecyclerView version packaged by GMMP 4.2.0.
+    // Both playlist ItemAnimator and Files quickNav EdgeEffectFactory run
+    // on GMMP's host-process RecyclerView implementation at runtime.
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     implementation(
         "io.github.libxposed:service:102.0.0"

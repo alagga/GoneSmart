@@ -28,7 +28,9 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
+import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.SimpleItemAnimator
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -115,6 +117,10 @@ internal class PlaylistFolderPreviewController(
         val paddingStartPx: Int,
         val paddingEndPx: Int,
         val nativeTouchBackground: Drawable.ConstantState?,
+        val edgeEffectFactory: RecyclerView.EdgeEffectFactory?,
+        val nativeOverScrollMode: Int,
+        val nativeClipToPadding: Boolean,
+        val nativeNestedScrolling: Boolean,
         val signature: String
     )
 
@@ -123,7 +129,7 @@ internal class PlaylistFolderPreviewController(
         val parent: ViewGroup,
         val overlay: FrameLayout,
         val rows: LinearLayout,
-        val breadcrumbScroller: HorizontalScrollView,
+        val breadcrumbScroller: RecyclerView,
         val breadcrumbRows: LinearLayout,
         val rootPath: String,
         var index: PlaylistFolderIndex.Result,
@@ -318,6 +324,23 @@ internal class PlaylistFolderPreviewController(
         list.post(retry)
     }
 
+    /**
+     * Exact installed GMMP 4.2.0 quickNav physics, where available.
+     * EdgeEffectFactory manufactures independent native EdgeEffects for
+     * this RecyclerView; never steal/reparent GMMP's live quickNav view.
+     * Before Files was first opened, AndroidX RecyclerView's own default
+     * factory implements the same native stretch engine on Android 12+.
+     */
+    private fun applyNativeQuickNavPhysics(header: RecyclerView) {
+        val source = observedNativeBreadcrumbStyle ?: return
+        source.edgeEffectFactory?.let {
+            if (header.edgeEffectFactory !== it) header.edgeEffectFactory = it
+        }
+        header.overScrollMode = source.nativeOverScrollMode
+        header.clipToPadding = source.nativeClipToPadding
+        header.isNestedScrollingEnabled = source.nativeNestedScrolling
+    }
+
     private fun nativeQuickNavTitleRatio(list: View): Float {
         sampledQuickNavRatio?.let { return it }
         val cached = list.context.getSharedPreferences(
@@ -354,11 +377,18 @@ internal class PlaylistFolderPreviewController(
             ?: original.height.coerceAtLeast(dp(list, 44))
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
+        val nativeNav = list as? RecyclerView
+        val edgeFactory = nativeNav?.edgeEffectFactory
+        val nativeScrollMode = nativeNav?.overScrollMode ?: View.OVER_SCROLL_ALWAYS
+        val nativeClip = nativeNav?.clipToPadding ?: false
+        val nativeNested = nativeNav?.isNestedScrollingEnabled ?: true
         val signature = listOf(
             paint.textSize, paint.color, paint.typeface?.style ?: 0,
             original.letterSpacing, original.includeFontPadding, height,
             original.paddingStart, original.paddingEnd,
-            nativeTouch?.javaClass?.name
+            nativeTouch?.javaClass?.name,
+            edgeFactory?.javaClass?.name, nativeScrollMode,
+            nativeClip, nativeNested
         ).joinToString(":")
         if (observedNativeBreadcrumbStyle?.signature == signature) {
             return true
@@ -380,6 +410,10 @@ internal class PlaylistFolderPreviewController(
             paddingStartPx = original.paddingStart,
             paddingEndPx = original.paddingEnd,
             nativeTouchBackground = nativeTouch,
+            edgeEffectFactory = edgeFactory,
+            nativeOverScrollMode = nativeScrollMode,
+            nativeClipToPadding = nativeClip,
+            nativeNestedScrolling = nativeNested,
             signature = signature
         )
         Log.i(
@@ -396,7 +430,10 @@ internal class PlaylistFolderPreviewController(
                     browser.currentFolderId != null &&
                     browser.overlay.visibility == View.VISIBLE &&
                     isFrontFragmentView(browser.list)
-                ) safeRender(browser)
+                ) {
+                    applyNativeQuickNavPhysics(browser.breadcrumbScroller)
+                    safeRender(browser)
+                }
             }
         }
         return true
@@ -660,38 +697,55 @@ internal class PlaylistFolderPreviewController(
         // Match GMMP's Files tab: a fixed horizontal navigation strip
         // above the scrollable contents, not a fake Back playlist row.
         // The strip is GONE in root, preserving its original height.
-        val breadcrumbScroller = HorizontalScrollView(list.context).apply {
-            isHorizontalScrollBarEnabled = false
-            isFillViewport = false
-            // Native Files quickNav stretches at both ends, even if the
-            // two-segment path would otherwise fit inside the viewport.
-            overScrollMode = View.OVER_SCROLL_ALWAYS
-            visibility = View.GONE
-        }
+        // GMMP's Files quickNav is an actual AndroidX RecyclerView.
+        // Use the SAME scrolling/EdgeEffect implementation rather than
+        // approximating its short-path stretch via a HorizontalScrollView.
         val breadcrumbRows = LinearLayout(list.context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        breadcrumbScroller.addOnLayoutChangeListener {
-                _, left, _, right, _, _, _, _, _ ->
-            val width = right - left
-            if (width > 0) {
-                // A 1px scroll range lets HorizontalScrollView intercept
-                // swipes and dispatch native Android 12+ stretch EdgeEffects
-                // for short paths, just like GMMP's native RecyclerView.
-                val min = width + 1
-                if (breadcrumbRows.minimumWidth != min) {
-                    breadcrumbRows.minimumWidth = min
+        val breadcrumbScroller = RecyclerView(list.context).apply {
+            layoutManager = LinearLayoutManager(
+                context, RecyclerView.HORIZONTAL, false
+            )
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_ALWAYS
+            clipToPadding = false
+            itemAnimator = null // path updates themselves are not insertions
+            visibility = View.GONE
+            adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+                override fun getItemCount() = 1
+
+                override fun onCreateViewHolder(
+                    parent: ViewGroup, viewType: Int
+                ): RecyclerView.ViewHolder {
+                    val frame = FrameLayout(parent.context).apply {
+                        layoutParams = RecyclerView.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                    return object : RecyclerView.ViewHolder(frame) {}
+                }
+
+                override fun onBindViewHolder(
+                    holder: RecyclerView.ViewHolder, position: Int
+                ) {
+                    val frame = holder.itemView as FrameLayout
+                    (breadcrumbRows.parent as? ViewGroup)
+                        ?.removeView(breadcrumbRows)
+                    frame.removeAllViews()
+                    frame.addView(
+                        breadcrumbRows,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
                 }
             }
         }
-        breadcrumbScroller.addView(
-            breadcrumbRows,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
+        applyNativeQuickNavPhysics(breadcrumbScroller)
         val contentColumn = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -1041,7 +1095,7 @@ internal class PlaylistFolderPreviewController(
     private fun renderBreadcrumb(browser: Browser) {
         val list = browser.list
         val strip = browser.breadcrumbScroller
-        val previousScrollX = strip.scrollX
+        val previousScrollX = breadcrumbScrollOffset(strip)
         val previousMaxScrollX =
             (browser.breadcrumbRows.width - strip.width).coerceAtLeast(0)
         val previousWasAtEnd =
@@ -1063,6 +1117,7 @@ internal class PlaylistFolderPreviewController(
 
         val native = styles[list]
         val nav = observedNativeBreadcrumbStyle
+        applyNativeQuickNavPhysics(strip)
         val height = nav?.rowHeightPx ?: native?.rowHeight ?: dp(list, 48)
         strip.layoutParams = strip.layoutParams.apply { this.height = height }
         strip.visibility = View.VISIBLE
@@ -1187,9 +1242,15 @@ internal class PlaylistFolderPreviewController(
                 )
             )
         }
-        // Do not snap back to the right on an ordinary theme/layout
-        // refresh; this previously made manual breadcrumb swipes unreliable.
-        // Only navigation changes should reveal the newest path component.
+        // A single oversized native RecyclerView holder carries the
+        // same clickable native GMMP path labels. Invalidate its measured
+        // width after a path/font change without replacing the scroller:
+        // AndroidX, not a 1px HorizontalScrollView workaround, now owns
+        // fling, touch slop and edge stretch.
+        strip.adapter?.notifyItemChanged(0)
+        strip.requestLayout()
+        // Preserve a deliberate left swipe on normal redraw. Actual folder
+        // navigation always reveals the newest/rightmost folder.
         val reposition = object : Runnable {
             var retries = 0
             override fun run() {
@@ -1200,6 +1261,7 @@ internal class PlaylistFolderPreviewController(
                 ) return
                 if ((strip.width <= 0 ||
                         browser.breadcrumbRows.width <= 0 ||
+                        strip.getChildAt(0) == null ||
                         strip.isLayoutRequested ||
                         browser.breadcrumbRows.isLayoutRequested) &&
                     ++retries <= 10
@@ -1207,16 +1269,22 @@ internal class PlaylistFolderPreviewController(
                     strip.postOnAnimation(this)
                     return
                 }
-                val x = PlaylistBreadcrumbScrollPolicy.targetX(
+                val target = PlaylistBreadcrumbScrollPolicy.targetX(
                     folderChanged || (contentChanged && previousWasAtEnd),
                     previousScrollX,
                     browser.breadcrumbRows.width,
                     strip.width
                 )
-                strip.scrollTo(x, 0)
+                strip.scrollBy(target - breadcrumbScrollOffset(strip), 0)
             }
         }
         strip.postOnAnimation(reposition)
+    }
+
+    private fun breadcrumbScrollOffset(header: RecyclerView): Int {
+        // RecyclerView does not use View.scrollX: its LayoutManager offsets
+        // child views instead. There is exactly one wide native holder.
+        return (-(header.getChildAt(0)?.left ?: 0)).coerceAtLeast(0)
     }
 
     private fun safeRender(browser: Browser) {
@@ -1375,43 +1443,110 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * Mirror the *bound native* RecyclerView ItemAnimator's actual add/move
-     * durations rather than inventing an unrelated GoneSmart animation.
-     * The overlay still uses native row XML; a newly inserted row fades
-     * in while rows below it move into place. Initial attach, folder changes,
-     * selection and theme-only renders never play an insertion animation.
+     * Reuse GMMP's actual installed ItemAnimator implementation, not just
+     * approximate its timing with View.animate. A separate same-class
+     * instance is required: sharing the original instance would mix the
+     * two RecyclerViews' pending ViewHolders and corrupt GMMP's own list.
+     *
+     * DefaultItemAnimator's animateAdd/animateMove/runPendingAnimations
+     * work with native XML views wrapped in standalone ViewHolders. The
+     * source Animator supplies the exact implementation, durations and
+     * interpolators of the live GMMP skin. Unclonable custom implementations
+     * fall back to the previous visual approximation, with a bounded log.
      */
+    private fun cloneNativeItemAnimator(
+        source: RecyclerView.ItemAnimator?
+    ): RecyclerView.ItemAnimator? {
+        if (source == null) return null
+        return runCatching {
+            val clone = source.javaClass.getDeclaredConstructor()
+                .apply { isAccessible = true }.newInstance()
+                as? RecyclerView.ItemAnimator ?: return@runCatching null
+            clone.addDuration = source.addDuration
+            clone.moveDuration = source.moveDuration
+            clone.changeDuration = source.changeDuration
+            clone.removeDuration = source.removeDuration
+            if (clone is SimpleItemAnimator && source is SimpleItemAnimator) {
+                clone.supportsChangeAnimations =
+                    source.supportsChangeAnimations
+            }
+            clone
+        }.onFailure {
+            Log.w(
+                TAG, "FOLDER NATIVE ANIMATOR | exact clone unavailable", it
+            )
+        }.getOrNull()
+    }
+
     private fun animateNativePlaylistInsertion(
         browser: Browser,
         plan: PlaylistFolderInsertionPlanner.Plan,
         rowViews: List<View>
     ) {
         val list = browser.list
-        val nativeAnimator = runCatching {
-            list.javaClass.getMethod("getItemAnimator").invoke(list)
-        }.getOrNull()
-        fun duration(name: String, fallback: Long): Long = runCatching {
-            (nativeAnimator?.javaClass?.getMethod(name)
-                ?.invoke(nativeAnimator) as? Number)?.toLong()
-        }.getOrNull()?.coerceIn(0L, 2_000L) ?: fallback
-
-        val addMs = duration("getAddDuration", 120L)
-        val moveMs = duration("getMoveDuration", 250L)
-        val interpolator = ValueAnimator().interpolator
+        val native = (list as? RecyclerView)?.itemAnimator
+        val clone = cloneNativeItemAnimator(native)
         val moved = plan.shiftBefore.any { it > 0 }
         val expectedOrder = browser.lastRenderedOrder
+        if (clone != null) {
+            // Construct independent holders for our bound native XML rows;
+            // the ORIGINAL player animator instance and adapter are never
+            // modified or attached to the overlay.
+            rowViews.forEachIndexed { index, row ->
+                val holder = object : RecyclerView.ViewHolder(row) {}
+                when {
+                    plan.newKeys.contains(plan.nextOrder[index]) -> {
+                        clone.animateAdd(holder)
+                    }
+                    plan.shiftBefore[index] > 0 -> {
+                        val height = styles[list]?.rowHeight ?: dp(list, 48)
+                        val shift = height * plan.shiftBefore[index]
+                        clone.animateMove(holder, 0, -shift, 0, 0)
+                    }
+                }
+            }
+            browser.rows.postOnAnimation {
+                if (browsers[list] === browser &&
+                    browser.lastRenderedOrder === expectedOrder &&
+                    browser.lastRenderedFolderId == browser.currentFolderId
+                ) {
+                    clone.runPendingAnimations()
+                } else {
+                    clone.endAnimations()
+                    rowViews.forEach {
+                        it.alpha = 1f
+                        it.translationY = 0f
+                    }
+                }
+            }
+            Log.i(
+                TAG,
+                "FOLDER NATIVE ANIMATOR | exact class=" +
+                    clone.javaClass.name + " | surface=" + surface(list) +
+                    " | addMs=" + clone.addDuration +
+                    " | moveMs=" + clone.moveDuration +
+                    " | inserted=" + plan.newKeys.size
+            )
+            return
+        }
+
+        // Only for a GMMP version with an unavailable/non-clonable animator.
+        // Keep behavior functional without pretending this branch is exact.
+        val addMs = native?.addDuration ?: 120L
+        val moveMs = native?.moveDuration ?: 250L
+        val interpolator = ValueAnimator().interpolator
         rowViews.forEachIndexed { index, item ->
             if (plan.newKeys.contains(plan.nextOrder[index])) {
                 item.alpha = 0f
             } else if (plan.shiftBefore[index] > 0) {
-                val itemHeight = styles[list]?.rowHeight ?: dp(list, 48)
+                val height = styles[list]?.rowHeight ?: dp(list, 48)
                 item.translationY =
-                    -(itemHeight * plan.shiftBefore[index]).toFloat()
+                    -(height * plan.shiftBefore[index]).toFloat()
             }
         }
         browser.rows.postOnAnimation {
             if (browsers[list] !== browser ||
-                browser.lastRenderedOrder != expectedOrder ||
+                browser.lastRenderedOrder !== expectedOrder ||
                 browser.lastRenderedFolderId != browser.currentFolderId
             ) return@postOnAnimation
             rowViews.forEachIndexed { index, item ->
@@ -1420,23 +1555,18 @@ internal class PlaylistFolderPreviewController(
                     item.animate().alpha(1f)
                         .setStartDelay(if (moved) moveMs else 0L)
                         .setDuration(addMs)
-                        .setInterpolator(interpolator)
-                        .start()
+                        .setInterpolator(interpolator).start()
                 } else if (plan.shiftBefore[index] > 0) {
                     item.animate().translationY(0f)
                         .setDuration(moveMs)
-                        .setInterpolator(interpolator)
-                        .start()
+                        .setInterpolator(interpolator).start()
                 }
             }
         }
-        Log.i(
+        Log.w(
             TAG,
-            "FOLDER INLINE INSERT | surface=" + surface(list) +
-                " | inserted=" + plan.newKeys.size +
-                " | nativeAnimator=" +
-                (nativeAnimator?.javaClass?.simpleName ?: "unavailable") +
-                " | addMs=" + addMs + " | moveMs=" + moveMs
+            "FOLDER NATIVE ANIMATOR | fallback surface=" + surface(list) +
+                " | sourceClass=" + (native?.javaClass?.name ?: "none")
         )
     }
 
