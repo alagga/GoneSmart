@@ -84,16 +84,17 @@ internal class PlaylistFolderPreviewController(
         val overlay: FrameLayout,
         val rows: LinearLayout,
         val rootPath: String,
-        val index: PlaylistFolderIndex.Result,
-        val modelsByPath: Map<String, Any>,
-        val nativeOrder: List<String>,
+        var index: PlaylistFolderIndex.Result,
+        var modelsByPath: Map<String, Any>,
+        var nativeOrder: List<String>,
         val originalAlpha: Float,
         val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
         val themeListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var currentFolderId: String? = null,
         var actionPending: Boolean = false,
-        var nativeNavigationInProgress: Boolean = false
+        var nativeNavigationInProgress: Boolean = false,
+        var nativeRefreshPending: Boolean = false
     )
 
     private var settings = Settings()
@@ -450,6 +451,7 @@ internal class PlaylistFolderPreviewController(
                     browsers[current]?.let { browser ->
                         runCatching {
                             positionOverlay(browser)
+                            scheduleNativePlaylistRefresh(browser)
                         }.onFailure { error ->
                             Log.e(TAG, "FOLDER INLINE ERROR | theme probe", error)
                             removeBrowser(current)
@@ -650,6 +652,87 @@ internal class PlaylistFolderPreviewController(
         )
     }
 
+    /**
+     * GMMP can update its adapter without replacing the RecyclerView.
+     * Refresh the already-visible folder browser when its full native
+     * playlist model changes; never wait for a tab switch or scan M3Us.
+     * Work is posted outside the pre-draw/layout traversal.
+     */
+    private fun scheduleNativePlaylistRefresh(browser: Browser) {
+        if (browser.nativeRefreshPending || browser.nativeNavigationInProgress ||
+            !browser.list.isAttachedToWindow ||
+            browsers[browser.list] !== browser
+        ) return
+        val adapter = nativeAdapter(browser.list) ?: return
+        val count = runCatching {
+            adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
+        }.getOrNull() ?: return
+        if (count == browser.nativeOrder.size) return
+        browser.nativeRefreshPending = true
+        mainHandler.post {
+            browser.nativeRefreshPending = false
+            if (browsers[browser.list] !== browser ||
+                !browser.list.isAttachedToWindow ||
+                browser.nativeNavigationInProgress
+            ) return@post
+            runCatching {
+                val currentAdapter = nativeAdapter(browser.list) ?: return@runCatching
+                val actualCount = currentAdapter.javaClass
+                    .getMethod("getItemCount").invoke(currentAdapter) as Int
+                if (actualCount == browser.nativeOrder.size || actualCount <= 0) {
+                    return@runCatching
+                }
+                val native = NativePlaylistSourceInspector.inspect(
+                    currentAdapter, actualCount
+                )
+                if (native.truncated || native.paths.size != actualCount ||
+                    native.nativeObjects.size != actualCount
+                ) return@runCatching
+                val visibleTitles = currentlyVisibleTitles(browser.list)
+                val titles = NativePlaylistTitleResolver.resolve(
+                    native.models, visibleTitles
+                )
+                if (titles.nativeTitles != actualCount) return@runCatching
+                val refreshed = PlaylistFolderIndex.build(
+                    nativePlaylistPaths = native.paths,
+                    mainPlaylistDirectory = browser.rootPath,
+                    groupExternalLocations = settings.groupExternal,
+                    groupRootPlaylists = settings.groupRoot,
+                    displayNamesByPath = titles.names + visibleTitles
+                )
+                browser.index = refreshed
+                browser.modelsByPath = native.nativeObjects
+                browser.nativeOrder = native.paths
+                if (browser.currentFolderId != null &&
+                    findFolder(refreshed, browser.currentFolderId) == null
+                ) {
+                    browser.currentFolderId = null
+                    rememberFolder(browser)
+                }
+                safeRender(browser)
+                Log.i(
+                    TAG,
+                    "FOLDER INLINE REFRESH | surface=" + surface(browser.list) +
+                        " | models=" + actualCount
+                )
+            }.onFailure {
+                Log.w(TAG, "FOLDER INLINE REFRESH | retry on next frame", it)
+            }
+        }
+    }
+
+    private fun folderBreadcrumb(browser: Browser, folder: PlaylistFolderIndex.Folder): String {
+        val names = mutableListOf<String>()
+        val visited = hashSetOf<String>()
+        var current: PlaylistFolderIndex.Folder? = folder
+        while (current != null && visited.add(current.id)) {
+            names.add(current.name)
+            val parentId = parentFolderId(browser, current)
+            current = if (parentId == null) null else findFolder(browser.index, parentId)
+        }
+        return (listOf("Playlists") + names.asReversed()).joinToString("  ›  ")
+    }
+
     private fun safeRender(browser: Browser) {
         runCatching {
             render(browser)
@@ -676,7 +759,7 @@ internal class PlaylistFolderPreviewController(
             browser.rows.addView(
                 row(
                     list,
-                    "‹  " + folder.name,
+                    "‹  " + folderBreadcrumb(browser, folder),
                     folder = true,
                     selected = false
                 ).apply {
