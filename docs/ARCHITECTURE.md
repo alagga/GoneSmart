@@ -91,6 +91,15 @@ A queue/session change or recommendation-affecting settings change invalidates t
 
 ## Companion app
 
+The maintainer's detailed, persistent rules for GoneSmart's dark/lilac
+companion UI, grouped options, exact design tokens, two-star sparkle
+branding of GoneSmart-added GMMP actions and in-app/GitHub documentation
+live in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md); overarching coding and
+new-chat handoff rules live in [AGENTS.md](../AGENTS.md).
+The companion's fixed brand palette is distinct from GMMP's live
+Aesthetic/album-art-driven injected-UI palette.
+
+
 The companion app provides:
 
 - module / target status

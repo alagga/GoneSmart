@@ -23,7 +23,7 @@
   </p>
 </div>
 
-> **Working on GoneSmart or resuming in a new chat?** Read [AGENTS.md](AGENTS.md) first. It records the maintainer's persistent coding, translation, GMMP design/theme, GitHub/CI and device-testing rules, plus the current development-branch handoff. Follow the feature-specific documents it links.
+> **Working on GoneSmart or resuming in a new chat?** Read [AGENTS.md](AGENTS.md) first, then [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) for GoneSmart's companion-app colors, setting-card presentation and the shared two-star sparkle on added GMMP actions. It records the maintainer's persistent coding, translation, GMMP design/theme, GitHub/CI and device-testing rules, plus the current development-branch handoff. Follow the feature-specific documents it links.
 
 ---
 
