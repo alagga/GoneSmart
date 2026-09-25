@@ -922,9 +922,11 @@ class GoneSmartModule : XposedModule() {
         listOf("sp3" to "main", "fo3" to "picker").forEach { (name, surface) ->
             runCatching {
                 val native = param.classLoader.loadClass(name)
+                // DEX confirms Kotlin Function2: two Object arguments,
+                // one Object return. The earlier three-argument lookup
+                // could never install either probe on GMMP 4.2.0.
                 val invoke = native.getDeclaredMethod(
                     "invoke",
-                    Any::class.java,
                     Any::class.java,
                     Any::class.java
                 ).apply { isAccessible = true }
