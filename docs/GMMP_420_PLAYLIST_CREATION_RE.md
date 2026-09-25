@@ -29,3 +29,17 @@ These observations were obtained by parsing DEX string/type/method/class tables 
 5. Regression-test root and virtual Other Locations both ways, physical folders at multiple depths, duplicate filename, invalid/vanished destination, picker and tab create, database row identity and list refresh. Device verification is required; unit/CI green alone cannot certify GMMP internals.
 
 The current branch intentionally retains the physical-creation guard and the working root flow. Do not enable subfolder creation based on `hp3.d` or `x6.b` alone.
+
+## 2026-09-25 follow-up: both native create lambdas located
+
+A second offline DEX cross-reference pass on the same privately supplied APK identified **two concrete playlist-creation lambdas**, rather than only the event subscriber. The observed instruction references in `classes3.dex` are:
+
+| Native method | Verified bytecode observations | Implication |
+| --- | --- | --- |
+| `sp3.invoke(Object,Object,Object)` (constructor `sp3(tp3)`) | Resolves a delegated value through `k15.getValue()` / `hr3.getValue()`; concatenates the entered name with `.m3u`; constructs `File(String,String)`; calls `hp3.d()`; obtains the absolute output path; calls `t6.f(Context,String[])`. | **Main Playlists presenter** create-file lambda. Its construction of the destination file is now localized; determine which delegated property supplies its parent directory before introducing a destination hook. |
+| `fo3.invoke(Object,Object,Object)` (constructor `fo3(go3)`) | Has the same delegated-value, `.m3u`, `File(String,String)`, `hp3.d()`, absolute-path and `t6.f(Context,String[])` sequence; additionally copies the incoming selected tracks to the new playlist and publishes a result event. | **Add-to-Playlist presenter** create-file lambda. The two surfaces have **separate callbacks but the same file-construction pattern**; modify/verify both, not only the main tab. |
+| `rp3.call(Object)` (constructor `rp3(tp3)`) | Builds `File(String)` from a delegated value and calls `x6.b(Context,File)`. | A separate file-registration path associated with the main presenter; its trigger and whether new creation depends on it still need runtime verification. |
+
+The same APK contains `zp3.M(Context,wp3)` for existing-playlist operations, but it is **not** the new-file constructor above. Both new-file constructors run in their own obfuscated lambdas. The exact delegate instance and its source (configured GMMP playlist root vs. another path) have not yet been established; neither an arbitrary `File` hook nor a guessed direct DB insert is safe.
+
+**Next narrowly scoped implementation step:** Add debug-only, version-guarded entry/exit observations for `sp3.invoke` and `fo3.invoke` on GMMP 4.2.0, recording only whether the expected type/signature and the intended create action were observed, with private path values redacted. Verify the actual parent-path delegate and whether `t6.f` updates GMMP's index on the real device. Then intercept the validated parent **within each create callback**, preserving original name validation, content writing, native indexing and success handling. Keep the existing physical-folder guard in place until those gates pass.
