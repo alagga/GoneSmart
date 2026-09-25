@@ -108,7 +108,9 @@ internal class PlaylistFolderPreviewController(
         var currentFolderId: String? = null,
         var actionPending: Boolean = false,
         var nativeNavigationInProgress: Boolean = false,
-        var nativeRefreshPending: Boolean = false
+        var nativeRefreshPending: Boolean = false,
+        var renderedBreadcrumbSignature: String? = null,
+        var breadcrumbRefreshPending: Boolean = false
     )
 
     private var settings = Settings()
@@ -280,7 +282,9 @@ internal class PlaylistFolderPreviewController(
         mainHandler.post {
             browsers.values.toList().forEach { browser ->
                 if (browser.list.isAttachedToWindow &&
-                    browser.currentFolderId != null
+                    browser.currentFolderId != null &&
+                    browser.overlay.visibility == View.VISIBLE &&
+                    isFrontFragmentView(browser.list)
                 ) safeRender(browser)
             }
         }
@@ -748,6 +752,21 @@ internal class PlaylistFolderPreviewController(
         if (!nativeVisible) return
         updatePickerFab(browser)
         updatePlaylistMenu()
+        val breadcrumbSignature =
+            observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
+        if (browser.currentFolderId != null &&
+            browser.renderedBreadcrumbSignature != breadcrumbSignature &&
+            !browser.breadcrumbRefreshPending
+        ) {
+            browser.breadcrumbRefreshPending = true
+            list.post {
+                browser.breadcrumbRefreshPending = false
+                if (browsers[list] === browser &&
+                    browser.renderedBreadcrumbSignature != breadcrumbSignature &&
+                    list.isAttachedToWindow
+                ) safeRender(browser)
+            }
+        }
         // GMMP's Aesthetic theme can change live with album art or user
         // settings. Mirror the real native row typography/background each
         // time its rendered style changes; never freeze an Android theme
@@ -899,6 +918,8 @@ internal class PlaylistFolderPreviewController(
         val segments = PlaylistBreadcrumbPath.forFolder(
             browser.index, browser.currentFolderId
         )
+        browser.renderedBreadcrumbSignature =
+            observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
         if (segments.isEmpty()) {
             strip.visibility = View.GONE
             browser.breadcrumbRows.removeAllViews()
@@ -1033,6 +1054,15 @@ internal class PlaylistFolderPreviewController(
         // folder navigation and the Add picker do not get a fake menu.
         val nativeMenu = if (isPicker(list)) null else {
             firstBoundNativeContextMenu(list)
+        }
+        if (!isPicker(list) && nativeMenu == null &&
+            observedMenus.add("native-playlist-row-menu-unavailable")
+        ) {
+            Log.w(
+                TAG,
+                "FOLDER CONTEXT MENU | native rvContextMenu not bound" +
+                    " | rows=" + list.childCount
+            )
         }
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
