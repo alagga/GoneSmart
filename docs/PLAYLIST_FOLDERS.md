@@ -464,6 +464,16 @@ behind another fragment and subsequently returns to the foreground.
 An actual list detach always clears the hold. The Add picker uses
 its own independent window and does not apply this tab-only guard.
 
+### 2026-09-25 — latest 12:43–12:48 device report and effective-native-font fix
+
+The user's test of commit `df1d04e` confirms the root and virtual Other Locations menu-create visibility policy for both values of Group root playlists. At 12:46, a native creation succeeded: the playlist adapter increased from 248 to 249 entries. The Add picker has the proper background, native highlight and plus button. The log also confirms that real physical creation was still blocked at `GoneSmart Tests/Level2`: `FOLDER CREATE GUARD | native root-only callback`.
+
+The title mismatch persisted because GoneSmart copied a base `metadataTextEntry` of 30 px from a native `SpannedString` without resolving its full-range `RelativeSizeSpan`, `TypefaceSpan` and `ForegroundColorSpan`. The next debug implementation reads Android's actual native `TextPaint`, applies relevant `MetricAffectingSpan.updateMeasureState` followed by draw-only spans and copies the resulting effective pixel size, color and typeface to each synthetic row. It does **not** use a static size or multiply the effective size twice. The diagnostic now logs actual relative factors and span ranges.
+
+The native tab briefly flashed during native detail and Now Playing transitions because the native list alpha was restored while GMMP was still navigating. The next iteration preserves the invisible native recycler alpha during fragment transitions and restores it only when the feature is turned off or attachment fails; it also avoids hiding the folder overlay merely because native navigation has been requested, waiting for actual foreground visibility.
+
+**Physical-folder creation remains an explicit safety blocker.** To make it real instead of cosmetic, map GMMP 4.2.0's native playlist-creation destination writer and DB registration, preferably from the installed APK. Do not create in root and then move the M3U or mutate `xn3` objects without confirmed native transactional behavior; manual moves previously left stale database rows. After identifying the writer, enable the same current-folder destination in both the normal overflow `menuAdd` and picker FAB, with confirmation continuing to take priority when multi-select has selected paths.
+
 ### 2026-09-25 — unified create-control matrix
 
 The same pure creation UI policy now drives both native surfaces so they cannot drift apart during folder navigation or option changes. The intended matrix for **Group root playlists** is:

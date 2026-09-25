@@ -14,6 +14,9 @@ import android.os.Handler
 import android.os.Looper
 import android.graphics.Rect
 import android.text.SpannableString
+import android.text.TextPaint
+import android.text.style.RelativeSizeSpan
+import android.text.style.ForegroundColorSpan
 import android.text.Spanned
 import android.text.style.CharacterStyle
 import android.text.style.MetricAffectingSpan
@@ -99,6 +102,7 @@ internal class PlaylistFolderPreviewController(
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
     private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
     private val folderMemory = PlaylistFolderNavigationMemory()
+    private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingLayoutObservers = WeakHashMap<
         ViewGroup,
@@ -143,6 +147,9 @@ internal class PlaylistFolderPreviewController(
 
         if (!enabled) {
             browsers.keys.toList().forEach(::removeBrowser)
+            knownLists.keys.toList().forEach { list ->
+                nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
+            }
             pendingRetries.clear()
             return
         }
@@ -151,7 +158,9 @@ internal class PlaylistFolderPreviewController(
             // Folder IDs are stable for physical directories, but a virtual
             // node can disappear when its grouping option changes. Validate
             // the remembered location against the freshly rebuilt index.
-            browsers.keys.toList().forEach(::removeBrowser)
+            browsers.keys.toList().forEach { list ->
+                removeBrowser(list, preserveNativeAlpha = true)
+            }
         }
         knownLists.keys.toList().forEach { scheduleAttach(it, 0) }
     }
@@ -210,6 +219,8 @@ internal class PlaylistFolderPreviewController(
                             }
                         }
                         pendingRetries.remove(original)
+                        // Retain the original alpha while the SAME
+                        // RecyclerView can be reused after navigation.
                         suspendedNativeLists.remove(original)
                         knownLists.remove(original)
                     }
@@ -450,7 +461,12 @@ internal class PlaylistFolderPreviewController(
         val detachListener = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) = Unit
             override fun onViewDetachedFromWindow(view: View) {
-                weakList.get()?.let(::removeBrowser)
+                weakList.get()?.let { list ->
+                    removeBrowser(
+                        list,
+                        preserveNativeAlpha = settings.enabled && !isPicker(list)
+                    )
+                }
             }
         }
 
@@ -467,7 +483,7 @@ internal class PlaylistFolderPreviewController(
             index = index,
             modelsByPath = native.nativeObjects,
             nativeOrder = native.paths,
-            originalAlpha = list.alpha,
+            originalAlpha = nativeOriginalAlphas.getOrPut(list) { list.alpha },
             layoutListener = layoutListener,
             themeListener = themeListener,
             detachListener = detachListener,
@@ -515,6 +531,7 @@ internal class PlaylistFolderPreviewController(
     private fun retry(list: ViewGroup, attempt: Int) {
         if (attempt >= MAX_ATTACH_RETRIES) {
             Log.w(TAG, "FOLDER INLINE STOP | attach retries exhausted")
+            nativeOriginalAlphas[list]?.let { list.alpha = it }
             return
         }
         scheduleAttach(list, attempt + 1)
@@ -547,8 +564,7 @@ internal class PlaylistFolderPreviewController(
         val nativeVisible = frontFragment && list.isShown &&
             list.getGlobalVisibleRect(visibleBounds) &&
             visibleBounds.width() > dp(list, 30) &&
-            visibleBounds.height() > dp(list, 30) &&
-            !browser.nativeNavigationInProgress
+            visibleBounds.height() > dp(list, 30)
         val nextVisibility = if (nativeVisible) View.VISIBLE else View.GONE
         if (overlay.visibility != nextVisibility) {
             overlay.visibility = nextVisibility
@@ -585,7 +601,10 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
-    private fun removeBrowser(list: ViewGroup) {
+    private fun removeBrowser(
+        list: ViewGroup,
+        preserveNativeAlpha: Boolean = false
+    ) {
         val browser = browsers.remove(list) ?: return
         styles.remove(list)
 
@@ -595,7 +614,7 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.visibility = View.GONE
         browser.overlay.isClickable = false
         browser.overlay.isFocusable = false
-        list.alpha = browser.originalAlpha
+        list.alpha = if (preserveNativeAlpha) 0f else browser.originalAlpha
         list.removeOnAttachStateChangeListener(browser.detachListener)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.removeOnGlobalLayoutListener(
@@ -790,7 +809,11 @@ internal class PlaylistFolderPreviewController(
                 // Reuse GMMP's exact currently-rendered title style. The
                 // source CharSequence may contain TextAppearance/size spans
                 // that are NOT represented by TextView.textSize alone.
-                target.text = nativeStyledText(native.textTemplate, text)
+                // native.textSizePx is now the live EFFECTIVE native title
+                // paint size after GMMP's MetricAffectingSpan processing.
+                // Applying both that effective size and the original
+                // RelativeSizeSpan would double-scale it.
+                target.text = text
                 target.setTextSize(
                     TypedValue.COMPLEX_UNIT_PX, native.textSizePx
                 )
@@ -1159,7 +1182,7 @@ internal class PlaylistFolderPreviewController(
             // retiring the old browser cannot reveal the native root list.
             suspendedNativeLists[list] = NavigationHold(leftForeground = true)
             browser.overlay.visibility = View.GONE
-            removeBrowser(list)
+            removeBrowser(list, preserveNativeAlpha = true)
             return
         }
 
@@ -1232,6 +1255,41 @@ internal class PlaylistFolderPreviewController(
             }
         }
         return out
+    }
+
+    private fun effectiveNativeTitlePaint(title: TextView): TextPaint {
+        val paint = TextPaint(title.paint)
+        val source = title.text as? Spanned ?: return paint
+        if (source.isEmpty()) return paint
+        // Android applies metric spans before draw-only spans. Include
+        // spans only when they cover the native title's first glyph.
+        val spans = source.getSpans(
+            0, 1, CharacterStyle::class.java
+        ).filter {
+            source.getSpanStart(it) <= 0 && source.getSpanEnd(it) > 0
+        }
+        spans.filterIsInstance<MetricAffectingSpan>()
+            .forEach { it.updateMeasureState(paint) }
+        spans.filterNot { it is MetricAffectingSpan }
+            .forEach { it.updateDrawState(paint) }
+        return paint
+    }
+
+    private fun nativeSpanDetails(source: CharSequence?): String {
+        val text = source as? Spanned ?: return "none"
+        return text.getSpans(
+            0, text.length, CharacterStyle::class.java
+        ).joinToString(";") { span ->
+            val factor = if (span is RelativeSizeSpan) {
+                ":factor=" + span.sizeChange
+            } else ""
+            val color = if (span is ForegroundColorSpan) {
+                ":color=" + span.foregroundColor
+            } else ""
+            span.javaClass.simpleName + "[" +
+                text.getSpanStart(span) + "," +
+                text.getSpanEnd(span) + "]" + factor + color
+        }.ifBlank { "none" }
     }
 
     private fun nativeSpanSignature(text: CharSequence?): String {
@@ -1383,12 +1441,14 @@ internal class PlaylistFolderPreviewController(
             val title = findNativeTitleTextView(nativeRow, name) ?: continue
             val matchedNativeTitle = !name.isNullOrBlank() &&
                 title.text?.toString()?.trim().equals(name.trim(), true)
-            // Do not scale or guess this value. GMMP can encode the visible
-            // headline size in spans/TextAppearance on top of this base
-            // TextView size. We copy both the base value and its spans.
-            val color = title.currentTextColor
-            val size = title.textSize
+            // Read the *effective* native headline TextPaint after the
+            // actual MetricAffectingSpan/ForegroundColorSpan for its first
+            // title glyph. TextView.textSize alone omits RelativeSizeSpan
+            // (30px base was visibly undersized on this GMMP skin).
             val textTemplate = title.text
+            val nativePaint = effectiveNativeTitlePaint(title)
+            val color = nativePaint.color
+            val size = nativePaint.textSize
             val height = nativeRow.height.coerceAtLeast(dp(list, 44))
             val nativeRowPos = IntArray(2)
             val titlePos = IntArray(2)
@@ -1402,7 +1462,8 @@ internal class PlaylistFolderPreviewController(
             val rowBackground = nativeRow.background?.constantState
             val signature = listOf(
                 color, size.toInt(), height, inset, backgroundColor, accent,
-                title.typeface?.style ?: 0, rowBackground?.javaClass?.name,
+                nativePaint.typeface?.style ?: 0,
+                rowBackground?.javaClass?.name,
                 nativeRow.sourceLayoutResId, title.id, matchedNativeTitle,
                 textTemplate?.javaClass?.name,
                 nativeSpanSignature(textTemplate),
@@ -1426,7 +1487,9 @@ internal class PlaylistFolderPreviewController(
                         " | matchedTitle=" + matchedNativeTitle +
                         " | modelName=" + name?.take(60) +
                         " | nativePx=" + title.textSize +
-                        " | appliedBasePx=" + size +
+                        " | effectiveNativePx=" + size +
+                        " | spanDetails=" +
+                            nativeSpanDetails(textTemplate) +
                         " | textClass=" +
                             (textTemplate?.javaClass?.name ?: "null") +
                         " | spans=" + nativeSpanSignature(textTemplate) +
@@ -1438,7 +1501,7 @@ internal class PlaylistFolderPreviewController(
             return NativeRowStyle(
                 textColor = color,
                 textSizePx = size,
-                typeface = title.typeface,
+                typeface = nativePaint.typeface,
                 rowHeight = height,
                 titleInset = inset,
                 backgroundColor = backgroundColor,
