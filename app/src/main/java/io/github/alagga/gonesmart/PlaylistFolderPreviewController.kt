@@ -117,6 +117,10 @@ internal class PlaylistFolderPreviewController(
         val rowHeightPx: Int,
         val paddingStartPx: Int,
         val paddingEndPx: Int,
+        val paddingTopPx: Int,
+        val paddingBottomPx: Int,
+        val nativeFirstTextStartPx: Int,
+        val nativeSeparatorWidthPx: Int?,
         val nativeTouchBackground: Drawable.ConstantState?,
         val edgeEffectFactory: RecyclerView.EdgeEffectFactory?,
         val nativeOverScrollMode: Int,
@@ -262,6 +266,15 @@ internal class PlaylistFolderPreviewController(
                 ?: native?.letterSpacing ?: 0f
             label.includeFontPadding = nav?.includeFontPadding
                 ?: native?.includeFontPadding ?: true
+            // XML supplies the structure. The live sg1 binding can also
+            // apply runtime padding through GMMP's Aesthetic metadata model;
+            // capture that actual bound value rather than assume XML alone.
+            if (nav != null) {
+                label.setPaddingRelative(
+                    nav.paddingStartPx, nav.paddingTopPx,
+                    nav.paddingEndPx, nav.paddingBottomPx
+                )
+            }
             // Native rv_horiz_metadata already supplies the exact item
             // width, minHeight, inset and ROUND selectable background.
             // Never overwrite its XML padding or ripple with guessed dp.
@@ -390,6 +403,11 @@ internal class PlaylistFolderPreviewController(
     private var activeBrowser = WeakReference<ViewGroup>(null)
     private var observedNativeBreadcrumbStyle: NativeBreadcrumbStyle? = null
     private val observedNativeNavLists = WeakHashMap<ViewGroup, Boolean>()
+    private val nativeQuickNavObservers = WeakHashMap<
+        RecyclerView,
+        Pair<RecyclerView.Adapter<*>, RecyclerView.AdapterDataObserver>
+    >()
+    private val quickNavParityReports = hashSetOf<String>()
     private var lastNativePlaylistTitlePx: Float? = null
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
@@ -455,6 +473,7 @@ internal class PlaylistFolderPreviewController(
      * in a session; in that case the live playlist headline is the fallback.
      */
     private fun observeNativeBreadcrumb(list: ViewGroup) {
+        (list as? RecyclerView)?.let(::observeNativeQuickNavEvents)
         if (observedNativeNavLists.containsKey(list)) {
             captureNativeBreadcrumbStyle(list)
             return
@@ -477,6 +496,12 @@ internal class PlaylistFolderPreviewController(
                     weak.get()?.let {
                         it.removeOnLayoutChangeListener(listener)
                         observedNativeNavLists.remove(it)
+                        (it as? RecyclerView)?.let { nav ->
+                            nativeQuickNavObservers.remove(nav)?.let {
+                                (adapter, observer) ->
+                                adapter.unregisterAdapterDataObserver(observer)
+                            }
+                        }
                     }
                 }
             }
@@ -486,11 +511,56 @@ internal class PlaylistFolderPreviewController(
             override fun run() {
                 val active = weak.get() ?: return
                 if (!active.isAttachedToWindow) return
+                (active as? RecyclerView)?.let(::observeNativeQuickNavEvents)
                 if (captureNativeBreadcrumbStyle(active)) return
                 if (++attempts < 8) active.postDelayed(this, ATTACH_RETRY_MS)
             }
         }
         list.post(retry)
+    }
+
+    /**
+     * GMMP's qg1 may update while its RecyclerView bounds stay unchanged;
+     * OnLayoutChange alone then misses new separator measurements. Listen
+     * only to the original adapter's public observer API. Never call its
+     * notify methods or hold its views across Activity destruction.
+     */
+    private fun observeNativeQuickNavEvents(list: RecyclerView) {
+        val source = list.adapter ?: return
+        val current = nativeQuickNavObservers[list]
+        if (current?.first === source) return
+        current?.let { (old, observer) ->
+            old.unregisterAdapterDataObserver(observer)
+        }
+        val weakList = WeakReference(list)
+        val observer = object : RecyclerView.AdapterDataObserver() {
+            private fun refresh(what: String) {
+                val live = weakList.get() ?: return
+                Log.i(
+                    TAG,
+                    "FOLDER NATIVE QUICKNAV EVENT | kind=" + what +
+                        " | count=" + (live.adapter?.itemCount ?: -1) +
+                        " | animator=" +
+                        (live.itemAnimator?.javaClass?.simpleName ?: "none")
+                )
+                live.post {
+                    if (live.isAttachedToWindow &&
+                        !live.isComputingLayout
+                    ) captureNativeBreadcrumbStyle(live)
+                }
+            }
+            override fun onChanged() = refresh("changed")
+            override fun onItemRangeInserted(start: Int, count: Int) =
+                refresh("insert:" + count)
+            override fun onItemRangeRemoved(start: Int, count: Int) =
+                refresh("remove:" + count)
+            override fun onItemRangeMoved(from: Int, to: Int, count: Int) =
+                refresh("move:" + count)
+            override fun onItemRangeChanged(start: Int, count: Int) =
+                refresh("update:" + count)
+        }
+        source.registerAdapterDataObserver(observer)
+        nativeQuickNavObservers[list] = source to observer
     }
 
     /**
@@ -577,6 +647,14 @@ internal class PlaylistFolderPreviewController(
         val nativeHeaderStart = nativeFirstItem?.left
             ?: nativeNav?.paddingStart ?: 0
         val nativeHeaderEnd = nativeNav?.paddingEnd ?: 0
+        val firstTextStart = nativeHeaderStart + original.paddingStart
+        val nativeSeparatorWidth = nativeNav?.let { nav ->
+            (0 until nav.childCount).map { nav.getChildAt(it) }
+                .firstOrNull { child ->
+                    nav.getChildAdapterPosition(child) == 1 &&
+                        child.width > 0
+                }?.width
+        }
         val edgeFactory = nativeNav?.edgeEffectFactory
         val nativeScrollMode = nativeNav?.overScrollMode ?: View.OVER_SCROLL_ALWAYS
         val nativeClip = nativeNav?.clipToPadding ?: false
@@ -588,7 +666,10 @@ internal class PlaylistFolderPreviewController(
             nativeTouch?.javaClass?.name,
             edgeFactory?.javaClass?.name, nativeScrollMode,
             nativeClip, nativeNested, nativeHeaderStart,
-            nativeHeaderEnd, nativeNav?.itemAnimator?.javaClass?.name
+            nativeHeaderEnd, original.paddingTop,
+            original.paddingBottom, firstTextStart,
+            nativeSeparatorWidth,
+            nativeNav?.itemAnimator?.javaClass?.name
         ).joinToString(":")
         if (observedNativeBreadcrumbStyle?.signature == signature) {
             return true
@@ -609,6 +690,10 @@ internal class PlaylistFolderPreviewController(
             rowHeightPx = height,
             paddingStartPx = original.paddingStart,
             paddingEndPx = original.paddingEnd,
+            paddingTopPx = original.paddingTop,
+            paddingBottomPx = original.paddingBottom,
+            nativeFirstTextStartPx = firstTextStart,
+            nativeSeparatorWidthPx = nativeSeparatorWidth,
             nativeTouchBackground = nativeTouch,
             edgeEffectFactory = edgeFactory,
             nativeOverScrollMode = nativeScrollMode,
@@ -629,6 +714,9 @@ internal class PlaylistFolderPreviewController(
                 " | height=" + height +
                 " | insetStart=" + nativeHeaderStart +
                 " | insetEnd=" + nativeHeaderEnd +
+                " | firstTextX=" + firstTextStart +
+                " | chevronWidth=" +
+                (nativeSeparatorWidth?.toString() ?: "pending") +
                 " | nativeAdapter=" +
                 (nativeNav?.adapter?.javaClass?.simpleName ?: "none") +
                 " | nativeAnimator=" +
@@ -1326,6 +1414,7 @@ internal class PlaylistFolderPreviewController(
         val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = appearance
         val pathChanged = adapter.submit(segments, storageLabel, appearance)
+        scheduleQuickNavParityCheck(browser, generation)
 
         // The original qg1 is a segmented adapter. Bring the newly added
         // last metadata holder into view, aligned to the right, AFTER the
@@ -1364,6 +1453,64 @@ internal class PlaylistFolderPreviewController(
             }
         }
         strip.postOnAnimation(reveal)
+    }
+
+    /**
+     * Self-audit against GMMP's ACTUAL bound Files-tab quickNav. A normal
+     * Logcat after one native Files-tab visit reports the original and
+     * injected first-title X, arrow width and effective text size so the
+     * maintainer does not have to notice every small UI discrepancy by eye.
+     * No folder names, file paths or track information are logged.
+     */
+    private fun scheduleQuickNavParityCheck(
+        browser: Browser,
+        generation: Long
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val source = observedNativeBreadcrumbStyle ?: return
+        val strip = browser.breadcrumbScroller
+        strip.postOnAnimation {
+            if (browsers[browser.list] !== browser ||
+                browser.breadcrumbRenderGeneration != generation ||
+                !strip.isAttachedToWindow
+            ) return@postOnAnimation
+            val first = strip.layoutManager?.findViewByPosition(0)
+                as? TextView ?: return@postOnAnimation
+            val separator = strip.layoutManager?.findViewByPosition(1)
+            val actual = NativeQuickNavParity.Metrics(
+                firstTextStartPx = first.left + first.paddingStart,
+                separatorWidthPx = separator?.width,
+                textSizePx = first.textSize
+            )
+            val expected = NativeQuickNavParity.Metrics(
+                firstTextStartPx = source.nativeFirstTextStartPx,
+                separatorWidthPx = source.nativeSeparatorWidthPx,
+                textSizePx = source.effectivePaint.textSize
+            )
+            val difference = NativeQuickNavParity.compare(
+                expected, actual
+            )
+            val signature = listOf(
+                surface(browser.list),
+                expected.toString(),
+                actual.toString()
+            ).joinToString("|")
+            if (quickNavParityReports.add(signature)) {
+                Log.i(
+                    TAG,
+                    "FOLDER QUICKNAV PARITY | surface=" +
+                        surface(browser.list) +
+                        " | firstX=" + actual.firstTextStartPx + "/" +
+                        expected.firstTextStartPx +
+                        " | chevronWidth=" +
+                        (actual.separatorWidthPx ?: -1) + "/" +
+                        (expected.separatorWidthPx ?: -1) +
+                        " | textPx=" + actual.textSizePx + "/" +
+                        expected.textSizePx +
+                        " | match=" + difference.matches()
+                )
+            }
+        }
     }
 
     private fun safeRender(browser: Browser) {
