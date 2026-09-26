@@ -41,6 +41,30 @@ internal object NativeRecyclerBridge {
         }.getOrNull() ?: -1
     }
 
+    /**
+     * Verified against the privately supplied original GMMP 4.2.0 APK:
+     * R8 renamed AndroidX DefaultItemAnimator to
+     * androidx.recyclerview.widget.o (extends f0 / SimpleItemAnimator);
+     * the class has 11 pending/running ArrayLists plus the stock static
+     * TimeInterpolator, matching the native DefaultItemAnimator.
+     *
+     * This shape is strictly version-specific and READ ONLY. Our holders
+     * live in the module classloader, so we must independently instantiate
+     * the same RecyclerView 1.4.0 implementation, never pass module holders
+     * to the original host animator object.
+     */
+    fun isVerifiedGmmp420DefaultAnimator(animator: Any): Boolean {
+        val klass = animator.javaClass
+        return klass.name == "androidx.recyclerview.widget.o" &&
+            klass.superclass?.name == "androidx.recyclerview.widget.f0" &&
+            klass.declaredFields.count {
+                it.type == java.util.ArrayList::class.java
+            } == 11 &&
+            klass.declaredFields.any {
+                it.type == android.animation.TimeInterpolator::class.java
+            }
+    }
+
     fun duration(animator: Any?, getterName: String): Long? {
         if (animator == null) return null
         return (invokeNoArg(animator, getterName) as? Number)

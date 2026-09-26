@@ -1,6 +1,5 @@
 package io.github.alagga.gonesmart
 
-import android.animation.ValueAnimator
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -53,6 +52,7 @@ internal class PlaylistFolderPreviewController(
         private const val QUICK_NAV_METRICS_PREFS =
             "gonesmart_gmmp_quicknav_metrics"
         private const val QUICK_NAV_TITLE_RATIO_KEY = "title_ratio"
+        private const val QUICK_NAV_VERIFIED_FIRST_X_KEY = "verified_first_text_x_dpi_"
     }
 
     private data class Settings(
@@ -389,6 +389,8 @@ internal class PlaylistFolderPreviewController(
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
     private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
     private val folderMemory = PlaylistFolderNavigationMemory()
+    private val observedPickerOwners = WeakHashMap<ViewGroup, Boolean>()
+    private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pendingLayoutObservers = WeakHashMap<
@@ -594,11 +596,17 @@ internal class PlaylistFolderPreviewController(
         header.overScrollMode = source.nativeOverScrollMode
         header.clipToPadding = source.nativeClipToPadding
         header.isNestedScrollingEnabled = source.nativeNestedScrolling
-        if (header.paddingStart != source.nativeHeaderStartPx ||
+        // Preserve an already verified first-title correction across
+        // unrelated rerenders. Otherwise every theme/selection refresh
+        // erased the calibration and shifted the breadcrumb back left.
+        val desiredStart = calibratedHeaderStarts[header]
+            ?.takeIf { it.first == source.signature }
+            ?.second ?: source.nativeHeaderStartPx
+        if (header.paddingStart != desiredStart ||
             header.paddingEnd != source.nativeHeaderEndPx
         ) {
             header.setPaddingRelative(
-                source.nativeHeaderStartPx,
+                desiredStart,
                 header.paddingTop,
                 source.nativeHeaderEndPx,
                 header.paddingBottom
@@ -610,6 +618,24 @@ internal class PlaylistFolderPreviewController(
         ) {
             header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
                 ?: DefaultItemAnimator()
+        }
+    }
+
+    /**
+     * Persist only a REAL first-text offset measured on GMMP's original,
+     * fully bound qg1 view. A different font-size ratio or unsampled native
+     * XML must never be mistaken for verified horizontal geometry.
+     * The physical pixel value is scoped to the device display density.
+     */
+    private fun verifiedNativeFirstTextX(list: View): Int? {
+        val key = QUICK_NAV_VERIFIED_FIRST_X_KEY +
+            list.resources.displayMetrics.densityDpi
+        val prefs = list.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+        )
+        if (!prefs.contains(key)) return null
+        return prefs.getInt(key, -1).takeIf {
+            it in 0..dp(list, 96)
         }
     }
 
@@ -682,6 +708,13 @@ internal class PlaylistFolderPreviewController(
             titleScreen[0] - sourceScreen[0] +
                 original.compoundPaddingStart
         } else previous?.nativeFirstTextStartPx ?: return false
+        if (rootItem != null && firstTextStart in 0..dp(list, 96)) {
+            val key = QUICK_NAV_VERIFIED_FIRST_X_KEY +
+                list.resources.displayMetrics.densityDpi
+            list.context.getSharedPreferences(
+                QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+            ).edit().putInt(key, firstTextStart).apply()
+        }
         val separatorWidth = visibleItems.firstOrNull {
             it.first == 1
         }?.second?.width ?: previous?.nativeSeparatorWidthPx
@@ -1115,7 +1148,25 @@ internal class PlaylistFolderPreviewController(
             }
         }
 
-        val rememberedFolder = folderMemory.restore(surface(list)) {
+        // The owner is this GMMP picker dialog's native CoordinatorLayout,
+        // NOT the global add-picker surface string. Its list may be replaced
+        // while the same dialog remains open; a newly opened dialog starts
+        // at the main playlist directory rather than an older selection.
+        if (isPicker(list) && observedPickerOwners.put(parent, true) == null) {
+            parent.addOnAttachStateChangeListener(
+                object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(view: View) = Unit
+                    override fun onViewDetachedFromWindow(view: View) {
+                        folderMemory.clear("add-picker", parent)
+                        observedPickerOwners.remove(parent)
+                        parent.removeOnAttachStateChangeListener(this)
+                    }
+                }
+            )
+        }
+        val rememberedFolder = folderMemory.restore(
+            surface(list), if (isPicker(list)) parent else null
+        ) {
             findFolder(index, it) != null
         }
 
@@ -1494,8 +1545,10 @@ internal class PlaylistFolderPreviewController(
         browser: Browser,
         generation: Long
     ) {
-        if (!BuildConfig.DEBUG) return
-        val source = observedNativeBreadcrumbStyle ?: return
+        val source = observedNativeBreadcrumbStyle
+        val expectedFirstX = source?.nativeFirstTextStartPx
+            ?: verifiedNativeFirstTextX(browser.list) ?: return
+        val styleKey = source?.signature ?: "cached:" + expectedFirstX
         val strip = browser.breadcrumbScroller
         strip.postOnAnimation {
             if (browsers[browser.list] !== browser ||
@@ -1508,7 +1561,7 @@ internal class PlaylistFolderPreviewController(
             val first = strip.layoutManager?.findViewByPosition(0)
                 as? TextView ?: return@postOnAnimation
             if (first.left < strip.paddingStart) return@postOnAnimation
-            val expectedX = source.nativeFirstTextStartPx
+            val expectedX = expectedFirstX
             val measuredX = first.left + first.compoundPaddingStart
             val correction = NativeQuickNavInsetPolicy.correctedPadding(
                 currentPadding = strip.paddingStart,
@@ -1517,22 +1570,28 @@ internal class PlaylistFolderPreviewController(
                 maxCorrection = dp(strip, 24)
             )
             if (correction != null) {
+                calibratedHeaderStarts[strip] = styleKey to correction
                 strip.setPaddingRelative(
                     correction, strip.paddingTop,
                     strip.paddingEnd, strip.paddingBottom
                 )
-                Log.i(
-                    TAG,
-                    "FOLDER QUICKNAV INSET | surface=" +
-                        surface(browser.list) +
-                        " | nativeX=" + expectedX +
-                        " | measuredX=" + measuredX +
-                        " | paddingStart=" + correction
-                )
-                // Allow RecyclerView to lay out the corrected XML before
-                // recording geometry; do not add another guessed margin.
+                if (BuildConfig.DEBUG) {
+                    Log.i(
+                        TAG,
+                        "FOLDER QUICKNAV INSET | surface=" +
+                            surface(browser.list) +
+                            " | nativeX=" + expectedX +
+                            " | measuredX=" + measuredX +
+                            " | paddingStart=" + correction +
+                            " | source=" +
+                            if (source != null) "live-qg1" else "verified-cache"
+                    )
+                }
+                // Do not record parity until the original XML relayout
+                // with its corrected native viewport inset has completed.
                 return@postOnAnimation
             }
+            if (!BuildConfig.DEBUG || source == null) return@postOnAnimation
             val separator = strip.layoutManager?.findViewByPosition(1)
             val actual = NativeQuickNavParity.Metrics(
                 firstTextStartPx = first.left + first.paddingStart,
@@ -1759,10 +1818,15 @@ internal class PlaylistFolderPreviewController(
                 )
             }.getOrNull() ?: return null
         } else if (
-            source.javaClass.name == DefaultItemAnimator::class.java.name
+            source.javaClass.name == DefaultItemAnimator::class.java.name ||
+            NativeRecyclerBridge.isVerifiedGmmp420DefaultAnimator(source)
         ) {
-            // The bundled GMMP 4.2.0 and GoneSmart use AndroidX
-            // RecyclerView 1.4.0, but NOT necessarily one classloader.
+            // Native GMMP 4.2.0: AndroidX DefaultItemAnimator was R8-
+            // renamed to widget.o. The ORIGINAL AndroidX implementation
+            // is already bundled by both APKs (RecyclerView 1.4.0).
+            // Independently instantiate that SAME implementation because
+            // a native host ItemAnimator cannot accept a module-loader
+            // RecyclerView.ViewHolder without corrupting native state.
             DefaultItemAnimator()
         } else {
             Log.w(
@@ -1864,46 +1928,14 @@ internal class PlaylistFolderPreviewController(
             return
         }
 
-        // Only for a GMMP version with an unavailable/non-clonable animator.
-        // Keep behavior functional without pretending this branch is exact.
-        val addMs = NativeRecyclerBridge.duration(
-            native, "getAddDuration"
-        ) ?: 120L
-        val moveMs = NativeRecyclerBridge.duration(
-            native, "getMoveDuration"
-        ) ?: 250L
-        val interpolator = ValueAnimator().interpolator
-        rowViews.forEachIndexed { index, item ->
-            if (plan.newKeys.contains(plan.nextOrder[index])) {
-                item.alpha = 0f
-            } else if (plan.shiftBefore[index] > 0) {
-                val height = styles[list]?.rowHeight ?: dp(list, 48)
-                item.translationY =
-                    -(height * plan.shiftBefore[index]).toFloat()
-            }
-        }
-        browser.rows.postOnAnimation {
-            if (browsers[list] !== browser ||
-                browser.lastRenderedOrder !== expectedOrder ||
-                browser.lastRenderedFolderId != browser.currentFolderId
-            ) return@postOnAnimation
-            rowViews.forEachIndexed { index, item ->
-                if (item.parent !== browser.rows) return@forEachIndexed
-                if (plan.newKeys.contains(plan.nextOrder[index])) {
-                    item.animate().alpha(1f)
-                        .setStartDelay(if (moved) moveMs else 0L)
-                        .setDuration(addMs)
-                        .setInterpolator(interpolator).start()
-                } else if (plan.shiftBefore[index] > 0) {
-                    item.animate().translationY(0f)
-                        .setDuration(moveMs)
-                        .setInterpolator(interpolator).start()
-                }
-            }
-        }
+        // The host has an original animator but its implementation is not
+        // verified for this GMMP version. The maintainer explicitly forbids
+        // approximating an available GMMP animation with View.animate().
+        // Leave the row static and request a native source investigation.
         Log.w(
             TAG,
-            "FOLDER NATIVE ANIMATOR | fallback surface=" + surface(list) +
+            "FOLDER NATIVE ANIMATOR | original unavailable for safe reuse;" +
+                " insertion left static | surface=" + surface(list) +
                 " | sourceClass=" + (native?.javaClass?.name ?: "none")
         )
     }
@@ -2422,7 +2454,8 @@ internal class PlaylistFolderPreviewController(
     private fun rememberFolder(browser: Browser) {
         folderMemory.remember(
             surface(browser.list),
-            browser.currentFolderId
+            browser.currentFolderId,
+            if (isPicker(browser.list)) browser.parent else null
         )
     }
 

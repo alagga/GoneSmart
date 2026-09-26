@@ -28,17 +28,44 @@ class PlaylistFolderNavigationMemoryTest {
         assertNull(memory.restore("playlists-tab") { true })
     }
 
-    @Test fun surfacesAreIndependent() {
+    @Test fun tabAndPickerStayIndependentWithinOneDialog() {
         val memory = PlaylistFolderNavigationMemory()
+        val dialog = Any()
         memory.remember("playlists-tab", "normal-folder")
-        memory.remember("add-picker", "picker-folder")
-        assertEquals(
-            "normal-folder",
-            memory.restore("playlists-tab") { true }
-        )
+        memory.remember("add-picker", "picker-folder", dialog)
+        assertEquals("normal-folder", memory.restore("playlists-tab") { true })
         assertEquals(
             "picker-folder",
-            memory.restore("add-picker") { true }
+            memory.restore("add-picker", dialog) { true }
         )
+    }
+
+    @Test fun newPickerStartsAtRootEvenIfEarlierPickerWasInsideFolder() {
+        val memory = PlaylistFolderNavigationMemory()
+        val previousDialog = Any()
+        val nextDialog = Any()
+        memory.remember("add-picker", "Level3", previousDialog)
+        assertNull(memory.restore("add-picker", nextDialog) { true })
+        assertEquals(
+            "Level3",
+            memory.restore("add-picker", previousDialog) { true }
+        )
+    }
+
+    @Test fun closedPickerClearsOnlyItsOwnFolderMemory() {
+        val memory = PlaylistFolderNavigationMemory()
+        val first = Any()
+        val second = Any()
+        memory.remember("add-picker", "A", first)
+        memory.remember("add-picker", "B", second)
+        memory.clear("add-picker", first)
+        assertNull(memory.restore("add-picker", first) { true })
+        assertEquals("B", memory.restore("add-picker", second) { true })
+    }
+
+    @Test fun pickerMemoryRequiresRealDialogOwner() {
+        val memory = PlaylistFolderNavigationMemory()
+        memory.remember("add-picker", "Level3")
+        assertNull(memory.restore("add-picker") { true })
     }
 }
