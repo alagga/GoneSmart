@@ -3242,6 +3242,139 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    /**
+     * Reuse the live GMMP native FloatingActionButton CLASS, tint, ripple
+     * and two genuine installed-player icons. The root plus remains the
+     * original native control; only its presentation as a speed dial is new.
+     */
+    private fun nativeMiniFab(
+        browser: Browser,
+        source: View,
+        icon: String,
+        click: () -> Unit
+    ): View? = runCatching {
+        val iconId = source.resources.getIdentifier(
+            icon, "drawable", source.context.packageName
+        )
+        if (iconId == 0) return@runCatching null
+        val item = source.javaClass.getConstructor(
+            android.content.Context::class.java
+        ).newInstance(source.context) as? View ?: return@runCatching null
+        (item as? ImageView)?.apply {
+            setImageResource(iconId)
+            (source as? ImageView)?.imageTintList?.let {
+                imageTintList = it
+            }
+        }
+        val size = dp(source, 44)
+        runCatching {
+            item.javaClass.getMethod("setCustomSize", Int::class.javaPrimitiveType)
+                .invoke(item, size)
+        }
+        val tint = runCatching {
+            source.javaClass.getMethod("getBackgroundTintList")
+                .invoke(source)
+        }.getOrNull()
+        if (tint is android.content.res.ColorStateList) {
+            runCatching {
+                item.javaClass.getMethod(
+                    "setBackgroundTintList",
+                    android.content.res.ColorStateList::class.java
+                ).invoke(item, tint)
+            }
+        }
+        item.elevation = source.elevation
+        item.setOnClickListener { click() }
+        browser.overlay.addView(
+            item,
+            FrameLayout.LayoutParams(size, size)
+        )
+        item.visibility = View.INVISIBLE
+        item
+    }.onFailure {
+        Log.w(TAG, "FOLDER PICKER FAB | original native clone unavailable", it)
+    }.getOrNull()
+
+    private fun positionPickerAddOptions(
+        browser: Browser,
+        fab: View
+    ) {
+        val base = IntArray(2)
+        val overlay = IntArray(2)
+        fab.getLocationOnScreen(base)
+        browser.overlay.getLocationOnScreen(overlay)
+        val size = dp(fab, 44)
+        val gap = dp(fab, 12)
+        val left = (base[0] - overlay[0] +
+            (fab.width - size) / 2).toFloat()
+        listOf(browser.playlistFab, browser.folderFab)
+            .filterNotNull().forEachIndexed { index, item ->
+                item.x = left
+                item.y = (base[1] - overlay[1] -
+                    (index + 1) * (size + gap)).toFloat()
+                item.bringToFront()
+            }
+    }
+
+    private fun closePickerAddOptions(browser: Browser) {
+        browser.pickerAddExpanded = false
+        listOf(browser.playlistFab, browser.folderFab).forEach { mini ->
+            if (mini != null && mini.parent === browser.overlay) {
+                browser.overlay.removeView(mini)
+            }
+        }
+        browser.playlistFab = null
+        browser.folderFab = null
+    }
+
+    private fun showPickerAddOptions(browser: Browser, fab: View) {
+        closePickerAddOptions(browser)
+        val normalCreate = PlaylistCreationUiPolicy.state(
+            foldersEnabled = settings.enabled,
+            currentFolderId = browser.currentFolderId,
+            mainPlaylistDirectory = browser.rootPath,
+            groupRootPlaylists = settings.groupRoot,
+            hasPickerSelection = false,
+            nativePhysicalCreateReady = nativePickerCreateRedirectReady
+        ).pickerFabVisible
+        if (normalCreate) {
+            browser.playlistFab = nativeMiniFab(
+                browser, fab, "ic_gm_playlist"
+            ) {
+                closePickerAddOptions(browser)
+                browser.forwardingOriginalFab = true
+                try {
+                    fab.performClick()
+                } finally {
+                    browser.forwardingOriginalFab = false
+                }
+            }
+        }
+        browser.folderFab = nativeMiniFab(
+            browser, fab, "ic_gm_new_folder"
+        ) {
+            closePickerAddOptions(browser)
+            requestNativeFolderCreation(browser)
+        }
+        if (browser.folderFab == null &&
+            browser.playlistFab == null
+        ) {
+            Log.w(TAG, "FOLDER PICKER FAB | no native buttons available")
+            return
+        }
+        browser.pickerAddExpanded = true
+        positionPickerAddOptions(browser, fab)
+        listOf(browser.playlistFab, browser.folderFab)
+            .filterNotNull().forEach { mini ->
+                runCatching {
+                    mini.javaClass.getMethod("show").invoke(mini)
+                }.onFailure {
+                    mini.visibility = View.VISIBLE
+                    Log.w(TAG, "FOLDER PICKER FAB | native show unavailable", it)
+                }
+            }
+    }
+
     private fun updatePickerFab(browser: Browser) {
         val list = browser.list
         if (!isPicker(list)) return
