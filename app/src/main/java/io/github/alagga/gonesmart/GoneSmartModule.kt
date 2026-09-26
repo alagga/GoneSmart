@@ -653,7 +653,8 @@ class GoneSmartModule : XposedModule() {
                         runCatching {
                             playlistFolderPreview.onMenuInflated(
                                 chain.getArg(0) as? Int ?: 0,
-                                chain.getArg(1) as? android.view.Menu
+                                chain.getArg(1) as? android.view.Menu,
+                                chain.getThisObject()
                             )
                         }.onFailure {
                             Log.w(
