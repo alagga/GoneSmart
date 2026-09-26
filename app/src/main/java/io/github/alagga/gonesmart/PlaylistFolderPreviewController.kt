@@ -2615,7 +2615,7 @@ internal class PlaylistFolderPreviewController(
                 if (handled && !isPicker(list) && !contextMenu &&
                     current != null && browsers[list] === current
                 ) {
-                    if (current.mainSelection.onNativeAction(path, longClick)) {
+                    if (current.mainSelection.onNativeAction(targetPath, longClick)) {
                         mainHandler.post {
                             if (browsers[list] === current &&
                                 list.isAttachedToWindow &&
