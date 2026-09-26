@@ -941,7 +941,7 @@ class GoneSmartModule : XposedModule() {
     ) {
         if (!BuildConfig.DEBUG) return
         val adapterBase = param.classLoader.loadClass(
-            "androidx.recyclerview.widget.RecyclerView\\$h"
+            "androidx.recyclerview.widget.RecyclerView\$h"
         )
         val nativePlaylist = param.classLoader.loadClass("zn3")
         check(adapterBase.isAssignableFrom(nativePlaylist)) {
