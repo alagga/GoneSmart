@@ -446,6 +446,7 @@ internal class PlaylistFolderPreviewController(
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
+    private val newFolderMenuId = View.generateViewId()
 
     init {
         multiSelect.setFolderSelectionChangedListener { list ->
@@ -931,6 +932,7 @@ internal class PlaylistFolderPreviewController(
                 }
         if (name == "menu_gm_playlist_list") {
             playlistTabMenu = WeakReference(menu)
+            installNativeNewFolderMenu(menu, context)
             updatePlaylistMenu()
         }
         if (!playlistRelated || !observedMenus.add(name) ||
@@ -941,6 +943,102 @@ internal class PlaylistFolderPreviewController(
             "FOLDER NATIVE MENU | menu=" + name +
                 " | items=" + items.joinToString(";")
         )
+    }
+
+    /** Native GMMP's existing translated New Folder action/icon. */
+    private fun installNativeNewFolderMenu(
+        menu: android.view.Menu,
+        context: android.content.Context
+    ) {
+        if (menu.findItem(newFolderMenuId) != null) return
+        val resources = context.resources
+        val titleId = resources.getIdentifier(
+            "files_new_folder", "string", context.packageName
+        )
+        val iconId = resources.getIdentifier(
+            "ic_gm_new_folder", "drawable", context.packageName
+        )
+        if (titleId == 0 || iconId == 0) return
+        val nativeAdd = (0 until menu.size()).map(menu::getItem)
+            .firstOrNull {
+                runCatching {
+                    resources.getResourceEntryName(it.itemId) == "menuAdd"
+                }.getOrDefault(false)
+            }
+        val item = menu.add(
+            android.view.Menu.NONE, newFolderMenuId,
+            (nativeAdd?.order ?: 0) + 1,
+            context.getString(titleId)
+        )
+        item.setIcon(iconId)
+        item.setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
+        item.setOnMenuItemClickListener {
+            currentBrowser(picker = false)?.let(::requestNativeFolderCreation)
+            true
+        }
+        Log.i(TAG, "FOLDER CREATE MENU | native icon/title installed")
+    }
+
+    private fun physicalFolderParent(browser: Browser): java.io.File? {
+        if (browser.currentFolderId == PlaylistFolderIndex.OTHER_LOCATIONS_ID) {
+            return null
+        }
+        val root = runCatching {
+            java.io.File(browser.rootPath).canonicalFile
+        }.getOrNull() ?: return null
+        val candidate = runCatching {
+            browser.currentFolderId?.let(::java.io.File)?.canonicalFile ?: root
+        }.getOrNull() ?: return null
+        val inside = candidate.path == root.path ||
+            candidate.path.startsWith(
+                root.path.trimEnd(java.io.File.separatorChar) +
+                    java.io.File.separator
+            )
+        return candidate.takeIf { inside && it.isDirectory && it.canWrite() }
+    }
+
+    private fun requestNativeFolderCreation(browser: Browser): Boolean {
+        val parent = physicalFolderParent(browser) ?: return false
+        val creator = nativeFolderCreator ?: return false
+        val root = java.io.File(browser.rootPath).canonicalPath
+        val previous = physicalDirectorySnapshot(root).toSet()
+        val opened = creator.show(browser.list.context, parent) {
+            mainHandler.post {
+                val changed = physicalDirectorySnapshot(root).toSet() - previous
+                if (changed.isEmpty()) {
+                    Log.w(TAG, "FOLDER CREATE | native callback without new directory")
+                    return@post
+                }
+                browsers.values.toList().forEach { current ->
+                    if (current.rootPath != browser.rootPath ||
+                        !current.list.isAttachedToWindow
+                    ) return@forEach
+                    val names = linkedMapOf<String, String>()
+                    fun collect(folder: PlaylistFolderIndex.Folder) {
+                        folder.playlists.forEach { names[it.path] = it.name }
+                        folder.children.forEach(::collect)
+                    }
+                    current.index.topLevelFolders.forEach(::collect)
+                    current.index.ungroupedPlaylists.forEach {
+                        names[it.path] = it.name
+                    }
+                    current.index = PlaylistFolderIndex.build(
+                        nativePlaylistPaths = current.nativeOrder,
+                        mainPlaylistDirectory = current.rootPath,
+                        groupExternalLocations = settings.groupExternal,
+                        groupRootPlaylists = settings.groupRoot,
+                        physicalDirectoryPaths = physicalDirectorySnapshot(root),
+                        displayNamesByPath = names
+                    )
+                    safeRender(current)
+                }
+                Log.i(TAG, "FOLDER CREATE | original GMMP mkdir completed")
+            }
+        }
+        if (!opened) {
+            Log.w(TAG, "FOLDER CREATE | original GMMP prompt unavailable")
+        }
+        return opened
     }
 
     fun consumeBack(): Boolean {
@@ -3111,6 +3209,9 @@ internal class PlaylistFolderPreviewController(
                 nativePhysicalCreateReady = nativeMainCreateRedirectReady
             )
         }
+        menu.findItem(newFolderMenuId)?.isVisible =
+            normal != null && nativeFolderCreator != null &&
+                physicalFolderParent(normal) != null
         for (i in 0 until menu.size()) {
             val item = menu.getItem(i)
             val id = runCatching {
