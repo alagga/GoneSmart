@@ -266,15 +266,10 @@ internal class PlaylistFolderPreviewController(
                 ?: native?.letterSpacing ?: 0f
             label.includeFontPadding = nav?.includeFontPadding
                 ?: native?.includeFontPadding ?: true
-            // XML supplies the structure. The live sg1 binding can also
-            // apply runtime padding through GMMP's Aesthetic metadata model;
-            // capture that actual bound value rather than assume XML alone.
-            if (nav != null) {
-                label.setPaddingRelative(
-                    nav.paddingStartPx, nav.paddingTopPx,
-                    nav.paddingEndPx, nav.paddingBottomPx
-                )
-            }
+            // The original native XML already contains its own text
+            // padding. The former early "native" sample read zero before
+            // qg1 was bound, then ERASED the XML's true start padding.
+            // Never overwrite this real layout with an unverified sample.
             // Native rv_horiz_metadata already supplies the exact item
             // width, minHeight, inset and ROUND selectable background.
             // Never overwrite its XML padding or ripple with guessed dp.
@@ -408,6 +403,7 @@ internal class PlaylistFolderPreviewController(
         Pair<RecyclerView.Adapter<*>, RecyclerView.AdapterDataObserver>
     >()
     private val quickNavParityReports = hashSetOf<String>()
+    private val nativePlaylistAnimatorReports = WeakHashMap<ViewGroup, String>()
     private var lastNativePlaylistTitlePx: Float? = null
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
@@ -489,12 +485,32 @@ internal class PlaylistFolderPreviewController(
             }
         }
         list.addOnLayoutChangeListener(listener)
+        // A fixed-size quickNav RecyclerView may get its qg1 adapter and
+        // bound holders without ANY change to its own bounds. The observed
+        // AndroidX class can be in GMMP's classloader rather than ours, so
+        // neither a Kotlin RecyclerView cast nor our AdapterDataObserver
+        // alone can guarantee a valid capture.
+        val globalLayout = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            weak.get()?.let { native ->
+                if (native.isAttachedToWindow) {
+                    captureNativeBreadcrumbStyle(native)
+                }
+            }
+        }
+        if (list.viewTreeObserver.isAlive) {
+            list.viewTreeObserver.addOnGlobalLayoutListener(globalLayout)
+        }
         list.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) = Unit
                 override fun onViewDetachedFromWindow(view: View) {
                     weak.get()?.let {
                         it.removeOnLayoutChangeListener(listener)
+                        if (it.viewTreeObserver.isAlive) {
+                            it.viewTreeObserver.removeOnGlobalLayoutListener(
+                                globalLayout
+                            )
+                        }
                         observedNativeNavLists.remove(it)
                         (it as? RecyclerView)?.let { nav ->
                             nativeQuickNavObservers.remove(nav)?.let {
@@ -607,73 +623,90 @@ internal class PlaylistFolderPreviewController(
         } else GMMP_420_QUICK_NAV_TITLE_RATIO
     }
 
+    /**
+     * Only accept a REAL, bound qg1 quickNav metadata holder. Previously
+     * we recorded a 58.8px TextView before its native adapter was available
+     * and a Kotlin RecyclerView cast failed across classloaders. That
+     * produced fake firstX=0/0 parity and erased the native XML start inset.
+     */
     private fun captureNativeBreadcrumbStyle(list: ViewGroup): Boolean {
-        val candidates = arrayListOf<TextView>()
-        fun scan(view: View, depth: Int) {
-            if (depth > 5 || candidates.size >= 20) return
+        val runtime = NativeRecyclerBridge.snapshot(list)
+        val adapter = runtime.adapter ?: return false
+        if (adapter.javaClass.simpleName != "qg1") return false
+        if (list.width <= 0 || list.height <= 0 ||
+            list.isLayoutRequested
+        ) return false
+
+        val visibleItems = (0 until list.childCount).map { list.getChildAt(it) }
+            .map { NativeRecyclerBridge.childAdapterPosition(list, it) to it }
+            .filter { (position, child) ->
+                position >= 0 && child.width > 0 && child.height > 0
+            }
+        val rootItem = visibleItems.firstOrNull { it.first == 0 }?.second
+        val previous = observedNativeBreadcrumbStyle
+        // The very first capture MUST see position zero at scroll start.
+        // Later theme changes can sample another visible even item while
+        // retaining the previously verified first-item geometry.
+        val metadataItem = rootItem ?: visibleItems.firstOrNull {
+            it.first % 2 == 0
+        }?.second ?: return false
+        if (rootItem == null && previous == null) return false
+
+        fun findNativeTitle(view: View, depth: Int): TextView? {
+            if (depth > 4) return null
             if (view is TextView &&
                 view.visibility == View.VISIBLE &&
                 view.text?.any(Char::isLetterOrDigit) == true
-            ) {
-                candidates.add(view)
-            }
+            ) return view
             if (view is ViewGroup) {
                 for (index in 0 until view.childCount) {
-                    scan(view.getChildAt(index), depth + 1)
+                    findNativeTitle(view.getChildAt(index), depth + 1)
+                        ?.let { return it }
                 }
             }
+            return null
         }
-        for (i in 0 until minOf(list.childCount, 4)) {
-            scan(list.getChildAt(i), 0)
-        }
-        val original = candidates.maxByOrNull { it.textSize }
-            ?: return false
+        val original = findNativeTitle(metadataItem, 0) ?: return false
         val paint = effectiveNativeTitlePaint(original)
-        val height = list.height.takeIf { it > 0 }
-            ?: original.height.coerceAtLeast(dp(list, 44))
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
-        val nativeNav = list as? RecyclerView
-        val nativeFirstItem = nativeNav?.let { nav ->
-            (0 until nav.childCount).map { nav.getChildAt(it) }
-                .firstOrNull { child ->
-                    nav.getChildAdapterPosition(child) == 0 &&
-                        child.left >= 0
-                }
-        }
-        // qg1's actual first item position incorporates the Files-tab
-        // RecyclerView inset. Its native rv_horiz_metadata XML adds the
-        // remaining text/background geometry when inflated.
-        val nativeHeaderStart = nativeFirstItem?.left
-            ?: nativeNav?.paddingStart ?: 0
-        val nativeHeaderEnd = nativeNav?.paddingEnd ?: 0
-        val firstTextStart = nativeHeaderStart + original.paddingStart
-        val nativeSeparatorWidth = nativeNav?.let { nav ->
-            (0 until nav.childCount).map { nav.getChildAt(it) }
-                .firstOrNull { child ->
-                    nav.getChildAdapterPosition(child) == 1 &&
-                        child.width > 0
-                }?.width
-        }
-        val edgeFactory = nativeNav?.edgeEffectFactory
-        val nativeScrollMode = nativeNav?.overScrollMode ?: View.OVER_SCROLL_ALWAYS
-        val nativeClip = nativeNav?.clipToPadding ?: false
-        val nativeNested = nativeNav?.isNestedScrollingEnabled ?: true
+        val firstTextStart = if (rootItem != null &&
+            !list.canScrollHorizontally(-1)
+        ) {
+            // Measured relative to the *native* quickNav viewport, not
+            // child.left alone (which ignores parent margins/nested views).
+            val sourceScreen = IntArray(2)
+            val titleScreen = IntArray(2)
+            list.getLocationOnScreen(sourceScreen)
+            original.getLocationOnScreen(titleScreen)
+            titleScreen[0] - sourceScreen[0] +
+                original.compoundPaddingStart
+        } else previous?.nativeFirstTextStartPx ?: return false
+        val separatorWidth = visibleItems.firstOrNull {
+            it.first == 1
+        }?.second?.width ?: previous?.nativeSeparatorWidthPx
+        // The native item's XML governs any additional per-item offset.
+        // Only the native RecyclerView's OWN padding belongs on ours.
+        val nativeHeaderStart = list.paddingStart
+        val nativeHeaderEnd = list.paddingEnd
+        val nativeAnimator = runtime.animator
+        val nativeEdgeFactory =
+            runtime.edgeEffectFactory as? RecyclerView.EdgeEffectFactory
         val signature = listOf(
             paint.textSize, paint.color, paint.typeface?.style ?: 0,
-            original.letterSpacing, original.includeFontPadding, height,
+            original.letterSpacing, original.includeFontPadding, list.height,
             original.paddingStart, original.paddingEnd,
             nativeTouch?.javaClass?.name,
-            edgeFactory?.javaClass?.name, nativeScrollMode,
-            nativeClip, nativeNested, nativeHeaderStart,
+            runtime.edgeEffectFactory?.javaClass?.name,
+            list.overScrollMode, list.clipToPadding,
+            list.isNestedScrollingEnabled, nativeHeaderStart,
             nativeHeaderEnd, original.paddingTop,
             original.paddingBottom, firstTextStart,
-            nativeSeparatorWidth,
-            nativeNav?.itemAnimator?.javaClass?.name
+            separatorWidth, nativeAnimator?.javaClass?.name,
+            NativeRecyclerBridge.duration(nativeAnimator, "getAddDuration"),
+            NativeRecyclerBridge.duration(nativeAnimator, "getMoveDuration")
         ).joinToString(":")
-        if (observedNativeBreadcrumbStyle?.signature == signature) {
-            return true
-        }
+        if (previous?.signature == signature) return true
         lastNativePlaylistTitlePx?.takeIf { it > 0f }?.let { titlePx ->
             val ratio = paint.textSize / titlePx
             if (ratio.isFinite() && ratio in 0.8f..1.8f) {
@@ -687,42 +720,37 @@ internal class PlaylistFolderPreviewController(
             effectivePaint = paint,
             letterSpacing = original.letterSpacing,
             includeFontPadding = original.includeFontPadding,
-            rowHeightPx = height,
+            rowHeightPx = list.height,
             paddingStartPx = original.paddingStart,
             paddingEndPx = original.paddingEnd,
             paddingTopPx = original.paddingTop,
             paddingBottomPx = original.paddingBottom,
             nativeFirstTextStartPx = firstTextStart,
-            nativeSeparatorWidthPx = nativeSeparatorWidth,
+            nativeSeparatorWidthPx = separatorWidth,
             nativeTouchBackground = nativeTouch,
-            edgeEffectFactory = edgeFactory,
-            nativeOverScrollMode = nativeScrollMode,
-            nativeClipToPadding = nativeClip,
-            nativeNestedScrolling = nativeNested,
+            edgeEffectFactory = nativeEdgeFactory,
+            nativeOverScrollMode = list.overScrollMode,
+            nativeClipToPadding = list.clipToPadding,
+            nativeNestedScrolling = list.isNestedScrollingEnabled,
             nativeHeaderStartPx = nativeHeaderStart,
             nativeHeaderEndPx = nativeHeaderEnd,
-            nativeItemAnimator = cloneNativeItemAnimator(
-                nativeNav?.itemAnimator
-            ),
+            nativeItemAnimator = cloneNativeItemAnimator(nativeAnimator),
             signature = signature
         )
         Log.i(
             TAG,
-            "FOLDER NATIVE BREADCRUMB | quickNav style captured" +
+            "FOLDER NATIVE BREADCRUMB | bound qg1" +
                 " | sizePx=" + paint.textSize +
-                " | typeface=" + (paint.typeface?.style ?: 0) +
-                " | height=" + height +
+                " | height=" + list.height +
                 " | insetStart=" + nativeHeaderStart +
-                " | insetEnd=" + nativeHeaderEnd +
                 " | firstTextX=" + firstTextStart +
                 " | chevronWidth=" +
-                (nativeSeparatorWidth?.toString() ?: "pending") +
-                " | nativeAdapter=" +
-                (nativeNav?.adapter?.javaClass?.simpleName ?: "none") +
+                (separatorWidth?.toString() ?: "pending") +
+                " | classloaderMatch=" + runtime.moduleClassMatch +
                 " | nativeAnimator=" +
-                (nativeNav?.itemAnimator?.javaClass?.simpleName ?: "none")
+                (nativeAnimator?.javaClass?.name ?: "none")
         )
-        // Never rebuild overlays inside GMMP's RecyclerView layout pass.
+        // qg1 is NEVER mutated by this observation.
         mainHandler.post {
             browsers.values.toList().forEach { browser ->
                 if (browser.list.isAttachedToWindow &&
@@ -1474,8 +1502,37 @@ internal class PlaylistFolderPreviewController(
                 browser.breadcrumbRenderGeneration != generation ||
                 !strip.isAttachedToWindow
             ) return@postOnAnimation
+            // Do not interpret a horizontally clipped first holder as
+            // a permanent negative start-inset error.
+            if (strip.canScrollHorizontally(-1)) return@postOnAnimation
             val first = strip.layoutManager?.findViewByPosition(0)
                 as? TextView ?: return@postOnAnimation
+            if (first.left < strip.paddingStart) return@postOnAnimation
+            val expectedX = source.nativeFirstTextStartPx
+            val measuredX = first.left + first.compoundPaddingStart
+            val correction = NativeQuickNavInsetPolicy.correctedPadding(
+                currentPadding = strip.paddingStart,
+                measuredTextStart = measuredX,
+                expectedTextStart = expectedX,
+                maxCorrection = dp(strip, 24)
+            )
+            if (correction != null) {
+                strip.setPaddingRelative(
+                    correction, strip.paddingTop,
+                    strip.paddingEnd, strip.paddingBottom
+                )
+                Log.i(
+                    TAG,
+                    "FOLDER QUICKNAV INSET | surface=" +
+                        surface(browser.list) +
+                        " | nativeX=" + expectedX +
+                        " | measuredX=" + measuredX +
+                        " | paddingStart=" + correction
+                )
+                // Allow RecyclerView to lay out the corrected XML before
+                // recording geometry; do not add another guessed margin.
+                return@postOnAnimation
+            }
             val separator = strip.layoutManager?.findViewByPosition(1)
             val actual = NativeQuickNavParity.Metrics(
                 firstTextStartPx = first.left + first.paddingStart,
@@ -1680,26 +1737,56 @@ internal class PlaylistFolderPreviewController(
      * interpolators of the live GMMP skin. Unclonable custom implementations
      * fall back to the previous visual approximation, with a bounded log.
      */
-    private fun cloneNativeItemAnimator(
-        source: RecyclerView.ItemAnimator?
-    ): SimpleItemAnimator? {
-        val native = source as? SimpleItemAnimator ?: return null
-        return runCatching {
-            val clone = native.javaClass.getDeclaredConstructor()
-                .apply { isAccessible = true }.newInstance()
-                as? SimpleItemAnimator ?: return@runCatching null
-            clone.addDuration = source.addDuration
-            clone.moveDuration = source.moveDuration
-            clone.changeDuration = source.changeDuration
-            clone.removeDuration = source.removeDuration
-            clone.supportsChangeAnimations =
-                native.supportsChangeAnimations
-            clone
-        }.onFailure {
+    /**
+     * A native GMMP RecyclerView/ItemAnimator may be loaded in the host
+     * classloader, while the overlay uses our packaged AndroidX 1.4.0.
+     * A failed Kotlin cast DOES NOT mean GMMP has no ItemAnimator.
+     * For a verified matching DefaultItemAnimator implementation, build
+     * an independent module-side instance and import its native durations.
+     * Never assign or run GMMP's live animator on synthetic ViewHolders.
+     */
+    private fun cloneNativeItemAnimator(source: Any?): SimpleItemAnimator? {
+        if (source == null) return null
+        val typed = source as? SimpleItemAnimator
+        val clone: SimpleItemAnimator = if (typed != null) {
+            runCatching {
+                typed.javaClass.getDeclaredConstructor()
+                    .apply { isAccessible = true }.newInstance()
+                    as SimpleItemAnimator
+            }.onFailure {
+                Log.w(
+                    TAG, "FOLDER NATIVE ANIMATOR | same-loader clone failed", it
+                )
+            }.getOrNull() ?: return null
+        } else if (
+            source.javaClass.name == DefaultItemAnimator::class.java.name
+        ) {
+            // The bundled GMMP 4.2.0 and GoneSmart use AndroidX
+            // RecyclerView 1.4.0, but NOT necessarily one classloader.
+            DefaultItemAnimator()
+        } else {
             Log.w(
-                TAG, "FOLDER NATIVE ANIMATOR | exact clone unavailable", it
+                TAG, "FOLDER NATIVE ANIMATOR | unsupported host class=" +
+                    source.javaClass.name
             )
-        }.getOrNull()
+            return null
+        }
+        NativeRecyclerBridge.duration(source, "getAddDuration")?.let {
+            clone.addDuration = it
+        }
+        NativeRecyclerBridge.duration(source, "getMoveDuration")?.let {
+            clone.moveDuration = it
+        }
+        NativeRecyclerBridge.duration(source, "getChangeDuration")?.let {
+            clone.changeDuration = it
+        }
+        NativeRecyclerBridge.duration(source, "getRemoveDuration")?.let {
+            clone.removeDuration = it
+        }
+        if (typed != null) {
+            clone.supportsChangeAnimations = typed.supportsChangeAnimations
+        }
+        return clone
     }
 
     private fun animateNativePlaylistInsertion(
@@ -1708,8 +1795,31 @@ internal class PlaylistFolderPreviewController(
         rowViews: List<View>
     ) {
         val list = browser.list
-        val native = (list as? RecyclerView)?.itemAnimator
+        val runtime = NativeRecyclerBridge.snapshot(list)
+        val native = runtime.animator
         val clone = cloneNativeItemAnimator(native)
+        val nativeDiagnostic = listOf(
+            native?.javaClass?.name ?: "none",
+            runtime.adapter?.javaClass?.simpleName ?: "none",
+            runtime.moduleClassMatch.toString(),
+            NativeRecyclerBridge.duration(native, "getAddDuration").toString()
+        ).joinToString(":")
+        if (nativePlaylistAnimatorReports[list] != nativeDiagnostic) {
+            nativePlaylistAnimatorReports[list] = nativeDiagnostic
+            Log.i(
+                TAG,
+                "FOLDER NATIVE PLAYLIST ANIMATION SOURCE" +
+                    " | nativeAdapter=" +
+                    (runtime.adapter?.javaClass?.simpleName ?: "none") +
+                    " | itemAnimator=" +
+                    (native?.javaClass?.name ?: "none") +
+                    " | classloaderMatch=" + runtime.moduleClassMatch +
+                    " | layoutAnimation=" +
+                    (list.layoutAnimation?.javaClass?.name ?: "none") +
+                    " | layoutTransition=" +
+                    (list.layoutTransition?.javaClass?.name ?: "none")
+            )
+        }
         val moved = plan.shiftBefore.any { it > 0 }
         val expectedOrder = browser.lastRenderedOrder
         if (clone != null) {
@@ -1756,8 +1866,12 @@ internal class PlaylistFolderPreviewController(
 
         // Only for a GMMP version with an unavailable/non-clonable animator.
         // Keep behavior functional without pretending this branch is exact.
-        val addMs = native?.addDuration ?: 120L
-        val moveMs = native?.moveDuration ?: 250L
+        val addMs = NativeRecyclerBridge.duration(
+            native, "getAddDuration"
+        ) ?: 120L
+        val moveMs = NativeRecyclerBridge.duration(
+            native, "getMoveDuration"
+        ) ?: 250L
         val interpolator = ValueAnimator().interpolator
         rowViews.forEachIndexed { index, item ->
             if (plan.newKeys.contains(plan.nextOrder[index])) {
