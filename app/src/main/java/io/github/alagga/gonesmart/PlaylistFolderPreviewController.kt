@@ -914,9 +914,19 @@ internal class PlaylistFolderPreviewController(
      * Do not remove the overflow menu or guess a title/ID before the actual
      * GMMP menu structure and create callback have been verified.
      */
-    fun onMenuInflated(resourceId: Int, menu: android.view.Menu?) {
+    fun onMenuInflated(
+        resourceId: Int,
+        menu: android.view.Menu?,
+        originalInflater: Any?
+    ) {
         if (!BuildConfig.DEBUG || !settings.enabled || menu == null) return
-        val context = knownLists.keys.firstOrNull()?.context ?: return
+        // The native menu is often inflated before the RecyclerView exists.
+        // Read the ORIGINAL inflater's own host context in that first frame.
+        val context = knownLists.keys.firstOrNull()?.context
+            ?: runCatching {
+                originalInflater?.javaClass?.getMethod("getContext")
+                    ?.invoke(originalInflater) as? android.content.Context
+            }.getOrNull() ?: return
         val name = runCatching {
             context.resources.getResourceEntryName(resourceId)
         }.getOrNull() ?: return
