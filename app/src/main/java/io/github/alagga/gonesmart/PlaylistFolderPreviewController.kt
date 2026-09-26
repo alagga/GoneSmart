@@ -3546,17 +3546,29 @@ internal class PlaylistFolderPreviewController(
                     (fab.width - size) / 2).toFloat()
                 item.y = (base[1] - hostPosition[1] -
                     (index + 1) * (size + gap)).toFloat()
-                item.bringToFront()
+                // Both minis were appended ABOVE the original FAB by
+                // addView. bringToFront() here on every global-layout
+                // callback would repeatedly invalidate the same host.
             }
     }
 
     private fun closePickerAddOptions(browser: Browser) {
         browser.pickerAddExpanded = false
-        listOf(browser.playlistFab, browser.folderFab).forEach { mini ->
-            (mini?.parent as? ViewGroup)?.removeView(mini)
-        }
+        val oldButtons = listOf(browser.playlistFab, browser.folderFab)
+            .filterNotNull()
         browser.playlistFab = null
         browser.folderFab = null
+        // Native popup/fragment detach and global-layout traversal may
+        // invoke this method while Android iterates children. Hide
+        // synchronously, then remove each native FAB NEXT main-loop turn.
+        oldButtons.forEach { mini -> mini.visibility = View.GONE }
+        if (oldButtons.isNotEmpty()) {
+            mainHandler.post {
+                oldButtons.forEach { mini ->
+                    (mini.parent as? ViewGroup)?.removeView(mini)
+                }
+            }
+        }
     }
 
     private fun showPickerAddOptions(browser: Browser, fab: View): Boolean {
