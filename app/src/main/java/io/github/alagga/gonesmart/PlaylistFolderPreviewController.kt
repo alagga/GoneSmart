@@ -1818,11 +1818,9 @@ internal class PlaylistFolderPreviewController(
                 browser.index = refreshed
                 browser.modelsByPath = native.nativeObjects
                 browser.nativeOrder = native.paths
-                pendingFolderDeletes.toList().forEach { pending ->
-                    if (pending.plan.root.path == browser.rootPath &&
-                        pending.plan.nativePlaylistFiles.isNotEmpty()
-                    ) waitForOriginalFolderDeletion(pending)
-                }
+                // A single 600ms native-delete watcher is already running.
+                // Calling it again per original adapter notification would
+                // spawn overlapping poll loops and exhaust its safe timeout.
                 if (browser.currentFolderId != null &&
                     findFolder(refreshed, browser.currentFolderId) == null
                 ) {
