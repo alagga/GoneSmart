@@ -159,7 +159,11 @@ internal class PlaylistFolderPreviewController(
         var lastRenderedOrder: List<String>? = null,
         var breadcrumbAdapter: NativeQuickNavAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
-            NativeMainPlaylistSelectionMirror()
+            NativeMainPlaylistSelectionMirror(),
+        var folderFab: View? = null,
+        var playlistFab: View? = null,
+        var pickerAddExpanded: Boolean = false,
+        var forwardingOriginalFab: Boolean = false
     )
 
     /**
@@ -3251,7 +3255,10 @@ internal class PlaylistFolderPreviewController(
             hasPickerSelection = selected,
             nativePhysicalCreateReady = nativePickerCreateRedirectReady
         )
-        val show = state.pickerFabVisible
+        val show = state.pickerFabVisible ||
+            (!selected && nativeFolderCreator != null &&
+                physicalFolderParent(browser) != null)
+        if (!show || selected) closePickerAddOptions(browser)
         if (show) {
             if (fab.visibility != View.VISIBLE ||
                 fab.alpha < 1f || fab.translationY != 0f
@@ -3271,6 +3278,9 @@ internal class PlaylistFolderPreviewController(
                 fab.bringToFront()
             }
             fab.invalidate()
+            if (browser.pickerAddExpanded) {
+                positionPickerAddOptions(browser, fab)
+            }
         } else if (fab.visibility != View.GONE) {
             fab.animate().cancel()
             fab.clearAnimation()
@@ -3287,7 +3297,16 @@ internal class PlaylistFolderPreviewController(
             resourceName(fab) != "playlistFab"
         ) return false
         val browser = currentBrowser(picker = true) ?: return false
-        if (multiSelect.hasFolderSelection(browser.list)) return false
+        if (multiSelect.hasFolderSelection(browser.list) ||
+            browser.forwardingOriginalFab
+        ) return false
+        if (nativeFolderCreator != null &&
+            physicalFolderParent(browser) != null
+        ) {
+            if (browser.pickerAddExpanded) closePickerAddOptions(browser)
+            else showPickerAddOptions(browser, fab)
+            return true
+        }
         val state = PlaylistCreationUiPolicy.state(
             foldersEnabled = settings.enabled,
             currentFolderId = browser.currentFolderId,
