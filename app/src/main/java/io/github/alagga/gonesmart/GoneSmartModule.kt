@@ -515,6 +515,7 @@ class GoneSmartModule : XposedModule() {
                         options.groupExternalPlaylists,
                         options.groupRootPlaylists
                     )
+                    playlistFolderPreview.setNativeFolderCreator(param.classLoader)
                     installPlaylistSurfaceDiscoveryHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {
