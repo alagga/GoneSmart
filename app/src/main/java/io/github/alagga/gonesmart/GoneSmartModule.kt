@@ -923,6 +923,38 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
+        // APK-proven: native playlist ActionMode callback yn3 extends n3.
+        // Original n3.onDestroyActionMode invokes its own native reset.
+        // Observe AFTER the original callback returns to clear our
+        // presentation-only selection mirror on toolbar Back, Android
+        // Back and completed original bulk actions alike.
+        runCatching {
+            val nativeBase = param.classLoader.loadClass("n3")
+            val nativePlaylistMode = param.classLoader.loadClass("yn3")
+            val nativeActionMode = param.classLoader.loadClass(
+                "androidx.appcompat.view.ActionMode"
+            )
+            val destroy = nativeBase.getDeclaredMethod(
+                "onDestroyActionMode", nativeActionMode
+            ).apply { isAccessible = true }
+            hook(destroy).intercept { chain ->
+                val playlistSelection =
+                    nativePlaylistMode.isInstance(chain.getThisObject())
+                val result = chain.proceed()
+                if (playlistSelection) {
+                    playlistFolderPreview.onNativeMainActionModeDestroyed()
+                }
+                result
+            }
+            Log.i("GoneSmartPlaylist", "FOLDER MAIN SELECT | native finish hook ready")
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER MAIN SELECT | native finish hook unavailable",
+                it
+            )
+        }
+
         Log.i(
             "GoneSmartPlaylist",
             "FOLDER SURFACE READY | native RecyclerView setAdapter/attach hooks"

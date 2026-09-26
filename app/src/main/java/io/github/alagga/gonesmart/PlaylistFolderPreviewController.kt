@@ -339,9 +339,16 @@ internal class PlaylistFolderPreviewController(
     private var nativeMainCreateRedirectReady = false
     private var nativePickerCreateRedirectReady = false
     private var nativeFolderCreator: NativeGmmpFolderCreator? = null
+    private var nativeFolderDeletion: NativeGmmpFolderDeletion? = null
+    private data class PendingFolderDeletion(
+        val plan: FolderDeletePolicy.Plan,
+        var checksRemaining: Int = 100
+    )
+    private val pendingFolderDeletes = arrayListOf<PendingFolderDeletion>()
 
     fun setNativeFolderCreator(hostClassLoader: ClassLoader) {
         nativeFolderCreator = NativeGmmpFolderCreator(hostClassLoader)
+        nativeFolderDeletion = NativeGmmpFolderDeletion(hostClassLoader)
         updatePlaylistMenu()
     }
 
@@ -966,25 +973,41 @@ internal class PlaylistFolderPreviewController(
     ) {
         if (menu.findItem(newFolderMenuId) != null) return
         val resources = context.resources
-        val titleId = resources.getIdentifier(
-            "files_new_folder", "string", context.packageName
-        )
         val iconId = resources.getIdentifier(
             "ic_gm_new_folder", "drawable", context.packageName
         )
-        if (titleId == 0 || iconId == 0) return
+        if (iconId == 0) return
         val nativeAdd = (0 until menu.size()).map(menu::getItem)
             .firstOrNull {
                 runCatching {
                     resources.getResourceEntryName(it.itemId) == "menuAdd"
                 }.getOrDefault(false)
             }
+        // Reuse the SAME GMMP-localized title as its adjacent menuAdd
+        // item. A native GMMP folder drawable is appended inline: Android
+        // overflow menus do not consistently show MenuItem.icon.
+        val originalAdd = nativeAdd ?: return
+        val originalTitle = originalAdd.title ?: return
+        val label = android.text.SpannableStringBuilder(originalTitle)
+        val folderIcon = context.getDrawable(iconId)?.mutate()
+        if (folderIcon != null) {
+            val width = folderIcon.intrinsicWidth.coerceAtLeast(dp(context, 18))
+            val height = folderIcon.intrinsicHeight.coerceAtLeast(dp(context, 18))
+            folderIcon.setBounds(0, 0, width, height)
+            val start = label.length
+            label.append("  \uFFFC")
+            label.setSpan(
+                android.text.style.ImageSpan(
+                    folderIcon, android.text.style.ImageSpan.ALIGN_BOTTOM
+                ),
+                start + 2, label.length,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
         val item = menu.add(
             android.view.Menu.NONE, newFolderMenuId,
-            (nativeAdd?.order ?: 0) + 1,
-            context.getString(titleId)
+            originalAdd.order + 1, label
         )
-        item.setIcon(iconId)
         item.setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
         item.setOnMenuItemClickListener {
             currentBrowser(picker = false)?.let(::requestNativeFolderCreation)
@@ -1053,6 +1076,177 @@ internal class PlaylistFolderPreviewController(
             Log.w(TAG, "FOLDER CREATE | original GMMP prompt unavailable")
         }
         return opened
+    }
+
+    /** Bound to GMMP 4.2.0's ORIGINAL yn3 -> n3 ActionMode lifecycle. */
+    fun onNativeMainActionModeDestroyed() {
+        mainHandler.post {
+            browsers.values.toList().forEach { browser ->
+                if (isPicker(browser.list) || !browser.mainSelection.isSelecting) {
+                    return@forEach
+                }
+                browser.mainSelection.clear()
+                if (browser.list.isAttachedToWindow &&
+                    browsers[browser.list] === browser
+                ) safeRender(browser)
+                Log.i(TAG, "FOLDER MAIN SELECT | original ActionMode destroyed; cleared")
+            }
+        }
+    }
+
+    private fun showNativeFolderContextMenu(
+        browser: Browser,
+        folder: PlaylistFolderIndex.Folder,
+        anchor: View
+    ) {
+        if (folder.virtual || isPicker(browser.list)) return
+        val context = anchor.context
+        val menuId = context.resources.getIdentifier(
+            "menu_gm_context_playlist_list",
+            "menu", context.packageName
+        )
+        val deleteId = context.resources.getIdentifier(
+            "menuContextDelete", "id", context.packageName
+        )
+        if (menuId == 0 || deleteId == 0) return
+        val popup = android.widget.PopupMenu(context, anchor)
+        if (!runCatching {
+            popup.menuInflater.inflate(menuId, popup.menu)
+        }.isSuccess) return
+        val originalDelete = popup.menu.findItem(deleteId) ?: return
+        val nativeTitle = originalDelete.title
+        val nativeIcon = originalDelete.icon
+        popup.menu.clear()
+        popup.menu.add(
+            android.view.Menu.NONE, deleteId, 0, nativeTitle
+        ).setIcon(nativeIcon)
+        popup.setOnMenuItemClickListener { item ->
+            if (item.itemId == deleteId) {
+                requestNativeFolderDeletion(browser, folder)
+                true
+            } else false
+        }
+        popup.show()
+    }
+
+    /**
+     * Use GMMP's original bulk-delete confirmation for EVERY native
+     * playlist in a folder, then remove ONLY empty directories once the
+     * original native model and physical M3Us both confirm deletion.
+     * For a completely empty folder, use GMMP's original Files-tab
+     * delete dialog/worker directly on the directory itself.
+     */
+    private fun requestNativeFolderDeletion(
+        browser: Browser,
+        folder: PlaylistFolderIndex.Folder
+    ): Boolean {
+        if (folder.virtual || nativeFolderDeletion == null) return false
+        val plan = FolderDeletePolicy.prepare(
+            java.io.File(browser.rootPath), java.io.File(folder.id),
+            browser.nativeOrder
+        )
+        if (plan == null) {
+            Log.w(
+                TAG,
+                "FOLDER DELETE | blocked: directory contains unindexed files" +
+                    " or unsafe/unwritable path; no files changed"
+            )
+            val error = browser.list.resources.getIdentifier(
+                "error", "string", browser.list.context.packageName
+            )
+            if (error != 0) Toast.makeText(
+                browser.list.context, error, Toast.LENGTH_LONG
+            ).show()
+            return false
+        }
+        val nativeTargets = if (plan.nativePlaylistFiles.isNotEmpty()) {
+            plan.nativePlaylistFiles
+        } else listOf(plan.folder)
+        val opened = nativeFolderDeletion!!.confirmNativeDeletion(
+            browser.list.context, nativeTargets
+        )
+        if (!opened) return false
+        val pending = PendingFolderDeletion(plan)
+        pendingFolderDeletes.add(pending)
+        waitForOriginalFolderDeletion(pending)
+        return true
+    }
+
+    private fun waitForOriginalFolderDeletion(
+        pending: PendingFolderDeletion
+    ) {
+        if (!pendingFolderDeletes.contains(pending)) return
+        val plan = pending.plan
+        val sameRoot = browsers.values.toList().filter {
+            it.rootPath == plan.root.path && it.list.isAttachedToWindow
+        }
+        val nativeGone = sameRoot.isNotEmpty() &&
+            sameRoot.all {
+                FolderDeletePolicy.nativeRemovalComplete(
+                    plan, it.nativeOrder
+                )
+            }
+        if (nativeGone && plan.nativePlaylistFiles.isNotEmpty()) {
+            if (FolderDeletePolicy.removeEmptyDirectories(plan)) {
+                pendingFolderDeletes.remove(pending)
+                refreshFoldersAfterNativeDeletion(plan.root.path)
+                Log.i(TAG, "FOLDER DELETE | native DB/file removal" +
+                    " verified; empty folders pruned")
+                return
+            }
+        }
+        if (plan.nativePlaylistFiles.isEmpty() && !plan.folder.exists()) {
+            pendingFolderDeletes.remove(pending)
+            refreshFoldersAfterNativeDeletion(plan.root.path)
+            Log.i(TAG, "FOLDER DELETE | original GMMP removed empty folder")
+            return
+        }
+        if (--pending.checksRemaining <= 0) {
+            pendingFolderDeletes.remove(pending)
+            Log.i(
+                TAG,
+                "FOLDER DELETE | not completed or canceled in native dialog;" +
+                    " no manual playlist deletion attempted"
+            )
+            return
+        }
+        mainHandler.postDelayed({
+            if (pendingFolderDeletes.contains(pending)) {
+                waitForOriginalFolderDeletion(pending)
+            }
+        }, 600L)
+    }
+
+    private fun refreshFoldersAfterNativeDeletion(root: String) {
+        browsers.values.toList().forEach { browser ->
+            if (!browser.list.isAttachedToWindow ||
+                browser.rootPath != root
+            ) return@forEach
+            val names = linkedMapOf<String, String>()
+            fun collect(folder: PlaylistFolderIndex.Folder) {
+                folder.playlists.forEach { names[it.path] = it.name }
+                folder.children.forEach(::collect)
+            }
+            browser.index.topLevelFolders.forEach(::collect)
+            browser.index.ungroupedPlaylists.forEach {
+                names[it.path] = it.name
+            }
+            browser.index = PlaylistFolderIndex.build(
+                nativePlaylistPaths = browser.nativeOrder,
+                mainPlaylistDirectory = browser.rootPath,
+                groupExternalLocations = settings.groupExternal,
+                groupRootPlaylists = settings.groupRoot,
+                physicalDirectoryPaths = physicalDirectorySnapshot(root),
+                displayNamesByPath = names
+            )
+            if (browser.currentFolderId != null &&
+                findFolder(browser.index, browser.currentFolderId) == null
+            ) {
+                browser.currentFolderId = null
+                rememberFolder(browser)
+            }
+            safeRender(browser)
+        }
     }
 
     fun consumeBack(): Boolean {
@@ -1433,7 +1627,10 @@ internal class PlaylistFolderPreviewController(
                     " | nativeShown=" + list.isShown
             )
         }
-        if (!nativeVisible) return
+        if (!nativeVisible) {
+            if (browser.pickerAddExpanded) closePickerAddOptions(browser)
+            return
+        }
         updatePickerFab(browser)
         updatePlaylistMenu()
         val breadcrumbSignature =
@@ -1478,6 +1675,7 @@ internal class PlaylistFolderPreviewController(
         preserveNativeAlpha: Boolean = false
     ) {
         val browser = browsers.remove(list) ?: return
+        closePickerAddOptions(browser)
         styles.remove(list)
 
         // GMMP's FragmentManager may be iterating the same ancestor's
@@ -1615,6 +1813,11 @@ internal class PlaylistFolderPreviewController(
                 browser.index = refreshed
                 browser.modelsByPath = native.nativeObjects
                 browser.nativeOrder = native.paths
+                pendingFolderDeletes.toList().forEach { pending ->
+                    if (pending.plan.root.path == browser.rootPath &&
+                        pending.plan.nativePlaylistFiles.isNotEmpty()
+                    ) waitForOriginalFolderDeletion(pending)
+                }
                 if (browser.currentFolderId != null &&
                     findFolder(refreshed, browser.currentFolderId) == null
                 ) {
@@ -1880,11 +2083,31 @@ internal class PlaylistFolderPreviewController(
         val renderedRows = arrayListOf<View>()
 
         for (child in folders) {
-            val item = row(
+            lateinit var item: View
+            item = row(
                 list,
                 child.name,
                 folder = true,
-                selected = false
+                selected = false,
+                nativeMenuButton = if (!isPicker(list) && !child.virtual) {
+                    nativeMenu
+                } else null,
+                onNativeContextMenu = if (!isPicker(list) &&
+                    !child.virtual
+                ) {
+                    {
+                        val id = nativeMenuResources(list).buttonId
+                        val anchor = if (id != 0) {
+                            item.findViewById<View>(id)
+                        } else null
+                        if (anchor != null) {
+                            showNativeFolderContextMenu(
+                                browser, child, anchor
+                            )
+                        }
+                        Unit
+                    }
+                } else null
             ).apply {
                     setOnClickListener {
                         browser.currentFolderId = child.id
@@ -1966,19 +2189,7 @@ internal class PlaylistFolderPreviewController(
             renderedRows.add(item)
         }
 
-        if (folders.isEmpty() && playlists.isEmpty()) {
-            browser.rows.addView(
-                row(
-                    list,
-                    "This folder is empty",
-                    folder = false,
-                    selected = false
-                ).apply {
-                    isEnabled = false
-                    alpha = 0.55f
-                }
-            )
-        }
+        // Empty folders deliberately have zero rows, just like GMMP Files.
         browser.lastRenderedFolderId = browser.currentFolderId
         browser.lastRenderedOrder = nextOrder
         if (insertions != null) {
@@ -2266,7 +2477,7 @@ internal class PlaylistFolderPreviewController(
                 )
             }
         }
-        if (onNativeContextMenu == null || nativeMenuButton == null) {
+        if (onNativeContextMenu == null) {
             return fallback
         }
         val height = native?.rowHeight ?: dp(view, 54)
@@ -2282,12 +2493,12 @@ internal class PlaylistFolderPreviewController(
                 ViewGroup.LayoutParams.MATCH_PARENT, height
             )
         )
-        val nativeWidth = nativeMenuButton.width
-            .takeIf { it > 0 } ?: dp(view, 48)
+        val nativeWidth = nativeMenuButton?.width
+            ?.takeIf { it > 0 } ?: dp(view, 48)
         val button = ImageButton(view.context).apply {
             id = nativeMenuResources(view).buttonId
             background = typedSelectableBackground(view)
-            imageTintList = nativeMenuButton.imageTintList
+            imageTintList = nativeMenuButton?.imageTintList
                 ?: android.content.res.ColorStateList.valueOf(
                     native?.textColor ?: resolveTextColor(view)
                 )
@@ -2337,12 +2548,12 @@ internal class PlaylistFolderPreviewController(
             root.findViewById<ImageView>(ids.buttonId)
         } else null
         if (button == null) return
-        if (onClick == null || source == null) {
+        if (onClick == null) {
             button.visibility = View.GONE
             button.setOnClickListener(null)
             return
         }
-        val original = source.drawable?.constantState
+        val original = source?.drawable?.constantState
             ?.newDrawable(host.resources)?.mutate()
         if (original != null) {
             button.setImageDrawable(original)
@@ -2353,8 +2564,8 @@ internal class PlaylistFolderPreviewController(
         button.isEnabled = true
         button.isClickable = true
         button.isFocusable = true
-        source.imageTintList?.let { button.imageTintList = it }
-        val description = source.contentDescription ?: run {
+        source?.imageTintList?.let { button.imageTintList = it }
+        val description = source?.contentDescription ?: run {
             if (ids.descriptionId != 0) {
                 host.context.getString(ids.descriptionId)
             } else null
@@ -3267,9 +3478,13 @@ internal class PlaylistFolderPreviewController(
             icon, "drawable", source.context.packageName
         )
         if (iconId == 0) return@runCatching null
+        // Native GMMP 4.2.0 AestheticFab has Context,AttributeSet
+        // constructor, NOT the Context-only constructor previously tried.
         val item = source.javaClass.getConstructor(
-            android.content.Context::class.java
-        ).newInstance(source.context) as? View ?: return@runCatching null
+            android.content.Context::class.java,
+            android.util.AttributeSet::class.java
+        ).newInstance(source.context, null)
+            as? View ?: return@runCatching null
         (item as? ImageView)?.apply {
             setImageResource(iconId)
             (source as? ImageView)?.imageTintList?.let {
@@ -3295,9 +3510,15 @@ internal class PlaylistFolderPreviewController(
         }
         item.elevation = source.elevation
         item.setOnClickListener { click() }
-        browser.overlay.addView(
+        // The original picker FAB can be BELOW the RecyclerView's
+        // viewport. Mini FABs must be siblings in its full-height native
+        // coordinator rather than clipped inside our list overlay.
+        val host = (source.parent as? ViewGroup)?.takeIf {
+            it.height >= size * 4 && it.width >= source.width * 2
+        } ?: browser.parent
+        host.addView(
             item,
-            FrameLayout.LayoutParams(size, size)
+            ViewGroup.LayoutParams(size, size)
         )
         item.visibility = View.INVISIBLE
         item
@@ -3310,17 +3531,17 @@ internal class PlaylistFolderPreviewController(
         fab: View
     ) {
         val base = IntArray(2)
-        val overlay = IntArray(2)
         fab.getLocationOnScreen(base)
-        browser.overlay.getLocationOnScreen(overlay)
         val size = dp(fab, 44)
         val gap = dp(fab, 12)
-        val left = (base[0] - overlay[0] +
-            (fab.width - size) / 2).toFloat()
-        listOf(browser.playlistFab, browser.folderFab)
+         listOf(browser.playlistFab, browser.folderFab)
             .filterNotNull().forEachIndexed { index, item ->
-                item.x = left
-                item.y = (base[1] - overlay[1] -
+                val host = item.parent as? ViewGroup ?: return@forEachIndexed
+                val hostPosition = IntArray(2)
+                host.getLocationOnScreen(hostPosition)
+                item.x = (base[0] - hostPosition[0] +
+                    (fab.width - size) / 2).toFloat()
+                item.y = (base[1] - hostPosition[1] -
                     (index + 1) * (size + gap)).toFloat()
                 item.bringToFront()
             }
@@ -3329,15 +3550,13 @@ internal class PlaylistFolderPreviewController(
     private fun closePickerAddOptions(browser: Browser) {
         browser.pickerAddExpanded = false
         listOf(browser.playlistFab, browser.folderFab).forEach { mini ->
-            if (mini != null && mini.parent === browser.overlay) {
-                browser.overlay.removeView(mini)
-            }
+            (mini?.parent as? ViewGroup)?.removeView(mini)
         }
         browser.playlistFab = null
         browser.folderFab = null
     }
 
-    private fun showPickerAddOptions(browser: Browser, fab: View) {
+    private fun showPickerAddOptions(browser: Browser, fab: View): Boolean {
         closePickerAddOptions(browser)
         val normalCreate = PlaylistCreationUiPolicy.state(
             foldersEnabled = settings.enabled,
@@ -3369,8 +3588,9 @@ internal class PlaylistFolderPreviewController(
         if (browser.folderFab == null &&
             browser.playlistFab == null
         ) {
-            Log.w(TAG, "FOLDER PICKER FAB | no native buttons available")
-            return
+            Log.w(TAG, "FOLDER PICKER FAB | no native buttons available;" +
+                " passing original GMMP FAB click through")
+            return false
         }
         browser.pickerAddExpanded = true
         positionPickerAddOptions(browser, fab)
@@ -3383,6 +3603,8 @@ internal class PlaylistFolderPreviewController(
                     Log.w(TAG, "FOLDER PICKER FAB | native show unavailable", it)
                 }
             }
+        Log.i(TAG, "FOLDER PICKER FAB | original GMMP mini FABs shown")
+        return true
     }
 
     private fun updatePickerFab(browser: Browser) {
@@ -3446,9 +3668,10 @@ internal class PlaylistFolderPreviewController(
         if (nativeFolderCreator != null &&
             physicalFolderParent(browser) != null
         ) {
-            if (browser.pickerAddExpanded) closePickerAddOptions(browser)
-            else showPickerAddOptions(browser, fab)
-            return true
+            return if (browser.pickerAddExpanded) {
+                closePickerAddOptions(browser)
+                true
+            } else showPickerAddOptions(browser, fab)
         }
         val state = PlaylistCreationUiPolicy.state(
             foldersEnabled = settings.enabled,
