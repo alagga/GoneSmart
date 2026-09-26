@@ -991,7 +991,7 @@ internal class PlaylistFolderPreviewController(
             java.io.File(browser.rootPath).canonicalFile
         }.getOrNull() ?: return null
         val candidate = runCatching {
-            browser.currentFolderId?.let(::java.io.File)?.canonicalFile ?: root
+            browser.currentFolderId?.let { java.io.File(it) }?.canonicalFile ?: root
         }.getOrNull() ?: return null
         val inside = candidate.path == root.path ||
             candidate.path.startsWith(
