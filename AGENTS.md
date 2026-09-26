@@ -14,6 +14,8 @@
 
 **New-chat handoff:** Read this file first; read the relevant feature docs under docs/; inspect the active branch, latest commit and CI; then inspect the actual relevant source files. Continue from confirmed device results and unresolved issues, not from an assumed green state.
 
+**Deferred native-first audit requested 2026-09-26:** AFTER playlist folders / native creation have passed the remaining responsiveness and lifecycle device tests, audit **ALL previously implemented GoneSmart features** against the mandatory native-first gate. Include Smart Auto-DJ queue/request orchestration, Track Auto-DJ, Queue Flip/reverse playlist playback, Multi-playlist selection, playlist-folder UI, Now Playing indicator, menus, success messages and settings interactions. For each feature, inventory the current GoneSmart class/method, the equivalent existing GMMP method/layout/event (or documented absence after an actual GMMP 4.2.0 APK inspection), whether the native method is called unmodified, classloader/lifecycle constraints, safe improvement opportunities and concrete regression tests. Prior code reviews/working device behavior do NOT establish compliance automatically. Present findings and ASK the maintainer before replacing any behavior whose native equivalent or intended behavior remains uncertain. Do not start this full audit while the user is still resolving native playlist insertion latency. Track the audit in docs/PLAYLIST_FOLDERS.md until it begins.
+
 ## 2. Identity, scope and architecture
 
 - Repository: **alagga/GoneSmart**. Android application ID/package: **io.github.alagga.gonesmart**. Visible app name: **GoneSmart**. LSPosed/Vector target scope: **gonemad.gmmp**. The local Android Studio project has been kept at C:\Android\Projects\GoneSmart.

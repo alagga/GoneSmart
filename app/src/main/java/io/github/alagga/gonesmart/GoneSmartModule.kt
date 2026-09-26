@@ -905,10 +905,21 @@ class GoneSmartModule : XposedModule() {
             }
             result
         }
-        // Native GMMP obfuscates RecyclerView.Adapter itself. Its public
-        // RecyclerView methods above are sufficient: the controller probes
-        // already-bound visible holders after layout instead of hooking a
-        // class name that does not exist in GMMP's APK.
+        // DEX-confirmed on the supplied GMMP 4.2.0 APK, not a guess:
+        // zn3 -> bw -> zw -> yw -> RecyclerView$h (native Adapter).
+        // Hook ONLY the actual native Adapter's existing notification
+        // methods and observe zn3 instances. This does not mutate GMMP
+        // model lists, force refresh, or manufacture a fake UI event.
+        runCatching {
+            installNativePlaylistAdapterChangeHooks(param)
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | hooks unavailable;" +
+                    " keeping pre-draw fallback",
+                it
+            )
+        }
 
         Log.i(
             "GoneSmartPlaylist",
@@ -916,6 +927,65 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+
+    /**
+     * Native GMMP RecyclerView's R8-renamed Adapter class is
+     * androidx.recyclerview.widget.RecyclerView$h in the supplied
+     * GMMP 4.2.0 APK. Its original public final notify* methods send
+     * real update events, including when the player is idle and no
+     * PreDraw callback runs for many seconds. Observing their RETURN is
+     * safer than guessed polling intervals or synthetic notifications.
+     */
+    private fun installNativePlaylistAdapterChangeHooks(
+        param: PackageReadyParam
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val adapterBase = param.classLoader.loadClass(
+            "androidx.recyclerview.widget.RecyclerView\\$h"
+        )
+        val nativePlaylist = param.classLoader.loadClass("zn3")
+        check(adapterBase.isAssignableFrom(nativePlaylist)) {
+            "GMMP 4.2.0 zn3 no longer extends original Adapter"
+        }
+        var installed = 0
+        for ((name, argCount) in NativePlaylistAdapterEventPolicy.nativeMethods) {
+            val method = adapterBase.declaredMethods.firstOrNull {
+                it.name == name && it.parameterCount == argCount
+            } ?: continue
+            method.isAccessible = true
+            hook(method).intercept { chain ->
+                val result = chain.proceed()
+                if (nativePlaylist.isInstance(chain.getThisObject())) {
+                    runCatching {
+                        playlistFolderPreview.onNativePlaylistAdapterEvent(
+                            chain.getThisObject(), name
+                        )
+                    }.onFailure {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "FOLDER NATIVE ADAPTER EVENT | observer failed",
+                            it
+                        )
+                    }
+                }
+                result
+            }
+            installed++
+        }
+        if (installed != NativePlaylistAdapterEventPolicy.nativeMethods.size) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | installed=" + installed +
+                    "/" + NativePlaylistAdapterEventPolicy.nativeMethods.size +
+                    "; pre-draw fallback still active"
+            )
+        } else {
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | hooks installed=" + installed
+            )
+        }
+    }
 
     /**
      * This GMMP version's vp3.F lazy delegate resolves the configured

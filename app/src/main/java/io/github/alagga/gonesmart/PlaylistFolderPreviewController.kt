@@ -1364,10 +1364,48 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * GMMP can update its adapter without replacing the RecyclerView.
-     * Refresh the already-visible folder browser when its full native
-     * playlist model changes; never wait for a tab switch or scan M3Us.
-     * Work is posted outside the pre-draw/layout traversal.
+     * GMMP 4.2.0's original zn3 adapter extends its own obfuscated
+     * RecyclerView$h (Adapter). The module observes the REAL adapter's
+     * original notifyDataSetChanged/notifyItemRangeInserted/etc. methods.
+     * These events are delivered even when an idle Playlists tab does not
+     * redraw. Never notify or mutate the native adapter ourselves.
+     */
+    fun onNativePlaylistAdapterEvent(adapter: Any, reason: String) {
+        if (!settings.enabled) return
+        mainHandler.post {
+            if (!settings.enabled) return@post
+            val attached = browsers.values.toList().filter {
+                it.list.isAttachedToWindow &&
+                    browsers[it.list] === it &&
+                    nativeAdapter(it.list) === adapter
+            }
+            for (browser in attached) {
+                val count = runCatching {
+                    adapter.javaClass.getMethod("getItemCount")
+                        .invoke(adapter) as Int
+                }.getOrNull() ?: continue
+                if (!NativePlaylistAdapterEventPolicy.needsRefresh(
+                        browser.nativeOrder.size, count
+                    )
+                ) continue
+                Log.i(
+                    TAG,
+                    "FOLDER NATIVE ADAPTER EVENT | surface=" +
+                        surface(browser.list) +
+                        " | kind=" + reason +
+                        " | previous=" + browser.nativeOrder.size +
+                        " | native=" + count
+                )
+                scheduleNativePlaylistRefresh(browser)
+            }
+        }
+    }
+
+    /**
+     * Refresh the already-visible folder browser when the ORIGINAL GMMP
+     * playlist model changes. Native Adapter notifications call this as
+     * the primary path; the throttled pre-draw check remains a fallback.
+     * Work is posted outside the native adapter's notification dispatch.
      */
     private fun scheduleNativePlaylistRefresh(browser: Browser) {
         if (browser.nativeRefreshPending || browser.nativeNavigationInProgress ||
@@ -1378,7 +1416,10 @@ internal class PlaylistFolderPreviewController(
         val count = runCatching {
             adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
         }.getOrNull() ?: return
-        if (count == browser.nativeOrder.size) return
+        if (!NativePlaylistAdapterEventPolicy.needsRefresh(
+                browser.nativeOrder.size, count
+            )
+        ) return
         browser.nativeRefreshPending = true
         mainHandler.post {
             browser.nativeRefreshPending = false
@@ -1390,9 +1431,10 @@ internal class PlaylistFolderPreviewController(
                 val currentAdapter = nativeAdapter(browser.list) ?: return@runCatching
                 val actualCount = currentAdapter.javaClass
                     .getMethod("getItemCount").invoke(currentAdapter) as Int
-                if (actualCount == browser.nativeOrder.size || actualCount <= 0) {
-                    return@runCatching
-                }
+                if (!NativePlaylistAdapterEventPolicy.needsRefresh(
+                        browser.nativeOrder.size, actualCount
+                    )
+                ) return@runCatching
                 val native = NativePlaylistSourceInspector.inspect(
                     currentAdapter, actualCount
                 )
