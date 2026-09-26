@@ -991,8 +991,13 @@ internal class PlaylistFolderPreviewController(
         val label = android.text.SpannableStringBuilder(originalTitle)
         val folderIcon = context.getDrawable(iconId)?.mutate()
         if (folderIcon != null) {
-            val width = folderIcon.intrinsicWidth.coerceAtLeast(dp(context, 18))
-            val height = folderIcon.intrinsicHeight.coerceAtLeast(dp(context, 18))
+            val fallbackSize = (
+                18f * context.resources.displayMetrics.density
+            ).toInt()
+            val width = folderIcon.intrinsicWidth.takeIf { it > 0 }
+                ?: fallbackSize
+            val height = folderIcon.intrinsicHeight.takeIf { it > 0 }
+                ?: fallbackSize
             folderIcon.setBounds(0, 0, width, height)
             val start = label.length
             label.append("  \uFFFC")
