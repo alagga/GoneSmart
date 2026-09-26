@@ -157,7 +157,9 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbRenderGeneration: Long = 0L,
         var lastRenderedFolderId: String? = null,
         var lastRenderedOrder: List<String>? = null,
-        var breadcrumbAdapter: NativeQuickNavAdapter? = null
+        var breadcrumbAdapter: NativeQuickNavAdapter? = null,
+        val mainSelection: NativeMainPlaylistSelectionMirror =
+            NativeMainPlaylistSelectionMirror()
     )
 
     /**
@@ -1747,8 +1749,9 @@ internal class PlaylistFolderPreviewController(
 
         for (playlist in playlists) {
             val model = browser.modelsByPath[playlist.path]
-            val selected =
+            val selected = if (isPicker(list)) {
                 multiSelect.isFolderPlaylistSelected(playlist.path)
+            } else browser.mainSelection.isSelected(playlist.path)
             val item = row(
                     list,
                     playlist.name,
@@ -2432,7 +2435,8 @@ internal class PlaylistFolderPreviewController(
                 // performClick() caused a one-frame flash of the original
                 // native playlist list.
                 val current = browsers[list]
-                val opensPlaylist = !longClick && !contextMenu
+                val opensPlaylist = !longClick && !contextMenu &&
+                    current?.mainSelection?.isSelecting != true
                 if (opensPlaylist) {
                     current?.nativeNavigationInProgress = true
                     current?.overlay?.isClickable = false
@@ -2460,6 +2464,20 @@ internal class PlaylistFolderPreviewController(
                     }
                     longClick -> nativeRow.performLongClick()
                     else -> nativeRow.performClick()
+                }
+                if (handled && !isPicker(list) && !contextMenu &&
+                    current != null && browsers[list] === current
+                ) {
+                    if (current.mainSelection.onNativeAction(path, longClick)) {
+                        mainHandler.post {
+                            if (browsers[list] === current &&
+                                list.isAttachedToWindow &&
+                                !current.nativeNavigationInProgress
+                            ) safeRender(current)
+                        }
+                        Log.i(TAG, "FOLDER MAIN SELECT | selected=" +
+                            current.mainSelection.selectedCount)
+                    }
                 }
                 if (!handled && opensPlaylist) {
                     current?.nativeNavigationInProgress = false
