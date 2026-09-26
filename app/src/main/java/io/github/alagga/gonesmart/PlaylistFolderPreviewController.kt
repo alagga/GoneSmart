@@ -31,6 +31,7 @@ import android.widget.FrameLayout
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.SimpleItemAnimator
+import androidx.recyclerview.widget.DefaultItemAnimator
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -121,6 +122,9 @@ internal class PlaylistFolderPreviewController(
         val nativeOverScrollMode: Int,
         val nativeClipToPadding: Boolean,
         val nativeNestedScrolling: Boolean,
+        val nativeHeaderStartPx: Int,
+        val nativeHeaderEndPx: Int,
+        val nativeItemAnimator: SimpleItemAnimator?,
         val signature: String
     )
 
@@ -130,7 +134,6 @@ internal class PlaylistFolderPreviewController(
         val overlay: FrameLayout,
         val rows: LinearLayout,
         val breadcrumbScroller: RecyclerView,
-        val breadcrumbRows: LinearLayout,
         val rootPath: String,
         var index: PlaylistFolderIndex.Result,
         var modelsByPath: Map<String, Any>,
@@ -149,8 +152,174 @@ internal class PlaylistFolderPreviewController(
         var lastBreadcrumbFolderId: String? = null,
         var breadcrumbRenderGeneration: Long = 0L,
         var lastRenderedFolderId: String? = null,
-        var lastRenderedOrder: List<String>? = null
+        var lastRenderedOrder: List<String>? = null,
+        var breadcrumbAdapter: NativeQuickNavAdapter? = null
     )
+
+    /**
+     * The actual GMMP 4.2.0 qg1 adapter alternates the native
+     * rv_horiz_metadata and rv_horiz_separator layouts (positions % 2).
+     * Reuse both of those exact resource layouts and RecyclerView's real
+     * per-item insert/remove animations. The old one-wide-holder layout
+     * forced guesses for the first inset and used a 40dp separator where
+     * GMMP's real separator layout measures 64dp on the tested device.
+     */
+    private inner class NativeQuickNavAdapter(
+        private val browser: Browser
+    ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        private val segments = arrayListOf<PlaylistBreadcrumbPath.Segment>()
+        private var rootLabel = ""
+        private var currentStyle = ""
+
+        init {
+            setHasStableIds(true)
+        }
+
+        override fun getItemCount(): Int =
+            NativeQuickNavDiff.itemCount(segments.size)
+
+        override fun getItemViewType(position: Int): Int = position % 2
+
+        override fun getItemId(position: Int): Long {
+            val segment = segments[position / 2]
+            val identifier = (segment.folderId ?: "root").hashCode().toLong()
+            return (identifier shl 1) xor (position % 2).toLong()
+        }
+
+        override fun onCreateViewHolder(
+            parent: ViewGroup,
+            viewType: Int
+        ): RecyclerView.ViewHolder {
+            val name = if (viewType == 0) {
+                "rv_horiz_metadata"
+            } else "rv_horiz_separator"
+            val layoutId = parent.resources.getIdentifier(
+                name, "layout", parent.context.packageName
+            )
+            val native = if (layoutId != 0) runCatching {
+                LayoutInflater.from(parent.context).inflate(
+                    layoutId, parent, false
+                )
+            }.onFailure {
+                Log.w(TAG, "FOLDER QUICKNAV | native XML inflation failed", it)
+            }.getOrNull() else null
+            // Only for a future GMMP version that removes the two verified
+            // 4.2.0 layouts. Normal operation uses the original native XML.
+            val view = native ?: if (viewType == 0) {
+                TextView(parent.context).apply {
+                    minHeight = dp(parent, 48)
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = typedSelectableBackground(
+                        parent, borderless = true
+                    )
+                }
+            } else {
+                ImageView(parent.context).apply {
+                    val icon = resources.getIdentifier(
+                        "ic_gm_keyboard_arrow_right", "drawable",
+                        context.packageName
+                    )
+                    if (icon != 0) setImageResource(icon)
+                    setPadding(dp(parent, 8), 0, dp(parent, 8), 0)
+                }
+            }
+            if (native == null) {
+                Log.w(
+                    TAG, "FOLDER QUICKNAV | XML missing | layout=" + name
+                )
+            }
+            if (view.layoutParams == null) {
+                view.layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+            return object : RecyclerView.ViewHolder(view) {}
+        }
+
+        override fun onBindViewHolder(
+            holder: RecyclerView.ViewHolder, position: Int
+        ) {
+            if (position % 2 != 0) return
+            val segment = segments.getOrNull(position / 2) ?: return
+            val label = holder.itemView as? TextView ?: return
+            val list = browser.list
+            val nav = observedNativeBreadcrumbStyle
+            val native = styles[list]
+            label.text = if (position == 0) rootLabel else segment.name
+            val nativePaint = nav?.effectivePaint ?: native?.effectivePaint
+            if (nativePaint != null) {
+                label.paint.set(nativePaint)
+                val nativeSize = if (nav != null) nativePaint.textSize
+                    else nativePaint.textSize * nativeQuickNavTitleRatio(list)
+                label.setTextSize(TypedValue.COMPLEX_UNIT_PX, nativeSize)
+            }
+            label.typeface = nav?.effectivePaint?.typeface
+                ?: Typeface.create(native?.typeface, Typeface.BOLD)
+            label.setTextColor(nav?.effectivePaint?.color
+                ?: native?.textColor ?: resolveTextColor(list))
+            label.letterSpacing = nav?.letterSpacing
+                ?: native?.letterSpacing ?: 0f
+            label.includeFontPadding = nav?.includeFontPadding
+                ?: native?.includeFontPadding ?: true
+            // Native rv_horiz_metadata already supplies the exact item
+            // width, minHeight, inset and ROUND selectable background.
+            // Never overwrite its XML padding or ripple with guessed dp.
+            label.isClickable = true
+            label.isFocusable = true
+            label.setOnClickListener {
+                if (browsers[list] !== browser ||
+                    browser.currentFolderId == segment.folderId
+                ) return@setOnClickListener
+                label.postOnAnimation {
+                    if (browsers[list] !== browser ||
+                        browser.currentFolderId == segment.folderId
+                    ) return@postOnAnimation
+                    browser.currentFolderId = segment.folderId
+                    rememberFolder(browser)
+                    activeBrowser = WeakReference(list)
+                    safeRender(browser)
+                    updatePlaylistMenu()
+                    updatePickerFab(browser)
+                }
+            }
+        }
+
+        /**
+         * qg1 is an alternating list of text and arrow holders:
+         * [Storage, >, Music, >, House].
+         * Native notifyItemRangeInserted/Removed, unlike notifyDataSetChanged
+         * on a single giant holder, activates the installed ItemAnimator on
+         * BOTH entering and returning from a nested folder.
+         */
+        fun submit(
+            next: List<PlaylistBreadcrumbPath.Segment>,
+            localizedRoot: String,
+            styleSignature: String
+        ): Boolean {
+            val oldIds = segments.map { (it.folderId ?: "root") + "\u0000" + it.name }
+            val newIds = next.map { (it.folderId ?: "root") + "\u0000" + it.name }
+            val diff = NativeQuickNavDiff.between(oldIds, newIds)
+            val styleChanged = styleSignature != currentStyle ||
+                rootLabel != localizedRoot
+            val pathChanged = oldIds != newIds
+            rootLabel = localizedRoot
+            currentStyle = styleSignature
+
+            if (diff.removedCount > 0) {
+                segments.subList(diff.sharedSegments, segments.size).clear()
+                notifyItemRangeRemoved(diff.retainedItems, diff.removedCount)
+            }
+            if (diff.insertedCount > 0) {
+                segments.addAll(next.drop(diff.sharedSegments))
+                notifyItemRangeInserted(diff.retainedItems, diff.insertedCount)
+            }
+            if (styleChanged && itemCount > 0 && !pathChanged) {
+                notifyItemRangeChanged(0, itemCount, "native-style")
+            }
+            return pathChanged
+        }
+    }
 
     private var settings = Settings()
     private var nativeMainCreateRedirectReady = false
@@ -339,6 +508,23 @@ internal class PlaylistFolderPreviewController(
         header.overScrollMode = source.nativeOverScrollMode
         header.clipToPadding = source.nativeClipToPadding
         header.isNestedScrollingEnabled = source.nativeNestedScrolling
+        if (header.paddingStart != source.nativeHeaderStartPx ||
+            header.paddingEnd != source.nativeHeaderEndPx
+        ) {
+            header.setPaddingRelative(
+                source.nativeHeaderStartPx,
+                header.paddingTop,
+                source.nativeHeaderEndPx,
+                header.paddingBottom
+            )
+        }
+        val observedAnimator = source.nativeItemAnimator
+        if (observedAnimator != null &&
+            header.itemAnimator?.javaClass != observedAnimator.javaClass
+        ) {
+            header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
+                ?: DefaultItemAnimator()
+        }
     }
 
     private fun nativeQuickNavTitleRatio(list: View): Float {
@@ -378,6 +564,19 @@ internal class PlaylistFolderPreviewController(
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
         val nativeNav = list as? RecyclerView
+        val nativeFirstItem = nativeNav?.let { nav ->
+            (0 until nav.childCount).map { nav.getChildAt(it) }
+                .firstOrNull { child ->
+                    nav.getChildAdapterPosition(child) == 0 &&
+                        child.left >= 0
+                }
+        }
+        // qg1's actual first item position incorporates the Files-tab
+        // RecyclerView inset. Its native rv_horiz_metadata XML adds the
+        // remaining text/background geometry when inflated.
+        val nativeHeaderStart = nativeFirstItem?.left
+            ?: nativeNav?.paddingStart ?: 0
+        val nativeHeaderEnd = nativeNav?.paddingEnd ?: 0
         val edgeFactory = nativeNav?.edgeEffectFactory
         val nativeScrollMode = nativeNav?.overScrollMode ?: View.OVER_SCROLL_ALWAYS
         val nativeClip = nativeNav?.clipToPadding ?: false
@@ -388,7 +587,8 @@ internal class PlaylistFolderPreviewController(
             original.paddingStart, original.paddingEnd,
             nativeTouch?.javaClass?.name,
             edgeFactory?.javaClass?.name, nativeScrollMode,
-            nativeClip, nativeNested
+            nativeClip, nativeNested, nativeHeaderStart,
+            nativeHeaderEnd, nativeNav?.itemAnimator?.javaClass?.name
         ).joinToString(":")
         if (observedNativeBreadcrumbStyle?.signature == signature) {
             return true
@@ -414,6 +614,11 @@ internal class PlaylistFolderPreviewController(
             nativeOverScrollMode = nativeScrollMode,
             nativeClipToPadding = nativeClip,
             nativeNestedScrolling = nativeNested,
+            nativeHeaderStartPx = nativeHeaderStart,
+            nativeHeaderEndPx = nativeHeaderEnd,
+            nativeItemAnimator = cloneNativeItemAnimator(
+                nativeNav?.itemAnimator
+            ),
             signature = signature
         )
         Log.i(
@@ -421,7 +626,13 @@ internal class PlaylistFolderPreviewController(
             "FOLDER NATIVE BREADCRUMB | quickNav style captured" +
                 " | sizePx=" + paint.textSize +
                 " | typeface=" + (paint.typeface?.style ?: 0) +
-                " | height=" + height
+                " | height=" + height +
+                " | insetStart=" + nativeHeaderStart +
+                " | insetEnd=" + nativeHeaderEnd +
+                " | nativeAdapter=" +
+                (nativeNav?.adapter?.javaClass?.simpleName ?: "none") +
+                " | nativeAnimator=" +
+                (nativeNav?.itemAnimator?.javaClass?.simpleName ?: "none")
         )
         // Never rebuild overlays inside GMMP's RecyclerView layout pass.
         mainHandler.post {
@@ -697,13 +908,9 @@ internal class PlaylistFolderPreviewController(
         // Match GMMP's Files tab: a fixed horizontal navigation strip
         // above the scrollable contents, not a fake Back playlist row.
         // The strip is GONE in root, preserving its original height.
-        // GMMP's Files quickNav is an actual AndroidX RecyclerView.
-        // Use the SAME scrolling/EdgeEffect implementation rather than
-        // approximating its short-path stretch via a HorizontalScrollView.
-        val breadcrumbRows = LinearLayout(list.context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
+        // qg1 is NOT one wide holder: its real alternating metadata and
+        // separator layouts determine exactly the first left inset, arrow
+        // size, padding, typography bounds and native clickable/ripple area.
         val breadcrumbScroller = RecyclerView(list.context).apply {
             layoutManager = LinearLayoutManager(
                 context, RecyclerView.HORIZONTAL, false
@@ -711,39 +918,10 @@ internal class PlaylistFolderPreviewController(
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
             clipToPadding = false
-            itemAnimator = null // path updates themselves are not insertions
-            visibility = View.GONE
-            this.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-                override fun getItemCount() = 1
-
-                override fun onCreateViewHolder(
-                    parent: ViewGroup, viewType: Int
-                ): RecyclerView.ViewHolder {
-                    val frame = FrameLayout(parent.context).apply {
-                        layoutParams = RecyclerView.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    }
-                    return object : RecyclerView.ViewHolder(frame) {}
-                }
-
-                override fun onBindViewHolder(
-                    holder: RecyclerView.ViewHolder, position: Int
-                ) {
-                    val frame = holder.itemView as FrameLayout
-                    (breadcrumbRows.parent as? ViewGroup)
-                        ?.removeView(breadcrumbRows)
-                    frame.removeAllViews()
-                    frame.addView(
-                        breadcrumbRows,
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    )
-                }
+            itemAnimator = DefaultItemAnimator().apply {
+                supportsChangeAnimations = false
             }
+            visibility = View.GONE
         }
         applyNativeQuickNavPhysics(breadcrumbScroller)
         val contentColumn = LinearLayout(list.context).apply {
@@ -831,7 +1009,6 @@ internal class PlaylistFolderPreviewController(
             overlay = overlay,
             rows = rows,
             breadcrumbScroller = breadcrumbScroller,
-            breadcrumbRows = breadcrumbRows,
             rootPath = root,
             index = index,
             modelsByPath = native.nativeObjects,
@@ -842,6 +1019,8 @@ internal class PlaylistFolderPreviewController(
             detachListener = detachListener,
             currentFolderId = rememberedFolder
         )
+        browser.breadcrumbAdapter = NativeQuickNavAdapter(browser)
+        breadcrumbScroller.adapter = browser.breadcrumbAdapter
         browsers[list] = browser
         styles[list] = nativeStyle
         list.addOnAttachStateChangeListener(detachListener)
@@ -1087,204 +1266,104 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * GMMP's Files page uses a persistent row of individually clickable
-     * ancestor segments. Reuse its localized "storage" string and its
-     * observed quickNav typography when available; the already-sampled
-     * native playlist headline is the documented defensive fallback.
+     * Use GMMP's exact qg1 XML layouts (not recreated TextViews/arrows).
+     * qg1 emits [metadata, separator, metadata, ...] into an actual
+     * horizontal RecyclerView. Native item insertions and removals activate
+     * the sampled GMMP quickNav ItemAnimator for forward/back navigation.
      */
     private fun renderBreadcrumb(browser: Browser) {
         val list = browser.list
         val strip = browser.breadcrumbScroller
-        val previousScrollX = breadcrumbScrollOffset(strip)
-        val previousMaxScrollX =
-            (browser.breadcrumbRows.width - strip.width).coerceAtLeast(0)
-        val previousWasAtEnd =
-            previousScrollX >= (previousMaxScrollX - dp(list, 6)).coerceAtLeast(0)
+        val adapter = browser.breadcrumbAdapter ?: return
+        val oldAtEnd = !strip.canScrollHorizontally(1)
         val folderChanged =
             browser.lastBreadcrumbFolderId != browser.currentFolderId
         browser.lastBreadcrumbFolderId = browser.currentFolderId
         val segments = PlaylistBreadcrumbPath.forFolder(
             browser.index, browser.currentFolderId
         )
+        val nav = observedNativeBreadcrumbStyle
+        val native = styles[list]
         browser.renderedBreadcrumbSignature =
-            observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
+            nav?.signature ?: "native-playlist-fallback"
+        applyNativeQuickNavPhysics(strip)
         if (segments.isEmpty()) {
+            adapter.submit(
+                emptyList(), "", browser.renderedBreadcrumbSignature ?: ""
+            )
             strip.visibility = View.GONE
             browser.breadcrumbContentSignature = null
-            browser.breadcrumbRows.removeAllViews()
             return
         }
 
-        val native = styles[list]
-        val nav = observedNativeBreadcrumbStyle
-        applyNativeQuickNavPhysics(strip)
         val height = nav?.rowHeightPx ?: native?.rowHeight ?: dp(list, 48)
-        strip.layoutParams = strip.layoutParams.apply { this.height = height }
-        strip.visibility = View.VISIBLE
-        val foreground = native?.textColor
-            ?: nav?.effectivePaint?.color ?: resolveTextColor(list)
-        val background = native?.let {
-            nativeContentBackground(list, browser.parent, it)
+        if (strip.layoutParams.height != height) {
+            strip.layoutParams = strip.layoutParams.apply { this.height = height }
         }
-        if (background != null) strip.background = background
-
-        val storageResource = list.resources.getIdentifier(
+        strip.visibility = View.VISIBLE
+        native?.let {
+            strip.background = nativeContentBackground(
+                list, browser.parent, it
+            )
+        }
+        val storageId = list.resources.getIdentifier(
             "storage", "string", list.context.packageName
         )
-        val storageLabel = if (storageResource != 0) {
-            list.context.getString(storageResource)
-        } else {
-            // Neutral icon if a future GMMP version removes its native
-            // "storage" string. Never insert an untranslated English label.
-            "⌂"
-        }
-        // A selection/list refresh must not tear down the clickable
-        // breadcrumb while the user is physically swiping it.
-        val contentSignature = listOf(
+        val storageLabel = if (storageId != 0) {
+            list.context.getString(storageId)
+        } else "⌂"
+        val appearance = listOf(
             browser.renderedBreadcrumbSignature,
             native?.signature ?: "-",
             storageLabel,
-            segments.joinToString("|") { (it.folderId ?: "root") + "=" + it.name }
+            segments.joinToString("|") {
+                (it.folderId ?: "root") + "=" + it.name
+            }
         ).joinToString("::")
-        if (browser.breadcrumbContentSignature == contentSignature &&
-            strip.visibility == View.VISIBLE &&
-            browser.breadcrumbRows.childCount > 0
-        ) {
-            // CRITICAL: do not increment generation for a no-op render.
-            // An extra native layout pass previously invalidated the
-            // pending scroll-to-last callback before it ever ran.
+        if (browser.breadcrumbContentSignature == appearance) return
+        val styleOnly = browser.breadcrumbContentSignature != null &&
+            !folderChanged
+        val generation = ++browser.breadcrumbRenderGeneration
+        browser.breadcrumbContentSignature = appearance
+        val pathChanged = adapter.submit(segments, storageLabel, appearance)
+
+        // The original qg1 is a segmented adapter. Bring the newly added
+        // last metadata holder into view, aligned to the right, AFTER the
+        // native LayoutManager has completed its insertion/move animation.
+        // A theme-only redraw must not undo the user's manual left swipe.
+        if (!folderChanged && !pathChanged && !(styleOnly && oldAtEnd)) {
             return
         }
-        val contentChanged = browser.breadcrumbContentSignature != contentSignature
-        val generation = ++browser.breadcrumbRenderGeneration
-        browser.breadcrumbContentSignature = contentSignature
-        browser.breadcrumbRows.removeAllViews()
-        segments.forEachIndexed { position, segment ->
-            if (position != 0) {
-                val separator = ImageView(list.context).apply {
-                    val arrow = resources.getIdentifier(
-                        "ic_gm_keyboard_arrow_right", "drawable",
-                        context.packageName
-                    )
-                    if (arrow != 0) {
-                        setImageResource(arrow)
-                        imageTintList = android.content.res.ColorStateList
-                            .valueOf(foreground)
-                    } else {
-                        setImageDrawable(null)
-                    }
-                    importantForAccessibility =
-                        View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                }
-                browser.breadcrumbRows.addView(
-                    separator,
-                    LinearLayout.LayoutParams(dp(list, 24), dp(list, 24)).apply {
-                        marginStart = dp(list, 8)
-                        marginEnd = dp(list, 8)
-                    }
-                )
-            }
-            val title = if (position == 0) storageLabel else segment.name
-            val label = TextView(list.context).apply {
-                text = title
-                val paintSource = nav?.effectivePaint ?: native?.effectivePaint
-                if (paintSource != null) {
-                    paint.set(paintSource)
-                    // The original native quickNav can be observed only
-                    // after visiting GMMP's Files tab. Do not show a visibly
-                    // smaller font the FIRST time an Add picker is opened.
-                    val px = if (nav != null) paintSource.textSize else {
-                        paintSource.textSize * nativeQuickNavTitleRatio(list)
-                    }
-                    setTextSize(TypedValue.COMPLEX_UNIT_PX, px)
-                }
-                typeface = nav?.effectivePaint?.typeface
-                    ?: Typeface.create(native?.typeface, Typeface.BOLD)
-                setTextColor(foreground)
-                letterSpacing = nav?.letterSpacing ?: native?.letterSpacing ?: 0f
-                includeFontPadding = nav?.includeFontPadding
-                    ?: native?.includeFontPadding ?: true
-                gravity = Gravity.CENTER_VERTICAL
-                setPaddingRelative(
-                    nav?.paddingStartPx ?: dp(list, 6), 0,
-                    nav?.paddingEndPx ?: dp(list, 6), 0
-                )
-                this.background = nav?.nativeTouchBackground
-                    ?.newDrawable(list.resources)?.mutate()
-                    ?: typedSelectableBackground(list, borderless = true)
-                // The native Files quickNav also responds visually when
-                // its CURRENT (last) segment is tapped. Keep all segments
-                // clickable, but do not navigate/rebuild when already there.
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    if (browsers[list] !== browser ||
-                        browser.currentFolderId == segment.folderId
-                    ) return@setOnClickListener
-                    // Let the native rounded ripple render before replacing
-                    // the row tree with a different breadcrumb destination.
-                    postOnAnimation {
-                        if (browsers[list] !== browser) return@postOnAnimation
-                        browser.currentFolderId = segment.folderId
-                        rememberFolder(browser)
-                        activeBrowser = WeakReference(list)
-                        safeRender(browser)
-                        updatePlaylistMenu()
-                        updatePickerFab(browser)
-                    }
-                }
-            }
-            browser.breadcrumbRows.addView(
-                label,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            )
-        }
-        // A single oversized native RecyclerView holder carries the
-        // same clickable native GMMP path labels. Invalidate its measured
-        // width after a path/font change without replacing the scroller:
-        // AndroidX, not a 1px HorizontalScrollView workaround, now owns
-        // fling, touch slop and edge stretch.
-        strip.adapter?.notifyItemChanged(0)
-        strip.requestLayout()
-        // Preserve a deliberate left swipe on normal redraw. Actual folder
-        // navigation always reveals the newest/rightmost folder.
-        val reposition = object : Runnable {
-            var retries = 0
+        val last = adapter.itemCount - 1
+        if (last < 0) return
+        var attempts = 0
+        val reveal = object : Runnable {
             override fun run() {
                 if (browsers[list] !== browser ||
-                    browser.breadcrumbRenderGeneration != generation ||
                     strip.visibility != View.VISIBLE ||
+                    browser.breadcrumbRenderGeneration != generation ||
                     !strip.isAttachedToWindow
                 ) return
-                if ((strip.width <= 0 ||
-                        browser.breadcrumbRows.width <= 0 ||
-                        strip.getChildAt(0) == null ||
-                        strip.isLayoutRequested ||
-                        browser.breadcrumbRows.isLayoutRequested) &&
-                    ++retries <= 10
-                ) {
-                    strip.postOnAnimation(this)
+                val child = strip.layoutManager?.findViewByPosition(last)
+                if (child == null || strip.isLayoutRequested) {
+                    if (attempts++ < 12) {
+                        strip.scrollToPosition(last)
+                        strip.postOnAnimation(this)
+                    }
                     return
                 }
-                val target = PlaylistBreadcrumbScrollPolicy.targetX(
-                    folderChanged || (contentChanged && previousWasAtEnd),
-                    previousScrollX,
-                    browser.breadcrumbRows.width,
-                    strip.width
-                )
-                strip.scrollBy(target - breadcrumbScrollOffset(strip), 0)
+                // RecyclerView's native smooth scroller supplies the
+                // forward/back movement; no custom ViewPropertyAnimator.
+                val visibleEnd = strip.width - strip.paddingEnd
+                val delta = child.right - visibleEnd
+                if (delta > 0) {
+                    strip.smoothScrollBy(delta, 0)
+                } else if (folderChanged && strip.canScrollHorizontally(1)) {
+                    strip.smoothScrollToPosition(last)
+                }
             }
         }
-        strip.postOnAnimation(reposition)
-    }
-
-    private fun breadcrumbScrollOffset(header: RecyclerView): Int {
-        // RecyclerView does not use View.scrollX: its LayoutManager offsets
-        // child views instead. There is exactly one wide native holder.
-        return (-(header.getChildAt(0)?.left ?: 0)).coerceAtLeast(0)
+        strip.postOnAnimation(reveal)
     }
 
     private fun safeRender(browser: Browser) {
