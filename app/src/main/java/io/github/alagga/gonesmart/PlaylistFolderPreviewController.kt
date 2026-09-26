@@ -920,6 +920,15 @@ internal class PlaylistFolderPreviewController(
         if (browser.overlay.visibility != View.VISIBLE ||
             browser.nativeNavigationInProgress
         ) return false
+        if (!isPicker(browser.list) && browser.mainSelection.isSelecting) {
+            // The original GMMP ActionMode handles Back; our synthetic
+            // selection tint is only a visual mirror of its accepted clicks.
+            browser.mainSelection.clear()
+            mainHandler.post {
+                if (browsers[browser.list] === browser) safeRender(browser)
+            }
+            return false
+        }
         if (browser.currentFolderId == null) return false
         val folder = findFolder(browser.index, browser.currentFolderId)
         browser.currentFolderId = parentFolderId(browser, folder)
