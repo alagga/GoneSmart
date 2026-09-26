@@ -334,6 +334,40 @@ internal class PlaylistFolderPreviewController(
     private var settings = Settings()
     private var nativeMainCreateRedirectReady = false
     private var nativePickerCreateRedirectReady = false
+    private var nativeFolderCreator: NativeGmmpFolderCreator? = null
+
+    fun setNativeFolderCreator(hostClassLoader: ClassLoader) {
+        nativeFolderCreator = NativeGmmpFolderCreator(hostClassLoader)
+        updatePlaylistMenu()
+    }
+
+    /** Only inspect directories: GMMP's native model owns all M3U files. */
+    private fun physicalDirectorySnapshot(rootPath: String): List<String> {
+        val root = runCatching { java.io.File(rootPath).canonicalFile }
+            .getOrNull() ?: return emptyList()
+        if (!root.isDirectory) return emptyList()
+        val found = arrayListOf<String>()
+        val pending = ArrayDeque<java.io.File>()
+        pending.add(root)
+        val prefix = root.path.trimEnd(java.io.File.separatorChar) +
+            java.io.File.separator
+        while (pending.isNotEmpty() && found.size < 1024) {
+            val folder = pending.removeFirst()
+            val children = folder.listFiles()?.filter { it.isDirectory }
+                ?: continue
+            for (child in children) {
+                val canonical = runCatching { child.canonicalFile }
+                    .getOrNull() ?: continue
+                if (!canonical.path.startsWith(prefix) ||
+                    canonical.path in found
+                ) continue
+                found.add(canonical.path)
+                pending.add(canonical)
+                if (found.size >= 1024) break
+            }
+        }
+        return found
+    }
 
     data class PhysicalCreationTarget(
         val nativeRoot: String,
@@ -1025,6 +1059,7 @@ internal class PlaylistFolderPreviewController(
             mainPlaylistDirectory = root,
             groupExternalLocations = settings.groupExternal,
             groupRootPlaylists = settings.groupRoot,
+            physicalDirectoryPaths = physicalDirectorySnapshot(root),
             displayNamesByPath = titleResult.names + renderedTitles
         )
 
@@ -1462,6 +1497,7 @@ internal class PlaylistFolderPreviewController(
                     mainPlaylistDirectory = browser.rootPath,
                     groupExternalLocations = settings.groupExternal,
                     groupRootPlaylists = settings.groupRoot,
+                    physicalDirectoryPaths = physicalDirectorySnapshot(browser.rootPath),
                     displayNamesByPath = titles.names + visibleTitles
                 )
                 browser.index = refreshed
