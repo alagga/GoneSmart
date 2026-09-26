@@ -516,6 +516,36 @@ class GoneSmartModule : XposedModule() {
                         options.groupRootPlaylists
                     )
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
+                    // py0.b() shows its native MaterialDialog synchronously.
+                    // Observe the ORIGINAL show() after it returns; alter
+                    // only the already-rendered path label for this thread's
+                    // verified GoneSmart folder deletion, never the dialog
+                    // buttons or the native delete worker.
+                    runCatching {
+                        val nativeDialog = param.classLoader.loadClass(
+                            "com.afollestad.materialdialogs.MaterialDialog"
+                        )
+                        val nativeShow = nativeDialog.getMethod("show")
+                            .apply { isAccessible = true }
+                        hook(nativeShow).intercept { chain ->
+                            val result = chain.proceed()
+                            if (nativeDialog.isInstance(chain.getThisObject())) {
+                                (chain.getThisObject() as? android.app.Dialog)
+                                    ?.let(playlistFolderPreview::onOriginalFolderDeleteDialogShown)
+                            }
+                            result
+                        }
+                        Log.i(
+                            "GoneSmartPlaylist",
+                            "FOLDER DELETE DIALOG | native show observer ready"
+                        )
+                    }.onFailure {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "FOLDER DELETE DIALOG | original show observer unavailable",
+                            it
+                        )
+                    }
                     installPlaylistSurfaceDiscoveryHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {

@@ -998,6 +998,31 @@ internal class PlaylistFolderPreviewController(
                 ?: fallbackSize
             val height = folderIcon.intrinsicHeight.takeIf { it > 0 }
                 ?: fallbackSize
+            // The inline ImageSpan does not inherit its parent TextView's
+            // text color. Prefer the original item's foreground span, then
+            // the CURRENT bound native playlist row, then the host's own
+            // active textColorPrimary. Never use the untinted black asset.
+            val nativeSpanColor = (originalTitle as? Spanned)?.let { source ->
+                source.getSpans(0, source.length, ForegroundColorSpan::class.java)
+                    .lastOrNull()?.foregroundColor
+            }
+            val rowColor = currentBrowser(picker = false)?.let {
+                styles[it.list]?.textColor
+            }
+            val nativeTextColor = nativeSpanColor ?: rowColor ?: run {
+                val attrs = context.obtainStyledAttributes(
+                    intArrayOf(android.R.attr.textColorPrimary)
+                )
+                try {
+                    attrs.getColorStateList(0)?.getColorForState(
+                        intArrayOf(android.R.attr.state_enabled),
+                        attrs.getColor(0, Color.WHITE)
+                    ) ?: attrs.getColor(0, Color.WHITE)
+                } finally {
+                    attrs.recycle()
+                }
+            }
+            folderIcon.setTint(nativeTextColor)
             folderIcon.setBounds(0, 0, width, height)
             val start = label.length
             label.append("  \uFFFC")
@@ -1081,6 +1106,15 @@ internal class PlaylistFolderPreviewController(
             Log.w(TAG, "FOLDER CREATE | original GMMP prompt unavailable")
         }
         return opened
+    }
+
+    /**
+     * Only the native bulk-delete dialog created by our OWN verified folder
+     * request is eligible for a path label. The original buttons, click
+     * callbacks, file list and WorkManager transaction are unchanged.
+     */
+    fun onOriginalFolderDeleteDialogShown(dialog: android.app.Dialog) {
+        nativeFolderDeletion?.onNativeDialogShown(dialog)
     }
 
     /** Bound to GMMP 4.2.0's ORIGINAL yn3 -> n3 ActionMode lifecycle. */
@@ -1168,7 +1202,7 @@ internal class PlaylistFolderPreviewController(
             plan.nativePlaylistFiles
         } else listOf(plan.folder)
         val opened = nativeFolderDeletion!!.confirmNativeDeletion(
-            browser.list.context, nativeTargets
+            browser.list.context, nativeTargets, plan.folder
         )
         if (!opened) return false
         val pending = PendingFolderDeletion(plan)
