@@ -45,6 +45,20 @@
 | Track Auto-DJ from any native song menu | Dispatch exact original native `Play` listener or `Menu.performIdentifierAction`; use `ex3.c(uq1)`, native queue `xx3.O`/ `xx3.O0` Room transaction to preserve the exact selected queue entry and isolate it, then native Auto-DJ command and refill using original configured Initial Size. | **NATIVE + EXTENSION:** deterministic seed isolation and replacement of old Auto-DJ refill are feature-owned; no custom audio player or ad-hoc raw queue file edits. |
 | Native GMMP player/UI surfaces | Original drawer `AestheticNavigationView`, ActionMode, AestheticFab, live Aesthetic color observables, native row/menu resource IDs and original mini-player bounds. | **NATIVE + EXTENSION:** only badges, folder overlays and speed dial are custom. Clone rather than reparent live native FAB or Animator session state. |
 
+### 2a. Companion-only workflows and Android framework APIs
+
+These screens belong to the English-only GoneSmart companion, **not GMMP**. They are still part of the complete application audit but should not be forced through GMMP translation resources or spliced into GMMP internal presenters.
+
+| Companion function | Current responsible API | Native GMMP substitution? |
+| --- | --- | --- |
+| Home module/GMMP status and independent UI / Smart DJ feature switches | Original Android View/Material widgets; libxposed remote preferences read by the injected module, native player state observed without replacing GMMP settings. | **Not applicable:** GoneSmart's enable/feature settings are not GMMP Auto-DJ settings. Original player Initial Size, Upcoming and fallback preferences are read from GMMP rather than copied into a second competing setting. |
+| Logs tab, per-feature counters, Copy and Clear | Own `GoneSmartEventStore` populated by typed broadcasts from injected hooks; native Android ClipboardManager for Copy. | **Not applicable:** this is a GoneSmart diagnostic facility, not GMMP's original player log. It stays English. |
+| Help / FAQ | Own English-only companion info cards and GitHub documentation. | **Not applicable:** documents GoneSmart functionality GMMP itself does not ship. |
+| Update check, Obtainium shortcut | `GitHubReleaseChecker` read-only GitHub Releases query; Android ACTION_VIEW to Obtainium. | **Not applicable:** GMMP has no native API for checking/releasing GoneSmart builds. No automatic APK installation. |
+| Restart GMMP troubleshooting button | Android package launch Intent; rooted `am force-stop gonemad.gmmp` then launch via Activity. | **No safe documented native “restart this app” GMMP command:** a controlled OS-level restart is appropriate for reloading an injected module; failing root reports an English companion-only error. |
+
+**Host-specific locale correction:** Smart DJ's injected status Toast initially used a GMMP **Application** context. To respect players that override language on their own active Activity, `GoneSmartStatusNotifier` now retains a **weak** reference to the actual host `MainActivity` observed through its already installed `onResume` hook and resolves native status resources from that foreground Activity when valid. Track Auto-DJ similarly keeps its originating GMMP menu Context for the bounded asynchronous request; it does not silently switch to the process-wide application locale. These fixes are source/CI-verifiable but a real GMMP in-app language-toggle smoke test is still required.
+
 ### 3. Outstanding questions and release-hardening gates
 
 1. **Potential native playlist Move/save primitive — REVIEW:** map original `zo3` / `hp3.d` writer's complete live model initialization, new destination binding, relative URI handling and `x6.b`/scanner index lifecycle using the privately inspected *same* original GMMP 4.2.0 APK. Existing native editor save does normalize relative playlist paths, but that observation alone does not prove it can safely relocate a playlist without stale records. **Keep the currently tested durable native-delete/native-scan Move workflow until such a complete alternative is established**.
