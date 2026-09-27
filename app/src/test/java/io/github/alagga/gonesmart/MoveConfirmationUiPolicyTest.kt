@@ -13,6 +13,31 @@ class MoveConfirmationUiPolicyTest {
     }
 
     @Test
+    fun moveBarRisesAboveClippedNativeViewport() {
+        assertEquals(
+            168,
+            MoveConfirmationUiPolicy.bottomOcclusion(
+                overlayBottomPx = 2200,
+                visibleBottomPx = 2032
+            )
+        )
+        assertEquals(
+            0,
+            MoveConfirmationUiPolicy.bottomOcclusion(
+                overlayBottomPx = 2032,
+                visibleBottomPx = 2032
+            )
+        )
+        assertEquals(
+            0,
+            MoveConfirmationUiPolicy.bottomOcclusion(
+                overlayBottomPx = 2000,
+                visibleBottomPx = 2032
+            )
+        )
+    }
+
+    @Test
     fun chooseContrastAgainstActualDarkGmmpAccent() {
         assertEquals(
             0xffffffff.toInt(),

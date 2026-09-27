@@ -17,6 +17,11 @@ internal object MoveConfirmationUiPolicy {
             ?: fallbackHeightPx.coerceAtLeast(0)
     }
 
+    fun bottomOcclusion(
+        overlayBottomPx: Int,
+        visibleBottomPx: Int
+    ): Int = (overlayBottomPx - visibleBottomPx).coerceAtLeast(0)
+
     /**
      * Choose the text with the greater WCAG contrast against the ACTUAL
      * current GMMP accent. Color math is Android-independent for unit tests.

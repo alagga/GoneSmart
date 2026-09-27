@@ -172,7 +172,8 @@ internal class PlaylistFolderPreviewController(
         var moveBottomBar: View? = null,
         var moveConfirmButton: android.widget.Button? = null,
         var moveLastAccent: Int? = null,
-        var moveBarLayoutLogged: Boolean = false
+        var moveBarLayoutLogged: Boolean = false,
+        var moveLastBottomOcclusion: Int = -1
     )
 
     /**
@@ -1127,6 +1128,7 @@ internal class PlaylistFolderPreviewController(
         }
         browser.movePreviousFolder = null
         browser.moveLastAccent = null
+        browser.moveLastBottomOcclusion = -1
         browser.moveBottomBar?.visibility = View.GONE
         browser.lastRenderedOrder = null
         safeRender(browser)
@@ -1294,6 +1296,41 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
+     * The playlists RecyclerView extends behind GMMP's persistent mini
+     * player. getGlobalVisibleRect() exposes the ACTUAL unobscured list
+     * viewport. Anchor the move controls above that clipped bottom edge
+     * rather than at overlay.height, which previously put ~168 px of a
+     * 210 px bar underneath the mini player on the maintainer's device.
+     */
+    private fun positionMoveBarAboveNativeObstruction(browser: Browser) {
+        val bar = browser.moveBottomBar ?: return
+        if (browser.moveSources == null || bar.height <= 0) return
+        val visible = Rect()
+        if (!browser.list.getGlobalVisibleRect(visible)) return
+        val overlayLocation = IntArray(2)
+        browser.overlay.getLocationOnScreen(overlayLocation)
+        val overlayBottom = overlayLocation[1] + browser.overlay.height
+        val occlusion = MoveConfirmationUiPolicy.bottomOcclusion(
+            overlayBottomPx = overlayBottom,
+            visibleBottomPx = visible.bottom
+        )
+        val params = bar.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (params.bottomMargin != occlusion) {
+            params.bottomMargin = occlusion
+            bar.layoutParams = params
+        }
+        if (browser.moveLastBottomOcclusion != occlusion) {
+            browser.moveLastBottomOcclusion = occlusion
+            Log.i(
+                TAG,
+                "PLAYLIST MOVE UI | bottom obstruction=" + occlusion +
+                    " | overlayBottom=" + overlayBottom +
+                    " | nativeVisibleBottom=" + visible.bottom
+            )
+        }
+    }
+
+    /**
      * FIX: the old buttonBarButtonStyle buttons lived as a final child
      * inside the full-height list column and could become invisible on the
      * original black Aesthetic skin. Anchor a single native-style action
@@ -1366,6 +1403,7 @@ internal class PlaylistFolderPreviewController(
             _, _, _, _, _, _, _, _, _ ->
             if (browser.moveSources != null) {
                 reserveMoveBarSpace(browser, active = true)
+                positionMoveBarAboveNativeObstruction(browser)
                 if (!browser.moveBarLayoutLogged && bar.height > 0) {
                     browser.moveBarLayoutLogged = true
                     val visible = Rect()
@@ -2131,6 +2169,7 @@ internal class PlaylistFolderPreviewController(
         // Aesthetic dynamically derives its colors from the current cover.
         // Keep the destination confirmation on the SAME native palette.
         syncMoveButtonPalette(browser)
+        positionMoveBarAboveNativeObstruction(browser)
         val breadcrumbSignature =
             observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
         if (browser.currentFolderId != null &&
@@ -2600,6 +2639,11 @@ internal class PlaylistFolderPreviewController(
         if (choosingDestination) {
             browser.moveBottomBar?.bringToFront()
             syncMoveButtonPalette(browser)
+            browser.moveBottomBar?.post {
+                if (browsers[list] === browser) {
+                    positionMoveBarAboveNativeObstruction(browser)
+                }
+            }
         }
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
