@@ -92,6 +92,113 @@ internal object GoneSmartGmmpStrings {
         "zu" to "Hambisa"
     )
 
+    /**
+     * GoneSmart's virtual "Other Locations" node is NOT a physical GMMP
+     * folder name. Reuse a genuine installed GMMP translation first if
+     * it exists. These are fallback translations for that feature-owned
+     * label; native-speaker review is still required before a broad release.
+     */
+    private val otherLocationsByLanguage = mapOf(
+        "af" to "Ander liggings",
+        "am" to "ሌሎች ቦታዎች",
+        "ar" to "مواقع أخرى",
+        "as" to "অন্যান্য স্থান",
+        "az" to "Digər yerlər",
+        "be" to "Іншыя месцы",
+        "bg" to "Други местоположения",
+        "bn" to "অন্যান্য অবস্থান",
+        "bs" to "Druge lokacije",
+        "ca" to "Altres ubicacions",
+        "cs" to "Další umístění",
+        "da" to "Andre placeringer",
+        "de" to "Andere Speicherorte",
+        "el" to "Άλλες τοποθεσίες",
+        "en" to "Other Locations",
+        "es" to "Otras ubicaciones",
+        "et" to "Muud asukohad",
+        "eu" to "Beste kokapen batzuk",
+        "fa" to "مکان‌های دیگر",
+        "fi" to "Muut sijainnit",
+        "fr" to "Autres emplacements",
+        "gl" to "Outras localizacións",
+        "gu" to "અન્ય સ્થાનો",
+        "he" to "מיקומים אחרים",
+        "hi" to "अन्य स्थान",
+        "hr" to "Ostale lokacije",
+        "hu" to "Egyéb helyek",
+        "hy" to "Այլ տեղադրություններ",
+        "id" to "Lokasi Lain",
+        "is" to "Aðrar staðsetningar",
+        "it" to "Altre posizioni",
+        "ja" to "その他の場所",
+        "ka" to "სხვა მდებარეობები",
+        "kk" to "Басқа орындар",
+        "km" to "ទីតាំងផ្សេងទៀត",
+        "kn" to "ಇತರ ಸ್ಥಳಗಳು",
+        "ko" to "다른 위치",
+        "ky" to "Башка жерлер",
+        "lo" to "ສະຖານທີ່ອື່ນ",
+        "lt" to "Kitos vietos",
+        "lv" to "Citas atrašanās vietas",
+        "mk" to "Други локации",
+        "ml" to "മറ്റ് സ്ഥാനങ്ങൾ",
+        "mn" to "Бусад байршлууд",
+        "mr" to "इतर ठिकाणे",
+        "ms" to "Lokasi Lain",
+        "my" to "အခြားတည်နေရာများ",
+        "nb" to "Andre plasseringer",
+        "ne" to "अन्य स्थानहरू",
+        "nl" to "Andere locaties",
+        "or" to "ଅନ୍ୟ ସ୍ଥାନ",
+        "pa" to "ਹੋਰ ਟਿਕਾਣੇ",
+        "pl" to "Inne lokalizacje",
+        "pt" to "Outros locais",
+        "ro" to "Alte locații",
+        "ru" to "Другие расположения",
+        "si" to "වෙනත් ස්ථාන",
+        "sk" to "Iné umiestnenia",
+        "sl" to "Druge lokacije",
+        "sq" to "Vendndodhje të tjera",
+        "sr" to "Друге локације",
+        "sv" to "Andra platser",
+        "sw" to "Maeneo mengine",
+        "ta" to "பிற இடங்கள்",
+        "te" to "ఇతర స్థానాలు",
+        "th" to "ตำแหน่งอื่น",
+        "tl" to "Iba pang lokasyon",
+        "tr" to "Diğer konumlar",
+        "uk" to "Інші розташування",
+        "ur" to "دیگر مقامات",
+        "uz" to "Boshqa joylar",
+        "vi" to "Vị trí khác",
+        "zh" to "其他位置",
+        "zu" to "Ezinye izindawo"
+    )
+
+    internal val translatedOtherLocationsLanguageCodes: Set<String>
+        get() = otherLocationsByLanguage.keys
+
+    fun otherLocations(locale: Locale): String {
+        val language = when (locale.language.lowercase(Locale.ROOT)) {
+            "iw" -> "he"
+            "in" -> "id"
+            "no" -> "nb"
+            else -> locale.language.lowercase(Locale.ROOT)
+        }
+        return otherLocationsByLanguage[language]
+            ?: otherLocationsByLanguage.getValue("en")
+    }
+
+    fun hasOtherLocationsTranslation(locale: Locale): Boolean {
+        val language = when (locale.language.lowercase(Locale.ROOT)) {
+            "iw" -> "he"
+            "in" -> "id"
+            "no" -> "nb"
+            else -> locale.language.lowercase(Locale.ROOT)
+        }
+        return otherLocationsByLanguage.containsKey(language)
+    }
+
     /** Explicit audit contract for the installed GMMP 4.2.0 locales. */
     internal val translatedLanguageCodes: Set<String>
         get() = moveByLanguage.keys
