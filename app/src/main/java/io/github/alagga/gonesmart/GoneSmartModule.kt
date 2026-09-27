@@ -506,6 +506,22 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
+            // This user test also identifies the EXACT native existing-
+            // playlist save/update call path. These debug-only observers
+            // capture symbol-only call stacks; they neither invoke a save
+            // nor change any original writer, scanner or DB transaction.
+            if (BuildConfig.DEBUG) {
+                runCatching {
+                    installNativePlaylistSaveDiagnostics(param)
+                }.onFailure {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "NATIVE SAVE DISCOVERY | passive hooks unavailable",
+                        it
+                    )
+                }
+            }
+
             // Playlist folders are debug-only while the inline integration
             // is validated. GMMP's native adapter remains attached and owns
             // all playlist actions; GoneSmart only changes presentation.
@@ -1361,6 +1377,146 @@ class GoneSmartModule : XposedModule() {
         playlistFolderPreview.setNativeCreateRedirectReady(
             main = getterReady && "main" in installedSurfaces,
             picker = getterReady && "picker" in installedSurfaces
+        )
+    }
+
+    private val nativeSaveTraceCounts = HashMap<String, Int>()
+
+    private fun nativeSaveShouldReport(method: String, origin: String): Boolean {
+        val key = method + "/" + origin
+        synchronized(nativeSaveTraceCounts) {
+            val seen = nativeSaveTraceCounts[key] ?: 0
+            // A normal startup can scan hundreds of playlists. We need
+            // only enough call stacks to distinguish native create, edit,
+            // context add, and GoneSmart move/rescan.
+            val limit = when (method) {
+                "hp3.d" -> 12
+                "t6.f" -> 8
+                else -> 6
+            }
+            if (seen >= limit) return false
+            nativeSaveTraceCounts[key] = seen + 1
+            return true
+        }
+    }
+
+    /**
+     * Passive original GMMP 4.2.0 playlist-write exploration. hp3.d()
+     * has already been identified in the maintainer's exact original DEX
+     * as a playlist file writer. What remains unproved is the EXISTING
+     * playlist model -> writer -> indexing call chain, including whether
+     * native edit/add invokes hp3.d or x6.b. Observe the original methods
+     * on the one disposable-playlist device test; do not edit any M3U,
+     * invoke these candidates, change return values or expose path data.
+     */
+    private fun installNativePlaylistSaveDiagnostics(
+        param: PackageReadyParam
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val loader = param.classLoader
+        val candidates = listOf(
+            Triple("hp3", "d", emptyList<String>()),
+            Triple("x6", "b", listOf("Context", "File")),
+            Triple("t6", "f", listOf("Context", "String[]")),
+            Triple("zp3", "M", listOf("Context", "wp3")),
+            Triple("io3", "r", listOf("Context", "ie0"))
+        )
+        var installed = 0
+        candidates.forEach { (owner, name, argTypes) ->
+            runCatching {
+                // Resolve EACH candidate independently: a missing optional
+                // obfuscated model must not disable the confirmed hp3 writer
+                // observer or the original native t6.f scanner observer.
+                val params: Array<Class<*>> = argTypes.map { typeName ->
+                    when (typeName) {
+                        "Context" -> android.content.Context::class.java
+                        "File" -> File::class.java
+                        "String[]" -> Array<String>::class.java
+                        else -> loader.loadClass(typeName)
+                    }
+                }.toTypedArray()
+                val target = loader.loadClass(owner)
+                    .getDeclaredMethod(name, *params)
+                    .apply { isAccessible = true }
+                // Never hook an unexpected overloaded method or a newer
+                // GMMP version by guessing from names alone.
+                require(target.parameterTypes.contentEquals(params))
+                if (owner == "hp3") {
+                    require(target.returnType == java.lang.Boolean.TYPE)
+                }
+                val label = "$owner.$name"
+                hook(target).intercept { chain ->
+                    val stack = Thread.currentThread().stackTrace
+                    var didReturn = false
+                    var booleanResult: Boolean? = null
+                    try {
+                        val result = chain.proceed()
+                        didReturn = true
+                        booleanResult = result as? Boolean
+                        result
+                    } finally {
+                        runCatching {
+                            val origin = NativePlaylistSaveTracePolicy.origin(stack)
+                            val scanSource = if (
+                                label == "t6.f" &&
+                                NativePlaylistSaveTracePolicy.isGoneSmartScanner(
+                                    stack
+                                )
+                            ) "GONESMART_MOVE" else origin.name
+                            if (nativeSaveShouldReport(label, scanSource)) {
+                                val fields = if (label == "hp3.d") {
+                                    chain.getThisObject()
+                                        ?.javaClass?.declaredFields
+                                        ?.take(32)
+                                        ?.joinToString(",") {
+                                            it.name + ":" + it.type.simpleName
+                                        }
+                                        ?: "unavailable"
+                                } else "-"
+                                Log.i(
+                                    "GoneSmartPlaylist",
+                                    "NATIVE SAVE DISCOVERY | method=$label" +
+                                        " | origin=$scanSource" +
+                                        " | result=" + when {
+                                            !didReturn -> "threw"
+                                            booleanResult == null -> "returned"
+                                            else -> booleanResult.toString()
+                                        } +
+                                        " | nativeReceiverFields=$fields" +
+                                        " | callerSymbols=" +
+                                        NativePlaylistSaveTracePolicy.visibleFrames(
+                                            stack
+                                        ).joinToString(" > ")
+                                )
+                            }
+                        }.onFailure {
+                            Log.w(
+                                "GoneSmartPlaylist",
+                                "NATIVE SAVE DISCOVERY | read-only sample failed",
+                                it
+                            )
+                        }
+                    }
+                }
+                installed++
+                Log.i(
+                    "GoneSmartPlaylist",
+                    "NATIVE SAVE DISCOVERY | observer installed | method=$label"
+                )
+            }.onFailure {
+                // A missing candidate never interferes with native GMMP.
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "NATIVE SAVE DISCOVERY | observer unavailable" +
+                        " | method=$owner.$name",
+                    it
+                )
+            }
+        }
+        Log.i(
+            "GoneSmartPlaylist",
+            "NATIVE SAVE DISCOVERY | installed=$installed/5" +
+                " | original methods untouched"
         )
     }
 
