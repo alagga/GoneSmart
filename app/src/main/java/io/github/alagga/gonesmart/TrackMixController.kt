@@ -283,7 +283,10 @@ internal class TrackMixController(
 
         val request = Pending(
             token = tokens.incrementAndGet(),
-            context = context.applicationContext,
+            // Keep the actual GMMP menu/Activity Context during this
+            // bounded request: the player may override its own locale
+            // independently of Android's application default.
+            context = context,
             source = source,
             before = old,
             confirmation = confirmation,
