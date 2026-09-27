@@ -24,6 +24,19 @@ internal object NativeGmmpUiText {
         return if (action == null) error else "$error · $action"
     }
 
+    /**
+     * Prefer the installed player's existing phrase if present. The
+     * virtual folder is GoneSmart-owned, so its separate fully mapped
+     * fallback follows the actual GMMP Activity language.
+     */
+    fun otherLocations(context: Context): String {
+        val native = string(context, "other_locations")
+            ?: string(context, "other_locations_title")
+        if (native != null && !native.contains("%")) return native
+        val locale = context.resources.configuration.locales[0]
+        return GoneSmartGmmpStrings.otherLocations(locale)
+    }
+
     fun error(context: Context, nativeAction: String? = null): String =
         errorLabel(string(context, "error"), nativeAction)
 }
