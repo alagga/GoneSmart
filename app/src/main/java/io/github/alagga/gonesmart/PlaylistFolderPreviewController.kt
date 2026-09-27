@@ -1481,7 +1481,10 @@ internal class PlaylistFolderPreviewController(
         fab.visibility = View.INVISIBLE
         fab.addOnLayoutChangeListener {
                 _, _, _, _, _, _, _, _, _ ->
-            if (browser.moveSources != null) positionMoveFab(browser)
+            if (browser.moveSources != null) {
+                positionOverlay(browser)
+                positionMoveFab(browser)
+            }
         }
         fab.post {
             if (browser.moveFab === fab && browser.moveSources != null) {
@@ -1618,17 +1621,24 @@ internal class PlaylistFolderPreviewController(
      * Place the floating confirm ABOVE the true visible native Playlists
      * viewport; original overlay extends behind the persistent mini-player.
      */
-    private fun isNativeMiniPlayerVisible(list: View): Boolean {
-        val root = list.rootView
-        val resources = list.resources
+    private fun nativeMiniPlayerTop(list: View): Int? {
+        val visible = Rect()
+        if (!list.getGlobalVisibleRect(visible)) return null
         return listOf(
             "miniPlayerWrapper", "miniPlayerLayout", "libraryTabMiniPlayer"
-        ).any { key ->
-            val id = resources.getIdentifier(
-                key, "id", list.context.packageName
+        ).mapNotNull { name ->
+            val id = list.resources.getIdentifier(
+                name, "id", list.context.packageName
             )
-            id != 0 && root.findViewById<View>(id)?.isShown == true
-        }
+            if (id == 0) return@mapNotNull null
+            val player = list.rootView.findViewById<View>(id)
+                ?: return@mapNotNull null
+            val bounds = Rect()
+            if (player.isShown && player.getGlobalVisibleRect(bounds) &&
+                bounds.height() > 0 &&
+                bounds.top > visible.top + visible.height() / 3
+            ) bounds.top else null
+        }.minOrNull()
     }
 
     private fun positionMoveFab(browser: Browser): Boolean {
@@ -1642,26 +1652,7 @@ internal class PlaylistFolderPreviewController(
             visible.height() == 0
         ) return false
 
-        // Native RecyclerView's global-visibility rect alone sometimes
-        // temporarily extends behind a SIBLING mini-player (sibling overlap
-        // is not visibility clipping). Measure the actual installed native
-        // mini-player wrapper too, on the same screen and layout pass.
-        val miniBottom = listOf(
-            "miniPlayerWrapper", "miniPlayerLayout", "libraryTabMiniPlayer"
-        ).mapNotNull { name ->
-            val id = browser.list.resources.getIdentifier(
-                name, "id", browser.list.context.packageName
-            )
-            if (id == 0) return@mapNotNull null
-            val player = browser.list.rootView.findViewById<View>(id)
-                ?: return@mapNotNull null
-            val bounds = Rect()
-            if (player.isShown &&
-                player.getGlobalVisibleRect(bounds) &&
-                bounds.height() > 0 &&
-                bounds.top > visible.top + visible.height() / 3
-            ) bounds.top else null
-        }.minOrNull()
+        val miniBottom = nativeMiniPlayerTop(browser.list)
         val safeBottom = MoveConfirmationUiPolicy.safeBottom(
             visible.bottom, miniBottom
         )
@@ -1697,7 +1688,7 @@ internal class PlaylistFolderPreviewController(
         val geometryReady = fab.width > 0 && fab.height > 0 &&
             !fab.isLayoutRequested &&
             (miniBottom != null || occlusion > 0 ||
-                !isNativeMiniPlayerVisible(browser.list))
+                nativeMiniPlayerTop(browser.list) == null)
         if (fab.visibility == View.INVISIBLE && geometryReady) {
             fab.visibility = View.VISIBLE
         }
@@ -2437,12 +2428,22 @@ internal class PlaylistFolderPreviewController(
         if (!list.isAttachedToWindow || list.width <= 0 || list.height <= 0) {
             return
         }
+        // A native sibling mini-player can cover our FAB despite its
+        // correct margin. Clip the Move overlay itself above that sibling.
+        val nativeMiniTop = if (browser.moveSources != null) {
+            nativeMiniPlayerTop(list)
+        } else null
+        val screen = IntArray(2)
+        list.getLocationOnScreen(screen)
+        val availableHeight = nativeMiniTop
+            ?.let { (it - screen[1]).coerceIn(1, list.height) }
+            ?: list.height
         if (overlay.layoutParams.width != list.width ||
-            overlay.layoutParams.height != list.height
+            overlay.layoutParams.height != availableHeight
         ) {
             overlay.layoutParams = overlay.layoutParams.apply {
                 width = list.width
-                height = list.height
+                height = availableHeight
             }
         }
         val listLocation = IntArray(2)
