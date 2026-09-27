@@ -517,6 +517,7 @@ class GoneSmartModule : XposedModule() {
                         options.groupRootPlaylists
                     )
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
+                    playlistFolderPreview.setNativePlaylistMover(param.classLoader)
                     nativeMoveDiscovery =
                         NativeGmmpMoveDiscovery(param.classLoader)
                     playlistFolderPreview.onNativeMoveDiscovery = { context ->
@@ -970,6 +971,34 @@ class GoneSmartModule : XposedModule() {
             val nativeActionMode = param.classLoader.loadClass(
                 "androidx.appcompat.view.ActionMode"
             )
+            // Capture the actual host ActionMode so GoneSmart's newly
+            // added Move menu can close GMMP's original selection without
+            // leaving an orphan contextual toolbar. A native callback may
+            // be inherited from n3; never instantiate a synthetic mode.
+            listOf("onCreateActionMode", "onPrepareActionMode").forEach { name ->
+                runCatching {
+                    val observed = nativeBase.declaredMethods.firstOrNull {
+                        it.name == name && it.parameterCount == 2 &&
+                            it.parameterTypes[0] == nativeActionMode
+                    } ?: return@runCatching
+                    observed.isAccessible = true
+                    hook(observed).intercept { chain ->
+                        val original = chain.proceed()
+                        if (nativePlaylistMode.isInstance(chain.getThisObject())) {
+                            playlistFolderPreview.observeNativePlaylistActionMode(
+                                chain.getArg(0)
+                            )
+                        }
+                        original
+                    }
+                }.onFailure {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "PLAYLIST MOVE | native ActionMode capture unavailable: " +
+                            name, it
+                    )
+                }
+            }
             val destroy = nativeBase.getDeclaredMethod(
                 "onDestroyActionMode", nativeActionMode
             ).apply { isAccessible = true }

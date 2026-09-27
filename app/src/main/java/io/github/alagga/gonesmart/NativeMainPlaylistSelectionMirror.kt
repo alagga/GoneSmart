@@ -9,6 +9,7 @@ internal class NativeMainPlaylistSelectionMirror {
     val isSelecting: Boolean get() = selected.isNotEmpty()
     val selectedCount: Int get() = selected.size
     fun isSelected(path: String): Boolean = path in selected
+    fun selectedPaths(): List<String> = selected.toList()
 
     fun onNativeAction(path: String, longClick: Boolean): Boolean {
         if (path.isBlank()) return false
