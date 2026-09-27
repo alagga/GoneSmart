@@ -23,35 +23,30 @@ internal object TrackMixPlan {
      * "Mix" is a GoneSmart-only word without a native translation, so
      * use the same two native GMMP nouns for EVERY player language.
      */
+    /**
+     * Never guess a missing GMMP translation: the caller may fail closed
+     * instead of injecting a mixed-language menu into the host player.
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun localizedMenuLabel(
         language: String,
         nativeTrack: String?,
         nativeAutoDj: String?
     ): String {
-        val track = nativeTrack?.takeIf { it.isNotBlank() }
-            ?: when (language.lowercase(java.util.Locale.ROOT)) {
-                "de" -> "Titel"
-                "en" -> "Track"
-                else -> null
-            }
-        val dj = nativeAutoDj?.takeIf { it.isNotBlank() } ?: "Auto-DJ"
-        return listOfNotNull(track, dj).joinToString(" ")
+        val track = nativeTrack?.trim().orEmpty()
+        val dj = nativeAutoDj?.trim().orEmpty()
+        return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
     }
 
+    /** Original GMMP 'started' when present; otherwise icon-only status. */
+    @Suppress("UNUSED_PARAMETER")
     fun localizedStartedMessage(
         language: String,
         menuLabel: String,
         gmmpStarted: String?
     ): String {
-        val native = gmmpStarted?.takeIf { it.isNotBlank() }
-        return when {
-            native != null -> "$menuLabel $native"
-            language.equals("de", ignoreCase = true) ->
-                "$menuLabel gestartet"
-            language.equals("en", ignoreCase = true) ->
-                "$menuLabel started"
-            else -> "$menuLabel ✓"
-        }
+        val native = gmmpStarted?.trim()?.takeIf(String::isNotBlank)
+        return if (native == null) "$menuLabel ✓" else "$menuLabel $native"
     }
 
     data class NativeQueueEntry(
