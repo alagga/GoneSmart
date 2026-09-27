@@ -14,6 +14,35 @@ class GoneSmartStatusNotifier {
             "GoneSmart"
     }
 
+    /** GMMP-hosted Toast; never display English companion diagnostics here. */
+    fun showNative(noticeKey: String) {
+        val application = getCurrentApplication() ?: return
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(
+                application,
+                NativeGmmpUiText.smartDjNotice(application, noticeKey),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun showNativeDelayed(
+        noticeKey: String,
+        delayMs: Long,
+        shouldShow: () -> Boolean
+    ) {
+        val application = getCurrentApplication() ?: return
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (shouldShow()) {
+                Toast.makeText(
+                    application,
+                    NativeGmmpUiText.smartDjNotice(application, noticeKey),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }, delayMs)
+    }
+
     fun show(
         message: String
     ) {
