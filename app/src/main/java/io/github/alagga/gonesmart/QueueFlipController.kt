@@ -744,49 +744,6 @@ internal class QueueFlipController {
         }
     }
 
-    /**
-     * Full-size 28 dp GoneSmart two-star badge, centered in the native
-     * menu row without altering TextView font metrics.
-     */
-    private class BaselineCenteredSparkleSpan(
-        context: Context,
-        private val badge: PlayerAutoDjBadgeController.SparkleBadgeDrawable
-    ) : ReplacementSpan() {
-        private val density = context.resources.displayMetrics.density
-
-        private fun badgeSize(): Int =
-            (28f * density).roundToInt().coerceAtLeast(1)
-
-        override fun getSize(
-            paint: Paint,
-            text: CharSequence,
-            start: Int,
-            end: Int,
-            fm: Paint.FontMetricsInt?
-        ): Int = badgeSize() + (3f * density).roundToInt()
-
-        override fun draw(
-            canvas: Canvas,
-            text: CharSequence,
-            start: Int,
-            end: Int,
-            x: Float,
-            top: Int,
-            y: Int,
-            bottom: Int,
-            paint: Paint
-        ) {
-            val size = badgeSize()
-            val metrics = paint.fontMetricsInt
-            val fontCenter = y + (metrics.ascent + metrics.descent) / 2f
-            badge.setBounds(0, 0, size, size)
-            val saveCount = canvas.save()
-            canvas.translate(x, fontCenter - size / 2f)
-            badge.draw(canvas)
-            canvas.restoreToCount(saveCount)
-        }
-    }
-
     private fun nativeString(context: Context, name: String): String? {
         val res = context.resources.getIdentifier(
             name,

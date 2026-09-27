@@ -1,13 +1,19 @@
 package io.github.alagga.gonesmart
 
 /**
- * Pure, testable native viewport geometry shared by the playlist move
- * destination browser and its separate original GMMP AestheticFab.
- *
- * The playlist page may extend BEHIND the mini-player; only the original
- * RecyclerView's getGlobalVisibleRect() supplies the true bottom edge.
+ * Pure geometry for the move FAB in GMMP's actual playlist viewport.
+ * The original native mini-player sometimes overlays its sibling rather
+ * than clipping the RecyclerView's getGlobalVisibleRect().
  */
 internal object MoveConfirmationUiPolicy {
+    fun safeBottom(
+        nativeListBottomPx: Int,
+        visibleNativeMiniPlayerTopPx: Int?
+    ): Int = minOf(
+        nativeListBottomPx,
+        visibleNativeMiniPlayerTopPx ?: nativeListBottomPx
+    )
+
     fun bottomOcclusion(
         overlayBottomPx: Int,
         visibleBottomPx: Int

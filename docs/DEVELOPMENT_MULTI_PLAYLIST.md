@@ -36,3 +36,7 @@ This implementation targets GMMP 4.2.0 and will need revalidation if GMMP change
 ### Shared confirmation glyph and native ActionMode styling — 2026-09-27
 
 The original multi-selection checkmark implementation has been extracted without changing its drawing geometry to the shared `PlaylistConfirmDrawable.kt`; the existing Add-picker FAB continues using that exact renderer. The exact existing native contextual action bar discovery/tint helper is also exposed internally as `tintNativeContextBar(list,liveNativeFabColor)` so GoneSmart's normal-Playlists move destination uses the same original bar mechanics without reparenting any live session state. The move destination creates a separate native `AestheticFab` and subscribes independently to the same original `!mainColorAccent` observable as the real picker FAB.
+
+### Shared sparkle span reused by the real GMMP navigation drawer (2026-09-27)
+
+The already accepted native 28dp `BaselineCenteredSparkleSpan` of the Play Flipped context-menu title is now a standalone shared implementation in `BaselineCenteredSparkleSpan.kt` instead of a private QueueFlipController nested class. It keeps exactly the same badge size/density/vertical baseline and lilac `SparkleBadgeDrawable` settings, and it decorates the original GMMP Playlists drawer MenuItem ONLY while Playlist folders is enabled. The Move confirmation native FAB deliberately has NO lilac sparkle; the Add-picker multi-select FAB's old sparkle stays untouched.

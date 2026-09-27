@@ -479,6 +479,13 @@ internal class PlaylistFolderPreviewController(
     private var nativePlaylistMover: NativeGmmpPlaylistMover? = null
     private var lastMoveLabelDiagnostic: String? = null
     private var lastSelectLabelDiagnostic: String? = null
+    // One badge per ORIGINAL navigation MenuItem, not an added clickable
+    // drawer row and not an overlay that interferes with its native ripple.
+    private val originalDrawerPlaylistTitles =
+        WeakHashMap<android.view.MenuItem, CharSequence>()
+    private val observedDrawerLists = WeakHashMap<ViewGroup, Boolean>()
+    private val drawerRefreshPending = WeakHashMap<ViewGroup, Boolean>()
+    private val drawerBadgeProbes = WeakHashMap<ViewGroup, Int>()
 
     fun setNativePlaylistMover(loader: ClassLoader) {
         nativePlaylistMover = NativeGmmpPlaylistMover(loader)
@@ -523,6 +530,10 @@ internal class PlaylistFolderPreviewController(
                 settings.groupRoot != next.groupRoot
         settings = next
         updatePlaylistMenu()
+        // The drawer is retained while switching settings; immediately
+        // add or restore our title decoration without reinflating GMMP's
+        // original native menu or changing its click handlers.
+        observedDrawerLists.keys.toList().forEach(::scheduleDrawerBadgeRefresh)
 
         if (!enabled) {
             browsers.keys.toList().forEach(::removeBrowser)
@@ -881,6 +892,10 @@ internal class PlaylistFolderPreviewController(
 
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
+        if (resourceName(list) == "design_navigation_view") {
+            observeDrawerPlaylistBadge(list)
+            return
+        }
         if (resourceName(list) == "quickNavRecyclerView") {
             observeNativeBreadcrumb(list)
             return
@@ -946,6 +961,152 @@ internal class PlaylistFolderPreviewController(
             )
         }
         if (settings.enabled) scheduleAttach(list, 0)
+    }
+
+    /**
+     * GMMP 4.2.0's native AestheticNavigationView owns the actual drawer
+     * menu and its existing Playlist item. Keep its original title/click
+     * listener/icon/ripple; add the SAME purple two-star ReplacementSpan
+     * as the approved Play Flipped context-menu entry, only while Playlist
+     * folders is enabled. No extra drawer item or custom replacement row.
+     */
+    private fun observeDrawerPlaylistBadge(list: ViewGroup) {
+        if (observedDrawerLists.put(list, true) != null) {
+            scheduleDrawerBadgeRefresh(list)
+            return
+        }
+        val weak = WeakReference(list)
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            weak.get()?.let(::scheduleDrawerBadgeRefresh)
+        }
+        if (list.viewTreeObserver.isAlive) {
+            list.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        }
+        list.addOnAttachStateChangeListener(
+            object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) {
+                    weak.get()?.let(::scheduleDrawerBadgeRefresh)
+                }
+                override fun onViewDetachedFromWindow(view: View) {
+                    weak.get()?.let { drawer ->
+                        if (drawer.viewTreeObserver.isAlive) {
+                            drawer.viewTreeObserver
+                                .removeOnGlobalLayoutListener(listener)
+                        }
+                        observedDrawerLists.remove(drawer)
+                        drawerRefreshPending.remove(drawer)
+                        drawerBadgeProbes.remove(drawer)
+                    }
+                }
+            }
+        )
+        scheduleDrawerBadgeRefresh(list)
+    }
+
+    private fun scheduleDrawerBadgeRefresh(list: ViewGroup) {
+        if (drawerRefreshPending.put(list, true) != null) return
+        val weak = WeakReference(list)
+        list.post {
+            val drawer = weak.get() ?: return@post
+            drawerRefreshPending.remove(drawer)
+            updateDrawerPlaylistBadge(drawer)
+        }
+    }
+
+    private fun updateDrawerPlaylistBadge(drawer: ViewGroup) {
+        // A menu is available from GMMP's ACTUAL parent
+        // AestheticNavigationView, not from the RecyclerView adapter.
+        var parent: View? = drawer
+        var menu: android.view.Menu? = null
+        repeat(5) {
+            val view = parent ?: return@repeat
+            if (resourceName(view) == "mainNavigationView") {
+                menu = runCatching {
+                    view.javaClass.getMethod("getMenu").invoke(view)
+                        as? android.view.Menu
+                }.getOrNull()
+                return@repeat
+            }
+            parent = view.parent as? View
+        }
+        if (menu == null) return
+        val nativeMenu = menu ?: return
+        val resources = drawer.resources
+        val nativeNames = listOf("playlists", "playlist").mapNotNull {
+            val id = resources.getIdentifier(
+                it, "string", drawer.context.packageName
+            )
+            if (id != 0) {
+                runCatching { drawer.context.getString(id) }.getOrNull()
+            } else null
+        }.map { it.trim() }
+        var target: android.view.MenuItem? = null
+        for (index in 0 until nativeMenu.size()) {
+            val item = nativeMenu.getItem(index)
+            val original = originalDrawerPlaylistTitles[item]
+                ?: item.title ?: continue
+            val nativeId = runCatching {
+                resources.getResourceEntryName(item.itemId)
+            }.getOrDefault("")
+            if (PlaylistDrawerBadgePolicy.matchesNativePlaylist(
+                    nativeNames, nativeId, original.toString()
+                )
+            ) {
+                target = item
+                break
+            }
+        }
+        if (target == null) {
+            val attempts = drawerBadgeProbes[drawer] ?: 0
+            if (attempts < 2 && settings.enabled) {
+                drawerBadgeProbes[drawer] = attempts + 1
+                Log.i(
+                    TAG, "FOLDER DRAWER BADGE | native Playlists " +
+                        "menu entry not bound yet | items=" + nativeMenu.size()
+                )
+            }
+            return
+        }
+        val item = target
+        if (settings.enabled) {
+            if (originalDrawerPlaylistTitles.containsKey(item)) {
+                val existing = item.title
+                if (existing is Spanned &&
+                    existing.getSpans(
+                        0, existing.length,
+                        BaselineCenteredSparkleSpan::class.java
+                    ).isNotEmpty()
+                ) return
+                // The original GMMP menu might have rebound this title
+                // after a theme/locale update. Restore the true CURRENT
+                // native text before decorating it again.
+                originalDrawerPlaylistTitles.remove(item)
+            }
+            val original = item.title ?: return
+            val newTitle = android.text.SpannableStringBuilder(original)
+                .append("  \uFFFC")
+            val marker = newTitle.lastIndexOf('\uFFFC')
+            newTitle.setSpan(
+                BaselineCenteredSparkleSpan(
+                    drawer.context,
+                    PlayerAutoDjBadgeController.SparkleBadgeDrawable(
+                        0xFFA39AFF.toInt(), scale = 1.85f
+                    )
+                ),
+                marker, marker + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            originalDrawerPlaylistTitles[item] = original
+            item.title = newTitle
+            Log.i(
+                TAG, "FOLDER DRAWER BADGE | existing native " +
+                    "Playlists menu decorated"
+            )
+        } else {
+            originalDrawerPlaylistTitles.remove(item)?.let { original ->
+                item.title = original
+                Log.i(TAG, "FOLDER DRAWER BADGE | native title restored")
+            }
+        }
     }
 
     /**
@@ -1173,17 +1334,20 @@ internal class PlaylistFolderPreviewController(
                     { success, message ->
                         Log.i(TAG, "PLAYLIST MOVE | result=" +
                             success + " | " + message)
-                        weakList.get()?.takeIf { it.isAttachedToWindow }
-                            ?.let { current ->
-                                Toast.makeText(
-                                    current.context,
-                                    if (success && ready.plan.count == 1) {
-                                        nativeMoveSuccessLabel(current.context) ?: title
-                                    } else if (success) title
-                                    else title + ": " + message,
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
+                        // The native list refresh itself is the success
+                        // feedback. An earlier branch emitted a bare Move
+                        // Toast ONLY for multi-moves: inconsistent and
+                        // misleading. Show one localized error only.
+                        if (PlaylistMoveFeedbackPolicy.shouldShowToast(success)) {
+                            weakList.get()?.takeIf { it.isAttachedToWindow }
+                                ?.let { current ->
+                                    Toast.makeText(
+                                        current.context,
+                                        title + ": " + message,
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                        }
                     }
                 ) == true
                 if (started) {
@@ -1258,6 +1422,7 @@ internal class PlaylistFolderPreviewController(
         Log.i(TAG, "PLAYLIST MOVE UI | native ActionMode and native AestheticFab ready")
         list.post {
             if (browsers[list] === browser && browser.moveSources != null) {
+                positionOverlay(browser)
                 observeMoveFabPalette(browser)
                 syncMoveChromePalette(browser)
                 positionMoveFab(browser)
@@ -1307,25 +1472,27 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.addView(fab, params)
         fab.elevation = dp(list, 8).toFloat()
         browser.moveFab = fab
-        fab.visibility = View.VISIBLE
-        val sparkle = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
-            0xFFA39AFF.toInt(),
-            scale = 2f,
-            playlistPlacement = true
-        )
-        fab.overlay.add(sparkle)
+        fab.visibility = View.INVISIBLE
+        // No branding on the move confirmation FAB: the maintainer
+        // wants just the same clean white checkmark as the Add picker.
+        // Do not reveal the native FAB while its original page/mini-player
+        // geometry is still being measured; that previously flashed it
+        // underneath the persistent mini-player on first entry.
+        fab.visibility = View.INVISIBLE
         fab.addOnLayoutChangeListener {
                 _, _, _, _, _, _, _, _, _ ->
-            sparkle.setBounds(0, 0, fab.width, fab.height)
             if (browser.moveSources != null) positionMoveFab(browser)
         }
         fab.post {
             if (browser.moveFab === fab && browser.moveSources != null) {
-                sparkle.setBounds(0, 0, fab.width, fab.height)
-                // The native class supplies its own original elevation,
-                // reveal animations, ripple and dynamic color handling.
-                runCatching { native.getMethod("show").invoke(fab) }
-                positionMoveFab(browser)
+                // First synchronize the overlay with the ORIGINAL native
+                // recycler/mini-player geometry. The first button frame
+                // must not appear in the pre-layout bottom position.
+                positionOverlay(browser)
+                if (positionMoveFab(browser)) {
+                    runCatching { native.getMethod("show").invoke(fab) }
+                        .onFailure { fab.visibility = View.VISIBLE }
+                }
             }
         }
         fab
@@ -1451,33 +1618,90 @@ internal class PlaylistFolderPreviewController(
      * Place the floating confirm ABOVE the true visible native Playlists
      * viewport; original overlay extends behind the persistent mini-player.
      */
-    private fun positionMoveFab(browser: Browser) {
-        val fab = browser.moveFab ?: return
-        if (browser.moveSources == null) return
+    private fun isNativeMiniPlayerVisible(list: View): Boolean {
+        val root = list.rootView
+        val resources = list.resources
+        return listOf(
+            "miniPlayerWrapper", "miniPlayerLayout", "libraryTabMiniPlayer"
+        ).any { key ->
+            val id = resources.getIdentifier(
+                key, "id", list.context.packageName
+            )
+            id != 0 && root.findViewById<View>(id)?.isShown == true
+        }
+    }
+
+    private fun positionMoveFab(browser: Browser): Boolean {
+        val fab = browser.moveFab ?: return false
+        if (browser.moveSources == null ||
+            !browser.list.isAttachedToWindow ||
+            browser.overlay.height <= 0
+        ) return false
         val visible = Rect()
-        if (!browser.list.getGlobalVisibleRect(visible)) return
+        if (!browser.list.getGlobalVisibleRect(visible) ||
+            visible.height() == 0
+        ) return false
+
+        // Native RecyclerView's global-visibility rect alone sometimes
+        // temporarily extends behind a SIBLING mini-player (sibling overlap
+        // is not visibility clipping). Measure the actual installed native
+        // mini-player wrapper too, on the same screen and layout pass.
+        val miniBottom = listOf(
+            "miniPlayerWrapper", "miniPlayerLayout", "libraryTabMiniPlayer"
+        ).mapNotNull { name ->
+            val id = browser.list.resources.getIdentifier(
+                name, "id", browser.list.context.packageName
+            )
+            if (id == 0) return@mapNotNull null
+            val player = browser.list.rootView.findViewById<View>(id)
+                ?: return@mapNotNull null
+            val bounds = Rect()
+            if (player.isShown &&
+                player.getGlobalVisibleRect(bounds) &&
+                bounds.height() > 0 &&
+                bounds.top > visible.top + visible.height() / 3
+            ) bounds.top else null
+        }.minOrNull()
+        val safeBottom = MoveConfirmationUiPolicy.safeBottom(
+            visible.bottom, miniBottom
+        )
         val overlayLocation = IntArray(2)
         browser.overlay.getLocationOnScreen(overlayLocation)
         val overlayBottom = overlayLocation[1] + browser.overlay.height
         val occlusion = MoveConfirmationUiPolicy.bottomOcclusion(
             overlayBottomPx = overlayBottom,
-            visibleBottomPx = visible.bottom
+            visibleBottomPx = safeBottom
         )
-        val params = fab.layoutParams as? FrameLayout.LayoutParams ?: return
+        val params = fab.layoutParams as? FrameLayout.LayoutParams
+            ?: return false
         val margin = dp(browser.list, 16)
         val targetMargin = occlusion + margin
         if (params.bottomMargin != targetMargin) {
             params.bottomMargin = targetMargin
             fab.layoutParams = params
         }
+        val wasUnpositioned = browser.moveLastBottomOcclusion == -1
         if (browser.moveLastBottomOcclusion != occlusion) {
             browser.moveLastBottomOcclusion = occlusion
             Log.i(
                 TAG, "PLAYLIST MOVE UI | FAB above native mini-player | " +
                     "occlusion=" + occlusion +
-                    " | nativeVisibleBottom=" + visible.bottom
+                    " | nativeVisibleBottom=" + visible.bottom +
+                    " | nativeMiniPlayerTop=" + (miniBottom ?: "unknown") +
+                    " | initial=" + wasUnpositioned
             )
         }
+        // This method is also called from the native page's global-layout
+        // and 400 ms pre-draw callbacks: an initially unavailable wrapper
+        // is automatically measured before revealing the confirm button.
+        val geometryReady = fab.width > 0 && fab.height > 0 &&
+            !fab.isLayoutRequested &&
+            (miniBottom != null || occlusion > 0 ||
+                !isNativeMiniPlayerVisible(browser.list))
+        if (fab.visibility == View.INVISIBLE && geometryReady) {
+            fab.visibility = View.VISIBLE
+        }
+        return geometryReady
     }
 
     private fun endMoveChrome(browser: Browser) {
