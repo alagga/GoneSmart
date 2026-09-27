@@ -39,6 +39,7 @@ internal class NativeGmmpPlaylistMover(
         var polling: Boolean = false,
         var deleteDialogDismissed: Boolean = false,
         var dialogSeen: Boolean = false,
+        var autoConfirmed: Boolean = false,
         var dismissedAtMs: Long? = null,
         var polls: Int = 0
     )
@@ -147,7 +148,7 @@ internal class NativeGmmpPlaylistMover(
                     onResult(false, "GMMP native confirmation unavailable")
                 } else {
                     Log.i(TAG, "PLAYLIST MOVE | durable backups ready; " +
-                        "original GMMP confirmation opened | count=" +
+                        "native delete transaction requested | count=" +
                         batch.entries.size)
                     schedule(task)
                 }
@@ -157,9 +158,17 @@ internal class NativeGmmpPlaylistMover(
     }
 
     /**
-     * Observe only the exact ORIGINAL MaterialDialog synchronously opened
-     * from this move's original py0.b invocation. Never alter its delete
-     * callback or positive button; cancellation leaves source untouched.
+     * The destination browser's SELECT action is the user's confirmation.
+     * After durable original-file backups and full original-index validation,
+     * the original py0.b worker should run without asking the user to
+     * approve an unrelated-looking second "Delete playlist" operation.
+     *
+     * Intercept ONLY the actual MaterialDialog displayed synchronously
+     * inside THIS thread's verified move invocation. Click its OWN native
+     * positive action after it has attached: the original dialog continues
+     * to own the original DeletePlaylistFileWorker and DB cleanup. On any
+     * signature/button mismatch DO NOT synthesize deletion or silently
+     * bypass GMMP; leave its native confirmation visible instead.
      */
     fun onNativeDialogShown(dialog: Dialog) {
         val task = awaitingNativeDialog ?: return
@@ -177,13 +186,50 @@ internal class NativeGmmpPlaylistMover(
                     task.deleteDialogDismissed = true
                     task.dismissedAtMs =
                         android.os.SystemClock.elapsedRealtime()
-                    // A user can keep the original dialog open for minutes.
-                    // Native worker timing begins on actual dismissal only.
+                    // A user can keep the native fallback dialog open for
+                    // minutes; no worker timeout begins before dismissal.
                     task.polls = 0
                     Log.i(TAG, "PLAYLIST MOVE | native confirmation dismissed")
                 }
             }
         )
+        // The original dialog is shown on GMMP's main thread. Calling the
+        // original button's click listener in the same event loop lets its
+        // OWN verified worker perform deletion/index removal, without an
+        // extra GoneSmart dialog or a second manual user confirmation.
+        val clicked = runCatching {
+            val actionClass = hostLoader.loadClass(
+                "com.afollestad.materialdialogs.DialogAction"
+            )
+            val positive = actionClass.enumConstants?.firstOrNull {
+                (it as? Enum<*>)?.name == "POSITIVE"
+            } ?: error("Original POSITIVE action missing")
+            val method = dialog.javaClass.methods.firstOrNull {
+                it.name == "getActionButton" &&
+                    it.parameterTypes.contentEquals(arrayOf(actionClass))
+            } ?: error("Original getActionButton unavailable")
+            val button = method.invoke(dialog, positive) as? View
+                ?: error("Original positive button unavailable")
+            require(button.isShown && button.isEnabled &&
+                button.hasOnClickListeners()
+            ) { "Original positive action is not clickable" }
+            button.performClick()
+        }.onFailure {
+            Log.w(
+                TAG,
+                "PLAYLIST MOVE | original positive action unavailable;" +
+                    " GMMP confirmation remains visible",
+                it
+            )
+        }.getOrDefault(false)
+        task.autoConfirmed = clicked
+        if (clicked) {
+            Log.i(
+                TAG,
+                "PLAYLIST MOVE | original GMMP positive action invoked" +
+                    " after durable staging"
+            )
+        }
     }
 
     /**

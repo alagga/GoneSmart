@@ -163,7 +163,13 @@ internal class PlaylistFolderPreviewController(
         var folderFab: View? = null,
         var playlistFab: View? = null,
         var pickerAddExpanded: Boolean = false,
-        var forwardingOriginalFab: Boolean = false
+        var forwardingOriginalFab: Boolean = false,
+        // Destination-selection mode reuses the actual Playlists-tab
+        // browser, original GMMP row XML and already sampled quickNav.
+        // No independent folder-list dialog or guessed native UI.
+        var moveSources: List<String>? = null,
+        var movePreviousFolder: String? = null,
+        var moveBottomBar: View? = null
     )
 
     /**
@@ -290,7 +296,7 @@ internal class PlaylistFolderPreviewController(
                         browser.currentFolderId == segment.folderId
                     ) return@postOnAnimation
                     browser.currentFolderId = segment.folderId
-                    rememberFolder(browser)
+                    if (browser.moveSources == null) rememberFolder(browser)
                     activeBrowser = WeakReference(list)
                     safeRender(browser)
                     updatePlaylistMenu()
@@ -1059,106 +1065,168 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * GMMP has NO original move action in its "Ordner" tab. Reuse our
-     * already-indexed physical folder tree; never scan unknown M3Us and
-     * never offer Other Locations (a virtual, ambiguous destination).
+     * Destination navigation deliberately IS the existing playlist browser:
+     * identical native row XML, original Files quickNav layouts, active
+     * Aesthetic palette, existing folder grouping and physical-only index.
+     * The normal list is temporarily in destination-selection mode, with
+     * the chosen folder confirmed by the native-themed bottom action.
      */
     private fun showNativeMoveDestinationPicker(
         browser: Browser,
         nativeSourcePaths: List<String>
     ) {
         if (nativeSourcePaths.isEmpty() || isPicker(browser.list) ||
-            nativePlaylistMover == null
+            nativePlaylistMover == null || browser.moveSources != null
         ) return
+        val verified = readActualNativePaths(browser) ?: run {
+            warn(browser.list, "Native playlist index unavailable")
+            return
+        }
+        val selected = nativeSourcePaths.distinct()
+        if (selected.any { it !in verified }) {
+            Log.w(TAG, "PLAYLIST MOVE UI | selection changed before navigation")
+            return
+        }
+        browser.movePreviousFolder = browser.currentFolderId
+        browser.moveSources = selected
+        browser.currentFolderId = null
+        activeBrowser = WeakReference(browser.list)
+        // The Move menu belongs to the ORIGINAL native ActionMode.
+        // Capture actual paths first and end that mode before presenting
+        // destination navigation; otherwise Back handles selection teardown.
+        activeNativePlaylistMode?.get()?.let { mode ->
+            runCatching { mode.javaClass.getMethod("finish").invoke(mode) }
+        }
+        safeRender(browser)
+        Log.i(TAG, "PLAYLIST MOVE UI | native-style browser opened | count=" +
+            selected.size)
+    }
+
+    private fun closeMoveBrowser(browser: Browser) {
+        browser.moveSources = null
+        browser.currentFolderId = browser.movePreviousFolder?.takeIf {
+            findFolder(browser.index, it) != null
+        }
+        browser.movePreviousFolder = null
+        browser.moveBottomBar?.visibility = View.GONE
+        browser.lastRenderedOrder = null
+        safeRender(browser)
+    }
+
+    private fun confirmMoveBrowser(browser: Browser) {
+        val selected = browser.moveSources ?: return
+        val list = browser.list
         val root = runCatching {
             java.io.File(browser.rootPath).canonicalFile
         }.getOrNull() ?: return
-        val dirs = (listOf(root.path) + physicalDirectorySnapshot(root.path))
-            .distinct().mapNotNull {
-                runCatching { java.io.File(it).canonicalFile }.getOrNull()
-            }.filter { it.isDirectory && it.canWrite() }
-            .sortedWith(
-                compareBy<java.io.File> {
-                    it.path.removePrefix(root.path)
-                        .count { char -> char == java.io.File.separatorChar }
-                }.thenBy(String.CASE_INSENSITIVE_ORDER) {
-                    it.path.removePrefix(root.path)
-                }
-            )
-        if (dirs.isEmpty()) return
-        val paths = nativeSourcePaths.distinct().toList()
-        val labels = dirs.map {
-            if (it == root) root.name
-            else root.name + " / " +
-                it.path.removePrefix(root.path)
-                    .trimStart(java.io.File.separatorChar)
-                    .replace(java.io.File.separatorChar, '/')
+        val destination = if (browser.currentFolderId == null) root else {
+            findFolder(browser.index, browser.currentFolderId)
+                ?.takeUnless { it.virtual }
+                ?.let { java.io.File(it.id) }
+        } ?: return
+        val indexed = readActualNativePaths(browser) ?: run {
+            warn(list, "Native playlist index unavailable")
+            return
         }
-        val context = browser.list.context
-        val title = nativeMoveLabel(context)
-        // The original player does not provide a native move picker, so
-        // present only already-known real physical folder destinations.
-        android.app.AlertDialog.Builder(context)
-            .setTitle(title)
-            .setItems(labels.toTypedArray()) { _, which ->
-                val target = dirs.getOrNull(which) ?: return@setItems
-                val pathsNow = readActualNativePaths(browser) ?: run {
-                    warn(browser.list, "Native playlist index unavailable")
-                    return@setItems
-                }
-                val prepared = PlaylistMovePolicy.prepare(
-                    root, target, paths, pathsNow
-                )
-                when (prepared) {
-                    is PlaylistMovePolicy.Result.Blocked -> {
-                        Log.w(TAG, "PLAYLIST MOVE | preflight blocked: " +
-                            prepared.reason)
-                        warn(browser.list, title + ": " + prepared.reason)
-                    }
-                    is PlaylistMovePolicy.Result.Ready -> {
-                        val weakList = WeakReference(browser.list)
-                        val started = nativePlaylistMover?.start(
-                            context,
-                            prepared.plan,
-                            {
-                                weakList.get()?.let { list ->
-                                    browsers[list]?.let(::readActualNativePaths)
-                                }
-                            },
-                            { success, message ->
-                                Log.i(TAG, "PLAYLIST MOVE | result=" +
-                                    success + " | " + message)
-                                weakList.get()?.takeIf {
-                                    it.isAttachedToWindow
-                                }?.let { view ->
-                                    Toast.makeText(
-                                        view.context,
-                                        if (success) title else title + ": " + message,
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
-                        ) == true
-                        if (started) {
-                            // Our own action consumed the original ActionMode
-                            // choice. Finish GMMP's REAL selection only after
-                            // caching the complete native playlist paths.
-                            mainHandler.post {
-                                activeNativePlaylistMode?.get()?.let { mode ->
-                                    runCatching {
-                                        mode.javaClass.getMethod("finish")
-                                            .invoke(mode)
-                                    }
-                                }
-                            }
-                        } else {
-                            warn(browser.list, "Native move not available")
+        val ready = PlaylistMovePolicy.prepare(
+            root, destination, selected, indexed
+        )
+        val title = nativeMoveLabel(list.context)
+        when (ready) {
+            is PlaylistMovePolicy.Result.Blocked -> {
+                Log.w(TAG, "PLAYLIST MOVE UI | destination rejected: " +
+                    ready.reason)
+                warn(list, title + ": " + ready.reason)
+            }
+            is PlaylistMovePolicy.Result.Ready -> {
+                val weakList = WeakReference(list)
+                val started = nativePlaylistMover?.start(
+                    list.context, ready.plan,
+                    {
+                        weakList.get()?.let { current ->
+                            browsers[current]?.let(::readActualNativePaths)
                         }
+                    },
+                    { success, message ->
+                        Log.i(TAG, "PLAYLIST MOVE | result=" +
+                            success + " | " + message)
+                        weakList.get()?.takeIf { it.isAttachedToWindow }
+                            ?.let { current ->
+                                Toast.makeText(
+                                    current.context,
+                                    if (success) title else title + ": " + message,
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                     }
+                ) == true
+                if (started) {
+                    // Pressing Select is the user's ONE final confirmation;
+                    // only after durable staging can the original GMMP
+                    // deletion worker be executed without another prompt.
+                    closeMoveBrowser(browser)
+                } else {
+                    warn(list, "Native move not available")
                 }
             }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        }
+    }
+
+    private fun nativeSelectFolderLabel(context: android.content.Context): String {
+        val resources = context.resources
+        val candidates = listOf(
+            "select", "menuSelect", "action_select", "select_folder",
+            "files_select", "button_select"
+        )
+        for (name in candidates) {
+            val id = resources.getIdentifier(name, "string", context.packageName)
+            if (id != 0) {
+                val label = runCatching { context.getString(id) }.getOrNull()
+                if (!label.isNullOrBlank() && !label.contains("%")) return label
+            }
+        }
+        return if (resources.configuration.locales[0].language == "de") {
+            "Auswählen"
+        } else "Select"
+    }
+
+    private fun installMoveBrowserBar(browser: Browser) {
+        if (browser.moveBottomBar != null) return
+        val content = browser.overlay.getChildAt(0) as? LinearLayout ?: return
+        val context = browser.list.context
+        val bar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            val native = styles[browser.list]
+            background = if (native != null) {
+                nativeContentBackground(browser.list, browser.parent, native)
+            } else browser.overlay.background?.constantState
+                ?.newDrawable(context.resources)
+            setPadding(dp(browser.list, 12), dp(browser.list, 6),
+                dp(browser.list, 12), dp(browser.list, 6))
+            visibility = View.GONE
+        }
+        fun button(text: String): android.widget.Button =
+            android.widget.Button(
+                context, null, android.R.attr.buttonBarButtonStyle
+            ).apply { this.text = text }
+        bar.addView(
+            button(context.getString(android.R.string.cancel)).apply {
+                setOnClickListener { closeMoveBrowser(browser) }
+            }
+        )
+        bar.addView(
+            button(nativeSelectFolderLabel(context)).apply {
+                setOnClickListener { confirmMoveBrowser(browser) }
+            }
+        )
+        content.addView(
+            bar, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        browser.moveBottomBar = bar
     }
 
     private fun readActualNativePaths(browser: Browser): List<String>? {
@@ -1512,6 +1580,14 @@ internal class PlaylistFolderPreviewController(
         if (browser.overlay.visibility != View.VISIBLE ||
             browser.nativeNavigationInProgress
         ) return false
+        if (browser.moveSources != null) {
+            if (browser.currentFolderId != null) {
+                val current = findFolder(browser.index, browser.currentFolderId)
+                browser.currentFolderId = parentFolderId(browser, current)
+                safeRender(browser)
+            } else closeMoveBrowser(browser)
+            return true
+        }
         if (!isPicker(browser.list) && browser.mainSelection.isSelecting) {
             // The original GMMP ActionMode handles Back; our synthetic
             // selection tint is only a visual mirror of its accepted clicks.
@@ -2328,7 +2404,10 @@ internal class PlaylistFolderPreviewController(
         val list = browser.list
         if (!list.isAttachedToWindow) return
         val folder = findFolder(browser.index, browser.currentFolderId)
-        val folders = folder?.children ?: browser.index.topLevelFolders
+        val allFolders = folder?.children ?: browser.index.topLevelFolders
+        val folders = if (browser.moveSources == null) allFolders else {
+            allFolders.filter { !it.virtual }
+        }
         val playlists = folder?.playlists ?: browser.index.ungroupedPlaylists
         val nextOrder = folders.map { "folder:" + it.id } +
             playlists.map { "playlist:" + it.path }
@@ -2355,6 +2434,9 @@ internal class PlaylistFolderPreviewController(
                     " | rows=" + list.childCount
             )
         }
+        installMoveBrowserBar(browser)
+        browser.moveBottomBar?.visibility =
+            if (browser.moveSources == null) View.GONE else View.VISIBLE
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
@@ -2367,11 +2449,13 @@ internal class PlaylistFolderPreviewController(
                 child.name,
                 folder = true,
                 selected = false,
-                nativeMenuButton = if (!isPicker(list) && !child.virtual) {
+                nativeMenuButton = if (browser.moveSources == null &&
+                    !isPicker(list) && !child.virtual
+                ) {
                     nativeMenu
                 } else null,
-                onNativeContextMenu = if (!isPicker(list) &&
-                    !child.virtual
+                onNativeContextMenu = if (browser.moveSources == null &&
+                    !isPicker(list) && !child.virtual
                 ) {
                     {
                         val id = nativeMenuResources(list).buttonId
@@ -2389,7 +2473,7 @@ internal class PlaylistFolderPreviewController(
             ).apply {
                     setOnClickListener {
                         browser.currentFolderId = child.id
-                        rememberFolder(browser)
+                        if (browser.moveSources == null) rememberFolder(browser)
                         activeBrowser = WeakReference(list)
                         safeRender(browser)
                         updatePlaylistMenu()
@@ -2407,7 +2491,9 @@ internal class PlaylistFolderPreviewController(
 
         for (playlist in playlists) {
             val model = browser.modelsByPath[playlist.path]
-            val selected = if (isPicker(list)) {
+            val selected = if (browser.moveSources != null) {
+                false
+            } else if (isPicker(list)) {
                 multiSelect.isFolderPlaylistSelected(playlist.path)
             } else browser.mainSelection.isSelected(playlist.path)
             val item = row(
@@ -2415,8 +2501,12 @@ internal class PlaylistFolderPreviewController(
                     playlist.name,
                     folder = false,
                     selected = selected,
-                    nativeMenuButton = nativeMenu,
-                    onNativeContextMenu = if (model != null && nativeMenu != null) {
+                    nativeMenuButton = if (browser.moveSources == null) {
+                        nativeMenu
+                    } else null,
+                    onNativeContextMenu = if (browser.moveSources == null &&
+                        model != null && nativeMenu != null
+                    ) {
                         {
                             activeBrowser = WeakReference(list)
                             dispatchNativeAction(
@@ -2428,6 +2518,7 @@ internal class PlaylistFolderPreviewController(
                     } else null
                 ).apply {
                     setOnClickListener {
+                        if (browser.moveSources != null) return@setOnClickListener
                         activeBrowser = WeakReference(list)
                         if (model == null) {
                             warn(list, "Native playlist model unavailable")
@@ -2446,6 +2537,7 @@ internal class PlaylistFolderPreviewController(
                         )
                     }
                     setOnLongClickListener {
+                        if (browser.moveSources != null) return@setOnLongClickListener false
                         activeBrowser = WeakReference(list)
                         if (model == null) {
                             return@setOnLongClickListener false
