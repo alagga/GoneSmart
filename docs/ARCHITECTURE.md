@@ -152,3 +152,8 @@ GoneSmart aims to keep:
 4. **Fallbacks explicit** so native GMMP Auto-DJ can still take over.
 5. **Session context stronger than self-generated drift**.
 6. **Future features modular** so GoneSmart can grow beyond Smart Auto-DJ.
+
+
+## Native GMMP reuse and localization audit (28 September 2026)
+
+The accepted Playlist folders feature builds its hierarchy from GMMP's native complete playlist dataset, creates playlists through its original scoped writer and physical directories through GMMP's original new-folder dialog, and deletes folders through original bulk-delete/Files workflows with a verified already-empty-directory cleanup. The one/many playlist Move uses a recoverable private stage around GMMP's original native delete worker and native index scanner; the potentially reusable existing-playlist save primitive has **not** been independently shown safe for cross-folder relocation. The normal Playlists and Add picker retain original localized titles, row models, fonts, native palette and native click flows; GoneSmart's only host-specific missing-native text concepts are Move and the virtual Other Locations node, centralized in one file and resolved using the current GMMP context. Smart DJ/Flip/Track Auto-DJ user-visible player notices now use native translated words and neutral symbols instead of hardcoded English/German. See the [full feature-by-feature localization and native API audit](NATIVE_GMMP_AUDIT.md) for precisely confirmed reuse, justified extension logic and unverified candidates. Branch acceptance is not a signed public release.
