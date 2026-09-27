@@ -37,6 +37,39 @@ internal object NativeGmmpUiText {
         return GoneSmartGmmpStrings.otherLocations(locale)
     }
 
+    /**
+     * Smart DJ is GoneSmart-owned. GMMP has native Auto-DJ and rating
+     * nouns, but no translations for our technical recommendation states.
+     * Preserve the full English explanation in the companion Logs while
+     * host-player notices use only installed GMMP words and neutral symbols.
+     */
+    fun smartDjNoticeLabel(
+        notice: String,
+        nativeAutoDj: String?,
+        nativeRating: String?,
+        nativeError: String?
+    ): String {
+        val dj = nativeAutoDj?.takeUnless(String::isBlank) ?: "Auto-DJ"
+        return when (notice) {
+            "cache-preparing" -> "GoneSmart ⏳"
+            "cache-ready" -> "GoneSmart ✓"
+            "offline-native-fallback", "no-matches-native-fallback" -> "$dj ↩"
+            "no-seeds" -> errorLabel(nativeError, dj)
+            "no-matches-stopped" -> "$dj ⏹"
+            "rating-fallback" -> (nativeRating?.takeUnless(String::isBlank)
+                ?: dj) + " ↩"
+            else -> errorLabel(nativeError, dj)
+        }
+    }
+
+    fun smartDjNotice(context: Context, notice: String): String =
+        smartDjNoticeLabel(
+            notice,
+            string(context, "auto_dj"),
+            string(context, "rating"),
+            string(context, "error")
+        )
+
     fun error(context: Context, nativeAction: String? = null): String =
         errorLabel(string(context, "error"), nativeAction)
 }
