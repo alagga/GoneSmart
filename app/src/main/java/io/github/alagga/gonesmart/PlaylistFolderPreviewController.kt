@@ -2063,6 +2063,45 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    /**
+     * GMMP's picker toolbar may invoke its own navigation listener instead
+     * of AndroidX's OnBackPressedDispatcher. Only intercept the actual
+     * navigation ImageButton while a nested folder picker is foreground.
+     */
+    fun consumePickerToolbarBack(clicked: View): Boolean {
+        if (!settings.enabled || clicked !is ImageButton) return false
+        val browser = browsers.values.firstOrNull {
+            isPicker(it.list) && it.list.isAttachedToWindow &&
+                it.overlay.isShown && isFrontFragmentView(it.list) &&
+                it.currentFolderId != null
+        } ?: return false
+        var ancestor = clicked.parent as? View
+        repeat(5) {
+            val toolbar = ancestor ?: return@repeat
+            if (toolbar.javaClass.name.endsWith("Toolbar")) {
+                val nativeNav = generateSequence(toolbar.javaClass) {
+                    it.superclass
+                }.mapNotNull { klass ->
+                    klass.declaredFields.firstOrNull {
+                        it.name == "mNavButtonView"
+                    }
+                }.firstOrNull()?.let { field ->
+                    runCatching {
+                        field.isAccessible = true
+                        field.get(toolbar)
+                    }.getOrNull()
+                }
+                if (nativeNav === clicked) {
+                    activeBrowser = WeakReference(browser.list)
+                    Log.i(TAG, "FOLDER PICKER TOOLBAR BACK | navigate parent")
+                    return consumeBack()
+                }
+            }
+            ancestor = toolbar.parent as? View
+        }
+        return false
+    }
+
     fun consumeBack(): Boolean {
         if (!settings.enabled) return false
         val list = activeBrowser.get()
