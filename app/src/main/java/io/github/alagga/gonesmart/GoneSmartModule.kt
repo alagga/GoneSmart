@@ -106,11 +106,10 @@ class GoneSmartModule : XposedModule() {
                 )
 
             if (
-                BuildConfig.DEBUG && (
-                    key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ||
+                key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ||
+
                     key == GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS ||
                     key == GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS
-                )
             ) {
                 val next = options
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -522,11 +521,11 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
-            // Playlist folders are debug-only while the inline integration
-            // is validated. GMMP's native adapter remains attached and owns
-            // all playlist actions; GoneSmart only changes presentation.
+            // Accepted folder functionality is available in debug AND
+            // future release builds; optional diagnostics remain debug-only.
+            // GMMP's original adapter still owns every native action.
             try {
-                if (BuildConfig.DEBUG) {
+                run {
                     playlistFolderPreview.setOptions(
                         options.playlistFoldersEnabled,
                         options.groupExternalPlaylists,
@@ -534,10 +533,12 @@ class GoneSmartModule : XposedModule() {
                     )
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
                     playlistFolderPreview.setNativePlaylistMover(param.classLoader)
-                    nativeMoveDiscovery =
-                        NativeGmmpMoveDiscovery(param.classLoader)
-                    playlistFolderPreview.onNativeMoveDiscovery = { context ->
-                        nativeMoveDiscovery?.reportOnce(context)
+                    if (BuildConfig.DEBUG) {
+                        nativeMoveDiscovery =
+                            NativeGmmpMoveDiscovery(param.classLoader)
+                        playlistFolderPreview.onNativeMoveDiscovery = { context ->
+                            nativeMoveDiscovery?.reportOnce(context)
+                        }
                     }
                     // py0.b() shows its native MaterialDialog synchronously.
                     // Observe the ORIGINAL show() after it returns; alter
@@ -724,8 +725,7 @@ class GoneSmartModule : XposedModule() {
                     } catch (error: Throwable) {
                         Log.e(TAG, "Track Mix menu insertion failed", error)
                     }
-                    if (BuildConfig.DEBUG) {
-                        runCatching {
+                    runCatching {
                             playlistFolderPreview.onMenuInflated(
                                 chain.getArg(0) as? Int ?: 0,
                                 chain.getArg(1) as? android.view.Menu,
@@ -738,7 +738,6 @@ class GoneSmartModule : XposedModule() {
                                 it
                             )
                         }
-                    }
                     result
                 }
                 installed++
@@ -1076,7 +1075,6 @@ class GoneSmartModule : XposedModule() {
     private fun installNativePlaylistAdapterChangeHooks(
         param: PackageReadyParam
     ) {
-        if (!BuildConfig.DEBUG) return
         val adapterBase = param.classLoader.loadClass(
             "androidx.recyclerview.widget.RecyclerView\$h"
         )
@@ -1242,7 +1240,7 @@ class GoneSmartModule : XposedModule() {
     private fun installNativePlaylistCreationProbeHooks(
         param: PackageReadyParam
     ) {
-        val getterReady = BuildConfig.DEBUG && runCatching {
+        val getterReady = runCatching {
             val nativeGetter = param.classLoader.loadClass("va4")
                 .getDeclaredMethod("getValue").apply { isAccessible = true }
             hook(nativeGetter).intercept { chain ->
