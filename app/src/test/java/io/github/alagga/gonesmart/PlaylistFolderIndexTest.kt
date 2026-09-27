@@ -28,6 +28,21 @@ class PlaylistFolderIndexTest {
         assertEquals(3, result.folders.sumOf { it.playlists.size + it.children.sumOf { sub -> sub.playlists.size } })
     }
 
+    @Test fun onlyTheVirtualNameIsTranslatedNotRealFolderNames() {
+        val result = PlaylistFolderIndex.build(
+            nativePlaylistPaths = listOf("$root/Other Locations/Local.m3u",
+                "$root/Loose.m3u"),
+            mainPlaylistDirectory = root,
+            groupExternalLocations = false,
+            groupRootPlaylists = true,
+            otherLocationsLabel = "Andere Speicherorte"
+        )
+        assertEquals("Andere Speicherorte", result.otherLocations!!.name)
+        assertTrue(result.otherLocations!!.virtual)
+        assertEquals("Other Locations", result.folders.single().name)
+        assertFalse(result.folders.single().virtual)
+    }
+
     @Test fun groupingCombinesMainRootAndExternalPlaylistsOnly() {
         val result = PlaylistFolderIndex.build(
             listOf(
