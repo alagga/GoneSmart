@@ -43,8 +43,9 @@ of its `track` and `auto_dj` resources in **every** player language.
 For example, native German: **Titel Auto-DJ**; native English: **Track Auto-DJ**.
 A localized native `started` resource is used for the one visible success
 confirmation where available; otherwise GoneSmart uses a checkmark
-rather than inventing a translation. If a GMMP resource is absent, an
-available native term is used without inserting a made-up foreign word.
+rather than inventing a translation. If either necessary native `track` or `auto_dj` resource is absent,
+the new player menu action is omitted rather than showing an incomplete
+or mixed-language phrase. The companion remains English.
 
 Only one user-visible success confirmation should appear. GMMP's own
 Play/Clear/Auto-DJ status Toasts and Snackbars are suppressed during the
@@ -70,3 +71,8 @@ transaction verification), `MIX ISOLATE FAILED` (concurrent queue change or
 native write failure), `MIX VERIFIED` (new queue and selected song intact),
 `MIX POPUP` (intermediate status suppressed). No repeated manual trial cycles
 are necessary: if either case fails, send the filtered log once.
+
+
+## 28 September 2026 localization/native reuse source audit
+
+The action now fails closed when **either** required original GMMP `track` or `auto_dj` resource cannot be resolved. The one verified-success Toast uses native `started` or the original native composed action followed by a neutral checkmark; errors inside GMMP use original `error` and the action, with English diagnostic detail retained in the companion/Logcat. Original native track Play dispatch, native Room queue isolation (`ex3.c`, `xx3.O`, `xx3.O0`) and native Auto-DJ/refill remain unchanged. See [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). These new locale-source changes require a brief on-device locale smoke test; previous queue-isolation acceptance does not prove multilingual wording.
