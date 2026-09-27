@@ -741,6 +741,36 @@ class MainActivity : AppCompatActivity() {
         ))
 
         container.addView(verticalGap(22))
+        container.addView(sectionTitle("GMMP UI EXTENSIONS"))
+        container.addView(infoCard(
+            title = "How does Multi-playlist selection work?",
+            body = "Enable it in the UI tab. In GMMP's Add to Playlist dialog, " +
+                "long-press a playlist to enter the original-style contextual " +
+                "selection mode, then select as many destinations as needed, " +
+                "including destinations in different folders. Tap the " +
+                "sparkle-marked native checkmark to add the original source " +
+                "tracks through GMMP's own playlist writer. One result " +
+                "message summarizes the accepted source files and completed " +
+                "destinations; Back cancels selection. If enabled when you " +
+                "create a new playlist, creation does not automatically add " +
+                "the selected tracks until you choose destinations."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "What do Flip Queue and Play Flipped do?",
+            body = "Enable Flip queue in the UI tab. The GMMP Queue menu " +
+                "gets a sparkle-marked reverse action next to its existing " +
+                "commands; it reverses the entire native queue while " +
+                "preserving the exact currently playing entry and its " +
+                "position in the song. In ordinary and Smart Playlist " +
+                "context menus, the sparkle-marked Play action starts " +
+                "the original GMMP playlist in reverse order. GMMP still " +
+                "resolves, writes and plays the selected native tracks; " +
+                "GoneSmart never edits the saved playlist file."
+        ))
+
+        container.addView(verticalGap(22))
         container.addView(sectionTitle("PLAYLISTS & FOLDERS"))
         container.addView(infoCard(
             title = "How do Playlist folders work?",
