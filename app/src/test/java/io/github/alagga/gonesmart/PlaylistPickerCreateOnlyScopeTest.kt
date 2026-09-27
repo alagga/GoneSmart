@@ -17,12 +17,15 @@ class PlaylistPickerCreateOnlyScopeTest {
     @Test fun suppressesOnlyPickerCloseDuringCreation() {
         val guard = PlaylistPickerCreateOnlyScope()
         assertFalse(guard.shouldSuppressClose("j83"))
+        assertFalse(guard.isActive())
         guard.duringCreate {
+            assertTrue(guard.isActive())
             assertTrue(guard.shouldSuppressClose("j83"))
             assertFalse(guard.shouldSuppressClose("q65"))
             assertFalse(guard.shouldSuppressClose(null))
         }
         assertFalse(guard.shouldSuppressClose("j83"))
+        assertFalse(guard.isActive())
     }
 
     @Test fun nestedScopesAndExceptionsRestorePriorState() {

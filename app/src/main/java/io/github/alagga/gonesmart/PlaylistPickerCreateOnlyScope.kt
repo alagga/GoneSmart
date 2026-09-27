@@ -25,6 +25,9 @@ internal class PlaylistPickerCreateOnlyScope {
         }
     }
 
+    /** Read-only current-thread visibility for the scoped native Toast hook. */
+    fun isActive(): Boolean = (depth.get() ?: 0) > 0
+
     fun shouldSuppressClose(eventClassName: String?): Boolean =
         eventClassName == "j83" && (depth.get() ?: 0) > 0
 }
