@@ -2079,7 +2079,7 @@ internal class PlaylistFolderPreviewController(
         repeat(5) {
             val toolbar = ancestor ?: return@repeat
             if (toolbar.javaClass.name.endsWith("Toolbar")) {
-                val nativeNav = generateSequence(toolbar.javaClass) {
+                val nativeNav = generateSequence<Class<*>>(toolbar.javaClass) {
                     it.superclass
                 }.mapNotNull { klass ->
                     klass.declaredFields.firstOrNull {
