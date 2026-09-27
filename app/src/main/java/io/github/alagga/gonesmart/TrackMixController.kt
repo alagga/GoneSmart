@@ -218,6 +218,10 @@ internal class TrackMixController(
             nativeTrack = nativeText("track"),
             nativeAutoDj = nativeText("auto_dj")
         )
+        if (label.isBlank()) {
+            Log.w(TAG, "MIX I18N | GMMP track/Auto-DJ resources unavailable; native menu untouched")
+            return
+        }
         val confirmation = TrackMixPlan.localizedStartedMessage(
             language = language,
             menuLabel = label,
@@ -688,7 +692,13 @@ internal class TrackMixController(
             GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
             "${pending?.menuLabel ?: "Auto-DJ"}: $message"
         )
-        toast(context, message)
+        toast(
+            context,
+            NativeGmmpUiText.error(
+                context,
+                pending?.menuLabel ?: NativeGmmpUiText.string(context, "auto_dj")
+            )
+        )
     }
 
     private fun toast(context: Context, message: String) {
