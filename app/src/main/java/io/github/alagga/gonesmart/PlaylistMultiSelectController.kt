@@ -137,6 +137,10 @@ internal class PlaylistMultiSelectController {
         WeakHashMap<ViewGroup, android.view.ViewTreeObserver.OnGlobalLayoutListener>()
 
     private val pickerCreateOnlyScope = PlaylistPickerCreateOnlyScope()
+    private val pickerZeroToastPolicy = NativePickerZeroToastPolicy()
+    private val nativeZeroToastCandidates = WeakHashMap<Toast, Boolean>()
+    private val nativeZeroToastLock = Any()
+    private val zeroToastInCurrentCreate = ThreadLocal<Boolean>()
 
     @Volatile private var pickerCloseGuardReady = false
     @Volatile
@@ -161,14 +165,74 @@ internal class PlaylistMultiSelectController {
         )
     }
 
-    fun aroundPickerCreateOnly(proceed: () -> Any?): Any? =
-        pickerCreateOnlyScope.duringCreate(proceed)
+    fun aroundPickerCreateOnly(proceed: () -> Any?): Any? {
+        val previous = zeroToastInCurrentCreate.get()
+        zeroToastInCurrentCreate.set(false)
+        try {
+            return pickerCreateOnlyScope.duringCreate(proceed)
+        } finally {
+            if (previous == null) zeroToastInCurrentCreate.remove()
+            else zeroToastInCurrentCreate.set(previous)
+        }
+    }
+
+    /**
+     * The original fo3 create transaction can schedule its native success
+     * toast AFTER its synchronous callback returns. Match only the exact
+     * currently localized 0-file message, once, after a verified native j83
+     * event from OUR empty-create scope; never suppress a normal add result.
+     */
+    fun onNativeToastConstructed(
+        toast: Toast?,
+        context: Context?,
+        message: CharSequence?
+    ) {
+        if (toast == null || context == null || message == null) return
+        val insideCreate = pickerCreateOnlyScope.isActive()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val pending = synchronized(nativeZeroToastLock) {
+            pickerZeroToastPolicy.hasPending(now)
+        }
+        if (!insideCreate && !pending) return
+        val nativeString = context.resources.getIdentifier(
+            "add_to_playlist_toast", "string", context.packageName
+        )
+        if (nativeString == 0) return
+        val expected = runCatching {
+            context.getString(nativeString, 0)
+        }.getOrNull() ?: return
+        val suppressed = synchronized(nativeZeroToastLock) {
+            if (nativeZeroToastCandidates.containsKey(toast)) return@synchronized false
+            pickerZeroToastPolicy.shouldSuppress(
+                actual = message.toString(),
+                localizedEmptyResult = expected,
+                now = now,
+                insideCreate = insideCreate
+            ).also {
+                if (it) nativeZeroToastCandidates[toast] = true
+            }
+        }
+        if (suppressed) {
+            if (insideCreate) zeroToastInCurrentCreate.set(true)
+            Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast identified")
+        }
+    }
 
     fun shouldSuppressPickerCreateCloseEvent(event: Any?): Boolean {
         val suppress = pickerCreateOnlyScope.shouldSuppressClose(
             event?.javaClass?.name
         )
         if (suppress) {
+            // This native event is emitted by fo3 only after its original
+            // create path. Its toast may be posted later by native GMMP.
+            // When constructed synchronously, do not arm a second token.
+            if (zeroToastInCurrentCreate.get() != true) {
+                synchronized(nativeZeroToastLock) {
+                    pickerZeroToastPolicy.arm(
+                        android.os.SystemClock.elapsedRealtime()
+                    )
+                }
+            }
             Log.i(TAG, "PICKER CREATE ONLY | native close event suppressed")
         }
         return suppress
@@ -286,10 +350,18 @@ internal class PlaylistMultiSelectController {
      * Ordinary one-playlist operations and unrelated GMMP Toasts are left
      * untouched. The aggregate is posted after all accepted callbacks.
      */
-    fun shouldSuppressNativeResultToast(): Boolean {
-        // GMMP versions may create their native success Toast either
-        // synchronously inside io3.r() or in its jd(mode=4) completion.
-        // Both scopes belong exclusively to this multi-add batch.
+    fun shouldSuppressNativeResultToast(toast: Toast? = null): Boolean {
+        // These asynchronous native create-only toasts have been identified
+        // by the original GMMP localized message at Toast.makeText().
+        if (toast != null && synchronized(nativeZeroToastLock) {
+                nativeZeroToastCandidates.remove(toast) == true
+            }
+        ) {
+            Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast suppressed")
+            return true
+        }
+        // Ordinary multiple-destination native successes are still scoped
+        // to their original jd(mode=4) callback, unchanged by this fix.
         val batch = runningNativeCallback.get()
             ?: constructingNativeCallback.get()
             ?: return false

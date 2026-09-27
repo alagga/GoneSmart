@@ -1456,6 +1456,39 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
+        // Track GMMP's native 0-file message at Toast.makeText() only
+        // when an EMPTY playlist was intentionally created in our picker.
+        // The actual Toast.show() suppression stays identity-scoped so
+        // unrelated native messages and normal playlist adds are untouched.
+        runCatching {
+            val nativeMakeText = android.widget.Toast::class.java
+                .getDeclaredMethod(
+                    "makeText",
+                    android.content.Context::class.java,
+                    CharSequence::class.java,
+                    Int::class.javaPrimitiveType
+                ).apply { isAccessible = true }
+            hook(nativeMakeText).intercept { chain ->
+                val result = chain.proceed()
+                playlistController.onNativeToastConstructed(
+                    result as? android.widget.Toast,
+                    chain.getArg(0) as? android.content.Context,
+                    chain.getArg(1) as? CharSequence
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "PICKER CREATE ONLY | localized toast observer ready"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "PICKER CREATE ONLY | native Toast construction unavailable",
+                it
+            )
+        }
+
         // GMMP displays a native Toast for each playlist completion.
         // Hide only those Toast.show() calls made INSIDE the jd(mode=4)
         // callbacks tagged during GoneSmart multi-add. The controller
@@ -1467,7 +1500,10 @@ class GoneSmartModule : XposedModule() {
                 .getDeclaredMethod("show")
                 .apply { isAccessible = true }
             hook(nativeToastShow).intercept { chain ->
-                if (playlistController.shouldSuppressNativeResultToast()) {
+                if (playlistController.shouldSuppressNativeResultToast(
+                        chain.getThisObject() as? android.widget.Toast
+                    )
+                ) {
                     null
                 } else if (trackMixController.shouldSuppressNativeToast(
                         chain.getThisObject() as? android.widget.Toast

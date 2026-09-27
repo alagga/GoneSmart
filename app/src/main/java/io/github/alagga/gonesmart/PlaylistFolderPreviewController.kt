@@ -460,6 +460,9 @@ internal class PlaylistFolderPreviewController(
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
     var onNativeMoveDiscovery: ((android.content.Context) -> Unit)? = null
     private val newFolderMenuId = View.generateViewId()
+    // Avoid replacing a native Material FAB's drawable every layout pass.
+    private val miniFabBackgroundSource =
+        WeakHashMap<View, Drawable.ConstantState>()
 
     init {
         multiSelect.setFolderSelectionChangedListener { list ->
@@ -3519,6 +3522,88 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
+     * Mirror the ACTUALLY displayed big native FAB instead of sampling an
+     * app/theme accent: AestheticFab may assign its dynamic color only AFTER
+     * attachment. MaterialShapeDrawable fill/tint is the read-only fallback
+     * when its public backgroundTintList is absent.
+     */
+    private fun nativeFabDrawableTint(
+        drawable: Drawable?,
+        depth: Int = 0
+    ): android.content.res.ColorStateList? {
+        if (drawable == null || depth > 6) return null
+        val nativeTint = runCatching {
+            drawable.javaClass.methods.firstOrNull {
+                it.name == "getTintList" && it.parameterCount == 0
+            }?.invoke(drawable) as? android.content.res.ColorStateList
+        }.getOrNull()
+        if (nativeTint != null) return nativeTint
+        val fill = runCatching {
+            drawable.javaClass.methods.firstOrNull {
+                it.name == "getFillColor" && it.parameterCount == 0
+            }?.invoke(drawable) as? android.content.res.ColorStateList
+        }.getOrNull()
+        if (fill != null) return fill
+        if (drawable is android.graphics.drawable.ColorDrawable) {
+            return android.content.res.ColorStateList.valueOf(drawable.color)
+        }
+        if (drawable is android.graphics.drawable.LayerDrawable) {
+            for (i in 0 until drawable.numberOfLayers) {
+                nativeFabDrawableTint(
+                    drawable.getDrawable(i), depth + 1
+                )?.let { return it }
+            }
+        }
+        if (drawable is android.graphics.drawable.InsetDrawable) {
+            return nativeFabDrawableTint(drawable.drawable, depth + 1)
+        }
+        return null
+    }
+
+    private fun syncNativeMiniFabPalette(source: View, mini: View) {
+        val nativeTint = runCatching {
+            source.javaClass.getMethod("getBackgroundTintList")
+                .invoke(source) as? android.content.res.ColorStateList
+        }.getOrNull() ?: nativeFabDrawableTint(source.background)
+        if (nativeTint != null) {
+            val existing = runCatching {
+                mini.javaClass.getMethod("getBackgroundTintList")
+                    .invoke(mini) as? android.content.res.ColorStateList
+            }.getOrNull()
+            if (existing != nativeTint) {
+                runCatching {
+                    mini.javaClass.getMethod(
+                        "setBackgroundTintList",
+                        android.content.res.ColorStateList::class.java
+                    ).invoke(mini, nativeTint)
+                }.onFailure {
+                    Log.w(TAG, "FOLDER PICKER FAB | native tint unavailable", it)
+                }
+            }
+        } else {
+            // Last-resort clone of the LIVE original native ripple/state,
+            // never its shared instance. Material FAB may reject background
+            // replacement, so prefer the native tint API above.
+            val state = source.background?.constantState
+            if (state != null && miniFabBackgroundSource[mini] !== state) {
+                runCatching {
+                    mini.background = state.newDrawable(source.resources).mutate()
+                    miniFabBackgroundSource[mini] = state
+                }.onFailure {
+                    Log.w(TAG, "FOLDER PICKER FAB | background fallback failed", it)
+                }
+            }
+        }
+        (source as? ImageView)?.imageTintList?.let { nativeIconTint ->
+            (mini as? ImageView)?.let { icon ->
+                if (icon.imageTintList != nativeIconTint) {
+                    icon.imageTintList = nativeIconTint
+                }
+            }
+        }
+    }
+
+    /**
      * Reuse the live GMMP native FloatingActionButton CLASS, tint, ripple
      * and two genuine installed-player icons. The root plus remains the
      * original native control; only its presentation as a speed dial is new.
@@ -3551,18 +3636,6 @@ internal class PlaylistFolderPreviewController(
             item.javaClass.getMethod("setCustomSize", Int::class.javaPrimitiveType)
                 .invoke(item, size)
         }
-        val tint = runCatching {
-            source.javaClass.getMethod("getBackgroundTintList")
-                .invoke(source)
-        }.getOrNull()
-        if (tint is android.content.res.ColorStateList) {
-            runCatching {
-                item.javaClass.getMethod(
-                    "setBackgroundTintList",
-                    android.content.res.ColorStateList::class.java
-                ).invoke(item, tint)
-            }
-        }
         item.elevation = source.elevation
         item.setOnClickListener { click() }
         // The original picker FAB can be BELOW the RecyclerView's
@@ -3576,6 +3649,12 @@ internal class PlaylistFolderPreviewController(
             ViewGroup.LayoutParams(size, size)
         )
         item.visibility = View.INVISIBLE
+        // Native AestheticFab's theme observer can overwrite the tint it
+        // received in its constructor; sync AFTER it joins the coordinator.
+        syncNativeMiniFabPalette(source, item)
+        item.post {
+            if (item.parent != null) syncNativeMiniFabPalette(source, item)
+        }
         item
     }.onFailure {
         Log.w(TAG, "FOLDER PICKER FAB | original native clone unavailable", it)
@@ -3665,6 +3744,7 @@ internal class PlaylistFolderPreviewController(
             .filterNotNull().forEach { mini ->
                 runCatching {
                     mini.javaClass.getMethod("show").invoke(mini)
+                    syncNativeMiniFabPalette(fab, mini)
                 }.onFailure {
                     mini.visibility = View.VISIBLE
                     Log.w(TAG, "FOLDER PICKER FAB | native show unavailable", it)
@@ -3711,6 +3791,10 @@ internal class PlaylistFolderPreviewController(
             }
             fab.invalidate()
             if (browser.pickerAddExpanded) {
+                listOf(browser.playlistFab, browser.folderFab)
+                    .filterNotNull().forEach {
+                        syncNativeMiniFabPalette(fab, it)
+                    }
                 positionPickerAddOptions(browser, fab)
             }
         } else if (fab.visibility != View.GONE) {
