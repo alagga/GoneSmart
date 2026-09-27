@@ -271,7 +271,7 @@ verification and failure outcomes appear in the GoneSmart app's
 
 ## Playlist folders (GMMP 4.2.0 — feature-complete on tested setup)
 
-Enable **UI → Playlist folders** to browse nested physical playlist folders in
+Enable **UI → Playlist folders** (available in both debug and future release builds on this development branch) to browse nested physical playlist folders in
 both GMMP's Playlists tab and its **Add to Playlist** picker. **Group external
 playlists** and **Group root playlists** independently control the virtual
 **Other Locations** folder. The native playlist model supplies paths and
