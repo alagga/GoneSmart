@@ -4,6 +4,24 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NativeGmmpUiTextTest {
+    @Test fun smartDjNoticesUseHostNativeNounsAndNeutralStatusSymbols() {
+        assertEquals("GoneSmart ⏳",
+            NativeGmmpUiText.smartDjNoticeLabel(
+                "cache-preparing", "Auto-DJ", "Bewertung", "Fehler"))
+        assertEquals("Auto-DJ ↩",
+            NativeGmmpUiText.smartDjNoticeLabel(
+                "offline-native-fallback", "Auto-DJ", "Bewertung", "Fehler"))
+        assertEquals("Fehler · Auto-DJ",
+            NativeGmmpUiText.smartDjNoticeLabel(
+                "no-seeds", "Auto-DJ", "Bewertung", "Fehler"))
+        assertEquals("Bewertung ↩",
+            NativeGmmpUiText.smartDjNoticeLabel(
+                "rating-fallback", "Auto-DJ", "Bewertung", "Fehler"))
+        assertEquals("Auto-DJ ⏹",
+            NativeGmmpUiText.smartDjNoticeLabel(
+                "no-matches-stopped", "Auto-DJ", "Bewertung", "Fehler"))
+    }
+
     @Test fun preservesTheHostPlayersErrorTranslation() {
         assertEquals(
             "Fehler · Wiedergabelisten",
