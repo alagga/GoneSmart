@@ -741,6 +741,55 @@ class MainActivity : AppCompatActivity() {
         ))
 
         container.addView(verticalGap(22))
+        container.addView(sectionTitle("PLAYLISTS & FOLDERS"))
+        container.addView(infoCard(
+            title = "How do Playlist folders work?",
+            body = "Enable Playlist folders in the UI tab to browse physical folders " +
+                "in both GMMP playlist views. Group external playlists and Group " +
+                "root playlists independently control the virtual Other Locations " +
+                "folder. A real folder with that name stays separate. The normal " +
+                "Playlists tab remembers its location, while each new Add to " +
+                "Playlist dialog opens at root. Android Back and the picker's " +
+                "top-left Back button ascend folders before closing from root."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "How do I create playlists and folders?",
+            body = "Open the destination folder first. GoneSmart uses GMMP's " +
+                "original playlist creator/writer and folder actions. When " +
+                "Group root playlists is enabled, create main-root playlists " +
+                "from virtual Other Locations; otherwise use the root view. " +
+                "The Add to Playlist picker also offers playlist and folder " +
+                "creation options. A multi-selection confirm always remains " +
+                "available while playlists are selected."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "How do I move one or more playlists?",
+            body = "In GMMP's Playlists tab, long-press a playlist and select " +
+                "any others, choose Move, navigate to an eligible destination " +
+                "and tap the white-check confirmation button above the " +
+                "mini-player. A verified successful move updates the playlist " +
+                "list without an extra popup; actual failures are reported. " +
+                "GoneSmart uses GMMP's original playlist delete and scan " +
+                "operations with a recoverable private staging step."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "How do GMMP language and theme settings apply?",
+            body = "The GoneSmart companion app stays English. Added controls " +
+                "inside GMMP reuse its original theme and translated native " +
+                "action labels. Move is the one GoneSmart-only GMMP action word " +
+                "with its own host-language translations. The existing " +
+                "Playlists drawer entry shows a lilac GoneSmart sparkle only " +
+                "while Playlist folders is enabled; the Move confirm has a " +
+                "plain white checkmark."
+        ))
+
+        container.addView(verticalGap(22))
         container.addView(sectionTitle("INDICATOR"))
         container.addView(infoCard(
             title = "What does the sparkle mean?",
