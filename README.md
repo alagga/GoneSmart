@@ -269,23 +269,40 @@ verification and failure outcomes appear in the GoneSmart app's
 
 **Status:** Feature complete in the v0.4.x development branch; the maintainer reports Track Auto-DJ working on-device with GMMP 4.2.0. The 24 September development log showed six successful five-song starts and one earlier intermittent queue-isolation failure during an old-queue refill. That older clearing path has been replaced with native atomic isolation by unique queue-entry ID. The maintainer subsequently retested the queue-row Track Auto-DJ flow with the corrected build and reported no recurrence of the failure; this targeted device regression is accepted as passed. Other GMMP versions remain unverified. See [Track Auto-DJ test and notes](docs/TRACK_MIX_TESTING.md).
 
-## In development: Playlist folders
+## Playlist folders (GMMP 4.2.0 — feature-complete on tested setup)
 
-The next v0.4.x feature introduces optional physical playlist folder
-navigation in GMMP's Playlists tab and Add to Playlist picker, with nested
-folders. Two **independent** options control whether external playlists and
-playlists directly in GMMP's main root appear inside the virtual **Other
-Locations** folder or as loose items after folder rows. The GMMP 4.2.0
-GMMP 4.2.0 has now been tested with playlists several physical folder
-levels deep: normal listing/opening, native Add to Playlist and GoneSmart
-multi-destination add all passed. A native GMMP write also converted an
-existing relative M3U entry to an absolute path. Moving playlist files
-externally still leaves stale GMMP database records until cleanup, so
-GoneSmart's future Move action requires a verified native per-playlist path
-update. A read-only `FOLDER DISCOVERY` diagnostic is now staged to map
-the normal Playlists tab against the Add picker. Native folder UI and
-file-moving actions are **not yet implemented**. See
-[the design and on-device findings](docs/PLAYLIST_FOLDERS.md).
+Enable **UI → Playlist folders** to browse nested physical playlist folders in
+both GMMP's Playlists tab and its **Add to Playlist** picker. **Group external
+playlists** and **Group root playlists** independently control the virtual
+**Other Locations** folder. The native playlist model supplies paths and
+display names; a real physical folder with the same name stays distinct.
+
+Create playlists in the currently open eligible physical folder via GMMP's
+existing create action. Create and delete physical folders using the original
+GMMP Files-tab operations. In the Add picker, the existing plus button exposes
+the native playlist/folder creation choices; when multi-selection is active it
+remains the confirmation button. Long-press playlists in the normal Playlists
+tab to select one or more and choose **Move**; navigate to the destination
+folder and confirm with the native-style white-check FAB. Moves stage their
+contents durably, invoke GMMP's original playlist delete and scan operations
+and verify native index changes; errors remain visible. A successful Move
+does not generate an extra success popup.
+
+The original GMMP drawer **Playlists** entry gets GoneSmart's lilac two-star
+badge while folders are enabled; the Move FAB intentionally has no sparkle.
+The picker toolbar's Back button and Android Back ascend nested folders before
+closing the picker from its root. GoneSmart retains GMMP's active native theme,
+localized built-in action labels and original playlist writer. **Move** is
+the one GoneSmart-only injected action word and uses a dedicated translation
+table covering the installed GMMP 4.2.0 language inventory.
+
+The maintainer accepted the complete current folder flow on the tested
+GMMP 4.2.0 device on 28 September 2026. Other GMMP versions, alternative
+skins, and independent native-speaker review of all Move translations remain
+separate compatibility/release-hardening work; this development-branch
+acceptance is **not** a newly published release. See
+[Playlist folders](docs/PLAYLIST_FOLDERS.md) and
+[GMMP localization](docs/GONESMART_GMMP_I18N.md).
 
 ## Companion UI and player indicator
 
