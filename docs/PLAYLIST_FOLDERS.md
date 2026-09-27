@@ -773,3 +773,8 @@ This document intentionally retains previous failed approaches and diagnostic lo
 ### 2026-09-28 native-function and full localization audit
 
 The post-acceptance source review is documented in [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). Important correction to earlier single-custom-word claims: **Move is the only new GoneSmart command verb**, but the virtual **Other Locations** node also needs its own fallback translation when the live installed GMMP APK offers no equivalent resource. Its label now resolves via `NativeGmmpUiText.otherLocations` on all four creation/refresh paths; real folder names are left untouched. Source-verified native row, writer, original folder creator, bulk-delete worker and scanner use are listed there, along with outstanding native existing-playlist save/relocation API questions and the remaining multilingual/theme smoke tests. The already accepted Move transaction is preserved without attempting an unverified writer swap.
+
+
+### 2026-09-28 debug-only gate retired after feature acceptance
+
+The completed folder feature's **actual runtime hooks, native playlist-create destination getter, original Add-menu integration, native-adapter refresh and UI settings are now enabled in both debug and unsigned release build variants**. The previous debug-only BuildConfig gate would have made the otherwise documented feature unavailable in a release APK, so it has been retired on this feature branch. Only read-only native writer/save discovery probes, experimental qg1 geometry parity logging and optional diagnostic traces remain debug-only. This does not publish a signed release, validate a release APK on a device, or broaden the tested GMMP 4.2.0 skin/language claim; normal release process still applies.
