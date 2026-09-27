@@ -32,3 +32,7 @@ Use disposable playlists. Verify long-press, toggle, scroll down/up, back cancel
 For debugging, filter Logcat to `GoneSmartPlaylist` and inspect `MULTI PICKER`, `MULTI SELECT`, `MULTI PALETTE`, `MULTI NAV`, `MULTI NATIVE ADD`, `MULTI TOAST` and `MULTI CONFIRM`. Paths in logs may reveal local filenames: redact them before publishing logs.
 
 This implementation targets GMMP 4.2.0 and will need revalidation if GMMP changes its internal obfuscated classes or its localized string resources.
+
+### Shared confirmation glyph and native ActionMode styling — 2026-09-27
+
+The original multi-selection checkmark implementation has been extracted without changing its drawing geometry to the shared `PlaylistConfirmDrawable.kt`; the existing Add-picker FAB continues using that exact renderer. The exact existing native contextual action bar discovery/tint helper is also exposed internally as `tintNativeContextBar(list,liveNativeFabColor)` so GoneSmart's normal-Playlists move destination uses the same original bar mechanics without reparenting any live session state. The move destination creates a separate native `AestheticFab` and subscribes independently to the same original `!mainColorAccent` observable as the real picker FAB.

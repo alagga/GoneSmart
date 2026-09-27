@@ -102,6 +102,19 @@ internal class PlaylistMultiSelectController {
     fun folderNativeFab(list: ViewGroup): View? =
         active?.takeIf { enabled && it.list === list }?.fab
 
+    /**
+     * Share the EXACT existing native contextual-bar discovery and coloring
+     * with the independent normal-Playlists move destination ActionMode.
+     * Never borrow/reparent the Add picker's own active ActionMode.
+     */
+    fun tintNativeContextBar(list: ViewGroup, liveNativeFabColor: Int): Boolean {
+        val bar = findContextBar(list.rootView) ?: return false
+        if ((bar.background as? ColorDrawable)?.color != liveNativeFabColor) {
+            bar.background = ColorDrawable(liveNativeFabColor)
+        }
+        return true
+    }
+
     fun confirmFolderSelection(list: ViewGroup): Boolean {
         val session = active ?: return false
         if (!enabled || session.list !== list ||
@@ -1389,7 +1402,7 @@ internal class PlaylistMultiSelectController {
         }
 
         fab.imageTintList = null
-        fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
+        fab.setImageDrawable(PlaylistConfirmDrawable(dp(fab, 24f)))
         if (session.sparkle == null) {
             val color = currentSparkleColor(session, fab)
             session.sparkleColor = color
@@ -2256,54 +2269,4 @@ internal class PlaylistMultiSelectController {
         Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     }
 
-    private class MultiConfirmDrawable(
-        private val iconSizePx: Int
-    ) : Drawable() {
-        override fun getIntrinsicWidth(): Int = iconSizePx
-        override fun getIntrinsicHeight(): Int = iconSizePx
-
-        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 3.4f
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-
-        override fun draw(canvas: Canvas) {
-            val rect = bounds
-            val w = rect.width().toFloat()
-            val h = rect.height().toFloat()
-            val x = rect.left.toFloat()
-            val y = rect.top.toFloat()
-
-            stroke.color = Color.WHITE
-            stroke.strokeWidth = w * 0.115f
-            canvas.drawLine(
-                x + w * 0.15f, y + h * 0.54f,
-                x + w * 0.42f, y + h * 0.78f,
-                stroke
-            )
-            canvas.drawLine(
-                x + w * 0.42f, y + h * 0.78f,
-                x + w * 0.87f, y + h * 0.26f,
-                stroke
-            )
-
-        // The shared Auto-DJ badge renderer draws the lilac sparkle as
-        // a separate overlay in the top-right corner of the native FAB.
-        }
-
-        override fun setAlpha(alpha: Int) {
-            stroke.alpha = alpha
-            invalidateSelf()
-        }
-
-        override fun setColorFilter(colorFilter: ColorFilter?) {
-            stroke.colorFilter = colorFilter
-            invalidateSelf()
-        }
-
-        @Suppress("DEPRECATION")
-        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-    }
 }
