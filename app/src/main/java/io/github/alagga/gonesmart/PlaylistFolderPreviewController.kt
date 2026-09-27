@@ -169,7 +169,10 @@ internal class PlaylistFolderPreviewController(
         // No independent folder-list dialog or guessed native UI.
         var moveSources: List<String>? = null,
         var movePreviousFolder: String? = null,
-        var moveBottomBar: View? = null
+        var moveBottomBar: View? = null,
+        var moveConfirmButton: android.widget.Button? = null,
+        var moveLastAccent: Int? = null,
+        var moveBarLayoutLogged: Boolean = false
     )
 
     /**
@@ -470,6 +473,8 @@ internal class PlaylistFolderPreviewController(
     private val nativeContextPlaylist = ThreadLocal<String?>()
     private var activeNativePlaylistMode: WeakReference<Any>? = null
     private var nativePlaylistMover: NativeGmmpPlaylistMover? = null
+    private var lastMoveLabelDiagnostic: String? = null
+    private var lastSelectLabelDiagnostic: String? = null
 
     fun setNativePlaylistMover(loader: ClassLoader) {
         nativePlaylistMover = NativeGmmpPlaylistMover(loader)
@@ -1033,11 +1038,23 @@ internal class PlaylistFolderPreviewController(
             val id = resources.getIdentifier(name, "string", context.packageName)
             if (id != 0) {
                 val label = runCatching { context.getString(id) }.getOrNull()
-                if (!label.isNullOrBlank() && !label.contains("%")) return label
+                if (!label.isNullOrBlank() && !label.contains("%")) {
+                    val source = "GMMP string/$name"
+                    if (lastMoveLabelDiagnostic != source) {
+                        lastMoveLabelDiagnostic = source
+                        Log.i(TAG, "NATIVE MOVE LABEL | source=$source")
+                    }
+                    return label
+                }
             }
         }
-        // DEBUG-only fallback until the installed GMMP exposes a localized
-        // move label. No original GMMP "Ordner" move action exists to reuse.
+        // GMMP 4.2.0 does not expose a native Move menu action, and its
+        // string resources must be checked on the INSTALLED locale before
+        // treating this wording as native.
+        if (lastMoveLabelDiagnostic != "DEBUG fallback") {
+            lastMoveLabelDiagnostic = "DEBUG fallback"
+            Log.i(TAG, "NATIVE MOVE LABEL | source=DEBUG fallback")
+        }
         return if (resources.configuration.locales[0].language == "de") {
             "Verschieben"
         } else "Move"
@@ -1088,6 +1105,7 @@ internal class PlaylistFolderPreviewController(
             return
         }
         browser.movePreviousFolder = browser.currentFolderId
+        browser.moveBarLayoutLogged = false
         browser.moveSources = selected
         browser.currentFolderId = null
         activeBrowser = WeakReference(browser.list)
@@ -1108,6 +1126,7 @@ internal class PlaylistFolderPreviewController(
             findFolder(browser.index, it) != null
         }
         browser.movePreviousFolder = null
+        browser.moveLastAccent = null
         browser.moveBottomBar?.visibility = View.GONE
         browser.lastRenderedOrder = null
         safeRender(browser)
@@ -1116,6 +1135,8 @@ internal class PlaylistFolderPreviewController(
     private fun confirmMoveBrowser(browser: Browser) {
         val selected = browser.moveSources ?: return
         val list = browser.list
+        Log.i(TAG, "PLAYLIST MOVE UI | select clicked | count=" +
+            selected.size)
         val root = runCatching {
             java.io.File(browser.rootPath).canonicalFile
         }.getOrNull() ?: return
@@ -1182,51 +1203,185 @@ internal class PlaylistFolderPreviewController(
             val id = resources.getIdentifier(name, "string", context.packageName)
             if (id != 0) {
                 val label = runCatching { context.getString(id) }.getOrNull()
-                if (!label.isNullOrBlank() && !label.contains("%")) return label
+                if (!label.isNullOrBlank() && !label.contains("%")) {
+                    val source = "GMMP string/$name"
+                    if (lastSelectLabelDiagnostic != source) {
+                        lastSelectLabelDiagnostic = source
+                        Log.i(TAG, "NATIVE SELECT LABEL | source=$source")
+                    }
+                    return label
+                }
             }
+        }
+        if (lastSelectLabelDiagnostic != "DEBUG fallback") {
+            lastSelectLabelDiagnostic = "DEBUG fallback"
+            Log.i(TAG, "NATIVE SELECT LABEL | source=DEBUG fallback")
         }
         return if (resources.configuration.locales[0].language == "de") {
             "Auswählen"
         } else "Select"
     }
 
+    /**
+     * Read the SAME original runtime Aesthetic accent source used by the
+     * established native GMMP multi-picker selection (Aesthetic.e(attr)).
+     * android.R.attr.colorAccent alone was WHITE on the user's current
+     * custom skin, whereas native Aesthetic emitted a burgundy accent.
+     */
+    private fun liveMoveAccent(browser: Browser): Int {
+        val list = browser.list
+        val attr = list.resources.getIdentifier(
+            "colorAccent", "attr", list.context.packageName
+        )
+        val live = if (attr != 0) runCatching {
+            val loader = list.javaClass.classLoader
+                ?: throw ClassNotFoundException("native GMMP classloader")
+            val theme = runCatching {
+                loader.loadClass("com.afollestad.aesthetic.a\$a")
+                    .getDeclaredMethod("c")
+                    .apply { isAccessible = true }
+                    .invoke(null)
+            }.getOrElse {
+                loader.loadClass("com.afollestad.aesthetic.Aesthetic")
+                    .getDeclaredMethod("get")
+                    .apply { isAccessible = true }
+                    .invoke(null)
+            } ?: error("native Aesthetic not initialized")
+            val getter = theme.javaClass.declaredMethods.first {
+                it.name == "e" && it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    it.returnType == Int::class.javaPrimitiveType
+            }.apply { isAccessible = true }
+            (getter.invoke(theme, attr) as Number).toInt()
+        }.getOrNull() else null
+        if (live != null && Color.alpha(live) >= 200) return live
+        // Defensive fallbacks use actual theme state, never GoneSmart's
+        // lilac brand or a fixed UI color.
+        return multiSelect.folderSelectionAccent(list)
+            ?: styles[list]?.accentColor?.takeIf { Color.alpha(it) >= 200 }
+            ?: resolveAccent(list)
+    }
+
+    private fun syncMoveButtonPalette(browser: Browser) {
+        if (browser.moveSources == null) return
+        val button = browser.moveConfirmButton ?: return
+        val color = liveMoveAccent(browser)
+        if (browser.moveLastAccent == color) return
+        browser.moveLastAccent = color
+        button.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(color)
+        button.setTextColor(
+            MoveConfirmationUiPolicy.textColorForBackground(color)
+        )
+        Log.i(TAG, "PLAYLIST MOVE UI | original GMMP Aesthetic accent=#" +
+            Integer.toHexString(color))
+    }
+
+    private fun reserveMoveBarSpace(browser: Browser, active: Boolean) {
+        val column = browser.overlay.getChildAt(0) as? LinearLayout ?: return
+        val scroller = column.getChildAt(1) as? ScrollView ?: return
+        val inset = MoveConfirmationUiPolicy.contentBottomInset(
+            active,
+            browser.moveBottomBar?.height ?: 0,
+            dp(browser.list, 72)
+        )
+        if (scroller.paddingBottom != inset) {
+            scroller.setPadding(
+                scroller.paddingLeft, scroller.paddingTop,
+                scroller.paddingRight, inset
+            )
+        }
+    }
+
+    /**
+     * FIX: the old buttonBarButtonStyle buttons lived as a final child
+     * inside the full-height list column and could become invisible on the
+     * original black Aesthetic skin. Anchor a single native-style action
+     * bar DIRECTLY over the existing playlist overlay, above the list,
+     * and reserve its measured height as scrolling space.
+     */
     private fun installMoveBrowserBar(browser: Browser) {
         if (browser.moveBottomBar != null) return
-        val content = browser.overlay.getChildAt(0) as? LinearLayout ?: return
-        val context = browser.list.context
+        val list = browser.list
+        val context = list.context
         val bar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            val native = styles[browser.list]
-            background = if (native != null) {
-                nativeContentBackground(browser.list, browser.parent, native)
-            } else browser.overlay.background?.constantState
+            background = styles[list]?.let {
+                nativeContentBackground(list, browser.parent, it)
+            } ?: browser.overlay.background?.constantState
                 ?.newDrawable(context.resources)
-            setPadding(dp(browser.list, 12), dp(browser.list, 6),
-                dp(browser.list, 12), dp(browser.list, 6))
+            setPadding(
+                dp(list, 12), dp(list, 8),
+                dp(list, 12), dp(list, 8)
+            )
+            minimumHeight = dp(list, 64)
+            isClickable = true
+            elevation = dp(list, 12).toFloat()
             visibility = View.GONE
         }
-        fun button(text: String): android.widget.Button =
-            android.widget.Button(
-                context, null, android.R.attr.buttonBarButtonStyle
-            ).apply { this.text = text }
-        bar.addView(
-            button(context.getString(android.R.string.cancel)).apply {
-                setOnClickListener { closeMoveBrowser(browser) }
+        val cancel = android.widget.Button(
+            context, null, android.R.attr.buttonBarButtonStyle
+        ).apply {
+            text = context.getString(android.R.string.cancel)
+            setTextColor(styles[list]?.textColor ?: resolveTextColor(list))
+            setOnClickListener {
+                Log.i(TAG, "PLAYLIST MOVE UI | cancel clicked")
+                closeMoveBrowser(browser)
             }
+        }
+        val confirm = android.widget.Button(
+            context, null, android.R.attr.buttonBarButtonStyle
+        ).apply {
+            text = nativeSelectFolderLabel(context)
+            minimumHeight = dp(list, 48)
+            minWidth = dp(list, 112)
+            setOnClickListener { confirmMoveBrowser(browser) }
+        }
+        bar.addView(
+            cancel,
+            LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            )
         )
         bar.addView(
-            button(nativeSelectFolderLabel(context)).apply {
-                setOnClickListener { confirmMoveBrowser(browser) }
-            }
+            confirm,
+            LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            )
         )
-        content.addView(
-            bar, LinearLayout.LayoutParams(
+        // This FrameLayout's already verified GMMP list viewport is the
+        // destination browser. No separate dialog, guessed file manager
+        // or Activity-root overlay is introduced.
+        browser.overlay.addView(
+            bar, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
             )
         )
         browser.moveBottomBar = bar
+        browser.moveConfirmButton = confirm
+        bar.addOnLayoutChangeListener {
+            _, _, _, _, _, _, _, _, _ ->
+            if (browser.moveSources != null) {
+                reserveMoveBarSpace(browser, active = true)
+                if (!browser.moveBarLayoutLogged && bar.height > 0) {
+                    browser.moveBarLayoutLogged = true
+                    val visible = Rect()
+                    val shown = bar.getGlobalVisibleRect(visible)
+                    Log.i(
+                        TAG,
+                        "PLAYLIST MOVE UI | bottom confirmation layout" +
+                            " | visible=" + shown +
+                            " | barHeight=" + bar.height +
+                            " | viewportHeight=" + browser.overlay.height +
+                            " | visibleHeight=" + visible.height() +
+                            " | confirmClickable=" + confirm.isEnabled
+                    )
+                }
+            }
+        }
     }
 
     private fun readActualNativePaths(browser: Browser): List<String>? {
@@ -1973,6 +2128,9 @@ internal class PlaylistFolderPreviewController(
         }
         updatePickerFab(browser)
         updatePlaylistMenu()
+        // Aesthetic dynamically derives its colors from the current cover.
+        // Keep the destination confirmation on the SAME native palette.
+        syncMoveButtonPalette(browser)
         val breadcrumbSignature =
             observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
         if (browser.currentFolderId != null &&
@@ -2435,8 +2593,14 @@ internal class PlaylistFolderPreviewController(
             )
         }
         installMoveBrowserBar(browser)
+        val choosingDestination = browser.moveSources != null
         browser.moveBottomBar?.visibility =
-            if (browser.moveSources == null) View.GONE else View.VISIBLE
+            if (choosingDestination) View.VISIBLE else View.GONE
+        reserveMoveBarSpace(browser, choosingDestination)
+        if (choosingDestination) {
+            browser.moveBottomBar?.bringToFront()
+            syncMoveButtonPalette(browser)
+        }
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
         updatePickerFab(browser)

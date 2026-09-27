@@ -1,0 +1,38 @@
+package io.github.alagga.gonesmart
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class MoveConfirmationUiPolicyTest {
+    @Test
+    fun reserveSpaceForBarOnlyWhileSelectingDestination() {
+        assertEquals(72, MoveConfirmationUiPolicy.contentBottomInset(true, 72, 80))
+        assertEquals(80, MoveConfirmationUiPolicy.contentBottomInset(true, 0, 80))
+        assertEquals(0, MoveConfirmationUiPolicy.contentBottomInset(false, 72, 80))
+        assertEquals(0, MoveConfirmationUiPolicy.contentBottomInset(true, 0, -10))
+    }
+
+    @Test
+    fun chooseContrastAgainstActualDarkGmmpAccent() {
+        assertEquals(
+            0xffffffff.toInt(),
+            MoveConfirmationUiPolicy.textColorForBackground(0xff8e0e00.toInt())
+        )
+        assertEquals(
+            0xffffffff.toInt(),
+            MoveConfirmationUiPolicy.textColorForBackground(0xff000000.toInt())
+        )
+    }
+
+    @Test
+    fun keepLightNativeAccentReadableWithoutHardcodedTint() {
+        assertEquals(
+            0xff000000.toInt(),
+            MoveConfirmationUiPolicy.textColorForBackground(0xffbfbfcc.toInt())
+        )
+        assertEquals(
+            0xff000000.toInt(),
+            MoveConfirmationUiPolicy.textColorForBackground(0xffffffff.toInt())
+        )
+    }
+}
