@@ -782,8 +782,9 @@ class MainActivity : AppCompatActivity() {
             title = "How do GMMP language and theme settings apply?",
             body = "The GoneSmart companion app stays English. Added controls " +
                 "inside GMMP reuse its original theme and translated native " +
-                "action labels. Move is the one GoneSmart-only GMMP action word " +
-                "with its own host-language translations. The existing " +
+                "action labels. The feature-owned Move command and virtual " +
+                "Other Locations name use central host-language translations " +
+                "when the player lacks a native equivalent. The existing " +
                 "Playlists drawer entry shows a lilac GoneSmart sparkle only " +
                 "while Playlist folders is enabled; the Move confirm has a " +
                 "plain white checkmark."
