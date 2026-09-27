@@ -302,7 +302,8 @@ skins, and independent native-speaker review of all Move translations remain
 separate compatibility/release-hardening work; this development-branch
 acceptance is **not** a newly published release. See
 [Playlist folders](docs/PLAYLIST_FOLDERS.md) and
-[GMMP localization](docs/GONESMART_GMMP_I18N.md).
+[GMMP localization](docs/GONESMART_GMMP_I18N.md) and the
+[complete native-function / translation audit](docs/NATIVE_GMMP_AUDIT.md).
 
 ## Companion UI and player indicator
 
