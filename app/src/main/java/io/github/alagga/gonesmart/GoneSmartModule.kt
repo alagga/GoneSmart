@@ -516,6 +516,11 @@ class GoneSmartModule : XposedModule() {
                         options.groupRootPlaylists
                     )
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
+                    nativeMoveDiscovery =
+                        NativeGmmpMoveDiscovery(param.classLoader)
+                    playlistFolderPreview.onNativeMoveDiscovery = { context ->
+                        nativeMoveDiscovery?.reportOnce(context)
+                    }
                     // py0.b() shows its native MaterialDialog synchronously.
                     // Observe the ORIGINAL show() after it returns; alter
                     // only the already-rendered path label for this thread's

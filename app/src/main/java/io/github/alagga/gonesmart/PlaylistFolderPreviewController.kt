@@ -457,6 +457,7 @@ internal class PlaylistFolderPreviewController(
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
+    var onNativeMoveDiscovery: ((android.content.Context) -> Unit)? = null
     private val newFolderMenuId = View.generateViewId()
 
     init {
@@ -934,6 +935,8 @@ internal class PlaylistFolderPreviewController(
                 originalInflater?.javaClass?.getMethod("getContext")
                     ?.invoke(originalInflater) as? android.content.Context
             }.getOrNull() ?: return
+        // Passive, bounded discovery only. No native move method is called.
+        onNativeMoveDiscovery?.invoke(context)
         val name = runCatching {
             context.resources.getResourceEntryName(resourceId)
         }.getOrNull() ?: return
@@ -984,7 +987,7 @@ internal class PlaylistFolderPreviewController(
                 }.getOrDefault(false)
             }
         // Reuse the SAME GMMP-localized title as its adjacent menuAdd
-        // item. A native GMMP folder drawable is appended inline: Android
+        // item. A native GMMP folder drawable is prepended inline: Android
         // overflow menus do not consistently show MenuItem.icon.
         val originalAdd = nativeAdd ?: return
         val originalTitle = originalAdd.title ?: return
@@ -1024,13 +1027,14 @@ internal class PlaylistFolderPreviewController(
             }
             folderIcon.setTint(nativeTextColor)
             folderIcon.setBounds(0, 0, width, height)
-            val start = label.length
-            label.append("  \uFFFC")
+            // Keep all original GMMP localized/title spans: inserting
+            // before the original text shifts them automatically.
+            label.insert(0, "\uFFFC  ")
             label.setSpan(
                 android.text.style.ImageSpan(
                     folderIcon, android.text.style.ImageSpan.ALIGN_BOTTOM
                 ),
-                start + 2, label.length,
+                0, 1,
                 android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
