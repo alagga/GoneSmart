@@ -38,6 +38,8 @@ internal class NativeGmmpPlaylistMover(
         var phase: Phase = Phase.WAIT_DELETE,
         var polling: Boolean = false,
         var deleteDialogDismissed: Boolean = false,
+        var dialogSeen: Boolean = false,
+        var dismissedAtMs: Long? = null,
         var polls: Int = 0
     )
 
@@ -167,11 +169,17 @@ internal class NativeGmmpPlaylistMover(
             ).isInstance(dialog)
         }.getOrDefault(false)
         if (!expected) return
+        task.dialogSeen = true
         dialog.window?.decorView?.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(v: View) = Unit
                 override fun onViewDetachedFromWindow(v: View) {
                     task.deleteDialogDismissed = true
+                    task.dismissedAtMs =
+                        android.os.SystemClock.elapsedRealtime()
+                    // A user can keep the original dialog open for minutes.
+                    // Native worker timing begins on actual dismissal only.
+                    task.polls = 0
                     Log.i(TAG, "PLAYLIST MOVE | native confirmation dismissed")
                 }
             }
@@ -340,11 +348,13 @@ internal class NativeGmmpPlaylistMover(
             }
             if (publishedAlready) {
                 task.phase = Phase.WAIT_INDEX
+                task.polls = 0
                 scan(task.context, task.batch.entries.map { it.target })
                 schedule(task)
                 return
             }
             task.phase = Phase.PUBLISH
+            task.polls = 0
             worker.execute {
                 val result = PlaylistMoveStager.commit(task.batch)
                 main.post {
@@ -356,6 +366,7 @@ internal class NativeGmmpPlaylistMover(
                         return@post
                     }
                     task.phase = Phase.WAIT_INDEX
+                    task.polls = 0
                     scan(task.context, task.batch.entries.map { it.target })
                     Log.i(TAG, "PLAYLIST MOVE | original t6.f rescan requested")
                     schedule(task)
@@ -370,6 +381,7 @@ internal class NativeGmmpPlaylistMover(
             scan(task.context, task.batch.entries.map { it.target })
         }
         if (task.phase == Phase.WAIT_DELETE &&
+            task.deleteDialogDismissed &&
             task.polls >= 240 &&
             task.batch.entries.any { !it.source.exists() }
         ) {
@@ -384,10 +396,13 @@ internal class NativeGmmpPlaylistMover(
                 " | remainingOld=" +
                 task.batch.entries.count { it.source.exists() })
         }
-        if (task.polls >= 45 &&
-            task.deleteDialogDismissed &&
-            task.batch.entries.all { it.source.exists() } &&
-            task.batch.entries.all { it.source.path in native }
+        if (NativePlaylistMoveTimeoutPolicy.isAbandoned(
+                task.dismissedAtMs,
+                android.os.SystemClock.elapsedRealtime(),
+                originalsStillPresent = task.batch.entries.all {
+                    it.source.exists() && it.source.path in native
+                }
+            )
         ) {
             PlaylistMoveStager.markCancelled(task.batch)
             pending = null
@@ -397,7 +412,13 @@ internal class NativeGmmpPlaylistMover(
                 "or native deletion not completed; private stage abandoned")
             return
         }
-        if (task.polls >= 360) {
+        if (NativePlaylistMoveTimeoutPolicy.hasTimedOut(
+                task.polls,
+                waitingForUserConfirmation =
+                    task.phase == Phase.WAIT_DELETE &&
+                    task.dialogSeen && !task.deleteDialogDismissed
+            )
+        ) {
             pending = null
             task.onResult(false, "Native scan pending; safe backup retained")
             Log.w(TAG, "PLAYLIST MOVE | indexing timeout; " +
