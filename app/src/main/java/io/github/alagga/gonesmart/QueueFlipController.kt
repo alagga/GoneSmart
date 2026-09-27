@@ -155,12 +155,11 @@ internal class QueueFlipController {
         // bold counter-directional arrows replace the very thin ⇵ glyph.
         // The usual full-size GoneSmart two-star lilac badge follows.
         val baseLabel = when (kind) {
-            Kind.QUEUE -> nativeString(context, "queue") ?: "Queue"
+            Kind.QUEUE -> nativeString(context, "queue")
             Kind.PLAYLIST, Kind.SMART ->
                 nativePlay?.title?.toString()
                     ?: nativeString(context, "play")
-                    ?: "Play"
-        }
+        } ?: return // Do not inject English into a GMMP locale lacking the resource.
         val title = brandedMenuTitle(context, baseLabel)
 
         val item = menu.add(
@@ -258,7 +257,9 @@ internal class QueueFlipController {
                 GoneSmartRuntimeContract.CATEGORY_FLIP,
                 "Reverse playback unavailable: GMMP integration was not initialized."
             )
-            toast(context, "Reverse playback is unavailable in this GMMP version.")
+            toast(context, NativeGmmpUiText.error(
+                    context, nativeString(context, "playlists")
+                ))
             return
         }
         val play = menu.findItem(nativePlayId)
@@ -275,7 +276,9 @@ internal class QueueFlipController {
                 GoneSmartRuntimeContract.CATEGORY_FLIP,
                 "Could not start ${kind.displayName()} in reverse."
             )
-            toast(context, "Unable to start this playlist in reverse.")
+            toast(context, NativeGmmpUiText.error(
+                    context, nativeString(context, "playlists")
+                ))
             return
         }
         synchronized(this) {
@@ -294,7 +297,9 @@ internal class QueueFlipController {
                     GoneSmartRuntimeContract.CATEGORY_FLIP,
                     "Could not start ${kind.displayName()} in reverse."
                 )
-                toast(context, "Could not start this playlist.")
+                toast(context, NativeGmmpUiText.error(
+                    context, nativeString(context, "playlists")
+                ))
             }
         } catch (failure: Throwable) {
             synchronized(this) { pendingPlayback = null }
@@ -454,7 +459,9 @@ internal class QueueFlipController {
     private fun flipCurrentQueue(context: Context) {
         synchronized(this) {
             if (queueFlipInProgress) {
-                toast(context, "Queue reversal is already running.")
+                toast(context, NativeGmmpUiText.error(
+                    context, nativeString(context, "queue")
+                ))
                 return
             }
             queueFlipInProgress = true
@@ -464,7 +471,12 @@ internal class QueueFlipController {
                 val count = performNativeQueueFlip()
                 toast(
                     context,
-                    if (count > 1) "Queue reversed." else "Queue is too short to reverse."
+                    if (count > 1) {
+                        (nativeString(context, "queue") ?: "").trim()
+                            .takeIf(String::isNotBlank)?.plus(" ✓") ?: "✓"
+                    } else NativeGmmpUiText.error(
+                        context, nativeString(context, "queue")
+                    )
                 )
             } catch (failure: Throwable) {
                 Log.e(TAG, "FLIP APPLY | failed; see rollback status", failure)
@@ -472,7 +484,9 @@ internal class QueueFlipController {
                     GoneSmartRuntimeContract.CATEGORY_FLIP,
                     "Could not reverse the queue. See Logcat for details."
                 )
-                toast(context, "Could not reverse queue; see GoneSmart log.")
+                toast(context, NativeGmmpUiText.error(
+                    context, nativeString(context, "queue")
+                ))
             } finally {
                 queueFlipInProgress = false
             }
