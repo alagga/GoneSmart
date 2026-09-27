@@ -91,3 +91,20 @@ GoneSmart's companion app remains English: its UI, Logs and Help always call the
 ## How are GoneSmart updates handled?
 
 The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.
+
+
+## How do Playlist folders work?
+
+Enable **UI → Playlist folders**. GMMP's original Playlists navigation entry gains a lilac GoneSmart sparkle. Both the main Playlists tab and Add to Playlist picker show real nested physical folders before loose playlists. **Group external playlists** and **Group root playlists** independently determine which entries appear in the virtual **Other Locations** folder; a real physical directory of the same name is independent. The main tab remembers its folder, while every newly opened Add picker starts in root. Android Back and the picker's top-left Back button navigate up one folder at a time before closing the picker from root.
+
+## Where are new playlists and folders created?
+
+GoneSmart reuses GMMP's original creation and native playlist-writing functionality. The current physical folder is the new playlist's destination. With **Group root playlists** on, root playlists are created from virtual Other Locations; with that option off, they are created directly from the root view. Folder creation/deletion operates on supported physical folders, not on the virtual grouping node. The main tab hides only its native **Add** menu entry when the location forbids creating a playlist, while leaving the other overflow actions intact. The Add picker offers native-styled new-playlist and new-folder choices while keeping multi-selection confirmation available.
+
+## Can I move several playlists between folders?
+
+Yes. In the main Playlists tab, long-press the first playlist and select additional playlists, choose **Move**, navigate to an eligible destination and tap the white checkmark. The destination FAB follows GMMP's native theme and stays above the mini-player. GoneSmart stages originals privately, uses GMMP's original playlist deletion and library-scan operations, verifies the native playlist index and can recover from a partially completed operation. It does not perform a blind file rename or direct database manipulation. Successful moves update the native list without an extra Toast; genuine errors remain visible. Use disposable playlists when testing a new GMMP version.
+
+## Why does Move have a separate translation table?
+
+GMMP 4.2.0 has localized resources for its built-in playlist/folder actions, but no suitable native **Move** resource for GoneSmart's new playlist relocation action. GoneSmart resolves other injected player text from the installed GMMP's resources and uses one central host-locale translation for **Move**, covering the known GMMP 4.2.0 language codes. Unrecognized future languages fall back to English. This is distinct from the **English-only** GoneSmart companion UI; translated Move labels still need independent native-speaker review before broader release claims.
