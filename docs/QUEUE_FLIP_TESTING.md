@@ -75,3 +75,8 @@ result rather than `mode=DRY_RUN`.
 
 Do not publish a new signed release or merge the feature branch solely
 because CI is green; review and use the normal project release process.
+
+
+## 28 September 2026 GMMP language / API source audit
+
+Flip's contextual menu now requires the **actual installed** GMMP `queue` resource or the current native `Play` item / `play` resource. There is no hardcoded English Queue/Play fallback in a foreign-language GMMP menu. The reverse arrow and lilac two-star branding are language-neutral. Queue success uses the original translated Queue noun plus a checkmark; generic failures use original `error` and the relevant translated noun or a neutral warning symbol. More detailed English explanations stay in companion Logs/Logcat. Existing native `tx3.H1`, `xx3.O0`, `ex3.b2` queue writer/pointer and original selected-playlist Play callback are preserved; the reversal ordering itself remains GoneSmart's necessary extension. See [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). Alternate-language device verification remains separate.
