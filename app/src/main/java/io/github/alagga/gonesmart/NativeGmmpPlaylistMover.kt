@@ -158,26 +158,106 @@ internal class NativeGmmpPlaylistMover(
     }
 
     /**
-     * The destination browser's SELECT action is the user's confirmation.
-     * After durable original-file backups and full original-index validation,
-     * the original py0.b worker should run without asking the user to
-     * approve an unrelated-looking second "Delete playlist" operation.
+     * The installed GMMP 4.2.0 APK contains MaterialDialogs v3, NOT the
+     * former v0.9 DialogAction/getActionButton API. Its original v3
+     * WhichButton.POSITIVE and MaterialDialog.onActionButtonClicked$core
+     * are verified against the actual private GMMP base.apk DEX.
      *
-     * Intercept ONLY the actual MaterialDialog displayed synchronously
-     * inside THIS thread's verified move invocation. Click its OWN native
-     * positive action after it has attached: the original dialog continues
-     * to own the original DeletePlaylistFileWorker and DB cleanup. On any
-     * signature/button mismatch DO NOT synthesize deletion or silently
-     * bypass GMMP; leave its native confirmation visible instead.
+     * Our own destination Select action is the user's confirmation, so
+     * consume only the exact native dialog whose show() runs synchronously
+     * inside the CURRENT native py0.b move request. Invoke the host
+     * MaterialDialog's ORIGINAL positive-action dispatcher before it
+     * attaches a window. This executes its own original GMMP callback
+     * and DeletePlaylistFileWorker, without briefly showing a DELETE
+     * prompt. Ordinary GMMP and GoneSmart folder-delete dialogs proceed
+     * through their unmodified original show() path.
+     *
+     * All reflection and positive-listener preflight completes BEFORE
+     * invoking any native callback; any mismatch falls back to the
+     * visible ORIGINAL GMMP confirmation rather than guessing an action.
+     */
+    fun onNativeDialogBeforeShow(dialog: Dialog): Boolean {
+        val task = awaitingNativeDialog ?: return false
+        if (pending !== task || task.dialogSeen) return false
+        val nativeAction = runCatching {
+            val dialogClass = hostLoader.loadClass(
+                "com.afollestad.materialdialogs.MaterialDialog"
+            )
+            require(dialogClass.isInstance(dialog)) {
+                "Not the original GMMP MaterialDialog"
+            }
+            val whichClass = hostLoader.loadClass(
+                "com.afollestad.materialdialogs.WhichButton"
+            )
+            val positive = whichClass.enumConstants?.firstOrNull {
+                (it as? Enum<*>)?.name == "POSITIVE"
+            } ?: error("Original v3 WhichButton.POSITIVE absent")
+            // This is a real, registered GMMP delete action, not a bare
+            // dialog whose button label happens to say Delete.
+            val listeners = dialogClass.getDeclaredField(
+                "positiveListeners"
+            ).apply { isAccessible = true }.get(dialog) as? List<*>
+            require(!listeners.isNullOrEmpty()) {
+                "Native positive delete callback was not registered"
+            }
+            val dispatcher = dialogClass.getDeclaredMethod(
+                "onActionButtonClicked\$core", whichClass
+            ).apply { isAccessible = true }
+            dispatcher to positive
+        }.onFailure { error ->
+            Log.w(
+                TAG,
+                "PLAYLIST MOVE | original v3 positive action unverified; " +
+                    "original GMMP confirmation remains visible",
+                error
+            )
+        }.getOrNull() ?: return false
+
+        // Disarm the one-shot scope BEFORE executing GMMP's own native
+        // callback, so a nested/unrelated native dialog is never consumed.
+        awaitingNativeDialog = null
+        task.dialogSeen = true
+        task.deleteDialogDismissed = true
+        task.dismissedAtMs = android.os.SystemClock.elapsedRealtime()
+        task.polls = 0
+        runCatching {
+            nativeAction.first.invoke(dialog, nativeAction.second)
+        }.onSuccess {
+            task.autoConfirmed = true
+            Log.i(
+                TAG,
+                "PLAYLIST MOVE | original GMMP v3 POSITIVE callback " +
+                    "invoked without showing its deletion dialog"
+            )
+        }.onFailure { error ->
+            // The native callback may have partially enqueued its worker.
+            // Never show it again: that risks duplicate deletion. Let
+            // the durable staged move's original index/restore watchdog
+            // finish or roll back from the verified source-file state.
+            Log.e(
+                TAG,
+                "PLAYLIST MOVE | v3 callback threw; second confirmation " +
+                    "suppressed, staged originals retained for verification",
+                error
+            )
+        }
+        return true
+    }
+
+    /**
+     * Safe fallback if the original v3 pre-show callback could not be
+     * verified. This now uses the APK's ACTUAL static
+     * DialogActionExtKt.getActionButton(MaterialDialog, WhichButton)
+     * rather than the nonexistent old DialogAction API.
      */
     fun onNativeDialogShown(dialog: Dialog) {
         val task = awaitingNativeDialog ?: return
-        val expected = runCatching {
+        val originalClass = runCatching {
             hostLoader.loadClass(
                 "com.afollestad.materialdialogs.MaterialDialog"
-            ).isInstance(dialog)
-        }.getOrDefault(false)
-        if (!expected) return
+            )
+        }.getOrNull() ?: return
+        if (!originalClass.isInstance(dialog)) return
         task.dialogSeen = true
         dialog.window?.decorView?.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
@@ -186,39 +266,36 @@ internal class NativeGmmpPlaylistMover(
                     task.deleteDialogDismissed = true
                     task.dismissedAtMs =
                         android.os.SystemClock.elapsedRealtime()
-                    // A user can keep the native fallback dialog open for
-                    // minutes; no worker timeout begins before dismissal.
                     task.polls = 0
                     Log.i(TAG, "PLAYLIST MOVE | native confirmation dismissed")
                 }
             }
         )
-        // The original dialog is shown on GMMP's main thread. Calling the
-        // original button's click listener in the same event loop lets its
-        // OWN verified worker perform deletion/index removal, without an
-        // extra GoneSmart dialog or a second manual user confirmation.
         val clicked = runCatching {
-            val actionClass = hostLoader.loadClass(
-                "com.afollestad.materialdialogs.DialogAction"
+            val whichClass = hostLoader.loadClass(
+                "com.afollestad.materialdialogs.WhichButton"
             )
-            val positive = actionClass.enumConstants?.firstOrNull {
+            val positive = whichClass.enumConstants?.firstOrNull {
                 (it as? Enum<*>)?.name == "POSITIVE"
-            } ?: error("Original POSITIVE action missing")
-            val method = dialog.javaClass.methods.firstOrNull {
-                it.name == "getActionButton" &&
-                    it.parameterTypes.contentEquals(arrayOf(actionClass))
-            } ?: error("Original getActionButton unavailable")
-            val button = method.invoke(dialog, positive) as? View
-                ?: error("Original positive button unavailable")
-            require(button.isShown && button.isEnabled &&
-                button.hasOnClickListeners()
-            ) { "Original positive action is not clickable" }
+            } ?: error("Native WhichButton.POSITIVE missing")
+            val actions = hostLoader.loadClass(
+                "com.afollestad.materialdialogs.actions.DialogActionExtKt"
+            )
+            val getter = actions.getDeclaredMethod(
+                "getActionButton", originalClass, whichClass
+            ).apply { isAccessible = true }
+            val button = getter.invoke(null, dialog, positive) as? View
+                ?: error("Original v3 positive button unavailable")
+            require(
+                button.isShown && button.isEnabled &&
+                    button.hasOnClickListeners()
+            ) { "Original v3 positive button not clickable" }
             button.performClick()
         }.onFailure {
             Log.w(
                 TAG,
-                "PLAYLIST MOVE | original positive action unavailable;" +
-                    " GMMP confirmation remains visible",
+                "PLAYLIST MOVE | original v3 action button unavailable; " +
+                    "GMMP confirmation remains visible",
                 it
             )
         }.getOrDefault(false)
@@ -226,8 +303,8 @@ internal class NativeGmmpPlaylistMover(
         if (clicked) {
             Log.i(
                 TAG,
-                "PLAYLIST MOVE | original GMMP positive action invoked" +
-                    " after durable staging"
+                "PLAYLIST MOVE | original GMMP v3 positive action invoked " +
+                    "after native dialog show (fallback)"
             )
         }
     }

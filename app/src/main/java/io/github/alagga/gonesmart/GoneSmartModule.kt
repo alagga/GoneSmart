@@ -548,19 +548,41 @@ class GoneSmartModule : XposedModule() {
                         val nativeDialog = param.classLoader.loadClass(
                             "com.afollestad.materialdialogs.MaterialDialog"
                         )
-                        val nativeShow = nativeDialog.getMethod("show")
+                        // The exact private GMMP 4.2.0 DEX has a declared
+                        // MaterialDialog.show():void (v3, not v0.9). Hook
+                        // precisely that method, not an inherited/overloaded
+                        // reflection candidate. Ordinary folder-delete and
+                        // host dialogs still proceed through GMMP untouched.
+                        val nativeShow = nativeDialog.getDeclaredMethod("show")
                             .apply { isAccessible = true }
                         hook(nativeShow).intercept { chain ->
-                            val result = chain.proceed()
-                            if (nativeDialog.isInstance(chain.getThisObject())) {
-                                (chain.getThisObject() as? android.app.Dialog)
-                                    ?.let(playlistFolderPreview::onOriginalFolderDeleteDialogShown)
+                            val originalDialog = chain.getThisObject()
+                                ?.takeIf(nativeDialog::isInstance)
+                                as? android.app.Dialog
+                            if (originalDialog != null &&
+                                playlistFolderPreview
+                                    .onOriginalPlaylistMoveDialogBeforeShow(
+                                        originalDialog
+                                    )
+                            ) {
+                                // The original v3 positive-action dispatcher
+                                // was already invoked on THIS exact dialog,
+                                // on THIS verified staged move's thread.
+                                // No second visible GMMP delete prompt.
+                                null
+                            } else {
+                                val result = chain.proceed()
+                                originalDialog?.let {
+                                    playlistFolderPreview
+                                        .onOriginalFolderDeleteDialogShown(it)
+                                }
+                                result
                             }
-                            result
                         }
                         Log.i(
                             "GoneSmartPlaylist",
-                            "FOLDER DELETE DIALOG | native show observer ready"
+                            "FOLDER DELETE DIALOG | v3 native show observer ready; " +
+                                "scoped pre-show playlist move dispatch ready"
                         )
                     }.onFailure {
                         Log.w(

@@ -5,6 +5,34 @@ import org.junit.Test
 
 class MoveConfirmationUiPolicyTest {
     @Test
+    fun nativeFolderActionUsesHostLocalizedNounNotMoveFallback() {
+        assertEquals(
+            "→ Ordner",
+            MoveConfirmationUiPolicy.nativeFolderDestinationLabel(
+                "Ordner", isRtl = false
+            )
+        )
+        assertEquals(
+            "→ Folder",
+            MoveConfirmationUiPolicy.nativeFolderDestinationLabel(
+                "Folder", isRtl = false
+            )
+        )
+        assertEquals(
+            "→ Dossier",
+            MoveConfirmationUiPolicy.nativeFolderDestinationLabel(
+                "Dossier", isRtl = false
+            )
+        )
+        assertEquals(
+            "← مجلد",
+            MoveConfirmationUiPolicy.nativeFolderDestinationLabel(
+                "مجلد", isRtl = true
+            )
+        )
+    }
+
+    @Test
     fun reserveSpaceForBarOnlyWhileSelectingDestination() {
         assertEquals(72, MoveConfirmationUiPolicy.contentBottomInset(true, 72, 80))
         assertEquals(80, MoveConfirmationUiPolicy.contentBottomInset(true, 0, 80))

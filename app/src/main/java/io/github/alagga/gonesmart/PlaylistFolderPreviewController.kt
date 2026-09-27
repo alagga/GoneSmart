@@ -1029,36 +1029,50 @@ internal class PlaylistFolderPreviewController(
     }
 
 
+    /**
+     * The exact original GMMP 4.2.0 APK has NO localizable Move action
+     * (nor a language-specific translation of "Verschieben"). "Copy"
+     * and "Rename" exist but would misdescribe a move. Use its REAL
+     * localized "folder" string with a directional action arrow instead:
+     * "→ Ordner", "→ Folder", etc. This is a destination action,
+     * not a claim that GMMP itself has a native Move command.
+     */
     private fun nativeMoveLabel(context: android.content.Context): String {
-        val resources = context.resources
-        val names = listOf(
-            "move", "move_to", "menuMove", "action_move",
-            "move_file", "files_move", "menuContextMove"
-        )
-        for (name in names) {
-            val id = resources.getIdentifier(name, "string", context.packageName)
-            if (id != 0) {
-                val label = runCatching { context.getString(id) }.getOrNull()
-                if (!label.isNullOrBlank() && !label.contains("%")) {
-                    val source = "GMMP string/$name"
-                    if (lastMoveLabelDiagnostic != source) {
-                        lastMoveLabelDiagnostic = source
-                        Log.i(TAG, "NATIVE MOVE LABEL | source=$source")
-                    }
-                    return label
-                }
+        val res = context.resources
+        for (key in listOf("folder", "folders")) {
+            val id = res.getIdentifier(key, "string", context.packageName)
+            if (id == 0) continue
+            val folder = runCatching { context.getString(id) }.getOrNull()
+            if (folder.isNullOrBlank() || folder.contains("%")) continue
+            val source = "GMMP string/$key + direction"
+            if (lastMoveLabelDiagnostic != source) {
+                lastMoveLabelDiagnostic = source
+                Log.i(TAG, "NATIVE MOVE LABEL | source=$source")
             }
+            return MoveConfirmationUiPolicy.nativeFolderDestinationLabel(
+                folder,
+                res.configuration.layoutDirection ==
+                    View.LAYOUT_DIRECTION_RTL
+            )
         }
-        // GMMP 4.2.0 does not expose a native Move menu action, and its
-        // string resources must be checked on the INSTALLED locale before
-        // treating this wording as native.
-        if (lastMoveLabelDiagnostic != "DEBUG fallback") {
-            lastMoveLabelDiagnostic = "DEBUG fallback"
-            Log.i(TAG, "NATIVE MOVE LABEL | source=DEBUG fallback")
+        // The tested GMMP 4.2.0 APK has both "folder" and "folders".
+        // On an unknown build, avoid pretending a DE/EN debug fallback
+        // works in every locale; a language-independent folder glyph is
+        // the bounded fail-closed visual fallback.
+        if (lastMoveLabelDiagnostic != "folder symbol fallback") {
+            lastMoveLabelDiagnostic = "folder symbol fallback"
+            Log.w(TAG, "NATIVE MOVE LABEL | native folder resource absent")
         }
-        return if (resources.configuration.locales[0].language == "de") {
-            "Verschieben"
-        } else "Move"
+        return "📁"
+    }
+
+    private fun nativeMoveSuccessLabel(context: android.content.Context): String? {
+        val id = context.resources.getIdentifier(
+            "playlist_saved", "string", context.packageName
+        )
+        return id.takeIf { it != 0 }?.let {
+            runCatching { context.getString(it) }.getOrNull()
+        }?.takeUnless { it.isBlank() || it.contains("%") }
     }
 
     private fun installPlaylistMoveMenu(
@@ -1177,7 +1191,10 @@ internal class PlaylistFolderPreviewController(
                             ?.let { current ->
                                 Toast.makeText(
                                     current.context,
-                                    if (success) title else title + ": " + message,
+                                    if (success && ready.plan.count == 1) {
+                                        nativeMoveSuccessLabel(current.context) ?: title
+                                    } else if (success) title
+                                    else title + ": " + message,
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -1270,8 +1287,25 @@ internal class PlaylistFolderPreviewController(
         val color = liveMoveAccent(browser)
         if (browser.moveLastAccent == color) return
         browser.moveLastAccent = color
-        button.backgroundTintList =
-            android.content.res.ColorStateList.valueOf(color)
+        // buttonBarButtonStyle on this GMMP skin has NO drawable to
+        // tint. backgroundTintList silently changed nothing (the actual
+        // user's device still showed the unaccented surface). Give the
+        // confirmation its own native-color filled shape and preserve
+        // GMMP's ripple/pressed feedback instead.
+        val fill = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(browser.list, 8).toFloat()
+            setColor(color)
+        }
+        val ripple = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(
+                withAlpha(color, 0x55)
+            ),
+            fill,
+            null
+        )
+        button.backgroundTintList = null
+        button.background = ripple
         button.setTextColor(
             MoveConfirmationUiPolicy.textColorForBackground(color)
         )
@@ -1585,6 +1619,10 @@ internal class PlaylistFolderPreviewController(
      * request is eligible for a path label. The original buttons, click
      * callbacks, file list and WorkManager transaction are unchanged.
      */
+    fun onOriginalPlaylistMoveDialogBeforeShow(
+        dialog: android.app.Dialog
+    ): Boolean = nativePlaylistMover?.onNativeDialogBeforeShow(dialog) == true
+
     fun onOriginalFolderDeleteDialogShown(dialog: android.app.Dialog) {
         nativeFolderDeletion?.onNativeDialogShown(dialog)
         nativePlaylistMover?.onNativeDialogShown(dialog)

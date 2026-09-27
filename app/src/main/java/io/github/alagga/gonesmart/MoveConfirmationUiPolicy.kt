@@ -6,6 +6,15 @@ package io.github.alagga.gonesmart
  * this class never invents or caches a theme color.
  */
 internal object MoveConfirmationUiPolicy {
+    /**
+     * Folder noun is read from GMMP's active language at RUNTIME.
+     * Only the arrow is GoneSmart-specific; there is no EN/DE table.
+     */
+    fun nativeFolderDestinationLabel(
+        nativeFolder: String,
+        isRtl: Boolean
+    ): String = (if (isRtl) "← " else "→ ") + nativeFolder.trim()
+
     fun contentBottomInset(
         active: Boolean,
         measuredBarHeightPx: Int,
