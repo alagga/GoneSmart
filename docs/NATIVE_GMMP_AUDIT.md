@@ -69,3 +69,8 @@ These screens belong to the English-only GoneSmart companion, **not GMMP**. They
 6. **No release implied:** The maintainer accepted the folder feature on the tested device; this branch-level audit and its CI do not authorize a signed public release, merging to main, or claiming new testing for untried languages/screens.
 
 See [Playlist folders](PLAYLIST_FOLDERS.md), [GMMP i18n](GONESMART_GMMP_I18N.md), [native playlist create RE](GMMP_420_PLAYLIST_CREATION_RE.md), [Flip validation](QUEUE_FLIP_TESTING.md), [Track Auto-DJ](TRACK_MIX_TESTING.md), and [persistent rules](../AGENTS.md).
+
+
+### 4. Debug vs release feature availability after acceptance
+
+The audit found another shipping gap: before this cleanup, the complete playlist folder UI and several native destination/adapter hooks still ran exclusively under `BuildConfig.DEBUG`, although accepted behavior was documented as feature-complete. The development branch now exposes the Playlist folders and grouping settings and installs the complete guarded folder/menu/adapter/create/move hook paths in **both** build variants, retaining passive native-save discovery and optional geometry probes as debug-only. This is a code/CI availability change, **not** evidence of new signed-release device testing. Do not restore the blanket debug-only gate when preparing v0.4.x.
