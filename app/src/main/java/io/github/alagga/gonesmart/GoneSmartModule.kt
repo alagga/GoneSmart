@@ -307,6 +307,7 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistFolderPreview =
         PlaylistFolderPreviewController(playlistController)
+    private var nativeMoveDiscovery: NativeGmmpMoveDiscovery? = null
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 

@@ -456,6 +456,7 @@ internal class PlaylistFolderPreviewController(
     private var lastNativePlaylistTitlePx: Float? = null
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
+    private val observedNativeFileMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
     var onNativeMoveDiscovery: ((android.content.Context) -> Unit)? = null
     private val newFolderMenuId = View.generateViewId()
@@ -954,6 +955,19 @@ internal class PlaylistFolderPreviewController(
                     it.contains("playlist", ignoreCase = true) ||
                         it.contains("wiedergabeliste", ignoreCase = true)
                 }
+        // Native Files-tab menu inventory for discovering the ORIGINAL
+        // move/rename UI. Read-only: do not invoke any unverified actions.
+        if (name.startsWith("menu_gm_") &&
+            name.contains("file", ignoreCase = true) &&
+            observedNativeFileMenus.size < 8 &&
+            observedNativeFileMenus.add(name)
+        ) {
+            Log.i(
+                TAG,
+                "FOLDER MOVE DISCOVERY | native Files menu=" + name +
+                    " | items=" + items.joinToString(";")
+            )
+        }
         if (name == "menu_gm_playlist_list") {
             playlistTabMenu = WeakReference(menu)
             installNativeNewFolderMenu(menu, context)
