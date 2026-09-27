@@ -76,6 +76,29 @@ class PlaylistMoveStagerTest {
         assertTrue(stage.entries.single().original.isFile)
     }
 
+    @Test fun partialNativeRemovalCanRestoreTheOriginalsFromPrivateBackup() {
+        val (plan, _) = prepareFixture()
+        val batch = PlaylistMoveStager.stage(plan, temp.newFolder("private"))
+        val old = batch.entries.single().source
+        val expected = old.readBytes()
+        assertTrue(old.delete())
+        assertTrue(PlaylistMoveStager.restoreMissingOriginals(batch))
+        assertTrue(old.exists())
+        assertTrue(expected.contentEquals(old.readBytes()))
+        assertFalse(batch.entries.single().target.exists())
+        assertTrue(batch.entries.single().original.isFile)
+    }
+
+    @Test fun modifiedExistingOriginalIsNeverOverwrittenDuringRecovery() {
+        val (plan, _) = prepareFixture()
+        val batch = PlaylistMoveStager.stage(plan, temp.newFolder("private"))
+        val old = batch.entries.single().source
+        old.writeText("A DIFFERENT USER EDIT")
+        assertFalse(PlaylistMoveStager.restoreMissingOriginals(batch))
+        assertEquals("A DIFFERENT USER EDIT", old.readText())
+        assertTrue(batch.entries.single().original.isFile)
+    }
+
     @Test fun nonExistingRelativeTracksAreRejectedByPreflight() {
         val (plan, _) = prepareFixture()
         val source = plan.entries.single().source

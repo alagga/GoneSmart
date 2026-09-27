@@ -83,7 +83,9 @@ internal object PlaylistMoveStager {
         return base.listFiles().orEmpty().filter { it.isDirectory }.mapNotNull { dir ->
             runCatching {
                 val props = Properties().apply {
-                    File(dir, "manifest.properties").inputStream().use(::load)
+                    File(dir, "manifest.properties").inputStream().use { stream ->
+                        load(stream)
+                    }
                 }
                 val root = File(props.getProperty("root")).canonicalFile
                 require(root == canonicalRoot && root.isDirectory)
@@ -134,6 +136,50 @@ internal object PlaylistMoveStager {
             // Private originals and normalized copies remain intact. Only our
             // newly created output is removed; never touch a preexisting file.
             written.asReversed().forEach { runCatching { it.delete() } }
+            return false
+        }
+    }
+
+    /**
+     * Recover from a partially successful original GMMP bulk deletion or a
+     * destination collision discovered AFTER its confirmation. Do not alter
+     * originals that still exist, especially if they changed independently.
+     * Retain every private backup until GMMP reindexes all restored paths.
+     */
+    fun restoreMissingOriginals(batch: Batch): Boolean {
+        val originals = runCatching {
+            batch.entries.associateWith { it.original.readBytes() }
+        }.getOrNull() ?: return false
+        if (batch.entries.any { entry ->
+            val source = entry.source
+            (source.exists() && (
+                !source.isFile ||
+                    runCatching {
+                        hash(source.readBytes()) !=
+                            hash(requireNotNull(originals[entry]))
+                    }.getOrDefault(true)
+            )) || !source.parentFile.isDirectory
+        }) return false
+        try {
+            for (entry in batch.entries) {
+                if (entry.source.exists()) continue
+                val backup = requireNotNull(originals[entry])
+                val temp = File.createTempFile(
+                    ".gonesmart_restore_", ".pending",
+                    entry.source.parentFile
+                )
+                try {
+                    durableWrite(temp, backup)
+                    check(hash(temp.readBytes()) == hash(backup))
+                    check(temp.renameTo(entry.source))
+                } finally {
+                    if (temp.exists()) temp.delete()
+                }
+            }
+            return true
+        } catch (_: Throwable) {
+            // A partially completed restore is recoverable from the still
+            // intact stage. Never delete any already restored source here.
             return false
         }
     }

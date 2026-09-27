@@ -27,7 +27,9 @@ internal class NativeGmmpPlaylistMover(
         const val TAG = "GoneSmartPlaylist"
         const val POLL_MS = 700L
     }
-    private enum class Phase { STAGING, WAIT_DELETE, PUBLISH, WAIT_INDEX }
+    private enum class Phase {
+        STAGING, WAIT_DELETE, PUBLISH, WAIT_INDEX, RESTORING, WAIT_ROLLBACK
+    }
     private class Pending(
         val batch: PlaylistMoveStager.Batch,
         val context: Context,
@@ -91,7 +93,6 @@ internal class NativeGmmpPlaylistMover(
         ) return false
         // Reserve the operation before starting disk IO on a background
         // thread. Another user action must not start an overlapping move.
-        var slotReserved = true
         val reservation = Pending(
             PlaylistMoveStager.Batch(File(""),plan.root,emptyList(),0L),
             context, currentPaths, onResult, Phase.STAGING
@@ -150,7 +151,7 @@ internal class NativeGmmpPlaylistMover(
                 }
             }
         }
-        return slotReserved
+        return true
     }
 
     /**
@@ -194,9 +195,7 @@ internal class NativeGmmpPlaylistMover(
         if (pending != null || !resolveNativeMethods()) return
         val staged = PlaylistMoveStager.recover(context.filesDir, nativeRoot)
         val batch = staged.firstOrNull { candidate ->
-            candidate.entries.all {
-                !it.source.exists() || !it.target.exists()
-            }
+            candidate.entries.any { !it.source.exists() || it.target.exists() }
         } ?: return
         // If all old files still exist, this was a canceled prior dialog.
         // Retain its private backups (not extra user-visible playlists) until
@@ -211,6 +210,49 @@ internal class NativeGmmpPlaylistMover(
         pending = task
         Log.i(TAG, "PLAYLIST MOVE | recovering durable staged batch")
         schedule(task)
+    }
+
+    private fun scan(context: Context, files: Collection<File>): Boolean =
+        runCatching {
+            requireNotNull(nativeScan).invoke(
+                null, context, files.map { it.absolutePath }.toTypedArray()
+            )
+            true
+        }.onFailure {
+            Log.e(TAG, "PLAYLIST MOVE | GMMP original t6.f scan unavailable", it)
+        }.getOrDefault(false)
+
+    /**
+     * If native bulk removal stopped halfway, or publication met a NEW
+     * target collision, put every missing original back from its private
+     * durable backup, ask GMMP's original scanner to reindex the originals,
+     * and wait for their actual native adapter records before cleaning up.
+     */
+    private fun rollback(task: Pending) {
+        if (task.phase == Phase.RESTORING ||
+            task.phase == Phase.WAIT_ROLLBACK
+        ) return
+        task.phase = Phase.RESTORING
+        worker.execute {
+            val restored = PlaylistMoveStager.restoreMissingOriginals(task.batch)
+            main.post {
+                if (pending !== task) return@post
+                if (!restored) {
+                    pending = null
+                    task.onResult(
+                        false, "Recovery blocked; private backup retained"
+                    )
+                    Log.e(TAG, "PLAYLIST MOVE | original restore failed; " +
+                        "private originals retained")
+                    return@post
+                }
+                task.phase = Phase.WAIT_ROLLBACK
+                task.polls = 0
+                scan(task.context, task.batch.entries.map { it.source })
+                Log.w(TAG, "PLAYLIST MOVE | restoring original native index")
+                schedule(task)
+            }
+        }
     }
 
     private fun schedule(task: Pending) {
@@ -240,6 +282,29 @@ internal class NativeGmmpPlaylistMover(
                         it.normalizedHash
                 }.getOrDefault(false)
         }
+        if (task.phase == Phase.WAIT_ROLLBACK) {
+            val restoredIndexed = task.batch.entries.all {
+                it.source.isFile && it.source.path in native
+            }
+            if (restoredIndexed) {
+                PlaylistMoveStager.finish(task.batch)
+                pending = null
+                task.onResult(false, "Move cancelled; originals restored")
+                Log.w(TAG, "PLAYLIST MOVE | rollback verified in original index")
+                return
+            }
+            task.polls++
+            if (task.polls % 60 == 0) {
+                scan(task.context, task.batch.entries.map { it.source })
+            }
+            if (task.polls >= 360) {
+                pending = null
+                task.onResult(false, "Restore indexing pending; backup retained")
+                return
+            }
+            schedule(task)
+            return
+        }
         if (targetIndexed && oldGone) {
             PlaylistMoveStager.finish(task.batch)
             pending = null
@@ -252,47 +317,62 @@ internal class NativeGmmpPlaylistMover(
         if (oldGone && task.phase != Phase.PUBLISH &&
             task.phase != Phase.WAIT_INDEX
         ) {
+            // The process may have died after publishing but BEFORE the
+            // original GMMP t6.f rescan. Reuse only our byte-identical
+            // already-published target files; never overwrite a conflict.
+            val publishedAlready = task.batch.entries.all { entry ->
+                entry.target.isFile && runCatching {
+                    PlaylistMoveStager.hash(entry.target.readBytes()) ==
+                        entry.normalizedHash
+                }.getOrDefault(false)
+            }
+            if (publishedAlready) {
+                task.phase = Phase.WAIT_INDEX
+                scan(task.context, task.batch.entries.map { it.target })
+                schedule(task)
+                return
+            }
             task.phase = Phase.PUBLISH
             worker.execute {
                 val result = PlaylistMoveStager.commit(task.batch)
                 main.post {
                     if (pending !== task) return@post
                     if (!result) {
-                        pending = null
-                        task.onResult(false,
-                            "Originals removed; safe staged backup retained")
-                        Log.e(TAG, "PLAYLIST MOVE | publish blocked; " +
-                            "durable backup retained for recovery")
+                        Log.e(TAG, "PLAYLIST MOVE | publication blocked;" +
+                            " restoring originals from durable backup")
+                        rollback(task)
                         return@post
                     }
                     task.phase = Phase.WAIT_INDEX
-                    val scan = runCatching {
-                        requireNotNull(nativeScan).invoke(
-                            null, task.context,
-                            task.batch.entries.map {
-                                it.target.absolutePath
-                            }.toTypedArray()
-                        )
-                    }
-                    if (scan.isFailure) {
-                        Log.e(TAG, "PLAYLIST MOVE | native scan failed; " +
-                            "staged originals retained", scan.exceptionOrNull())
-                    } else {
-                        Log.i(TAG, "PLAYLIST MOVE | native t6.f rescan requested")
-                    }
+                    scan(task.context, task.batch.entries.map { it.target })
+                    Log.i(TAG, "PLAYLIST MOVE | original t6.f rescan requested")
                     schedule(task)
                 }
             }
             return
         }
         task.polls++
+        if (task.phase == Phase.WAIT_INDEX &&
+            task.polls % 60 == 0
+        ) {
+            scan(task.context, task.batch.entries.map { it.target })
+        }
+        if (task.phase == Phase.WAIT_DELETE &&
+            task.polls >= 240 &&
+            task.batch.entries.any { !it.source.exists() }
+        ) {
+            Log.w(TAG, "PLAYLIST MOVE | partial native deletion; " +
+                "rolling back to original playlists")
+            rollback(task)
+            return
+        }
         if (task.polls % 20 == 0) {
             Log.i(TAG, "PLAYLIST MOVE | awaiting native index" +
                 " | phase=" + task.phase +
                 " | remainingOld=" +
                 task.batch.entries.count { it.source.exists() })
         }
-        if (task.polls >= 180 &&
+        if (task.polls >= 45 &&
             task.deleteDialogDismissed &&
             task.batch.entries.all { it.source.exists() } &&
             task.batch.entries.all { it.source.path in native }

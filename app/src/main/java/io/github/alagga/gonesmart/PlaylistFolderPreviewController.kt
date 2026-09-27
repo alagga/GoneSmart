@@ -2077,6 +2077,22 @@ internal class PlaylistFolderPreviewController(
                 browser.index = refreshed
                 browser.modelsByPath = native.nativeObjects
                 browser.nativeOrder = native.paths
+                // A pending batch may have survived process death, or the
+                // original GMMP worker may finish AFTER its first adapter
+                // attach. Resume from private durable stage whenever its
+                // original playlist list changes, not only once at startup.
+                if (!isPicker(browser.list)) {
+                    val weak = WeakReference(browser.list)
+                    nativePlaylistMover?.resume(
+                        browser.list.context,
+                        java.io.File(browser.rootPath),
+                        {
+                            weak.get()?.let { actual ->
+                                browsers[actual]?.let(::readActualNativePaths)
+                            }
+                        }
+                    )
+                }
                 // A single 600ms native-delete watcher is already running.
                 // Calling it again per original adapter notification would
                 // spawn overlapping poll loops and exhaust its safe timeout.
