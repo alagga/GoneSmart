@@ -61,22 +61,20 @@ class TrackMixPlanTest {
 
     @Test fun neverInventsATranslationWhenNativeWordIsMissing() {
         assertEquals(
-            "Titel Auto-DJ",
+            "",
             TrackMixPlan.localizedMenuLabel("de", null, null)
         )
         assertEquals(
-            "Track Auto-DJ",
-            TrackMixPlan.localizedMenuLabel("en", null, null)
+            "",
+            TrackMixPlan.localizedMenuLabel("en", "Track", null)
         )
         assertEquals(
-            "DJ automatique",
-            TrackMixPlan.localizedMenuLabel(
-                "fr", null, "DJ automatique"
-            )
+            "",
+            TrackMixPlan.localizedMenuLabel("fr", null, "DJ automatique")
         )
         assertEquals(
             "Piste Auto-DJ",
-            TrackMixPlan.localizedMenuLabel("fr", "Piste", null)
+            TrackMixPlan.localizedMenuLabel("fr", "Piste", "Auto-DJ")
         )
     }
 
@@ -88,7 +86,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "Track Auto-DJ started",
+            "Track Auto-DJ ✓",
             TrackMixPlan.localizedStartedMessage(
                 "en", "Track Auto-DJ", null
             )
