@@ -292,9 +292,9 @@ The original GMMP drawer **Playlists** entry gets GoneSmart's lilac two-star
 badge while folders are enabled; the Move FAB intentionally has no sparkle.
 The picker toolbar's Back button and Android Back ascend nested folders before
 closing the picker from its root. GoneSmart retains GMMP's active native theme,
-localized built-in action labels and original playlist writer. **Move** is
-the one GoneSmart-only injected action word and uses a dedicated translation
-table covering the installed GMMP 4.2.0 language inventory.
+localized built-in action labels and original playlist writer. **Move** and the feature-owned virtual **Other Locations** label use one
+central GoneSmart translation file only when GMMP has no corresponding native
+resource; the installed GMMP 4.2.0 language inventory is covered in both.
 
 The maintainer accepted the complete current folder flow on the tested
 GMMP 4.2.0 device on 28 September 2026. Other GMMP versions, alternative
