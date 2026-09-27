@@ -2022,6 +2022,7 @@ class GoneSmartModule : XposedModule() {
                 activity != null
             ) {
 
+                statusNotifier.attachHostActivity(activity)
                 playerBadgeController
                     .attach(
                         activity
