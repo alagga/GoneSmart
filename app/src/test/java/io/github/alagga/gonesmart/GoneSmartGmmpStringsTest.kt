@@ -31,6 +31,46 @@ class GoneSmartGmmpStringsTest {
         )
     }
 
+    @Test fun coversTheVirtualOtherLocationsLabelForEveryGmmp420Language() {
+        assertEquals(
+            GoneSmartGmmpStrings.translatedLanguageCodes,
+            GoneSmartGmmpStrings.translatedOtherLocationsLanguageCodes
+        )
+        assertEquals(
+            "Andere Speicherorte",
+            GoneSmartGmmpStrings.otherLocations(Locale.GERMANY)
+        )
+        assertEquals(
+            "Other Locations",
+            GoneSmartGmmpStrings.otherLocations(Locale.UK)
+        )
+        assertEquals(
+            "Autres emplacements",
+            GoneSmartGmmpStrings.otherLocations(Locale.CANADA_FRENCH)
+        )
+        assertEquals(
+            "Otras ubicaciones",
+            GoneSmartGmmpStrings.otherLocations(Locale.forLanguageTag("es-US"))
+        )
+        assertEquals(
+            "מיקומים אחרים",
+            GoneSmartGmmpStrings.otherLocations(Locale("iw", "IL"))
+        )
+        assertEquals(
+            "Lokasi Lain",
+            GoneSmartGmmpStrings.otherLocations(Locale("in", "ID"))
+        )
+        assertEquals(
+            "Other Locations",
+            GoneSmartGmmpStrings.otherLocations(Locale.forLanguageTag("xx-ZZ"))
+        )
+        assertFalse(
+            GoneSmartGmmpStrings.hasOtherLocationsTranslation(
+                Locale.forLanguageTag("xx-ZZ")
+            )
+        )
+    }
+
     @Test
     fun translatedMissingNativeMoveVerbFollowsInstalledGmmpLocale() {
         assertEquals(
