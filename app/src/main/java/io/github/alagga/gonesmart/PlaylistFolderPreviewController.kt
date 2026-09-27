@@ -905,6 +905,29 @@ internal class PlaylistFolderPreviewController(
         if (adapter != null && adapter.javaClass.name != "zn3") return
         knownLists[list] = true
         if (suspendedNativeLists.containsKey(list)) return
+        // Hide the native ungrouped list as soon as its verified zn3 adapter
+        // is observed. The complete native model can take another frame (or
+        // several) to load; showing that list first causes a visible flash.
+        // Keep the original alpha and fail open if overlay setup stalls.
+        if (settings.enabled && !browsers.containsKey(list) &&
+            nativeOriginalAlphas[list] == null
+        ) {
+            nativeOriginalAlphas[list] = list.alpha
+            list.alpha = 0f
+            val weak = WeakReference(list)
+            list.postDelayed({
+                weak.get()?.let { current ->
+                    if (browsers[current] == null && settings.enabled &&
+                        current.isAttachedToWindow
+                    ) {
+                        nativeOriginalAlphas.remove(current)?.let {
+                            current.alpha = it
+                        }
+                        Log.w(TAG, "FOLDER INLINE WAIT | native list restored after timeout")
+                    }
+                }
+            }, 2500L)
+        }
         if (!pendingLayoutObservers.containsKey(list)) {
             val weakList = WeakReference(list)
             val observer = android.view.ViewTreeObserver.OnGlobalLayoutListener {
@@ -1686,7 +1709,7 @@ internal class PlaylistFolderPreviewController(
         // and 400 ms pre-draw callbacks: an initially unavailable wrapper
         // is automatically measured before revealing the confirm button.
         val geometryReady = fab.width > 0 && fab.height > 0 &&
-            !fab.isLayoutRequested &&
+            !fab.isLayoutRequested && !browser.overlay.isLayoutRequested &&
             (miniBottom != null || occlusion > 0 ||
                 nativeMiniPlayerTop(browser.list) == null)
         if (fab.visibility == View.INVISIBLE && geometryReady) {
