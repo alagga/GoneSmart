@@ -2275,7 +2275,14 @@ internal class PlaylistMultiSelectController {
         (value * view.resources.displayMetrics.density + 0.5f).toInt()
 
     private fun warn(context: Context, text: String) {
-        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        // Engineering failure details remain in English-only GoneSmart Logs
+        // and Logcat. The GMMP-hosted warning must follow its own language;
+        // this also covers older German debug-only guard messages.
+        Log.w(TAG, "MULTI UI ERROR | " + text)
+        val native = NativeGmmpUiText.error(
+            context, gmmpString(context, "playlists")
+        )
+        Toast.makeText(context, native, Toast.LENGTH_SHORT).show()
     }
 
 }
