@@ -1878,6 +1878,24 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "FAB hide hook unavailable; layout pin remains", error)
         }
 
+        // The Add-to-Playlist toolbar's own navigation button can bypass
+        // OnBackPressedDispatcher. Preserve its original click everywhere
+        // except inside an actual nested GoneSmart picker folder.
+        runCatching {
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick").apply {
+                    isAccessible = true
+                }
+            hook(performClick).intercept { chain ->
+                val clicked = chain.getThisObject() as? android.view.View
+                if (clicked != null &&
+                    playlistFolderPreview.consumePickerToolbarBack(clicked)
+                ) true else chain.proceed()
+            }
+        }.onFailure {
+            Log.w(TAG, "Picker native toolbar back hook unavailable", it)
+        }
+
         runCatching {
             val backClass = param.classLoader.loadClass(
                 "androidx.activity.OnBackPressedDispatcher"
