@@ -1418,8 +1418,13 @@ internal class PlaylistMultiSelectController {
         } else {
             updateSparkleColor(session)
         }
-        fab.contentDescription =
-            "GoneSmart: Zu ${session.selectedPaths.size} Playlists hinzufügen"
+        // Preserve GMMP's current language for screen readers as well as
+        // visible ActionMode text; never hardcode a German description.
+        val countLabel = selectionTitle(session, session.selectedPaths.size)
+        fab.contentDescription = listOfNotNull(
+            countLabel,
+            session.originalDescription?.toString()?.takeIf(String::isNotBlank)
+        ).joinToString(" · ")
         pinFab(session)
     }
 
@@ -2157,10 +2162,14 @@ internal class PlaylistMultiSelectController {
             // This case is a single destination dispatched from a selection
             // session; preserve GMMP's normal native completion toast.
             if (accepted == 0) {
-                warn(fab.context, "Hinzufügen nicht gestartet")
+                warn(fab.context, NativeGmmpUiText.error(
+                    fab.context, gmmpString(fab.context, "playlists")
+                ))
             }
         } else if (accepted == 0) {
-            warn(fab.context, "Hinzufügen zu keiner Playlist gestartet")
+            warn(fab.context, NativeGmmpUiText.error(
+                fab.context, gmmpString(fab.context, "playlists")
+            ))
         } else {
             Log.i(
                 TAG,
