@@ -14,6 +14,15 @@ internal object MoveConfirmationUiPolicy {
         visibleNativeMiniPlayerTopPx ?: nativeListBottomPx
     )
 
+    /** Crop the Move browser above a sibling mini-player before drawing. */
+    fun clippedOverlayHeight(
+        listTopPx: Int,
+        listHeightPx: Int,
+        nativeMiniPlayerTopPx: Int?
+    ): Int = nativeMiniPlayerTopPx
+        ?.let { (it - listTopPx).coerceIn(1, listHeightPx) }
+        ?: listHeightPx
+
     fun bottomOcclusion(
         overlayBottomPx: Int,
         visibleBottomPx: Int
