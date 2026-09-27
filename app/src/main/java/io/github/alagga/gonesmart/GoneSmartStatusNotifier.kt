@@ -1,6 +1,9 @@
 package io.github.alagga.gonesmart
 
+import android.app.Activity
 import android.app.Application
+import android.content.Context
+import java.lang.ref.WeakReference
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -14,13 +17,29 @@ class GoneSmartStatusNotifier {
             "GoneSmart"
     }
 
+    @Volatile
+    private var currentHostActivity = WeakReference<Activity>(null)
+
+    /** Retain only a WEAK reference to GMMP's current app-locale Activity. */
+    fun attachHostActivity(activity: Activity) {
+        currentHostActivity = WeakReference(activity)
+    }
+
+    private fun liveHostContext(fallback: Application): Context {
+        val host = currentHostActivity.get()
+        return if (host != null && !host.isFinishing && !host.isDestroyed) {
+            host
+        } else fallback
+    }
+
     /** GMMP-hosted Toast; never display English companion diagnostics here. */
     fun showNative(noticeKey: String) {
         val application = getCurrentApplication() ?: return
         Handler(Looper.getMainLooper()).post {
+            val host = liveHostContext(application)
             Toast.makeText(
-                application,
-                NativeGmmpUiText.smartDjNotice(application, noticeKey),
+                host,
+                NativeGmmpUiText.smartDjNotice(host, noticeKey),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -34,9 +53,10 @@ class GoneSmartStatusNotifier {
         val application = getCurrentApplication() ?: return
         Handler(Looper.getMainLooper()).postDelayed({
             if (shouldShow()) {
+                val host = liveHostContext(application)
                 Toast.makeText(
-                    application,
-                    NativeGmmpUiText.smartDjNotice(application, noticeKey),
+                    host,
+                    NativeGmmpUiText.smartDjNotice(host, noticeKey),
                     Toast.LENGTH_LONG
                 ).show()
             }
