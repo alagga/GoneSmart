@@ -4,6 +4,23 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MoveConfirmationUiPolicyTest {
+    @Test fun clipsEntireMoveOverlayAboveSiblingMiniPlayer() {
+        assertEquals(
+            1931,
+            MoveConfirmationUiPolicy.clippedOverlayHeight(
+                listTopPx = 232, listHeightPx = 2099,
+                nativeMiniPlayerTopPx = 2163
+            )
+        )
+        assertEquals(
+            2099,
+            MoveConfirmationUiPolicy.clippedOverlayHeight(
+                listTopPx = 232, listHeightPx = 2099,
+                nativeMiniPlayerTopPx = null
+            )
+        )
+    }
+
     @Test fun nativeConfirmFabRisesAboveClippedViewport() {
         assertEquals(
             168,
