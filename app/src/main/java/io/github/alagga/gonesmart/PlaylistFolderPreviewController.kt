@@ -2114,7 +2114,20 @@ internal class PlaylistFolderPreviewController(
                         field.get(toolbar)
                     }.getOrNull()
                 }
-                if (nativeNav === clicked) {
+                val nativeDescription = runCatching {
+                    toolbar.javaClass.getMethod("getNavigationContentDescription")
+                        .invoke(toolbar) as? CharSequence
+                }.getOrNull()
+                val firstImage = (toolbar as? ViewGroup)?.let { group ->
+                    (0 until group.childCount).map { group.getChildAt(it) }
+                        .firstOrNull { it is ImageButton }
+                }
+                val verifiedNavigation = nativeNav === clicked ||
+                    (nativeNav == null && firstImage === clicked &&
+                        !nativeDescription.isNullOrBlank() &&
+                        clicked.contentDescription?.toString() ==
+                            nativeDescription.toString())
+                if (verifiedNavigation) {
                     activeBrowser = WeakReference(browser.list)
                     Log.i(TAG, "FOLDER PICKER TOOLBAR BACK | navigate parent")
                     return consumeBack()
