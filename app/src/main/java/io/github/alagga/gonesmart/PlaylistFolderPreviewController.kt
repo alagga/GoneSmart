@@ -2497,9 +2497,11 @@ internal class PlaylistFolderPreviewController(
         } else null
         val screen = IntArray(2)
         list.getLocationOnScreen(screen)
-        val availableHeight = nativeMiniTop
-            ?.let { (it - screen[1]).coerceIn(1, list.height) }
-            ?: list.height
+        val availableHeight = MoveConfirmationUiPolicy.clippedOverlayHeight(
+            listTopPx = screen[1],
+            listHeightPx = list.height,
+            nativeMiniPlayerTopPx = nativeMiniTop
+        )
         if (overlay.layoutParams.width != list.width ||
             overlay.layoutParams.height != availableHeight
         ) {
