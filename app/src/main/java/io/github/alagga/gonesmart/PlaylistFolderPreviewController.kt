@@ -436,8 +436,10 @@ internal class PlaylistFolderPreviewController(
         browser?.list?.let { list ->
             Toast.makeText(
                 list.context,
-                "Playlist folder destination could not be verified. " +
-                    "No playlist was created.",
+                NativeGmmpUiText.error(
+                    list.context,
+                    NativeGmmpUiText.string(list.context, "playlist")
+                ),
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -1366,7 +1368,9 @@ internal class PlaylistFolderPreviewController(
                                 ?.let { current ->
                                     Toast.makeText(
                                         current.context,
-                                        title + ": " + message,
+                                        NativeGmmpUiText.error(
+                                            current.context, title
+                                        ),
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
@@ -3578,7 +3582,7 @@ internal class PlaylistFolderPreviewController(
         val drawable = FolderOutlineDrawable(color, dp(host, 24))
         val image = ImageView(host.context).apply {
             setImageDrawable(drawable)
-            contentDescription = "Folder"
+            contentDescription = NativeGmmpUiText.string(host.context, "folder")
             isClickable = false
             isFocusable = false
             importantForAccessibility =
@@ -4542,6 +4546,10 @@ internal class PlaylistFolderPreviewController(
                 .invoke(item, size)
         }
         item.elevation = source.elevation
+        item.contentDescription = NativeGmmpUiText.string(
+            source.context,
+            if (icon == "ic_gm_new_folder") "folder" else "playlist"
+        )
         item.setOnClickListener { click() }
         // The original picker FAB can be BELOW the RecyclerView's
         // viewport. Mini FABs must be siblings in its full-height native
@@ -4745,8 +4753,10 @@ internal class PlaylistFolderPreviewController(
         if (state.physicalDestinationUnsupported) {
             Toast.makeText(
                 browser.list.context,
-                "Creating playlists in subfolders is not supported in " +
-                    "this build yet. No playlist was created.",
+                NativeGmmpUiText.error(
+                    browser.list.context,
+                    NativeGmmpUiText.string(browser.list.context, "playlist")
+                ),
                 Toast.LENGTH_LONG
             ).show()
             Log.i(
@@ -4832,9 +4842,15 @@ internal class PlaylistFolderPreviewController(
         )
 
     private fun warn(view: View, message: String) {
+        // The detailed engineering reason remains in Logcat; the host
+        // player's user-facing Toast must not leak a hardcoded language.
+        Log.w(TAG, "FOLDER UI ERROR | " + message)
         Toast.makeText(
             view.context,
-            message,
+            NativeGmmpUiText.error(
+                view.context,
+                NativeGmmpUiText.string(view.context, "playlist")
+            ),
             Toast.LENGTH_SHORT
         ).show()
     }
