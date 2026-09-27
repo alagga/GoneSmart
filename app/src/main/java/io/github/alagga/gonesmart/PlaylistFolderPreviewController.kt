@@ -1144,7 +1144,7 @@ internal class PlaylistFolderPreviewController(
         menu: android.view.Menu?,
         originalInflater: Any?
     ) {
-        if (!BuildConfig.DEBUG || !settings.enabled || menu == null) return
+        if (!settings.enabled || menu == null) return
         // The native menu is often inflated before the RecyclerView exists.
         // Read the ORIGINAL inflater's own host context in that first frame.
         val context = knownLists.keys.firstOrNull()?.context
