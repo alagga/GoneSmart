@@ -536,9 +536,10 @@ class MainActivity : AppCompatActivity() {
                 COLOR_ACCENT
             )
         )))
-        if (BuildConfig.DEBUG) {
-            container.addView(verticalGap(12))
-            container.addView(settingGroup(listOf(
+        // Feature accepted on the tested GMMP 4.2.0 device. Keep the
+        // setting available in both debug and eventual release variants.
+        container.addView(verticalGap(12))
+        container.addView(settingGroup(listOf(
                 SettingSpec(
                     GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
                     "▣",
@@ -564,15 +565,15 @@ class MainActivity : AppCompatActivity() {
                     COLOR_ACCENT
                 )
             )))
-            container.addView(verticalGap(12))
-            container.addView(infoCard(
-                title = "Experimental inline folders",
-                body = "Folders now replace the visible playlist list while " +
-                    "GMMP's original native adapter stays attached behind it. " +
-                    "Playlist files and the database are not moved or rewritten. " +
-                    "Creation controls are not folder-aware yet."
-            ))
-        }
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "Playlist folders",
+            body = "Browse physical playlist folders in both GMMP views; " +
+                "create playlists and folders in eligible destinations, " +
+                "select and move multiple playlists, and use the original " +
+                "GMMP dialogs and playlist index. The virtual Other Locations " +
+                "group is configured separately for external and root playlists."
+        ))
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
         container.addView(settingGroup(listOf(
