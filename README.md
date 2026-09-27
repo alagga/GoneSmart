@@ -296,6 +296,10 @@ localized built-in action labels and original playlist writer. **Move** and the 
 central GoneSmart translation file only when GMMP has no corresponding native
 resource; the installed GMMP 4.2.0 language inventory is covered in both.
 
+The current browser conservatively targets GMMP's standard primary-storage
+`gmmp/playlists` root and verifies native creation destinations. A different
+user-configured native playlist save root is not yet independently supported.
+
 The maintainer accepted the complete current folder flow on the tested
 GMMP 4.2.0 device on 28 September 2026. Other GMMP versions, alternative
 skins, and independent native-speaker review of all Move translations remain
