@@ -1891,7 +1891,9 @@ internal class PlaylistFolderPreviewController(
                         groupExternalLocations = settings.groupExternal,
                         groupRootPlaylists = settings.groupRoot,
                         physicalDirectoryPaths = physicalDirectorySnapshot(root),
-                        displayNamesByPath = names
+                        displayNamesByPath = names,
+                        otherLocationsLabel =
+                            NativeGmmpUiText.otherLocations(current.list.context)
                     )
                     safeRender(current)
                 }
@@ -2078,7 +2080,9 @@ internal class PlaylistFolderPreviewController(
                 groupExternalLocations = settings.groupExternal,
                 groupRootPlaylists = settings.groupRoot,
                 physicalDirectoryPaths = physicalDirectorySnapshot(root),
-                displayNamesByPath = names
+                displayNamesByPath = names,
+                otherLocationsLabel =
+                    NativeGmmpUiText.otherLocations(browser.list.context)
             )
             if (browser.currentFolderId != null &&
                 findFolder(browser.index, browser.currentFolderId) == null
@@ -2267,7 +2271,8 @@ internal class PlaylistFolderPreviewController(
             groupExternalLocations = settings.groupExternal,
             groupRootPlaylists = settings.groupRoot,
             physicalDirectoryPaths = physicalDirectorySnapshot(root),
-            displayNamesByPath = titleResult.names + renderedTitles
+            displayNamesByPath = titleResult.names + renderedTitles,
+            otherLocationsLabel = NativeGmmpUiText.otherLocations(list.context)
         )
 
         // A GMMP Playlists tab RecyclerView is owned by
@@ -2558,6 +2563,22 @@ internal class PlaylistFolderPreviewController(
         }
         updatePickerFab(browser)
         updatePlaylistMenu()
+        // GMMP may switch its own app-specific language while retaining an
+        // already attached ViewPager page. Refresh only our virtual label;
+        // real physical folder names must never be translated.
+        browser.index.otherLocations?.let { virtual ->
+            val localized = NativeGmmpUiText.otherLocations(list.context)
+            if (virtual.name != localized) {
+                browser.index = browser.index.copy(
+                    otherLocations = virtual.copy(name = localized)
+                )
+                list.post {
+                    if (browsers[list] === browser && list.isAttachedToWindow) {
+                        safeRender(browser)
+                    }
+                }
+            }
+        }
         // Aesthetic dynamically derives its colors from the current cover.
         // Keep the destination confirmation on the SAME native palette.
         syncMoveChromePalette(browser)
@@ -2739,7 +2760,9 @@ internal class PlaylistFolderPreviewController(
                     groupExternalLocations = settings.groupExternal,
                     groupRootPlaylists = settings.groupRoot,
                     physicalDirectoryPaths = physicalDirectorySnapshot(browser.rootPath),
-                    displayNamesByPath = titles.names + visibleTitles
+                    displayNamesByPath = titles.names + visibleTitles,
+                    otherLocationsLabel =
+                        NativeGmmpUiText.otherLocations(browser.list.context)
                 )
                 browser.index = refreshed
                 browser.modelsByPath = native.nativeObjects
