@@ -23,6 +23,7 @@ internal object PlaylistMoveStager {
         val target: File,
         val original: File,
         val normalized: File,
+        val originalHash: String,
         val normalizedHash: String
     )
 
@@ -52,7 +53,10 @@ internal object PlaylistMoveStager {
                 val normalized = File(folder, "normalized_$index.bin")
                 durableWrite(original, originalBytes)
                 durableWrite(normalized, transformed)
-                Entry(source, snapshot.target, original, normalized, hash(transformed))
+                Entry(
+                    source, snapshot.target, original, normalized,
+                    snapshot.contentHash, hash(transformed)
+                )
             }
             val now = System.currentTimeMillis()
             val data = Properties().apply {
@@ -63,6 +67,7 @@ internal object PlaylistMoveStager {
                     setProperty("source.$i", entry.source.canonicalPath)
                     setProperty("target.$i", entry.target.canonicalPath)
                     setProperty("hash.$i", entry.normalizedHash)
+                    setProperty("originalHash.$i", entry.originalHash)
                 }
             }
             val manifest = File(folder, "manifest.properties")
@@ -89,6 +94,7 @@ internal object PlaylistMoveStager {
                 }
                 val root = File(props.getProperty("root")).canonicalFile
                 require(root == canonicalRoot && root.isDirectory)
+                require(props.getProperty("cancelled") != "true")
                 val count = props.getProperty("count").toInt()
                 require(count in 1..256)
                 val entries = (0 until count).map { index ->
@@ -99,8 +105,15 @@ internal object PlaylistMoveStager {
                     val normalized = File(dir, "normalized_$index.bin")
                     require(original.isFile && normalized.isFile)
                     val digest = props.getProperty("hash.$index")
-                    require(hash(normalized.readBytes()) == digest)
-                    Entry(source, target, original, normalized, digest)
+                    val originalDigest = props.getProperty(
+                        "originalHash.$index"
+                    ) ?: hash(original.readBytes())
+                    require(hash(normalized.readBytes()) == digest &&
+                        hash(original.readBytes()) == originalDigest)
+                    Entry(
+                        source, target, original, normalized,
+                        originalDigest, digest
+                    )
                 }
                 Batch(dir, root, entries, props.getProperty("createdAt").toLong())
             }.getOrNull()
@@ -148,7 +161,11 @@ internal object PlaylistMoveStager {
      */
     fun restoreMissingOriginals(batch: Batch): Boolean {
         val originals = runCatching {
-            batch.entries.associateWith { it.original.readBytes() }
+            batch.entries.associateWith { entry ->
+                entry.original.readBytes().also {
+                    require(hash(it) == entry.originalHash)
+                }
+            }
         }.getOrNull() ?: return false
         if (batch.entries.any { entry ->
             val source = entry.source
@@ -181,6 +198,27 @@ internal object PlaylistMoveStager {
             // A partially completed restore is recoverable from the still
             // intact stage. Never delete any already restored source here.
             return false
+        }
+    }
+
+    /**
+     * The original native dialog was dismissed WITHOUT evidence that any
+     * original indexed source changed. Do not resume this abandoned move
+     * after an unrelated later playlist deletion. Keep private originals
+     * untouched for emergency inspection; never publish the destinations.
+     */
+    fun markCancelled(batch: Batch) {
+        val manifest = File(batch.directory, "manifest.properties")
+        if (!manifest.isFile) return
+        runCatching {
+            val props = Properties().apply {
+                manifest.inputStream().use { load(it) }
+            }
+            props.setProperty("cancelled", "true")
+            FileOutputStream(manifest).use {
+                props.store(it, "Cancelled move; private backups only")
+                it.fd.sync()
+            }
         }
     }
 

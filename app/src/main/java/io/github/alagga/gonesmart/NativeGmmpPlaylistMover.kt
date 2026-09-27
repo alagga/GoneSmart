@@ -33,7 +33,7 @@ internal class NativeGmmpPlaylistMover(
     private class Pending(
         val batch: PlaylistMoveStager.Batch,
         val context: Context,
-        val paths: () -> List<String>?,
+        var paths: () -> List<String>?,
         val onResult: (Boolean, String) -> Unit,
         var phase: Phase = Phase.WAIT_DELETE,
         var polling: Boolean = false,
@@ -192,7 +192,19 @@ internal class NativeGmmpPlaylistMover(
             main.post { resume(context, nativeRoot, currentPaths) }
             return
         }
-        if (pending != null || !resolveNativeMethods()) return
+        pending?.let { active ->
+            if (active.batch.root == runCatching {
+                    nativeRoot.canonicalFile
+                }.getOrNull()
+            ) {
+                // Replace an old fragment's weak supplier after recreation.
+                // Never leave a successful original delete waiting forever
+                // on a detached RecyclerView.
+                active.paths = currentPaths
+            }
+            return
+        }
+        if (!resolveNativeMethods()) return
         val staged = PlaylistMoveStager.recover(context.filesDir, nativeRoot)
         val batch = staged.firstOrNull { candidate ->
             candidate.entries.any { !it.source.exists() || it.target.exists() }
@@ -377,11 +389,12 @@ internal class NativeGmmpPlaylistMover(
             task.batch.entries.all { it.source.exists() } &&
             task.batch.entries.all { it.source.path in native }
         ) {
+            PlaylistMoveStager.markCancelled(task.batch)
             pending = null
             task.onResult(false,
                 "Native deletion not confirmed; originals unchanged")
             Log.i(TAG, "PLAYLIST MOVE | original confirmation cancelled " +
-                "or native deletion not completed; backup retained")
+                "or native deletion not completed; private stage abandoned")
             return
         }
         if (task.polls >= 360) {

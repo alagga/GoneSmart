@@ -99,6 +99,27 @@ class PlaylistMoveStagerTest {
         assertTrue(batch.entries.single().original.isFile)
     }
 
+    @Test fun nativeDeleteCancellationDoesNotLaterResurrectMovedCopies() {
+        val (plan, _) = prepareFixture()
+        val filesDir = temp.newFolder("private")
+        val staged = PlaylistMoveStager.stage(plan, filesDir)
+        PlaylistMoveStager.markCancelled(staged)
+        assertTrue(PlaylistMoveStager.recover(filesDir, plan.root).isEmpty())
+        assertTrue(staged.entries.single().source.exists())
+        assertFalse(staged.entries.single().target.exists())
+        assertTrue(staged.entries.single().original.exists())
+    }
+
+    @Test fun damagedOriginalPrivateBackupCannotBeAutoRestored() {
+        val (plan, _) = prepareFixture()
+        val filesDir = temp.newFolder("private")
+        val staged = PlaylistMoveStager.stage(plan, filesDir)
+        staged.entries.single().original.writeText("CORRUPT")
+        assertFalse(PlaylistMoveStager.restoreMissingOriginals(staged))
+        assertTrue(PlaylistMoveStager.recover(filesDir, plan.root).isEmpty())
+        assertTrue(staged.entries.single().source.exists())
+    }
+
     @Test fun nonExistingRelativeTracksAreRejectedByPreflight() {
         val (plan, _) = prepareFixture()
         val source = plan.entries.single().source
