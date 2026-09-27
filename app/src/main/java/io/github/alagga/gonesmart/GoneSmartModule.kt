@@ -2120,9 +2120,8 @@ class GoneSmartModule : XposedModule() {
         val startedAt =
             SystemClock.elapsedRealtime()
 
-        statusNotifier.showDelayed(
-            message =
-                "Preparing GoneSmart cache… This may take a moment.",
+        statusNotifier.showNativeDelayed(
+            noticeKey = "cache-preparing",
             delayMs =
                 STARTUP_PREWARM_STATUS_DELAY_MS,
             shouldShow = {
@@ -2226,9 +2225,7 @@ class GoneSmartModule : XposedModule() {
                     STARTUP_PREWARM_STATUS_DELAY_MS
                 ) {
 
-                    statusNotifier.show(
-                        "GoneSmart cache ready."
-                    )
+                    statusNotifier.showNative("cache-ready")
                 }
 
                 if (
@@ -5096,9 +5093,11 @@ class GoneSmartModule : XposedModule() {
             )
         ) {
 
-            statusNotifier.show(
-                message
-            )
+            // The detailed explanation remains in GoneSmart Logs/Logcat;
+            // an in-player Toast must use installed GMMP vocabulary.
+            Log.i(TAG, "SMART DJ NOTICE | key=" + noticeKey +
+                " | companionDetail=" + message)
+            statusNotifier.showNative(noticeKey)
         }
     }
 
