@@ -59,7 +59,8 @@ internal object PlaylistFolderIndex {
         groupExternalLocations: Boolean,
         groupRootPlaylists: Boolean,
         physicalDirectoryPaths: Collection<String> = emptyList(),
-        displayNamesByPath: Map<String, String> = emptyMap()
+        displayNamesByPath: Map<String, String> = emptyMap(),
+        otherLocationsLabel: String = OTHER_LOCATIONS
     ): Result {
         val mainRoot = normalizeFilePath(mainPlaylistDirectory)
             ?: throw IllegalArgumentException("Main playlist directory must be absolute")
@@ -139,7 +140,8 @@ internal object PlaylistFolderIndex {
             otherLocations = if (groupRootPlaylists || groupedSorted.isNotEmpty()) {
                 Folder(
                     id = OTHER_LOCATIONS_ID,
-                    name = OTHER_LOCATIONS,
+                    name = otherLocationsLabel.takeIf(String::isNotBlank)
+                        ?: OTHER_LOCATIONS,
                     children = emptyList(),
                     playlists = groupedSorted,
                     virtual = true
