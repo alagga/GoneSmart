@@ -788,3 +788,7 @@ The accepted setup uses GMMP's standard `/gmmp/playlists` under primary Android 
 The maintainer explicitly changed the accepted feedback requirement after testing Smart-Playlist moves: a verified successful Move should produce one small confirmation in both the normal Playlist-folder browser and the Smart-Playlist-folder browser. This supersedes the 2026-09-28 “no redundant success Toast” baseline.
 
 The normal Playlist move still waits for `NativeGmmpPlaylistMover`'s verified completion callback; only then does it show a short Toast. To keep every installed GMMP language grammatical without inventing another GoneSmart translation table, the confirmation reuses GMMP 4.2.0's complete localized `playlist_saved` string. If a future host lacks that usable resource, the fail-closed fallback is only `✓`. Errors remain the existing longer localized/neutral feedback.
+### 2026-09-29 Smart-folder parity reference additions
+The accepted normal Playlist-folder row geometry is now also a runtime reference for the Smart-Playlist tab: its measured native title inset is cached per density so Smart native titles can share the same horizontal start. This does not change the accepted normal Playlist layout.
+
+The existing `NativeGmmpFolderDeletion` adapter remains generic by design: Smart physical folders now reuse the same original GMMP `py0.b` confirmation/worker after `FolderDeletePolicy` verifies that the selected subtree contains only the supplied `.spl` files and directories. Smart folder menus expose Delete only; no folder-move behavior has been added.
