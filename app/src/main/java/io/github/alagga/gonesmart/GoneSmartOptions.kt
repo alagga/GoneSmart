@@ -7,6 +7,7 @@ data class GoneSmartOptions(
     val multiPlaylistEnabled: Boolean = false,
     val playlistFoldersEnabled: Boolean = false,
     val smartPlaylistFoldersEnabled: Boolean = false,
+    val smartMultiPlaylistEnabled: Boolean = true,
     val smartGroupRootPlaylists: Boolean = false,
     val groupExternalPlaylists: Boolean = true,
     val groupRootPlaylists: Boolean = true,
@@ -48,6 +49,10 @@ data class GoneSmartOptions(
                 smartPlaylistFoldersEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                     false
+                ),
+                smartMultiPlaylistEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                    true
                 ),
                 smartGroupRootPlaylists = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,

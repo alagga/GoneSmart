@@ -125,13 +125,15 @@ class GoneSmartModule : XposedModule() {
             }
             if (
                 key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS ||
+                key == GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ||
                 key == GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
             ) {
                 val next = options
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     smartPlaylistFolderController.setOptions(
                         next.smartPlaylistFoldersEnabled,
-                        next.smartGroupRootPlaylists
+                        next.smartGroupRootPlaylists,
+                        next.smartMultiPlaylistEnabled
                     )
                 }
             }
@@ -172,6 +174,7 @@ class GoneSmartModule : XposedModule() {
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
                 key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
                 key != GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST &&
                 key != GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
@@ -326,7 +329,7 @@ class GoneSmartModule : XposedModule() {
         PlaylistFolderPreviewController(playlistController)
 
     private val smartPlaylistFolderController =
-        SmartPlaylistFolderController()
+        SmartPlaylistFolderController(playlistController)
 
     private val smartPlaylistSaveRedirectDepth =
         ThreadLocal.withInitial { 0 }
@@ -593,7 +596,8 @@ class GoneSmartModule : XposedModule() {
                     )
                     smartPlaylistFolderController.setOptions(
                         options.smartPlaylistFoldersEnabled,
-                        options.smartGroupRootPlaylists
+                        options.smartGroupRootPlaylists,
+                        options.smartMultiPlaylistEnabled
                     )
                     installSmartPlaylistFolderFeatureHooks(param)
                     installSmartPlaylistSaveHook(param)
@@ -640,6 +644,8 @@ class GoneSmartModule : XposedModule() {
                                 val result = chain.proceed()
                                 originalDialog?.let {
                                     playlistFolderPreview
+                                        .onOriginalFolderDeleteDialogShown(it)
+                                    smartPlaylistFolderController
                                         .onOriginalFolderDeleteDialogShown(it)
                                 }
                                 result

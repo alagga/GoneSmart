@@ -35,6 +35,10 @@ class GoneSmartSettingsRepository(
                 local.smartPlaylistFoldersEnabled
             )
             .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                local.smartMultiPlaylistEnabled
+            )
+            .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
                 local.smartGroupRootPlaylists
             )
@@ -157,6 +161,10 @@ class GoneSmartSettingsRepository(
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 options.smartPlaylistFoldersEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                options.smartMultiPlaylistEnabled
             )
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,

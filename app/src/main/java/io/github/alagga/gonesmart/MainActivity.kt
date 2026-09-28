@@ -565,8 +565,17 @@ class MainActivity : AppCompatActivity() {
                     COLOR_ACCENT
                 )
             )))
-        container.addView(verticalGap(12))
+        container.addView(verticalGap(24))
+        container.addView(sectionTitle("SMART-PLAYLISTS"))
         container.addView(settingGroup(listOf(
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                "✓",
+                "Multi-Smart-Playlist selection",
+                "Add GoneSmart's Move command to GMMP's native " +
+                    "Smart-Playlist multi-selection.",
+                COLOR_ACCENT
+            ),
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 "▤",
@@ -586,12 +595,11 @@ class MainActivity : AppCompatActivity() {
         )))
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "Playlist folders",
-            body = "Browse physical playlist folders in both GMMP views; " +
-                "create playlists and folders in eligible destinations, " +
-                "select and move multiple playlists, and use the original " +
-                "GMMP dialogs and playlist index. The virtual Other Locations " +
-                "group is configured separately for external and root playlists."
+            title = "Playlist & Smart-Playlist folders",
+            body = "Browse physical folders in both GMMP playlist views; " +
+                "create and delete folders, move one or several entries, " +
+                "and keep GMMP's original lists, dialogs and actions. " +
+                "Virtual Other Locations grouping is configured separately."
         ))
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
@@ -1107,6 +1115,10 @@ class MainActivity : AppCompatActivity() {
             options.smartPlaylistFoldersEnabled
         )
         setSwitch(
+            GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+            options.smartMultiPlaylistEnabled
+        )
+        setSwitch(
             GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
             options.smartGroupRootPlaylists
         )
@@ -1163,10 +1175,14 @@ class MainActivity : AppCompatActivity() {
     private fun refreshSmartPlaylistFolderAvailability(
         options: GoneSmartOptions = settingsRepository.read()
     ) {
-        val key = GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
-        switches[key]?.isEnabled = options.smartPlaylistFoldersEnabled
-        settingRows[key]?.alpha =
-            if (options.smartPlaylistFoldersEnabled) 1f else 0.45f
+        for (key in listOf(
+            GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+            GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
+        )) {
+            switches[key]?.isEnabled = options.smartPlaylistFoldersEnabled
+            settingRows[key]?.alpha =
+                if (options.smartPlaylistFoldersEnabled) 1f else 0.45f
+        }
     }
 
     /**

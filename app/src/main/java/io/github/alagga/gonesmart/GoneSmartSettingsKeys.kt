@@ -7,6 +7,7 @@ object GoneSmartSettingsKeys {
     const val KEY_MULTI_PLAYLIST = "multi_playlist_selection"
     const val KEY_PLAYLIST_FOLDERS = "playlist_folders_enabled"
     const val KEY_SMART_PLAYLIST_FOLDERS = "smart_playlist_folders_enabled"
+    const val KEY_SMART_MULTI_PLAYLIST = "smart_playlist_multi_selection"
     const val KEY_SMART_GROUP_ROOT_PLAYLISTS =
         "smart_playlist_folders_group_main_root"
     const val KEY_GROUP_EXTERNAL_PLAYLISTS = "playlist_folders_group_external"

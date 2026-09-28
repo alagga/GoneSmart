@@ -53,6 +53,7 @@ internal class PlaylistFolderPreviewController(
             "gonesmart_gmmp_quicknav_metrics"
         private const val QUICK_NAV_TITLE_RATIO_KEY = "title_ratio"
         private const val QUICK_NAV_VERIFIED_FIRST_X_KEY = "verified_first_text_x_dpi_"
+        private const val PLAYLIST_TITLE_INSET_KEY = "playlist_title_inset_dpi_"
     }
 
     private data class Settings(
@@ -4176,6 +4177,14 @@ internal class PlaylistFolderPreviewController(
             val inset = (
                 titlePos[0] - nativeRowPos[0] + title.paddingLeft
             ).coerceAtLeast(dp(list, 12))
+            if (inset in 0..dp(list, 96)) {
+                val key = PLAYLIST_TITLE_INSET_KEY +
+                    list.resources.displayMetrics.densityDpi
+                list.context.getSharedPreferences(
+                    QUICK_NAV_METRICS_PREFS,
+                    android.content.Context.MODE_PRIVATE
+                ).edit().putInt(key, inset).apply()
+            }
             val backgroundColor = nativeSurfaceBackground(list)
             val accent = resolveAccent(list)
             val rowBackground = nativeRow.background?.constantState

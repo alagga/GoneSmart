@@ -63,7 +63,9 @@ import java.util.concurrent.atomic.AtomicLong
  *   the breadcrumb stays fixed like the accepted normal Playlist-folder view.
  *   GoneSmart never hides or redraws real Smart-Playlist rows.
  */
-internal class SmartPlaylistFolderController {
+internal class SmartPlaylistFolderController(
+    private val multiSelect: PlaylistMultiSelectController
+) {
     companion object {
         private const val TAG = "GoneSmartSmartFolders"
         private const val SMART_LIST_ID = "smartListRecyclerView"
@@ -74,6 +76,7 @@ internal class SmartPlaylistFolderController {
         private const val QUICK_NAV_METRICS_PREFS =
             "gonesmart_gmmp_quicknav_metrics"
         private const val QUICK_NAV_TITLE_RATIO_KEY = "title_ratio"
+        private const val PLAYLIST_TITLE_INSET_KEY = "playlist_title_inset_dpi_"
         private const val GMMP_420_QUICK_NAV_TITLE_RATIO = 1.225f
     }
 
@@ -170,11 +173,19 @@ internal class SmartPlaylistFolderController {
         var generation: Long = 0L,
         var actionPending: Boolean = false,
         var nativeOrder: List<String> = emptyList(),
+        var nativeSignature: List<String> = emptyList(),
+        var nativeSubmitted: Boolean = false,
+        var renderedLocationKey: String? = null,
         var moveSources: List<String>? = null,
         var movePreviousDirectory: String? = null,
         var movePreviousOtherLocations: Boolean = false,
         var moveActionMode: android.view.ActionMode? = null,
         var moveFab: View? = null,
+        var moveFabColor: Int? = null,
+        var moveLastColor: Int? = null,
+        var moveBarTintApplied: Boolean = false,
+        var moveThemeObserver: Any? = null,
+        val moveThemeDisposables: ArrayList<Any> = arrayListOf(),
         var lastFolderScrollOffset: Int = Int.MIN_VALUE
     )
 
@@ -303,12 +314,23 @@ internal class SmartPlaylistFolderController {
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
     private val moveMenuId = View.generateViewId()
+    private val alignedNativeTitles = WeakHashMap<TextView, Float>()
+    private val alignedNativeTitleOwners =
+        WeakHashMap<TextView, WeakReference<ViewGroup>>()
+    private val titleAlignmentReports = linkedSetOf<String>()
 
     @Volatile private var enabled = false
     @Volatile private var groupRootPlaylists = false
+    @Volatile private var multiSelectEnabled = true
     @Volatile private var bindings: Bindings? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var folderCreator: NativeGmmpFolderCreator? = null
+    @Volatile private var folderDeletion: NativeGmmpFolderDeletion? = null
+    private data class PendingFolderDeletion(
+        val plan: FolderDeletePolicy.Plan,
+        var checksRemaining: Int = 100
+    )
+    private val pendingFolderDeletes = arrayListOf<PendingFolderDeletion>()
     @Volatile private var rememberedDirectory: String? = null
     @Volatile private var rememberedOtherLocations = false
     @Volatile private var pendingCreationDirectory: String? = null
@@ -417,18 +439,25 @@ internal class SmartPlaylistFolderController {
 
     fun setNativeFolderCreator(loader: ClassLoader) {
         folderCreator = NativeGmmpFolderCreator(loader)
+        folderDeletion = NativeGmmpFolderDeletion(loader)
     }
 
     fun setEnabled(next: Boolean) {
-        setOptions(next, groupRootPlaylists)
+        setOptions(next, groupRootPlaylists, multiSelectEnabled)
     }
 
-    fun setOptions(nextEnabled: Boolean, nextGroupRoot: Boolean) {
+    fun setOptions(
+        nextEnabled: Boolean,
+        nextGroupRoot: Boolean,
+        nextMultiSelect: Boolean = multiSelectEnabled
+    ) {
         val enabledChanged = enabled != nextEnabled
         val groupingChanged = groupRootPlaylists != nextGroupRoot
-        if (!enabledChanged && !groupingChanged) return
+        val multiChanged = multiSelectEnabled != nextMultiSelect
+        if (!enabledChanged && !groupingChanged && !multiChanged) return
         enabled = nextEnabled
         groupRootPlaylists = nextGroupRoot
+        multiSelectEnabled = nextMultiSelect
         main.post {
             if (!groupRootPlaylists) {
                 rememberedOtherLocations = false
@@ -456,7 +485,8 @@ internal class SmartPlaylistFolderController {
         Log.i(
             TAG,
             "SMART FOLDERS OPTION | enabled=" + nextEnabled +
-                " | groupRoot=" + nextGroupRoot
+                " | groupRoot=" + nextGroupRoot +
+                " | multiSelect=" + nextMultiSelect
         )
     }
 
@@ -597,9 +627,12 @@ internal class SmartPlaylistFolderController {
 
     /** Add GoneSmart Move to GMMP's ORIGINAL Smart selection ActionMode. */
     fun onNativeSmartActionModeCreated(callback: Any?, menu: Menu?) {
-        if (!enabled || menu == null || !isSmartActionMode(callback)) return
+        if (!enabled || !multiSelectEnabled ||
+            menu == null || !isSmartActionMode(callback)
+        ) return
         val context = currentBrowser()?.list?.context ?: return
         installMoveMenu(menu, context)
+        Log.i(TAG, "SMART MULTI SELECT | native ActionMode Move installed")
     }
 
     /** Exact n3 selected models: s3.c -> s3$a.b -> ws4. */
@@ -609,7 +642,9 @@ internal class SmartPlaylistFolderController {
         item: MenuItem?
     ): Boolean {
         if (item?.itemId != moveMenuId) return false
-        if (!enabled || !isSmartActionMode(callback)) return true
+        if (!enabled || !multiSelectEnabled ||
+            !isSmartActionMode(callback)
+        ) return true
         val browser = currentBrowser() ?: return true
         val paths = selectedSmartPaths(callback)
         if (paths.isEmpty()) {
@@ -778,7 +813,13 @@ internal class SmartPlaylistFolderController {
             }
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
-                if (browsers[list] === browser) syncFolderRowsScroll(browser)
+                if (browsers[list] === browser) {
+                    syncFolderRowsScroll(browser)
+                    alignVisibleNativeTitles(browser)
+                    if (browser.moveSources != null) {
+                        syncMoveChromePalette(browser)
+                    }
+                }
                 true
             }
         val detachListener = object : View.OnAttachStateChangeListener {
@@ -896,14 +937,25 @@ internal class SmartPlaylistFolderController {
                     browser.otherLocations != otherLocations
                 ) return@post
                 val models = when {
-                    browser.moveSources != null -> emptyList()
                     browser.otherLocations -> snapshot.models
+                    browser.moveSources != null -> snapshot.models
                     groupRootPlaylists &&
                         sameFile(browser.current, browser.root) -> emptyList()
                     else -> snapshot.models
                 }
-                browser.nativeOrder = models.mapNotNull(::modelPath)
-                applyNativeModels(browser, models)
+                val order = models.mapNotNull(::modelPath)
+                val signature = nativeModelSignature(models)
+                browser.nativeOrder = order
+                if (SmartNativeSubmissionPolicy.shouldSubmit(
+                        browser.nativeSubmitted,
+                        browser.nativeSignature,
+                        signature
+                    )
+                ) {
+                    applyNativeModels(browser, models)
+                    browser.nativeSignature = signature
+                    browser.nativeSubmitted = true
+                }
                 browser.style = sampleNativeStyle(browser.list) ?: browser.style
                 render(browser, snapshot, models.size)
                 positionOverlay(browser)
@@ -1004,6 +1056,14 @@ internal class SmartPlaylistFolderController {
      * Never route ws4 through U(List): r1.c(...) casts that list to t23 and
      * crashes SmartListAdapter.onCreateViewHolder.
      */
+    private fun nativeModelSignature(models: List<Any>): List<String> =
+        models.mapNotNull { model ->
+            modelPath(model)?.let { path ->
+                val file = File(path)
+                path + "|" + file.lastModified() + "|" + file.length()
+            }
+        }
+
     private fun applyNativeModels(browser: Browser, models: List<Any>) {
         val native = bindings ?: return
         val differ = runCatching {
@@ -1024,8 +1084,20 @@ internal class SmartPlaylistFolderController {
         visibleSmartCount: Int
     ) {
         browser.rows.removeAllViews()
-        browser.folderBand.translationY = 0f
-        browser.lastFolderScrollOffset = Int.MIN_VALUE
+        val locationKey = canonicalPath(snapshot.directory.path) +
+            "|other=" + browser.otherLocations +
+            "|move=" + (browser.moveSources != null)
+        val locationChanged = browser.renderedLocationKey != locationKey
+        browser.renderedLocationKey = locationKey
+        if (locationChanged) {
+            browser.folderBand.translationY = 0f
+            browser.lastFolderScrollOffset = 0
+            runCatching {
+                browser.list.javaClass.getMethod(
+                    "scrollToPosition", Integer.TYPE
+                ).invoke(browser.list, 0)
+            }
+        }
         renderBreadcrumb(browser)
 
         val moving = browser.moveSources != null
@@ -1034,13 +1106,16 @@ internal class SmartPlaylistFolderController {
         } else {
             snapshot.folders
         }
+        val nativeMenuButton = firstNativeContextMenu(browser.list)
         folders.forEach { folder ->
             val row = createRow(
                 browser,
                 folder.name,
                 folder = true,
-                contextMenuSource = null,
-                onContext = null
+                contextMenuSource = nativeMenuButton,
+                onContext = if (moving) null else { anchor ->
+                    showNativeFolderContextMenu(browser, folder, anchor)
+                }
             )
             row.setOnClickListener { navigate(browser, folder) }
             browser.rows.addView(row)
@@ -1127,7 +1202,7 @@ internal class SmartPlaylistFolderController {
         text: String,
         folder: Boolean,
         contextMenuSource: ImageView?,
-        onContext: (() -> Unit)?
+        onContext: ((View) -> Unit)?
     ): View {
         val style = browser.style
         val layoutId = style?.rowLayoutId?.takeIf { it != 0 } ?: 0
@@ -1268,7 +1343,7 @@ internal class SmartPlaylistFolderController {
         host: View,
         folder: Boolean,
         source: ImageView?,
-        onContext: (() -> Unit)?
+        onContext: ((View) -> Unit)?
     ) {
         val id = host.resources.getIdentifier(
             "rvContextMenu",
@@ -1277,7 +1352,7 @@ internal class SmartPlaylistFolderController {
         )
         if (id == 0) return
         val button = root.findViewById<ImageView>(id) ?: return
-        if (folder || onContext == null) {
+        if (onContext == null) {
             button.visibility = View.GONE
             button.setOnClickListener(null)
             return
@@ -1297,7 +1372,7 @@ internal class SmartPlaylistFolderController {
         source?.imageTintList?.let { button.imageTintList = it }
         button.visibility = View.VISIBLE
         button.isClickable = true
-        button.setOnClickListener { onContext() }
+        button.setOnClickListener { onContext(button) }
     }
 
     private fun dispatchNativeAction(
@@ -1439,6 +1514,78 @@ internal class SmartPlaylistFolderController {
             )
         }
         return null
+    }
+
+    private fun playlistTitleInset(list: View): Int {
+        val key = PLAYLIST_TITLE_INSET_KEY +
+            list.resources.displayMetrics.densityDpi
+        return list.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS,
+            android.content.Context.MODE_PRIVATE
+        ).getInt(key, dp(list, 12)).coerceIn(0, dp(list, 96))
+    }
+
+    private fun alignVisibleNativeTitles(browser: Browser) {
+        val native = bindings ?: return
+        val targetInset = playlistTitleInset(browser.list)
+        val holderGetter = runCatching {
+            browser.list.javaClass.getMethod(
+                "getChildViewHolder", View::class.java
+            )
+        }.getOrNull() ?: return
+        for (index in 0 until browser.list.childCount) {
+            val row = browser.list.getChildAt(index) ?: continue
+            val holder = runCatching {
+                holderGetter.invoke(browser.list, row)
+            }.getOrNull() ?: continue
+            if (!native.holderClass.isInstance(holder)) continue
+            val model = runCatching {
+                native.holderModel.get(holder)
+            }.getOrNull() ?: continue
+            val title = findTextView(row, modelName(model)) ?: continue
+            if (!alignedNativeTitles.containsKey(title)) {
+                alignedNativeTitles[title] = title.translationX
+                alignedNativeTitleOwners[title] = WeakReference(browser.list)
+            }
+            val rowPosition = IntArray(2)
+            val titlePosition = IntArray(2)
+            row.getLocationOnScreen(rowPosition)
+            title.getLocationOnScreen(titlePosition)
+            val currentInset = titlePosition[0] - rowPosition[0] +
+                title.compoundPaddingStart
+            val delta = targetInset - currentInset
+            if (kotlin.math.abs(delta) >= 1) {
+                val base = alignedNativeTitles[title] ?: 0f
+                title.translationX = (title.translationX + delta)
+                    .coerceIn(
+                        base - dp(browser.list, 48),
+                        base + dp(browser.list, 48)
+                    )
+            }
+            if (BuildConfig.DEBUG && titleAlignmentReports.size < 8) {
+                val signature = "$currentInset->$targetInset"
+                if (titleAlignmentReports.add(signature)) {
+                    Log.i(
+                        TAG,
+                        "SMART TITLE ALIGN | nativeInset=" + currentInset +
+                            " | playlistInset=" + targetInset +
+                            " | delta=" + delta
+                    )
+                }
+            }
+        }
+    }
+
+    private fun restoreAlignedNativeTitles(browser: Browser) {
+        val titles = alignedNativeTitleOwners.entries
+            .filter { it.value.get() === browser.list }
+            .map { it.key }
+        titles.forEach { title ->
+            alignedNativeTitles.remove(title)?.let { base ->
+                title.translationX = base
+            }
+            alignedNativeTitleOwners.remove(title)
+        }
     }
 
     private fun firstNativeContextMenu(list: ViewGroup): ImageView? {
@@ -1777,11 +1924,14 @@ internal class SmartPlaylistFolderController {
             closeMoveBrowser(browser)
             return
         }
+        observeMoveFabPalette(browser)
+        syncMoveChromePalette(browser)
         browser.list.post {
             if (browsers[list] === browser &&
                 browser.moveSources != null &&
                 positionMoveFab(browser)
             ) {
+                syncMoveChromePalette(browser)
                 runCatching {
                     fab.javaClass.getMethod("show").invoke(fab)
                 }.onFailure {
@@ -1845,6 +1995,144 @@ internal class SmartPlaylistFolderController {
         Log.w(TAG, "SMART MOVE UI | native AestheticFab clone failed", it)
     }.getOrNull()
 
+    private fun nativeFabDrawableTint(
+        drawable: Drawable?,
+        depth: Int = 0
+    ): android.content.res.ColorStateList? {
+        if (drawable == null || depth > 6) return null
+        val tint = runCatching {
+            drawable.javaClass.methods.firstOrNull {
+                it.name == "getTintList" && it.parameterCount == 0
+            }?.invoke(drawable) as? android.content.res.ColorStateList
+        }.getOrNull()
+        if (tint != null) return tint
+        val fill = runCatching {
+            drawable.javaClass.methods.firstOrNull {
+                it.name == "getFillColor" && it.parameterCount == 0
+            }?.invoke(drawable) as? android.content.res.ColorStateList
+        }.getOrNull()
+        if (fill != null) return fill
+        if (drawable is ColorDrawable) {
+            return android.content.res.ColorStateList.valueOf(drawable.color)
+        }
+        if (drawable is android.graphics.drawable.LayerDrawable) {
+            for (index in 0 until drawable.numberOfLayers) {
+                nativeFabDrawableTint(
+                    drawable.getDrawable(index), depth + 1
+                )?.let { return it }
+            }
+        }
+        if (drawable is android.graphics.drawable.InsetDrawable) {
+            return nativeFabDrawableTint(drawable.drawable, depth + 1)
+        }
+        return null
+    }
+
+    private fun observeMoveFabPalette(browser: Browser) {
+        if (browser.moveThemeObserver != null || browser.moveFab == null) return
+        runCatching {
+            val list = browser.list
+            val loader = list.javaClass.classLoader
+                ?: error("GMMP classloader missing")
+            val theme = runCatching {
+                loader.loadClass("com.afollestad.aesthetic.a\$a")
+                    .getDeclaredMethod("c")
+                    .apply { isAccessible = true }.invoke(null)
+            }.getOrElse {
+                loader.loadClass("com.afollestad.aesthetic.Aesthetic")
+                    .getDeclaredMethod("get")
+                    .apply { isAccessible = true }.invoke(null)
+            } ?: error("GMMP Aesthetic not initialized")
+            val attr = list.resources.getIdentifier(
+                "colorAccent", "attr", list.context.packageName
+            )
+            require(attr != 0)
+            val fallback = theme.javaClass.getDeclaredMethod(
+                "b", Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }.invoke(theme, attr)
+                ?: error("GMMP accent observable missing")
+            val utility = loader.loadClass("oy0")
+            val method = utility.declaredMethods.first {
+                it.name == "h" && it.parameterCount == 3 &&
+                    it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
+                    it.parameterTypes[1] == String::class.java
+            }.apply { isAccessible = true }
+            val observable = method.invoke(
+                null, theme, "!mainColorAccent", fallback
+            ) ?: error("GMMP native FAB observable unavailable")
+            val observerType = loader.loadClass("nf3")
+            val listener = java.lang.reflect.Proxy.newProxyInstance(
+                observerType.classLoader, arrayOf(observerType)
+            ) { _, callback, args ->
+                when (callback.name) {
+                    "a" -> (args?.firstOrNull() as? Number)?.let { value ->
+                        list.post {
+                            if (browsers[list] === browser &&
+                                browser.moveSources != null
+                            ) {
+                                browser.moveFabColor = value.toInt()
+                                syncMoveChromePalette(browser)
+                            }
+                        }
+                    }
+                    "c" -> args?.firstOrNull()?.let {
+                        browser.moveThemeDisposables.add(it)
+                    }
+                    "onError" -> Log.w(
+                        TAG, "SMART MOVE UI | GMMP FAB palette observer error",
+                        args?.firstOrNull() as? Throwable
+                    )
+                }
+                null
+            }
+            browser.moveThemeObserver = listener
+            observable.javaClass.getMethod("b", observerType)
+                .invoke(observable, listener)
+            Log.i(TAG, "SMART MOVE UI | native !mainColorAccent observer active")
+        }.onFailure {
+            Log.w(
+                TAG, "SMART MOVE UI | native FAB observer unavailable; " +
+                    "using original AestheticFab live background",
+                it
+            )
+        }
+    }
+
+    private fun nativeMovePaletteFallback(browser: Browser): Int? {
+        val fab = browser.moveFab ?: return null
+        val tint = runCatching {
+            fab.javaClass.getMethod("getBackgroundTintList")
+                .invoke(fab) as? android.content.res.ColorStateList
+        }.getOrNull() ?: nativeFabDrawableTint(fab.background)
+        return tint?.getColorForState(
+            fab.drawableState, tint.defaultColor
+        )?.takeIf { Color.alpha(it) >= 200 }
+    }
+
+    private fun syncMoveChromePalette(browser: Browser) {
+        if (browser.moveSources == null || browser.moveActionMode == null) return
+        val fab = browser.moveFab ?: return
+        val color = browser.moveFabColor
+            ?: nativeMovePaletteFallback(browser)
+            ?: return
+        val changed = browser.moveLastColor != color
+        browser.moveLastColor = color
+        if (changed) {
+            fab.backgroundTintList =
+                android.content.res.ColorStateList.valueOf(color)
+        }
+        browser.moveBarTintApplied =
+            multiSelect.tintNativeContextBar(browser.list, color)
+        if (changed || browser.moveBarTintApplied) {
+            Log.i(
+                TAG,
+                "SMART MOVE UI | native picker FAB color=#" +
+                    Integer.toHexString(color) +
+                    " | originalActionBarTint=" + browser.moveBarTintApplied
+            )
+        }
+    }
+
     private fun nativeMiniPlayerTop(list: View): Int? {
         val visible = Rect()
         if (!list.getGlobalVisibleRect(visible)) return null
@@ -1907,6 +2195,16 @@ internal class SmartPlaylistFolderController {
         val mode = browser.moveActionMode
         browser.moveActionMode = null
         mode?.finish()
+        browser.moveFabColor = null
+        browser.moveLastColor = null
+        browser.moveBarTintApplied = false
+        browser.moveThemeDisposables.forEach { disposable ->
+            runCatching {
+                disposable.javaClass.getMethod("b").invoke(disposable)
+            }
+        }
+        browser.moveThemeDisposables.clear()
+        browser.moveThemeObserver = null
         val fab = browser.moveFab
         browser.moveFab = null
         if (fab != null) {
@@ -1947,6 +2245,144 @@ internal class SmartPlaylistFolderController {
                 }
             }
         }.also { it.startWatching() }
+    }
+
+
+    fun onOriginalFolderDeleteDialogShown(dialog: android.app.Dialog) {
+        folderDeletion?.onNativeDialogShown(dialog)
+    }
+
+    private fun allSmartPlaylistPaths(root: File): List<String> {
+        if (!root.isDirectory) return emptyList()
+        return root.walkTopDown()
+            .filter {
+                it.isFile && it.extension.equals("spl", ignoreCase = true)
+            }
+            .take(4096)
+            .mapNotNull { runCatching { it.canonicalPath }.getOrNull() }
+            .toList()
+    }
+
+    private fun showNativeFolderContextMenu(
+        browser: Browser,
+        folder: File,
+        anchor: View
+    ) {
+        if (browser.moveSources != null || browser.otherLocations) return
+        val context = anchor.context
+        val menuId = context.resources.getIdentifier(
+            "menu_gm_context_smart", "menu", context.packageName
+        )
+        val deleteId = context.resources.getIdentifier(
+            "menuContextDelete", "id", context.packageName
+        )
+        if (menuId == 0 || deleteId == 0) return
+        val popup = android.widget.PopupMenu(context, anchor)
+        if (!runCatching {
+                popup.menuInflater.inflate(menuId, popup.menu)
+            }.isSuccess
+        ) return
+        val originalDelete = popup.menu.findItem(deleteId) ?: return
+        val nativeTitle = originalDelete.title
+        val nativeIcon = originalDelete.icon
+        popup.menu.clear()
+        popup.menu.add(Menu.NONE, deleteId, 0, nativeTitle).setIcon(nativeIcon)
+        popup.setOnMenuItemClickListener { item ->
+            if (item.itemId == deleteId) {
+                requestNativeFolderDeletion(browser, folder)
+                true
+            } else false
+        }
+        popup.show()
+    }
+
+    private fun requestNativeFolderDeletion(
+        browser: Browser,
+        folder: File
+    ): Boolean {
+        val deletion = folderDeletion ?: return false
+        val plan = FolderDeletePolicy.prepare(
+            browser.root, folder, allSmartPlaylistPaths(browser.root)
+        )
+        if (plan == null) {
+            Log.w(
+                TAG,
+                "SMART FOLDER DELETE | blocked: unsafe path or non-Smart files"
+            )
+            showMoveError(browser.list.context)
+            return false
+        }
+        val targets = if (plan.nativePlaylistFiles.isNotEmpty()) {
+            plan.nativePlaylistFiles
+        } else {
+            listOf(plan.folder)
+        }
+        if (!deletion.confirmNativeDeletion(
+                browser.list.context, targets, plan.folder
+            )
+        ) return false
+        val pending = PendingFolderDeletion(plan)
+        pendingFolderDeletes.add(pending)
+        waitForNativeFolderDeletion(pending)
+        return true
+    }
+
+    private fun waitForNativeFolderDeletion(
+        pending: PendingFolderDeletion
+    ) {
+        if (!pendingFolderDeletes.contains(pending)) return
+        val plan = pending.plan
+        val filesGone = FolderDeletePolicy.nativeRemovalComplete(
+            plan, allSmartPlaylistPaths(plan.root)
+        )
+        if (filesGone && plan.nativePlaylistFiles.isNotEmpty()) {
+            if (FolderDeletePolicy.removeEmptyDirectories(plan)) {
+                pendingFolderDeletes.remove(pending)
+                refreshAfterFolderDeletion(plan)
+                Log.i(
+                    TAG,
+                    "SMART FOLDER DELETE | native files removed; folders pruned"
+                )
+                return
+            }
+        }
+        if (plan.nativePlaylistFiles.isEmpty() && !plan.folder.exists()) {
+            pendingFolderDeletes.remove(pending)
+            refreshAfterFolderDeletion(plan)
+            Log.i(TAG, "SMART FOLDER DELETE | native empty-folder delete complete")
+            return
+        }
+        if (--pending.checksRemaining <= 0) {
+            pendingFolderDeletes.remove(pending)
+            Log.i(
+                TAG,
+                "SMART FOLDER DELETE | canceled or not completed by native dialog"
+            )
+            return
+        }
+        main.postDelayed({
+            if (pendingFolderDeletes.contains(pending)) {
+                waitForNativeFolderDeletion(pending)
+            }
+        }, 600L)
+    }
+
+    private fun refreshAfterFolderDeletion(plan: FolderDeletePolicy.Plan) {
+        browsers.values.toList().forEach { browser ->
+            if (!browser.list.isAttachedToWindow ||
+                !sameFile(browser.root, plan.root)
+            ) return@forEach
+            val deletedPrefix =
+                canonicalPath(plan.folder.path) + File.separator
+            if (!browser.current.exists() ||
+                canonicalPath(browser.current.path).startsWith(deletedPrefix)
+            ) {
+                browser.current = browser.root
+                browser.otherLocations = false
+            }
+            startObserver(browser)
+            refresh(browser)
+        }
     }
 
     private fun installNewFolderMenu(menu: Menu, context: android.content.Context) {
@@ -2063,6 +2499,7 @@ internal class SmartPlaylistFolderController {
             browser.originalPaddingBottom
         )
         browser.list.clipToPadding = browser.originalClipToPadding
+        restoreAlignedNativeTitles(browser)
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
         if (browser.list.viewTreeObserver.isAlive) {
             browser.list.viewTreeObserver.removeOnGlobalLayoutListener(
@@ -2180,7 +2617,11 @@ internal class SmartPlaylistFolderController {
             if (browsers[list] === browser) {
                 updateNativeInset(browser)
                 syncFolderRowsScroll(browser)
-                if (browser.moveSources != null) positionMoveFab(browser)
+                alignVisibleNativeTitles(browser)
+                if (browser.moveSources != null) {
+                    syncMoveChromePalette(browser)
+                    positionMoveFab(browser)
+                }
             }
         }
     }
