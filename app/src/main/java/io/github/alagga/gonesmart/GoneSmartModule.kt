@@ -313,6 +313,9 @@ class GoneSmartModule : XposedModule() {
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 
+    private val playlistBridgeController =
+        PlaylistBridgeController()
+
     private val playlistBridgeEvaluationDepth =
         ThreadLocal.withInitial { 0 }
 
@@ -529,10 +532,11 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
 
-                // Playlist Bridge's first build is deliberately diagnostic
-                // only. It observes original Smart Playlist persistence /
-                // evaluation and GMMP's original read-only playlist data
-                // source without writing a new rule or changing a query.
+                // Playlist Bridge is still a DEBUG-only proof of concept.
+                // The previous read-only device trace proved native dynamic
+                // Smart-link evaluation and the original ordinary-playlist
+                // parser. This build adds one fail-closed end-to-end bridge
+                // path for disposable Smart Playlists only.
                 runCatching {
                     installPlaylistBridgeDiagnostics(param)
                 }.onFailure {
@@ -747,6 +751,21 @@ class GoneSmartModule : XposedModule() {
                         )
                     } catch (error: Throwable) {
                         Log.e(TAG, "Track Mix menu insertion failed", error)
+                    }
+                    if (BuildConfig.DEBUG) {
+                        runCatching {
+                            playlistBridgeController.onMenuInflated(
+                                chain.getArg(0) as? Int ?: 0,
+                                chain.getArg(1) as? android.view.Menu,
+                                chain.getThisObject()
+                            )
+                        }.onFailure {
+                            Log.w(
+                                PLAYLIST_BRIDGE_TAG,
+                                "POC MENU FAILED | native menu untouched",
+                                it
+                            )
+                        }
                     }
                     runCatching {
                             playlistFolderPreview.onMenuInflated(
@@ -1569,8 +1588,11 @@ class GoneSmartModule : XposedModule() {
         if (!BuildConfig.DEBUG) return
 
         val loader = param.classLoader
+        val pocReady = playlistBridgeController.configure(loader)
         playlistBridgeInfo(
-            "DIAG V2 START | build=playlist-bridge-v2 | readOnly=true"
+            "POC V1 START | build=playlist-bridge-poc-v1" +
+                " | writableDisposableSmartOnly=true" +
+                " | bindings=" + pocReady
         )
 
         var installed = 0
@@ -1579,8 +1601,9 @@ class GoneSmartModule : XposedModule() {
         installed += installPlaylistBridgeReaderDiagnostics(loader)
 
         playlistBridgeInfo(
-            "DIAG V2 READY | hooks=" + installed +
-                " | native GMMP behavior unchanged"
+            "POC V1 READY | hooks=" + installed +
+                " | bridgeBindings=" + pocReady +
+                " | native non-Bridge rules unchanged"
         )
     }
 
@@ -1591,15 +1614,46 @@ class GoneSmartModule : XposedModule() {
 
         runCatching {
             val presenterClass = loader.loadClass("ds4")
+            val constructor = presenterClass
+                .getDeclaredConstructor(
+                    android.content.Context::class.java,
+                    android.os.Bundle::class.java
+                )
+                .apply { isAccessible = true }
+            hook(constructor).intercept { chain ->
+                val context = chain.getArg(0) as? android.content.Context
+                val result = chain.proceed()
+                playlistBridgeController.capturePresenter(
+                    chain.getThisObject(),
+                    context
+                )
+                result
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ds4(Context,Bundle)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ds4(Context,Bundle)", it)
+        }
+
+        runCatching {
+            val presenterClass = loader.loadClass("ds4")
             val method = presenterClass
                 .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
                 .apply { isAccessible = true }
             hook(method).intercept { chain ->
+                val edit = chain.getArg(0) as? Boolean == true
                 if (playlistBridgeShouldReport("chooser-v2", 12)) {
                     playlistBridgeInfo(
-                        "EDITOR CHOOSER | method=ds4.g2 | edit=" +
-                            (chain.getArg(0) as? Boolean)
+                        "EDITOR CHOOSER | method=ds4.g2 | edit=" + edit
                     )
+                }
+                if (
+                    playlistBridgeController.interceptNativeLinkedEditor(
+                        chain.getThisObject(),
+                        edit
+                    )
+                ) {
+                    return@intercept null
                 }
                 chain.proceed()
             }
@@ -1706,7 +1760,40 @@ class GoneSmartModule : XposedModule() {
             }
 
             hook(method).intercept { chain ->
-                val snapshot = playlistBridgeRuleSnapshot(chain.getThisObject())
+                val rule = chain.getThisObject()
+                val snapshot = playlistBridgeRuleSnapshot(rule)
+                val isBridge = playlistBridgeController.isBridgeRule(rule)
+                if (isBridge) {
+                    val started = SystemClock.elapsedRealtimeNanos()
+                    val result = runCatching {
+                        playlistBridgeController.compile(rule)
+                    }.onFailure {
+                        playlistBridgeWarn(
+                            "POC COMPILE EXCEPTION | forcing false predicate",
+                            it
+                        )
+                    }.getOrNull()
+                        ?: playlistBridgeController.failClosedPredicate()
+                    if (result != null) {
+                        val args = runCatching {
+                            result.javaClass.getMethod("a")
+                                .invoke(result) as? List<*>
+                        }.getOrNull()
+                        playlistBridgeInfo(
+                            "POC RULE COMPILE END | result=" +
+                                result.javaClass.name +
+                                " | queryArgs=" + (args?.size ?: -1) +
+                                " | elapsedMs=" +
+                                ((SystemClock.elapsedRealtimeNanos() - started) /
+                                    1_000_000L)
+                        )
+                        return@intercept result
+                    }
+                    throw IllegalStateException(
+                        "Playlist Bridge fail-closed predicate unavailable"
+                    )
+                }
+
                 val isNativeLink = snapshot != null &&
                     PlaylistBridgeDiagnosticPolicy
                         .isNativeSmartPlaylistReference(snapshot.value)

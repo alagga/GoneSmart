@@ -1,6 +1,6 @@
 # Playlist Bridge — feasibility study (28 September 2026)
 
-**Status: FIRST READ-ONLY RUNTIME DIAGNOSTIC BUILD PREPARED. No Playlist Bridge rule, button, `.spl` write, query replacement, or ordinary-playlist mutation is implemented yet.** Target: the maintainer's original GMMP 4.2.0 APK and the existing `feature/multi-playlist-add` development branch. Do not commit or redistribute the privately supplied proprietary APK.
+**Status: WRITABLE DEBUG-ONLY END-TO-END POC PREPARED AFTER THE FIRST DEVICE TRACE. Use disposable Smart Playlists only. No ordinary playlist or GMMP database row is mutated by Playlist Bridge.** Target: the maintainer's original GMMP 4.2.0 APK and the existing `feature/multi-playlist-add` development branch. Do not commit or redistribute the privately supplied proprietary APK.
 
 ## User goal and proposed names
 
@@ -86,3 +86,25 @@ The v2 diagnostic therefore changes the instrumentation architecture, not GMMP b
 - still no button, custom rule persistence, query replacement or playlist mutation.
 
 The next writable proof-of-concept remains gated on these v2 runtime observations.
+
+
+## End-to-end debug PoC — 28 September 2026
+
+The correct device log from the first diagnostic build established the two blockers that had to be proven before writing anything: original linked Smart rules were parsed and re-evaluated during actual Smart Playlist display/play, and the original GMMP reader loaded the disposable ordinary M3U as 22/22 parsed entries. The next build intentionally batches the remaining core path into one device test.
+
+### Implementation in this PoC
+
+- A second Smart-editor toolbar action is inserted only into original menu_gm_smart_editor, anchored to original menuLink. It reuses GMMP's original ic_gm_link drawable and link_playlist localized string; GoneSmart's lilac sparkle distinguishes the extension action.
+- Ordinary choices come from original GMDatabase.E().G1() / PlaylistDao. The selection UI is original GMMP zn4 ShowDialogEvent -> MaterialDialog list rendering.
+- Selection is validated/prewarmed through original hp3.c before the native Smart editor is mutated.
+- Persistence is a normal original ft4 linked rule (field -1) added through original ds4.P1. Its Value is gonesmart-playlist:<hex-path>|<display name>. Native rule-row formatting still uses segment 2 as the visible name, while stock GMMP without GoneSmart sees a non-file sentinel instead of the real M3U path.
+- On ft4.z, only a validated Playlist Bridge sentinel is intercepted. Current playlist membership is obtained with original hp3.c, then compiled with original ot0.t(z75.URI,List). Lists above 800 values are split into native IN clauses and combined with original zw3(..., OR).
+- Missing, unsupported, parse-failed or empty sources fail closed using original ot0.p(z75.ID, Long.MIN_VALUE); they never fall through to GMMP's SPL loader.
+- Membership is only cached in memory, keyed by canonical path + file lastModified + length. The first use/process restart or a changed file invokes the native parser again; no membership snapshot is persisted.
+- Clicking an already persisted Bridge rule follows GMMP's original linked-rule edit dispatch, but GoneSmart intercepts only that Bridge value and reopens the same native ordinary-playlist chooser. Original linked Smart Playlists continue through ds4.g2(true) untouched.
+
+### One consolidated device test requested
+
+Use one disposable ordinary playlist and one disposable Smart Playlist. Confirm the second sparkle link icon; select the ordinary playlist; save and verify Smart results; reopen and edit the linked Bridge rule; modify the ordinary source without editing the Smart Playlist and verify membership updates; then use normal Smart Playlist Play. Capture Logcat filtered by GoneSmartPlaylistBridge. Relevant markers are POC MENU, POC CHOOSER, POC ADD/EDIT, POC SOURCE, POC COMPILE and POC RULE COMPILE END.
+
+If any step fails, preserve the disposable Smart Playlist file and log but do not hand-edit it. The next change should target the single failing native boundary rather than split the feature into many speculative builds.
