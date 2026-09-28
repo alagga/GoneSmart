@@ -170,3 +170,22 @@ The maintainer accepted the consolidated single-link-button UI and requested two
 3. **Smart-Playlist folders.** No no-op setting is exposed yet. One read-only debug diagnostic is bundled into the compatibility/terminology test build. It observes the exact native `ss4.P1` load request, the verified `jz.apply` mode-5 root loader, `os4.B2` fragment binding, `ls4.U` adapter updates and `qs4.onEvent` FileObserver notifications. It also reports only redacted root identity plus direct child-directory/direct-`.spl` counts and the number of native `ws4` models loaded. This is sufficient to implement the separate **Smart-Playlist folders** option in the following build without a dedicated diagnostics-only device pass.
 
 The Smart-Playlist-folder diagnostics do not insert folders, recurse, alter adapter data, redirect creation, or change the native FileObserver.
+
+
+## Disabled-module compatibility device result + first Smart-Playlist-folders implementation — 28 September 2026
+
+The maintainer disabled GoneSmart for GMMP, restarted the player and verified the V2 Bridge rule remained visible in the native editor as `Playlist: <name>` but no longer affected results, including when nested inside a rule group. The supplied full Logcat independently shows stock GMMP compiling the V2 compatibility placeholders as native `song_id != Long.MIN_VALUE` and `song_id = Long.MIN_VALUE` leaves inside the surrounding query. This confirms the intended boolean-neutral disabled-module contract on the tested GMMP 4.2.0 device.
+
+The bundled Smart-folder trace also confirmed the real `smartListRecyclerView` uses native `ls4`, `ss4.P1` drives reloads and `qs4` observes file changes. The next implementation therefore exposes the requested separate **Smart-Playlist folders** companion option (default off) and keeps native ownership of Smart-Playlist files/actions:
+
+- configured Smart root is resolved through GMMP's original `tx4.b(rx4.s)`;
+- each current-folder `.spl` is parsed by original `ws4.r(File)`;
+- current-folder Smart models are sorted with original `ou4.e` using the live `ts4.q/zu4` sort preferences;
+- original `ls4` remains installed and receives the current-folder native `ws4` list;
+- GoneSmart overlays only physical folder rows plus a breadcrumb built from GMMP's own horizontal metadata/separator XML;
+- Smart-Playlist click/long-click/context actions are dispatched only through a currently bound native `vs4` holder whose `A.v` file path matches the requested source;
+- folder creation reuses GMMP's existing MaterialDialogs new-folder creator;
+- original `ss4$b` add flow remains unchanged, but a brand-new root `ws4.t(File)` save is retargeted to the currently selected physical folder; existing files are never implicitly moved;
+- a FileObserver is scoped to the currently open nested folder because GMMP's own `qs4` observer is rooted at the native Smart root.
+
+One writer hook now coordinates the new-folder destination redirect and Playlist Bridge's already-tested temporary V2 persistence rewrite so the two features cannot race or double-hook `ws4.t(File)`.

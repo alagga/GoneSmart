@@ -566,6 +566,17 @@ class MainActivity : AppCompatActivity() {
                 )
             )))
         container.addView(verticalGap(12))
+        container.addView(settingGroup(listOf(
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
+                "▤",
+                "Smart-Playlist folders",
+                "Browse physical folders directly inside GMMP's " +
+                    "Smart-Playlists tab.",
+                COLOR_ACCENT
+            )
+        )))
+        container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Playlist folders",
             body = "Browse physical playlist folders in both GMMP views; " +
@@ -589,7 +600,7 @@ class MainActivity : AppCompatActivity() {
                 "⇵",
                 "Flip queue / Play flipped",
                 "Reverse your entire queue while keeping the current song, " +
-                    "or play any playlist or Smart Playlist from its last " +
+                    "or play any playlist or Smart-Playlist from its last " +
                     "song to its first.",
                 COLOR_ACCENT
             )
@@ -764,7 +775,7 @@ class MainActivity : AppCompatActivity() {
                 "gets a sparkle-marked reverse action next to its existing " +
                 "commands; it reverses the entire native queue while " +
                 "preserving the exact currently playing entry and its " +
-                "position in the song. In ordinary and Smart Playlist " +
+                "position in the song. In ordinary and Smart-Playlist " +
                 "context menus, the sparkle-marked Play action starts " +
                 "the original GMMP playlist in reverse order. GMMP still " +
                 "resolves, writes and plays the selected native tracks; " +
@@ -1071,6 +1082,10 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
         setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, options.playlistFoldersEnabled)
+        setSwitch(
+            GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
+            options.smartPlaylistFoldersEnabled
+        )
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)
         refreshPlaylistFolderAvailability(options)

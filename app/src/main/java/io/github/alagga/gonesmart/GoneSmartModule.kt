@@ -123,6 +123,13 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
+            if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) {
+                val next = options.smartPlaylistFoldersEnabled
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    smartPlaylistFolderController.setEnabled(next)
+                }
+            }
+
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
                 if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
@@ -158,6 +165,7 @@ class GoneSmartModule : XposedModule() {
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
                 key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
@@ -309,6 +317,13 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistFolderPreview =
         PlaylistFolderPreviewController(playlistController)
+
+    private val smartPlaylistFolderController =
+        SmartPlaylistFolderController()
+
+    private val smartPlaylistSaveRedirectDepth =
+        ThreadLocal.withInitial { 0 }
+
     private var nativeMoveDiscovery: NativeGmmpMoveDiscovery? = null
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
@@ -550,19 +565,6 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
 
-                // One bundled pass for the maintainer's next requested
-                // feature. These hooks are read-only and only map the
-                // original Smart-Playlist root loader / adapter / observer
-                // lifecycle before a separate opt-in folder view is exposed.
-                runCatching {
-                    installSmartPlaylistFolderDiagnostics(param)
-                }.onFailure {
-                    Log.w(
-                        "GoneSmartSmartFolders",
-                        "DIAG INSTALL FAILED | native Smart-Playlist tab unchanged",
-                        it
-                    )
-                }
             }
 
             // Accepted folder functionality is available in debug AND
@@ -577,6 +579,17 @@ class GoneSmartModule : XposedModule() {
                     )
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
                     playlistFolderPreview.setNativePlaylistMover(param.classLoader)
+
+                    smartPlaylistFolderController.configure(param.classLoader)
+                    smartPlaylistFolderController.setNativeFolderCreator(
+                        param.classLoader
+                    )
+                    smartPlaylistFolderController.setEnabled(
+                        options.smartPlaylistFoldersEnabled
+                    )
+                    installSmartPlaylistFolderFeatureHooks(param)
+                    installSmartPlaylistSaveHook(param)
+
                     if (BuildConfig.DEBUG) {
                         nativeMoveDiscovery =
                             NativeGmmpMoveDiscovery(param.classLoader)
@@ -786,6 +799,11 @@ class GoneSmartModule : XposedModule() {
                     }
                     runCatching {
                             playlistFolderPreview.onMenuInflated(
+                                chain.getArg(0) as? Int ?: 0,
+                                chain.getArg(1) as? android.view.Menu,
+                                chain.getThisObject()
+                            )
+                            smartPlaylistFolderController.onMenuInflated(
                                 chain.getArg(0) as? Int ?: 0,
                                 chain.getArg(1) as? android.view.Menu,
                                 chain.getThisObject()
@@ -1019,6 +1037,7 @@ class GoneSmartModule : XposedModule() {
                     chain.getArg(0)
                 )
                 playlistFolderPreview.onNativeRecyclerObserved(list)
+                smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
                 Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter probe failed", it)
             }
@@ -1035,6 +1054,7 @@ class GoneSmartModule : XposedModule() {
                 val list = chain.getThisObject() as? android.view.View
                 playlistController.onNativeRecyclerAttached(list)
                 playlistFolderPreview.onNativeRecyclerObserved(list)
+                smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
                 Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach probe failed", it)
             }
@@ -1760,6 +1780,135 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+    private fun installSmartPlaylistFolderFeatureHooks(
+        param: PackageReadyParam
+    ) {
+        val loader = param.classLoader
+
+        runCatching {
+            val presenter = loader.loadClass("ss4")
+            val view = loader.loadClass("fo2")
+            val method = presenter.getDeclaredMethod("P1", view)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                smartPlaylistFolderController.capturePresenter(
+                    chain.getThisObject()
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | ss4.P1 presenter capture"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | ss4.P1",
+                it
+            )
+        }
+
+        runCatching {
+            val adapter = loader.loadClass("ls4")
+            val method = adapter.getDeclaredMethod(
+                "U",
+                java.util.List::class.java
+            ).apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val result = chain.proceed()
+                smartPlaylistFolderController.onNativeAdapterUpdated(
+                    chain.getThisObject()
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | ls4.U native refresh"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | ls4.U",
+                it
+            )
+        }
+
+        runCatching {
+            val callback = loader.loadClass("ss4\$b")
+            val method = callback.getDeclaredMethod("invoke")
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                smartPlaylistFolderController.markNativeCreateRequested()
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | original Smart add destination"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | ss4\$b.invoke",
+                it
+            )
+        }
+    }
+
+    /**
+     * Single writer hook for both independently-scoped features:
+     * Smart-Playlist folders may retarget ONLY a brand-new root save,
+     * then Playlist Bridge temporarily rewrites Bridge q-values for stock
+     * GMMP compatibility. Re-entry is bounded and the native writer remains
+     * the only code that serializes .spl files.
+     */
+    private fun installSmartPlaylistSaveHook(
+        param: PackageReadyParam
+    ) {
+        val smartPlaylistClass = param.classLoader.loadClass("ws4")
+        val method = smartPlaylistClass
+            .getDeclaredMethod("t", File::class.java)
+            .apply { isAccessible = true }
+
+        hook(method).intercept { chain ->
+            val originalDestination = chain.getArg(0) as? File
+            val depth = smartPlaylistSaveRedirectDepth.get()
+
+            if (depth == 0) {
+                val redirected = smartPlaylistFolderController
+                    .consumeRedirectedSaveDestination(originalDestination)
+                if (redirected != null &&
+                    originalDestination != null &&
+                    redirected.path != originalDestination.path
+                ) {
+                    smartPlaylistSaveRedirectDepth.set(1)
+                    try {
+                        return@intercept method.invoke(
+                            chain.getThisObject(),
+                            redirected
+                        )
+                    } finally {
+                        smartPlaylistSaveRedirectDepth.set(0)
+                    }
+                }
+            }
+
+            val token = playlistBridgeController.preparePortableSave(
+                chain.getThisObject(),
+                originalDestination
+            )
+            try {
+                chain.proceed()
+            } finally {
+                playlistBridgeController.restorePortableSave(token)
+            }
+        }
+
+        Log.i(
+            "GoneSmartSmartFolders",
+            "SMART FOLDERS SAVE READY | original ws4 writer preserved"
+        )
+    }
+
     private fun installPlaylistBridgeDiagnostics(
         param: PackageReadyParam
     ) {
@@ -1913,32 +2062,6 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeInfo("HOOK READY | ft4.t(XmlSerializer)")
         }.onFailure {
             playlistBridgeWarn("HOOK MISSING | ft4.t(XmlSerializer)", it)
-        }
-
-        // Persist a Bridge rule as a syntactically valid native linked-Smart
-        // rule. During GMMP's ORIGINAL ws4.t(File) writer only, swap each
-        // Bridge q-value to a neutral compatibility .spl chosen for its
-        // boolean position. Restore the live editor model in finally.
-        runCatching {
-            val smartPlaylistClass = loader.loadClass("ws4")
-            val method = smartPlaylistClass
-                .getDeclaredMethod("t", File::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val token = playlistBridgeController.preparePortableSave(
-                    chain.getThisObject(),
-                    chain.getArg(0) as? File
-                )
-                try {
-                    chain.proceed()
-                } finally {
-                    playlistBridgeController.restorePortableSave(token)
-                }
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ws4.t(File) portable Bridge save")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ws4.t(File) portable save", it)
         }
 
         // Native ds4.g2 ultimately creates its list dialog inside ds4$g.accept.
@@ -2794,7 +2917,8 @@ class GoneSmartModule : XposedModule() {
             hook(backMethod).intercept { chain ->
                 if (
                     playlistController.consumeBack() ||
-                    playlistFolderPreview.consumeBack()
+                    playlistFolderPreview.consumeBack() ||
+                    smartPlaylistFolderController.consumeBack()
                 ) {
                     null
                 } else {
@@ -2819,7 +2943,8 @@ class GoneSmartModule : XposedModule() {
                 hook(method).intercept { chain ->
                     if (
                         playlistController.consumeBack() ||
-                        playlistFolderPreview.consumeBack()
+                        playlistFolderPreview.consumeBack() ||
+                        smartPlaylistFolderController.consumeBack()
                     ) null else chain.proceed()
                 }
                 Log.i(TAG, "Playlist platform back hook ready")
