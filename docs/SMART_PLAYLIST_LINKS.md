@@ -1,6 +1,6 @@
 # Playlist Bridge — feasibility study (28 September 2026)
 
-**Status: PROPOSAL / APK SOURCE INVESTIGATION ONLY. No feature code, hook, or on-device test has been performed for Playlist Bridge.** Target: the maintainer's original GMMP 4.2.0 APK and the existing `feature/multi-playlist-add` development branch. Do not commit or redistribute the privately supplied proprietary APK.
+**Status: FIRST READ-ONLY RUNTIME DIAGNOSTIC BUILD PREPARED. No Playlist Bridge rule, button, `.spl` write, query replacement, or ordinary-playlist mutation is implemented yet.** Target: the maintainer's original GMMP 4.2.0 APK and the existing `feature/multi-playlist-add` development branch. Do not commit or redistribute the privately supplied proprietary APK.
 
 ## User goal and proposed names
 
@@ -48,3 +48,25 @@ The materialized original APK's binary AndroidManifest contains the GMMP package
 The companion app remains English-only. Inside GMMP, compose native localized `playlist` and the installed original link/action title where grammatically possible; any truly new phrase uses the already centralized `GoneSmartGmmpStrings.kt` with the known GMMP 4.2.0 language codes. Follow `docs/DESIGN_SYSTEM.md`, original skin/theme/layout, original editor controls and current Playlist folders navigation. Add opt-in setting, English in-app Help, README/FAQ, tests and documentation **only when a runtime-verified implementation is ready**. No feature code has been changed by this feasibility document and there is no authorized merge, signed release or device-success claim.
 
 Source: original privately supplied GMMP 4.2.0 APK (read-only DEX mapping in this session); current GoneSmart branch `AGENTS.md`, `docs/NATIVE_GMMP_AUDIT.md`, `docs/PLAYLIST_FOLDERS.md`, `QueueFlipController.kt`, and published official GMMP documentation above.
+
+
+## First runtime diagnostic build — 28 September 2026
+
+Branch: `feature/playlist-bridge`.
+
+This build directly tests the two architectural questions raised by the maintainer without modifying Smart Playlist behavior:
+
+1. **Does a persisted native Smart Playlist link get re-evaluated dynamically?** Debug-only hooks observe the original `ds4.g2` chooser, `ds4.P1` add-rule path, `ft4.c/t/z` parse/serialize/compile methods and `ws4.r(File)` source load. Values are classified and path/name data is hashed/redacted. If `ft4.z` and `ws4.r` recur when the Smart Playlist is reopened/refreshed/played, the correct Playlist Bridge architecture is a persistent reference plus on-demand membership resolution, not a copied snapshot.
+2. **Can GoneSmart reuse GMMP's actual ordinary-playlist reader instead of parsing M3U itself?** Debug-only hooks observe original `ip3(Context,kp3,int,boolean)` construction and `ip3.F(start,count)` page reads, walking only the already verified native `kp3 -> hp3 -> th1 -> File` model to identify the source in redacted form. Returned item counts and native parser/cache counts are logged; no item titles or paths are exposed.
+3. The exact original `ot0.t(qw3,List) -> xw3` native SQL `IN` helper and `z75.ID/URI` query fields are verified at hook-install time. Calls occurring inside a native linked-Smart evaluation are observed passively. The diagnostic never invokes this helper on its own and never substitutes a returned WHERE clause.
+
+### Device test for this build
+
+Use disposable data only.
+
+- Create **Smart A** with a simple ordinary native rule (for example a rating/year rule that returns a small known set).
+- Create **Smart B**, use GMMP's existing **Link Smart Playlist** action to link Smart A, save Smart B, close the editor, reopen/edit Smart B, then open its results and trigger one normal Play/refresh. This should produce `SMART LINK CHOOSER`, `SMART LINK ADD`, `SMART LINK SERIALIZE/PARSE`, `SMART LINK EVAL` and `SMART LINK SOURCE READ` markers as the corresponding original operations occur.
+- Open one small disposable **ordinary M3U playlist** in the normal Playlists tab and let its tracks display. This should produce `PLAYLIST READER INIT/PAGE` markers.
+- Capture Logcat for package `gonemad.gmmp` filtered by tag **GoneSmartPlaylistBridge**. The diagnostic intentionally logs hashes/counts instead of actual playlist paths or track metadata.
+
+Do **not** manually edit a `.spl` for this test. The next build should only write a synthetic ordinary-playlist link after these logs establish the native lifecycle and after the stock editor's validation/persistence boundary is mapped.
