@@ -40,52 +40,61 @@ class NativeGmmpUiTextTest {
         assertEquals("Erreur", NativeGmmpUiText.errorLabel("Erreur", " "))
     }
 
-    @Test fun playlistBridgeUsesExactGermanAndEnglishSmartPlaylistWording() {
+    @Test fun playlistBridgeDerivesGermanAndEnglishFromNativeEditorWording() {
         assertEquals(
-            "Smart Playlist",
-            NativeGmmpUiText.smartPlaylistLabel("de", "Smart-Playlists")
+            "Smart-Playlist",
+            NativeGmmpUiText.smartPlaylistLabel(
+                "de",
+                "Smart-Playlist-Editor",
+                "Smarte Playlists"
+            )
         )
         assertEquals(
-            "Smart Playlist verlinken",
+            "Smart Playlist",
+            NativeGmmpUiText.smartPlaylistLabel(
+                "en",
+                "Smart Playlist Editor",
+                "Smart Playlists"
+            )
+        )
+        assertEquals(
+            "Smart-Playlist verlinken",
             NativeGmmpUiText.linkSmartPlaylistLabel(
-                "de",
                 "Playlist verlinken",
                 "Playlist",
-                "Smart Playlist"
+                "Smart-Playlist"
             )
         )
         assertEquals(
             "Link Smart Playlist",
             NativeGmmpUiText.linkSmartPlaylistLabel(
-                "en",
-                "Link playlist",
+                "Link Playlist",
                 "Playlist",
                 "Smart Playlist"
             )
         )
     }
 
-    @Test fun playlistBridgeKeepsHostLocalizedFallbackOutsideVerifiedGrammar() {
+    @Test fun playlistBridgeKeepsNativePluralWhenSingularCannotBeDerivedSafely() {
         assertEquals(
             "Listes intelligentes",
             NativeGmmpUiText.smartPlaylistLabel(
                 "fr",
+                "Éditeur de listes intelligentes",
                 "Listes intelligentes"
             )
         )
         assertEquals(
-            "Lier Smart",
+            "Lier Smart local",
             NativeGmmpUiText.linkSmartPlaylistLabel(
-                "xx",
                 "Lier Playlist",
                 "Playlist",
-                "Smart"
+                "Smart local"
             )
         )
         assertEquals(
             "Smart local",
             NativeGmmpUiText.linkSmartPlaylistLabel(
-                "xx",
                 "Forme fléchie",
                 "Playlist",
                 "Smart local"

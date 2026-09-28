@@ -125,3 +125,35 @@ The next build intentionally leaves that proven persistence/evaluation path unch
 - The former synthetic toolbar action ID is gone, which also removes the repeated Android resource lookup noise for `0x47534201`.
 
 This remains debug-only until the compatibility/disable contract and broader locale/UI coverage are finalized.
+
+
+## Portable disabled-module compatibility — 28 September 2026
+
+The maintainer explicitly requires Smart Playlists containing Playlist Bridge rules to remain usable when GoneSmart is disabled. The desired semantics are: native GMMP rules continue to work; the unavailable Playlist Bridge rule contributes no filtering; no missing-file crash or user-facing error should be required.
+
+A source audit of GMMP 4.2.0 found that the first PoC encoding was only safely ignorable at the top level. A missing linked-Smart source becomes GMMP's empty `yw3` clause and `ws4.c` filters that marker at the top level, but nested `jt4` groups do not perform that filter before building their AND/OR expression. Therefore a bogus Bridge path is not a sufficient disabled-module contract for arbitrary nested rules.
+
+The new persisted V2 representation remains a **valid native linked Smart Playlist rule**:
+
+`<neutral .spl>|<visible playlist name>|gonesmart-playlist-v2:<hex real M3U path>`
+
+GMMP 4.2.0 reads component 0 as the linked `.spl` and component 1 as the displayed linked-playlist name; the verified native evaluator/summary ignore later components. GoneSmart reads the final component and compiles the live normal-playlist membership exactly as before.
+
+Two tiny compatibility Smart Playlists are written with GMMP's original `ws4.t(File)` serializer into GMMP's own private files directory:
+
+- **true**: native `track_id != Long.MIN_VALUE`
+- **false**: native `track_id = Long.MIN_VALUE`
+
+The field mapping is the verified GMMP 4.2.0 `cg.A(100) -> z75.ID`; native operator 1 is `!=` and operator 0 is `=`. The files live under GMMP app data, so disabling or uninstalling GoneSmart does not remove them.
+
+During the original `ws4.t(File)` save only, Bridge rules are temporarily pointed at true/false compatibility files. The choice is derived recursively from the actual native rule tree so a Bridge-only subtree is neutral to its nearest surviving AND/OR expression; if an entire Smart Playlist contains only Bridge rules, it degrades to the same unfiltered/all-tracks semantics as an empty native Smart Playlist. The live editor objects are restored in `finally` immediately after the native writer returns. V1 PoC values remain readable and migrate to V2 on the next save.
+
+Device verification still required: save/reopen one Bridge Smart Playlist, disable GoneSmart in LSPosed and restart GMMP, then verify both a top-level and a nested Bridge rule are ignored while native rules still filter normally and no visible error appears. Re-enable GoneSmart and verify the Bridge rule becomes active again. If a user restructures an AND/OR group while GoneSmart is disabled, re-enable and save once before relying on the neutral-placeholder placement again.
+
+## Smart Playlist folders — native-first investigation proposal
+
+The maintainer requested a **separate opt-in GoneSmart setting** for folder navigation in GMMP's Smart Playlists tab. It must not be tied to the existing normal Playlist folders setting.
+
+GMMP 4.2.0 uses `os4` / `ss4` / `ls4` / `vs4` for the Smart Playlists surface and native `ws4` models. The verified `ss4.P1` loading path constructs the configured Smart Playlist root, filters `.spl` files with GMMP's own `pt1("spl")`, and currently calls `File.listFiles(FileFilter)` on that root only; it is not recursive. This makes nested physical Smart Playlist folders technically feasible as a GoneSmart navigation extension, but the following native contracts must be mapped before implementation: subfolder refresh/observer behavior (`qs4`), native Smart Playlist creation/save destination, and preservation of every original context action on actual `.spl` rows.
+
+Planned product behavior: a companion option **Smart Playlist folders** (English companion, initially off), independent navigation state from normal Playlist folders, physical nested folders, normal Android Back, and the same accepted native-first breadcrumb/row/theme rules where the Smart Playlist surface exposes equivalent live styles. The option should not be exposed until the native loader/creation lifecycle is implemented rather than presenting a no-op toggle.

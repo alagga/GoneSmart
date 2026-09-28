@@ -1740,6 +1740,31 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("HOOK MISSING | ft4.t(XmlSerializer)", it)
         }
 
+        // Persist a Bridge rule as a syntactically valid native linked-Smart
+        // rule. During GMMP's ORIGINAL ws4.t(File) writer only, swap each
+        // Bridge q-value to a neutral compatibility .spl chosen for its
+        // boolean position. Restore the live editor model in finally.
+        runCatching {
+            val smartPlaylistClass = loader.loadClass("ws4")
+            val method = smartPlaylistClass
+                .getDeclaredMethod("t", File::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val token = playlistBridgeController.preparePortableSave(
+                    chain.getThisObject()
+                )
+                try {
+                    chain.proceed()
+                } finally {
+                    playlistBridgeController.restorePortableSave(token)
+                }
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ws4.t(File) portable Bridge save")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ws4.t(File) portable save", it)
+        }
+
         // Native ds4.g2 ultimately creates its list dialog inside ds4$g.accept.
         // Scope only that original call so bx.K0(link_playlist) can use the
         // more precise "Link Smart Playlist" title without renaming any

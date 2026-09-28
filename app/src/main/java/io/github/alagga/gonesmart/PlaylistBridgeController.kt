@@ -80,7 +80,15 @@ internal class PlaylistBridgeController {
         val popupMenuGetMenu: Method,
         val popupMenuSetListener: Method,
         val popupMenuShow: Method,
-        val popupMenuListenerClass: Class<*>
+        val popupMenuListenerClass: Class<*>,
+        val smartPlaylistConstructor: Constructor<*>,
+        val smartPlaylistSave: Method,
+        val smartPlaylistName: Field,
+        val smartPlaylistRules: Field,
+        val smartPlaylistMatchAll: Field,
+        val groupRuleClass: Class<*>,
+        val groupRules: Field,
+        val groupMatchAll: Field
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -92,6 +100,12 @@ internal class PlaylistBridgeController {
     @Volatile private var bindings: Bindings? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var contextRef: WeakReference<Context>? = null
+    @Volatile private var trueCompatibilityPath: String? = null
+    @Volatile private var falseCompatibilityPath: String? = null
+
+    internal data class PortableSaveToken(
+        val originals: List<Pair<Any, String?>>
+    )
 
     fun configure(loader: ClassLoader): Boolean {
         val loaded = runCatching { createBindings(loader) }
@@ -108,7 +122,18 @@ internal class PlaylistBridgeController {
         val native = bindings ?: return
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
-        context?.let { contextRef = WeakReference(it) }
+        context?.let {
+            contextRef = WeakReference(it)
+            runCatching { ensureCompatibilitySmartPlaylists(it) }
+                .onFailure { error ->
+                    Log.e(
+                        TAG,
+                        "PORTABLE COMPATIBILITY INIT FAILED | " +
+                            "existing Bridge behavior remains active",
+                        error
+                    )
+                }
+        }
         Log.i(TAG, "POC PRESENTER | captured=${presenter.javaClass.name}")
     }
 
@@ -169,6 +194,7 @@ internal class PlaylistBridgeController {
                 .apply { isAccessible = true }
                 .get(rule) as? String
         }.getOrNull()
+        if (PlaylistBridgeReference.isBridgeValue(value)) return original
         if (
             !PlaylistBridgeDiagnosticPolicy
                 .isNativeSmartPlaylistReference(value)
@@ -361,6 +387,268 @@ internal class PlaylistBridgeController {
                 " | " + PlaylistBridgeDiagnosticPolicy.safePath(reference.path)
         )
         return result
+    }
+
+    fun preparePortableSave(smartPlaylist: Any?): PortableSaveToken? {
+        val native = bindings ?: return null
+        if (smartPlaylist == null) return null
+        val context = contextRef?.get() ?: return null
+        ensureCompatibilitySmartPlaylists(context)
+        val truePath = trueCompatibilityPath ?: return null
+        val falsePath = falseCompatibilityPath ?: return null
+
+        @Suppress("UNCHECKED_CAST")
+        val rules = native.smartPlaylistRules.get(smartPlaylist)
+            as? List<Any?> ?: return null
+        val matchAll = native.smartPlaylistMatchAll.getBoolean(smartPlaylist)
+        val originals = mutableListOf<Pair<Any, String?>>()
+
+        rewritePortableRuleList(
+            native = native,
+            rules = rules,
+            matchAll = matchAll,
+            targetIfBridgeOnly = true,
+            truePath = truePath,
+            falsePath = falsePath,
+            originals = originals
+        )
+
+        if (originals.isNotEmpty()) {
+            Log.i(
+                TAG,
+                "PORTABLE SAVE PREPARED | bridgeRules=${originals.size}" +
+                    " | rootMatchAll=$matchAll"
+            )
+        }
+        return PortableSaveToken(originals)
+    }
+
+    fun restorePortableSave(token: PortableSaveToken?) {
+        token?.originals?.asReversed()?.forEach { (rule, value) ->
+            runCatching {
+                findField(rule.javaClass, "q")
+                    .apply { isAccessible = true }
+                    .set(rule, value)
+            }
+        }
+    }
+
+    private fun rewritePortableRuleList(
+        native: Bindings,
+        rules: List<Any?>,
+        matchAll: Boolean,
+        targetIfBridgeOnly: Boolean,
+        truePath: String,
+        falsePath: String,
+        originals: MutableList<Pair<Any, String?>>
+    ) {
+        if (rules.isEmpty()) return
+        val bridgeOnly = rules.map { isBridgeOnlySubtree(native, it) }
+        if (bridgeOnly.all { it }) {
+            assignBridgeOnlyList(
+                native,
+                rules,
+                matchAll,
+                targetIfBridgeOnly,
+                truePath,
+                falsePath,
+                originals
+            )
+            return
+        }
+
+        // Neutral element for the CURRENT boolean operator:
+        // AND -> true, OR -> false.
+        val identity = matchAll
+        rules.forEachIndexed { index, rule ->
+            if (rule == null) return@forEachIndexed
+            if (bridgeOnly[index]) {
+                assignBridgeOnlyRule(
+                    native,
+                    rule,
+                    identity,
+                    truePath,
+                    falsePath,
+                    originals
+                )
+            } else if (
+                native.groupRuleClass.isInstance(rule) &&
+                containsBridge(native, rule)
+            ) {
+                @Suppress("UNCHECKED_CAST")
+                val children = native.groupRules.get(rule) as? List<Any?>
+                    ?: return@forEachIndexed
+                rewritePortableRuleList(
+                    native,
+                    children,
+                    native.groupMatchAll.getBoolean(rule),
+                    targetIfBridgeOnly = identity,
+                    truePath,
+                    falsePath,
+                    originals
+                )
+            }
+        }
+    }
+
+    private fun assignBridgeOnlyList(
+        native: Bindings,
+        rules: List<Any?>,
+        matchAll: Boolean,
+        target: Boolean,
+        truePath: String,
+        falsePath: String,
+        originals: MutableList<Pair<Any, String?>>
+    ) {
+        if (rules.isEmpty()) return
+        rules.forEachIndexed { index, rule ->
+            if (rule == null) return@forEachIndexed
+            val childTarget = when {
+                matchAll && target -> true
+                matchAll && !target -> index != 0
+                !matchAll && !target -> false
+                else -> index == 0
+            }
+            assignBridgeOnlyRule(
+                native,
+                rule,
+                childTarget,
+                truePath,
+                falsePath,
+                originals
+            )
+        }
+    }
+
+    private fun assignBridgeOnlyRule(
+        native: Bindings,
+        rule: Any,
+        target: Boolean,
+        truePath: String,
+        falsePath: String,
+        originals: MutableList<Pair<Any, String?>>
+    ) {
+        if (native.smartRuleClass.isInstance(rule) && isBridgeRule(rule)) {
+            val field = findField(rule.javaClass, "q").apply {
+                isAccessible = true
+            }
+            val original = field.get(rule) as? String
+            val reference = PlaylistBridgeReference.decode(original) ?: return
+            originals += rule to original
+            field.set(
+                rule,
+                PlaylistBridgeReference.encodePortable(
+                    reference.path,
+                    reference.displayName,
+                    if (target) truePath else falsePath
+                )
+            )
+            return
+        }
+
+        if (native.groupRuleClass.isInstance(rule)) {
+            @Suppress("UNCHECKED_CAST")
+            val children = native.groupRules.get(rule) as? List<Any?>
+                ?: return
+            assignBridgeOnlyList(
+                native,
+                children,
+                native.groupMatchAll.getBoolean(rule),
+                target,
+                truePath,
+                falsePath,
+                originals
+            )
+        }
+    }
+
+    private fun isBridgeOnlySubtree(native: Bindings, rule: Any?): Boolean {
+        if (rule == null) return false
+        if (native.smartRuleClass.isInstance(rule)) {
+            return isBridgeRule(rule)
+        }
+        if (!native.groupRuleClass.isInstance(rule)) return false
+        @Suppress("UNCHECKED_CAST")
+        val children = native.groupRules.get(rule) as? List<Any?>
+            ?: return false
+        return children.isNotEmpty() && children.all {
+            isBridgeOnlySubtree(native, it)
+        }
+    }
+
+    private fun containsBridge(native: Bindings, rule: Any?): Boolean {
+        if (rule == null) return false
+        if (native.smartRuleClass.isInstance(rule)) {
+            return isBridgeRule(rule)
+        }
+        if (!native.groupRuleClass.isInstance(rule)) return false
+        @Suppress("UNCHECKED_CAST")
+        val children = native.groupRules.get(rule) as? List<Any?>
+            ?: return false
+        return children.any { containsBridge(native, it) }
+    }
+
+    @Synchronized
+    private fun ensureCompatibilitySmartPlaylists(context: Context) {
+        val native = bindings ?: return
+        val directory = File(
+            context.filesDir,
+            "gonesmart/playlist-bridge"
+        )
+        check(directory.exists() || directory.mkdirs()) {
+            "Could not create Playlist Bridge compatibility directory"
+        }
+
+        val trueFile = File(directory, "bridge-true.spl")
+        val falseFile = File(directory, "bridge-false.spl")
+        writeCompatibilitySmartPlaylist(native, trueFile, shouldMatch = true)
+        writeCompatibilitySmartPlaylist(native, falseFile, shouldMatch = false)
+        trueCompatibilityPath = canonicalPath(trueFile)
+        falseCompatibilityPath = canonicalPath(falseFile)
+
+        Log.i(
+            TAG,
+            "PORTABLE COMPATIBILITY READY | true=" +
+                PlaylistBridgeDiagnosticPolicy.safePath(
+                    trueCompatibilityPath
+                ) +
+                " | false=" +
+                PlaylistBridgeDiagnosticPolicy.safePath(
+                    falseCompatibilityPath
+                )
+        )
+    }
+
+    private fun writeCompatibilitySmartPlaylist(
+        native: Bindings,
+        file: File,
+        shouldMatch: Boolean
+    ) {
+        val smart = native.smartPlaylistConstructor.newInstance()
+        native.smartPlaylistName.set(
+            smart,
+            if (shouldMatch) {
+                "GoneSmart Playlist Bridge true"
+            } else {
+                "GoneSmart Playlist Bridge false"
+            }
+        )
+        @Suppress("UNCHECKED_CAST")
+        val rules = native.smartPlaylistRules.get(smart)
+            as MutableList<Any?>
+        rules.clear()
+        rules += native.smartRuleConstructor.newInstance(
+            100, // GMMP 4.2.0 cg.A(100) -> z75.ID
+            if (shouldMatch) 1 else 0, // != for true, = for false
+            Long.MIN_VALUE.toString(),
+            0
+        )
+        check(native.smartPlaylistSave.invoke(smart, file) == true) {
+            "GMMP native Smart Playlist writer returned false"
+        }
+        check(file.isFile && file.length() > 0L) {
+            "GMMP native Smart Playlist writer did not create file"
+        }
     }
 
     private fun openChooser(
@@ -703,6 +991,8 @@ internal class PlaylistBridgeController {
         val presenterClass = loader.loadClass("ds4")
         val baseRuleClass = loader.loadClass("gt4")
         val smartRuleClass = loader.loadClass("ft4")
+        val smartPlaylistClass = loader.loadClass("ws4")
+        val groupRuleClass = loader.loadClass("jt4")
         val stateClass = loader.loadClass("hs4")
         val playlistFileClass = loader.loadClass("hp3")
         val fileModelClass = loader.loadClass("th1")
@@ -852,7 +1142,24 @@ internal class PlaylistBridgeController {
             popupMenuShow = popupMenuClass
                 .getDeclaredMethod("show")
                 .apply { isAccessible = true },
-            popupMenuListenerClass = popupMenuListenerClass
+            popupMenuListenerClass = popupMenuListenerClass,
+            smartPlaylistConstructor = smartPlaylistClass
+                .getDeclaredConstructor()
+                .apply { isAccessible = true },
+            smartPlaylistSave = smartPlaylistClass
+                .getDeclaredMethod("t", File::class.java)
+                .apply { isAccessible = true },
+            smartPlaylistName = findField(smartPlaylistClass, "o")
+                .apply { isAccessible = true },
+            smartPlaylistRules = findField(smartPlaylistClass, "u")
+                .apply { isAccessible = true },
+            smartPlaylistMatchAll = findField(smartPlaylistClass, "s")
+                .apply { isAccessible = true },
+            groupRuleClass = groupRuleClass,
+            groupRules = findField(groupRuleClass, "o")
+                .apply { isAccessible = true },
+            groupMatchAll = findField(groupRuleClass, "p")
+                .apply { isAccessible = true }
         )
     }
 

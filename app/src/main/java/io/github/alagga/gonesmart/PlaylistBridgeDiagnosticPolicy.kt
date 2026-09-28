@@ -10,6 +10,7 @@ import java.util.Locale
  */
 internal object PlaylistBridgeDiagnosticPolicy {
     fun isNativeSmartPlaylistReference(value: String?): Boolean {
+        if (PlaylistBridgeReference.isBridgeValue(value)) return false
         if (value.isNullOrBlank()) return false
         val separator = value.indexOf('|')
         if (separator <= 0) return false
