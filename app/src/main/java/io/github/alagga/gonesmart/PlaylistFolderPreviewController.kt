@@ -1362,22 +1362,29 @@ internal class PlaylistFolderPreviewController(
                     { success, message ->
                         Log.i(TAG, "PLAYLIST MOVE | result=" +
                             success + " | " + message)
-                        // The native list refresh itself is the success
-                        // feedback. An earlier branch emitted a bare Move
-                        // Toast ONLY for multi-moves: inconsistent and
-                        // misleading. Show one localized error only.
-                        if (PlaylistMoveFeedbackPolicy.shouldShowToast(success)) {
-                            weakList.get()?.takeIf { it.isAttachedToWindow }
-                                ?.let { current ->
-                                    Toast.makeText(
-                                        current.context,
-                                        NativeGmmpUiText.error(
-                                            current.context, title
-                                        ),
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                        weakList.get()?.takeIf { it.isAttachedToWindow }
+                            ?.let { current ->
+                                when (
+                                    PlaylistMoveFeedbackPolicy.feedbackFor(success)
+                                ) {
+                                    PlaylistMoveFeedbackPolicy.Feedback.SUCCESS ->
+                                        Toast.makeText(
+                                            current.context,
+                                            NativeGmmpUiText.playlistMoveSuccess(
+                                                current.context
+                                            ),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    PlaylistMoveFeedbackPolicy.Feedback.ERROR ->
+                                        Toast.makeText(
+                                            current.context,
+                                            NativeGmmpUiText.error(
+                                                current.context, title
+                                            ),
+                                            Toast.LENGTH_LONG
+                                        ).show()
                                 }
-                        }
+                            }
                     }
                 ) == true
                 if (started) {

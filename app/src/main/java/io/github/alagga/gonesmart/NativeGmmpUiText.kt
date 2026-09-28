@@ -152,6 +152,19 @@ internal object NativeGmmpUiText {
         )
     }
 
+    /**
+     * GMMP 4.2.0 has no localized Move-success sentence, but it already
+     * provides the complete localized `playlist_saved` confirmation. Reuse
+     * that grammatical host phrase instead of composing translated fragments.
+     */
+    internal fun playlistMoveSuccessLabel(nativePlaylistSaved: String?): String {
+        val native = nativePlaylistSaved?.takeUnless(String::isBlank)
+        return if (native == null || native.contains("%")) "✓" else native
+    }
+
+    fun playlistMoveSuccess(context: Context): String =
+        playlistMoveSuccessLabel(string(context, "playlist_saved"))
+
     fun error(context: Context, nativeAction: String? = null): String =
         errorLabel(string(context, "error"), nativeAction)
 }

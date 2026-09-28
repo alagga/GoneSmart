@@ -40,6 +40,18 @@ class NativeGmmpUiTextTest {
         assertEquals("Erreur", NativeGmmpUiText.errorLabel("Erreur", " "))
     }
 
+    @Test fun moveSuccessPrefersCompleteNativeHostPhraseAndFailsClosed() {
+        assertEquals(
+            "Playlist gespeichert",
+            NativeGmmpUiText.playlistMoveSuccessLabel("Playlist gespeichert")
+        )
+        assertEquals("✓", NativeGmmpUiText.playlistMoveSuccessLabel(null))
+        assertEquals(
+            "✓",
+            NativeGmmpUiText.playlistMoveSuccessLabel("Saved %s")
+        )
+    }
+
     @Test fun playlistBridgeDerivesGermanAndEnglishFromNativeEditorWording() {
         assertEquals(
             "Smart-Playlist",

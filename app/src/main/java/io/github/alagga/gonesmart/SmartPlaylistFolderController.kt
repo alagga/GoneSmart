@@ -14,7 +14,9 @@ import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
+import android.text.style.CharacterStyle
 import android.text.style.ImageSpan
+import android.text.style.MetricAffectingSpan
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -56,8 +58,10 @@ import java.util.concurrent.atomic.AtomicLong
  * - Current-folder ordering uses original ou4.e(...).
  * - GMMP itself renders and handles every real Smart-Playlist row through
  *   the unchanged native RecyclerView/ls4 adapter.
- * - GoneSmart adds only a compact folder/breadcrumb header and reserves
- *   native top padding for it; it never hides or redraws Smart-Playlist rows.
+ * - GoneSmart adds only physical folder rows plus a breadcrumb and reserves
+ *   native top padding for them. Folder rows scroll away with the native list;
+ *   the breadcrumb stays fixed like the accepted normal Playlist-folder view.
+ *   GoneSmart never hides or redraws real Smart-Playlist rows.
  */
 internal class SmartPlaylistFolderController {
     companion object {
@@ -147,6 +151,7 @@ internal class SmartPlaylistFolderController {
         val host: ViewGroup,
         val overlay: FrameLayout,
         val rows: LinearLayout,
+        val folderBand: FrameLayout,
         val breadcrumb: RecyclerView,
         val originalAlpha: Float,
         val originalPaddingLeft: Int,
@@ -159,6 +164,7 @@ internal class SmartPlaylistFolderController {
         var otherLocations: Boolean,
         var style: NativeStyle?,
         val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
+        val scrollDrawListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
         var generation: Long = 0L,
@@ -168,7 +174,8 @@ internal class SmartPlaylistFolderController {
         var movePreviousDirectory: String? = null,
         var movePreviousOtherLocations: Boolean = false,
         var moveActionMode: android.view.ActionMode? = null,
-        var moveFab: View? = null
+        var moveFab: View? = null,
+        var lastFolderScrollOffset: Int = Int.MIN_VALUE
     )
 
     private inner class BreadcrumbAdapter(
@@ -701,13 +708,18 @@ internal class SmartPlaylistFolderController {
                 rememberedOtherLocations &&
                 sameFile(remembered, root)
 
+        val nativeSurfaceColor = initialStyle?.let { nativeSurfaceBackground(list) }
+            ?: resolveColor(list, android.R.attr.colorBackground, Color.BLACK)
+        val nativeSurfaceState = cloneBackground(list)?.constantState
+        fun headerSurface(): Drawable =
+            nativeSurfaceState?.newDrawable(list.resources)?.mutate()
+                ?: ColorDrawable(nativeSurfaceColor)
+
         val overlay = FrameLayout(list.context).apply {
-            isClickable = true
-            isFocusable = true
-            background = cloneBackground(list) ?: ColorDrawable(
-                initialStyle?.let { nativeSurfaceBackground(list) }
-                    ?: resolveColor(list, android.R.attr.colorBackground, Color.BLACK)
-            )
+            isClickable = false
+            isFocusable = false
+            clipChildren = true
+            background = ColorDrawable(Color.TRANSPARENT)
         }
         val breadcrumb = RecyclerView(list.context).apply {
             layoutManager = LinearLayoutManager(
@@ -718,9 +730,21 @@ internal class SmartPlaylistFolderController {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
             visibility = View.GONE
+            background = headerSurface()
+            elevation = dp(list, 2).toFloat()
         }
         val rows = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
+        }
+        val folderBand = FrameLayout(list.context).apply {
+            background = headerSurface()
+            addView(
+                rows,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
         }
         val column = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
@@ -732,7 +756,7 @@ internal class SmartPlaylistFolderController {
                 )
             )
             addView(
-                rows,
+                folderBand,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -752,6 +776,11 @@ internal class SmartPlaylistFolderController {
             android.view.ViewTreeObserver.OnGlobalLayoutListener {
                 if (browsers[list] === browser) positionOverlay(browser)
             }
+        val scrollDrawListener =
+            android.view.ViewTreeObserver.OnPreDrawListener {
+                if (browsers[list] === browser) syncFolderRowsScroll(browser)
+                true
+            }
         val detachListener = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) {
@@ -764,6 +793,7 @@ internal class SmartPlaylistFolderController {
             host = host,
             overlay = overlay,
             rows = rows,
+            folderBand = folderBand,
             breadcrumb = breadcrumb,
             originalAlpha = list.alpha,
             originalPaddingLeft = list.paddingLeft,
@@ -776,6 +806,7 @@ internal class SmartPlaylistFolderController {
             otherLocations = restoreOtherLocations,
             style = initialStyle,
             layoutListener = layoutListener,
+            scrollDrawListener = scrollDrawListener,
             detachListener = detachListener
         )
         breadcrumb.adapter = BreadcrumbAdapter(browser)
@@ -783,6 +814,7 @@ internal class SmartPlaylistFolderController {
         list.addOnAttachStateChangeListener(detachListener)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
+            list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
 
         // Keep GMMP's real Smart-Playlist RecyclerView visible. The
@@ -992,6 +1024,8 @@ internal class SmartPlaylistFolderController {
         visibleSmartCount: Int
     ) {
         browser.rows.removeAllViews()
+        browser.folderBand.translationY = 0f
+        browser.lastFolderScrollOffset = Int.MIN_VALUE
         renderBreadcrumb(browser)
 
         val moving = browser.moveSources != null
@@ -1035,6 +1069,7 @@ internal class SmartPlaylistFolderController {
         browser.overlay.post {
             if (browsers[browser.list] === browser) {
                 updateNativeInset(browser)
+                syncFolderRowsScroll(browser)
                 if (moving) positionMoveFab(browser)
             }
         }
@@ -1381,17 +1416,18 @@ internal class SmartPlaylistFolderController {
             }.getOrNull() ?: continue
             val name = modelName(model)
             val title = findTextView(row, name) ?: continue
+            val effectivePaint = effectiveNativeTitlePaint(title)
             return NativeStyle(
                 rowLayoutId = row.sourceLayoutResId,
                 titleViewId = title.id,
                 rowHeight = row.height.coerceAtLeast(dp(list, 44)),
-                textColor = title.currentTextColor,
-                textSizePx = title.paint.textSize,
-                typeface = title.typeface,
+                textColor = effectivePaint.color,
+                textSizePx = effectivePaint.textSize,
+                typeface = effectivePaint.typeface,
                 titleGravity = title.gravity,
                 titlePaddingStart = title.paddingStart,
                 titlePaddingEnd = title.paddingEnd,
-                paint = TextPaint(title.paint),
+                paint = effectivePaint,
                 letterSpacing = title.letterSpacing,
                 textScaleX = title.textScaleX,
                 includeFontPadding = title.includeFontPadding,
@@ -1599,6 +1635,11 @@ internal class SmartPlaylistFolderController {
                 if (browsers[browser.list] !== browser) return@post
                 if (success) {
                     Log.i(TAG, "SMART MOVE | completed | count=" + plan.size)
+                    Toast.makeText(
+                        context,
+                        NativeGmmpUiText.playlistMoveSuccess(context),
+                        Toast.LENGTH_SHORT
+                    ).show()
                     closeMoveBrowser(browser)
                     browsers.values.toList()
                         .filter { it.list.isAttachedToWindow }
@@ -2027,6 +2068,9 @@ internal class SmartPlaylistFolderController {
             browser.list.viewTreeObserver.removeOnGlobalLayoutListener(
                 browser.layoutListener
             )
+            browser.list.viewTreeObserver.removeOnPreDrawListener(
+                browser.scrollDrawListener
+            )
         }
         browser.overlay.visibility = View.GONE
         val host = browser.host
@@ -2043,7 +2087,10 @@ internal class SmartPlaylistFolderController {
         val headerHeight = if (
             browser.overlay.visibility == View.VISIBLE
         ) {
-            browser.overlay.height.coerceAtLeast(0)
+            val breadcrumbHeight = if (
+                browser.breadcrumb.visibility == View.VISIBLE
+            ) browser.breadcrumb.height.coerceAtLeast(0) else 0
+            breadcrumbHeight + browser.folderBand.height.coerceAtLeast(0)
         } else {
             0
         }
@@ -2060,9 +2107,43 @@ internal class SmartPlaylistFolderController {
                 browser.originalPaddingBottom
             )
         }
-        // Clip native rows out of the header's reserved area instead of
-        // letting them paint behind clickable folder/breadcrumb controls.
-        list.clipToPadding = true
+        list.clipToPadding = false
+    }
+
+    private fun syncFolderRowsScroll(browser: Browser) {
+        val list = browser.list
+        if (!list.isAttachedToWindow || browsers[list] !== browser) return
+        val folderHeight = browser.folderBand.height.coerceAtLeast(0)
+        if (folderHeight == 0) {
+            if (browser.lastFolderScrollOffset != 0) {
+                browser.folderBand.translationY = 0f
+                browser.lastFolderScrollOffset = 0
+            }
+            return
+        }
+        var firstPosition = Int.MAX_VALUE
+        var firstTop: Int? = null
+        for (index in 0 until list.childCount) {
+            val child = list.getChildAt(index) ?: continue
+            val position = NativeRecyclerBridge.childAdapterPosition(list, child)
+            if (position >= 0 && position < firstPosition) {
+                firstPosition = position
+                firstTop = child.top
+            }
+        }
+        val offset = if (firstTop == null) {
+            if (list.canScrollVertically(-1)) folderHeight else 0
+        } else {
+            SmartFolderHeaderScrollPolicy.folderScrollOffset(
+                folderHeight = folderHeight,
+                listPaddingTop = list.paddingTop,
+                firstChildTop = firstTop,
+                firstAdapterPosition = firstPosition
+            )
+        }
+        if (browser.lastFolderScrollOffset == offset) return
+        browser.lastFolderScrollOffset = offset
+        browser.folderBand.translationY = -offset.toFloat()
     }
 
     private fun positionOverlay(browser: Browser) {
@@ -2098,6 +2179,7 @@ internal class SmartPlaylistFolderController {
         browser.overlay.post {
             if (browsers[list] === browser) {
                 updateNativeInset(browser)
+                syncFolderRowsScroll(browser)
                 if (browser.moveSources != null) positionMoveFab(browser)
             }
         }
@@ -2197,6 +2279,22 @@ internal class SmartPlaylistFolderController {
             node = node.parent as? View ?: return null
         }
         return node.takeIf { it.parent === host }
+    }
+
+    private fun effectiveNativeTitlePaint(title: TextView): TextPaint {
+        val paint = TextPaint(title.paint)
+        val source = title.text as? Spanned ?: return paint
+        if (source.isEmpty()) return paint
+        val spans = source.getSpans(
+            0, 1, CharacterStyle::class.java
+        ).filter {
+            source.getSpanStart(it) <= 0 && source.getSpanEnd(it) > 0
+        }
+        spans.filterIsInstance<MetricAffectingSpan>()
+            .forEach { it.updateMeasureState(paint) }
+        spans.filterNot { it is MetricAffectingSpan }
+            .forEach { it.updateDrawState(paint) }
+        return paint
     }
 
     private fun findTextView(
