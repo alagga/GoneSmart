@@ -1569,267 +1569,411 @@ class GoneSmartModule : XposedModule() {
         if (!BuildConfig.DEBUG) return
 
         val loader = param.classLoader
-        val presenterClass = loader.loadClass("ds4")
-        val baseRuleClass = loader.loadClass("gt4")
-        val smartRuleClass = loader.loadClass("ft4")
-        val whereClass = loader.loadClass("ww3")
-        val smartPlaylistFileClass = loader.loadClass("ws4")
-        val queryFieldClass = loader.loadClass("qw3")
-        val queryClauseClass = loader.loadClass("xw3")
-        val searchHelperClass = loader.loadClass("ot0")
-        val trackFieldClass = loader.loadClass("z75")
-        val playlistStateClass = loader.loadClass("kp3")
-        val playlistDataSourceClass = loader.loadClass("ip3")
-
-        val showLinkChooser = presenterClass
-            .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
-            .apply { isAccessible = true }
-        val addRule = presenterClass
-            .getDeclaredMethod("P1", baseRuleClass)
-            .apply { isAccessible = true }
-        val parseRule = smartRuleClass
-            .getDeclaredMethod("c", org.w3c.dom.Node::class.java)
-            .apply { isAccessible = true }
-        val serializeRule = smartRuleClass
-            .getDeclaredMethod("t", org.xmlpull.v1.XmlSerializer::class.java)
-            .apply { isAccessible = true }
-        val compileRule = smartRuleClass
-            .getDeclaredMethod(
-                "z",
-                java.util.LinkedHashSet::class.java,
-                java.lang.Integer::class.java
-            )
-            .apply { isAccessible = true }
-        require(compileRule.returnType == whereClass)
-
-        val loadSmartPlaylist = smartPlaylistFileClass
-            .getDeclaredMethod("r", File::class.java)
-            .apply { isAccessible = true }
-        val nativeIn = searchHelperClass
-            .getDeclaredMethod("t", queryFieldClass, java.util.List::class.java)
-            .apply { isAccessible = true }
-        require(nativeIn.returnType == queryClauseClass)
-
-        val dataSourceConstructor = playlistDataSourceClass
-            .getDeclaredConstructor(
-                android.content.Context::class.java,
-                playlistStateClass,
-                Integer.TYPE,
-                java.lang.Boolean.TYPE
-            )
-            .apply { isAccessible = true }
-        val readPlaylistPage = playlistDataSourceClass
-            .getDeclaredMethod("F", Integer.TYPE, Integer.TYPE)
-            .apply { isAccessible = true }
-        require(readPlaylistPage.returnType == ArrayList::class.java)
-
-        val getFieldName = queryFieldClass
-            .getDeclaredMethod("getFname")
-            .apply { isAccessible = true }
-        val idField = trackFieldClass
-            .getDeclaredField("ID")
-            .apply { isAccessible = true }
-            .get(null)
-        val uriField = trackFieldClass
-            .getDeclaredField("URI")
-            .apply { isAccessible = true }
-            .get(null)
-        Log.i(
-            PLAYLIST_BRIDGE_TAG,
-            "DIAG READY | native IN helper=" + nativeIn.name +
-                " | idField=" + getFieldName.invoke(idField) +
-                " | uriField=" + getFieldName.invoke(uriField) +
-                " | no native behavior changed"
+        playlistBridgeInfo(
+            "DIAG V2 START | build=playlist-bridge-v2 | readOnly=true"
         )
 
-        hook(showLinkChooser).intercept { chain ->
-            if (playlistBridgeShouldReport("chooser", 8)) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK CHOOSER | native=true | edit=" +
-                        (chain.getArg(0) as? Boolean)
-                )
+        var installed = 0
+        installed += installPlaylistBridgeEditorDiagnostics(loader)
+        installed += installPlaylistBridgeEvaluationDiagnostics(loader)
+        installed += installPlaylistBridgeReaderDiagnostics(loader)
+
+        playlistBridgeInfo(
+            "DIAG V2 READY | hooks=" + installed +
+                " | native GMMP behavior unchanged"
+        )
+    }
+
+    private fun installPlaylistBridgeEditorDiagnostics(
+        loader: ClassLoader
+    ): Int {
+        var installed = 0
+
+        runCatching {
+            val presenterClass = loader.loadClass("ds4")
+            val method = presenterClass
+                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (playlistBridgeShouldReport("chooser-v2", 12)) {
+                    playlistBridgeInfo(
+                        "EDITOR CHOOSER | method=ds4.g2 | edit=" +
+                            (chain.getArg(0) as? Boolean)
+                    )
+                }
+                chain.proceed()
             }
-            chain.proceed()
+            installed++
+            playlistBridgeInfo("HOOK READY | ds4.g2(boolean)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ds4.g2(boolean)", it)
         }
 
-        hook(addRule).intercept { chain ->
-            val rule = chain.getArg(0)
-            val snapshot = playlistBridgeRuleSnapshot(rule)
-            if (
-                snapshot != null &&
-                PlaylistBridgeDiagnosticPolicy
-                    .isNativeSmartPlaylistReference(snapshot.value) &&
-                playlistBridgeShouldReport("add-rule", 12)
-            ) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK ADD | " + playlistBridgeRuleSummary(snapshot)
-                )
+        runCatching {
+            val presenterClass = loader.loadClass("ds4")
+            val baseRuleClass = loader.loadClass("gt4")
+            val method = presenterClass
+                .getDeclaredMethod("P1", baseRuleClass)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val rule = chain.getArg(0)
+                if (playlistBridgeShouldReport("add-rule-v2", 24)) {
+                    val snapshot = playlistBridgeRuleSnapshot(rule)
+                    playlistBridgeInfo(
+                        "EDITOR ADD RULE | class=" +
+                            (rule?.javaClass?.name ?: "null") +
+                            if (snapshot == null) {
+                                ""
+                            } else {
+                                " | " + playlistBridgeRuleSummary(snapshot)
+                            }
+                    )
+                }
+                chain.proceed()
             }
-            chain.proceed()
+            installed++
+            playlistBridgeInfo("HOOK READY | ds4.P1(gt4)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ds4.P1(gt4)", it)
         }
 
-        hook(parseRule).intercept { chain ->
-            val result = chain.proceed()
-            val snapshot = playlistBridgeRuleSnapshot(chain.getThisObject())
-            if (
-                snapshot != null &&
-                PlaylistBridgeDiagnosticPolicy
-                    .isNativeSmartPlaylistReference(snapshot.value) &&
-                playlistBridgeShouldReport("parse", 16)
-            ) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK PARSE | " + playlistBridgeRuleSummary(snapshot)
-                )
-            }
-            result
-        }
-
-        hook(serializeRule).intercept { chain ->
-            val snapshot = playlistBridgeRuleSnapshot(chain.getThisObject())
-            if (
-                snapshot != null &&
-                PlaylistBridgeDiagnosticPolicy
-                    .isNativeSmartPlaylistReference(snapshot.value) &&
-                playlistBridgeShouldReport("serialize", 16)
-            ) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK SERIALIZE | " + playlistBridgeRuleSummary(snapshot)
-                )
-            }
-            chain.proceed()
-        }
-
-        hook(compileRule).intercept { chain ->
-            val snapshot = playlistBridgeRuleSnapshot(chain.getThisObject())
-            if (
-                snapshot == null ||
-                !PlaylistBridgeDiagnosticPolicy
-                    .isNativeSmartPlaylistReference(snapshot.value)
-            ) {
-                return@intercept chain.proceed()
-            }
-
-            val previousDepth = playlistBridgeEvaluationDepth.get()
-            playlistBridgeEvaluationDepth.set(previousDepth + 1)
-            val started = SystemClock.elapsedRealtimeNanos()
-            val report = playlistBridgeShouldReport("evaluate", 24)
-            if (report) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK EVAL START | depth=\${previousDepth + 1} | " +
-                        playlistBridgeRuleSummary(snapshot)
-                )
-            }
-            try {
+        runCatching {
+            val smartRuleClass = loader.loadClass("ft4")
+            val method = smartRuleClass
+                .getDeclaredMethod("c", org.w3c.dom.Node::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
                 val result = chain.proceed()
+                if (playlistBridgeShouldReport("parse-v2", 32)) {
+                    playlistBridgeRuleSnapshot(chain.getThisObject())?.let {
+                        playlistBridgeInfo(
+                            "RULE PARSE | " + playlistBridgeRuleSummary(it)
+                        )
+                    }
+                }
+                result
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ft4.c(Node)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ft4.c(Node)", it)
+        }
+
+        runCatching {
+            val smartRuleClass = loader.loadClass("ft4")
+            val method = smartRuleClass
+                .getDeclaredMethod(
+                    "t",
+                    org.xmlpull.v1.XmlSerializer::class.java
+                )
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (playlistBridgeShouldReport("serialize-v2", 32)) {
+                    playlistBridgeRuleSnapshot(chain.getThisObject())?.let {
+                        playlistBridgeInfo(
+                            "RULE SERIALIZE | " + playlistBridgeRuleSummary(it)
+                        )
+                    }
+                }
+                chain.proceed()
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ft4.t(XmlSerializer)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ft4.t(XmlSerializer)", it)
+        }
+
+        return installed
+    }
+
+    private fun installPlaylistBridgeEvaluationDiagnostics(
+        loader: ClassLoader
+    ): Int {
+        var installed = 0
+
+        runCatching {
+            val smartRuleClass = loader.loadClass("ft4")
+            val whereClass = loader.loadClass("ww3")
+            val method = smartRuleClass
+                .getDeclaredMethod(
+                    "z",
+                    java.util.LinkedHashSet::class.java,
+                    java.lang.Integer::class.java
+                )
+                .apply { isAccessible = true }
+            require(method.returnType == whereClass) {
+                "Unexpected ft4.z return type " + method.returnType.name
+            }
+
+            hook(method).intercept { chain ->
+                val snapshot = playlistBridgeRuleSnapshot(chain.getThisObject())
+                val isNativeLink = snapshot != null &&
+                    PlaylistBridgeDiagnosticPolicy
+                        .isNativeSmartPlaylistReference(snapshot.value)
+
+                val previousDepth = playlistBridgeEvaluationDepth.get()
+                if (isNativeLink) {
+                    playlistBridgeEvaluationDepth.set(previousDepth + 1)
+                }
+
+                val report = playlistBridgeShouldReport("compile-v2", 48)
+                val started = SystemClock.elapsedRealtimeNanos()
                 if (report) {
-                    val args = runCatching {
-                        result?.javaClass
-                            ?.getMethod("a")
-                            ?.invoke(result) as? List<*>
+                    playlistBridgeInfo(
+                        "RULE COMPILE START | nativeSmartLink=" + isNativeLink +
+                            " | depth=" +
+                            (if (isNativeLink) previousDepth + 1
+                            else previousDepth) +
+                            if (snapshot == null) "" else
+                                " | " + playlistBridgeRuleSummary(snapshot)
+                    )
+                }
+
+                try {
+                    val result = chain.proceed()
+                    if (report) {
+                        val args = runCatching {
+                            result?.javaClass
+                                ?.getMethod("a")
+                                ?.invoke(result) as? List<*>
+                        }.getOrNull()
+                        playlistBridgeInfo(
+                            "RULE COMPILE END | nativeSmartLink=" + isNativeLink +
+                                " | result=" + (result?.javaClass?.name ?: "null") +
+                                " | queryArgs=" + (args?.size ?: -1) +
+                                " | elapsedMs=" +
+                                ((SystemClock.elapsedRealtimeNanos() - started) /
+                                    1_000_000L)
+                        )
+                    }
+                    result
+                } finally {
+                    if (isNativeLink) {
+                        playlistBridgeEvaluationDepth.set(previousDepth)
+                    }
+                }
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ft4.z(LinkedHashSet,Integer)")
+        }.onFailure {
+            playlistBridgeWarn(
+                "HOOK MISSING | ft4.z(LinkedHashSet,Integer)",
+                it
+            )
+        }
+
+        runCatching {
+            val smartPlaylistFileClass = loader.loadClass("ws4")
+            val method = smartPlaylistFileClass
+                .getDeclaredMethod("r", File::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val depth = playlistBridgeEvaluationDepth.get()
+                if (
+                    playlistBridgeShouldReport("smart-file-load-v2", 48)
+                ) {
+                    playlistBridgeInfo(
+                        "SMART FILE LOAD | bridgeDepth=" + depth + " | " +
+                            PlaylistBridgeDiagnosticPolicy.safePath(
+                                (chain.getArg(0) as? File)?.absolutePath
+                            )
+                    )
+                }
+                chain.proceed()
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ws4.r(File)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ws4.r(File)", it)
+        }
+
+        runCatching {
+            val queryFieldClass = loader.loadClass("qw3")
+            val queryClauseClass = loader.loadClass("xw3")
+            val searchHelperClass = loader.loadClass("ot0")
+            val method = searchHelperClass
+                .getDeclaredMethod(
+                    "t",
+                    queryFieldClass,
+                    java.util.List::class.java
+                )
+                .apply { isAccessible = true }
+            require(method.returnType == queryClauseClass) {
+                "Unexpected ot0.t return type " + method.returnType.name
+            }
+            val getFieldName = queryFieldClass
+                .getDeclaredMethod("getFname")
+                .apply { isAccessible = true }
+
+            hook(method).intercept { chain ->
+                if (
+                    playlistBridgeShouldReport("native-in-v2", 32)
+                ) {
+                    val fieldName = runCatching {
+                        getFieldName.invoke(chain.getArg(0))?.toString()
                     }.getOrNull()
-                    Log.i(
-                        PLAYLIST_BRIDGE_TAG,
-                        "SMART LINK EVAL END | result=" +
-                            (result?.javaClass?.name ?: "null") +
-                            " | queryArgs=" + (args?.size ?: -1) +
-                            " | elapsedMs=" +
-                            ((SystemClock.elapsedRealtimeNanos() - started) / 1_000_000L)
+                    val values = chain.getArg(1) as? List<*>
+                    playlistBridgeInfo(
+                        "NATIVE IN | bridgeDepth=" +
+                            playlistBridgeEvaluationDepth.get() +
+                            " | field=" + (fieldName ?: "unknown") +
+                            " | values=" + (values?.size ?: -1)
+                    )
+                }
+                chain.proceed()
+            }
+
+            val trackFieldClass = loader.loadClass("z75")
+            listOf("ID", "URI").forEach { fieldName ->
+                val value = trackFieldClass
+                    .getDeclaredField(fieldName)
+                    .apply { isAccessible = true }
+                    .get(null)
+                playlistBridgeInfo(
+                    "QUERY FIELD | z75." + fieldName + "=" +
+                        runCatching {
+                            getFieldName.invoke(value)?.toString()
+                        }.getOrNull()
+                )
+            }
+
+            installed++
+            playlistBridgeInfo("HOOK READY | ot0.t(qw3,List)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ot0.t(qw3,List)", it)
+        }
+
+        return installed
+    }
+
+    private fun installPlaylistBridgeReaderDiagnostics(
+        loader: ClassLoader
+    ): Int {
+        var installed = 0
+
+        runCatching {
+            val playlistStateClass = loader.loadClass("kp3")
+            val playlistDataSourceClass = loader.loadClass("ip3")
+            val constructor = playlistDataSourceClass
+                .getDeclaredConstructor(
+                    android.content.Context::class.java,
+                    playlistStateClass,
+                    Integer.TYPE,
+                    java.lang.Boolean.TYPE
+                )
+                .apply { isAccessible = true }
+
+            hook(constructor).intercept { chain ->
+                val snapshot = playlistBridgeReaderSnapshot(chain.getArg(1))
+                if (
+                    playlistBridgeShouldReport("reader-init-v2", 32)
+                ) {
+                    playlistBridgeInfo(
+                        "READER INIT | " +
+                            PlaylistBridgeDiagnosticPolicy.safePath(
+                                snapshot.file?.absolutePath
+                            ) +
+                            " | mode=" + chain.getArg(2) +
+                            " | flag=" + chain.getArg(3) +
+                            " | parsed=" + (snapshot.parsedEntries ?: -1) +
+                            " | cache=" + (snapshot.cachedEntries ?: -1)
+                    )
+                }
+                chain.proceed()
+            }
+
+            installed++
+            playlistBridgeInfo("HOOK READY | ip3(Context,kp3,int,boolean)")
+        }.onFailure {
+            playlistBridgeWarn(
+                "HOOK MISSING | ip3(Context,kp3,int,boolean)",
+                it
+            )
+        }
+
+        runCatching {
+            val playlistDataSourceClass = loader.loadClass("ip3")
+            val method = playlistDataSourceClass
+                .getDeclaredMethod("F", Integer.TYPE, Integer.TYPE)
+                .apply { isAccessible = true }
+            require(method.returnType == ArrayList::class.java) {
+                "Unexpected ip3.F return type " + method.returnType.name
+            }
+
+            hook(method).intercept { chain ->
+                val before = playlistBridgeReaderSnapshotFromDataSource(
+                    chain.getThisObject()
+                )
+                val result = chain.proceed()
+                if (
+                    playlistBridgeShouldReport("reader-page-v2", 48)
+                ) {
+                    val after = playlistBridgeReaderSnapshotFromDataSource(
+                        chain.getThisObject()
+                    )
+                    playlistBridgeInfo(
+                        "READER PAGE | " +
+                            PlaylistBridgeDiagnosticPolicy.safePath(
+                                after.file?.absolutePath ?:
+                                    before.file?.absolutePath
+                            ) +
+                            " | from=" + chain.getArg(0) +
+                            " | count=" + chain.getArg(1) +
+                            " | returned=" +
+                            ((result as? Collection<*>)?.size ?: -1) +
+                            " | parsed=" + (after.parsedEntries ?: -1) +
+                            " | cache=" + (after.cachedEntries ?: -1) +
+                            " | " + playlistBridgeResultSchema(result)
                     )
                 }
                 result
-            } finally {
-                playlistBridgeEvaluationDepth.set(previousDepth)
             }
+
+            installed++
+            playlistBridgeInfo("HOOK READY | ip3.F(int,int)")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ip3.F(int,int)", it)
         }
 
-        hook(loadSmartPlaylist).intercept { chain ->
-            val depth = playlistBridgeEvaluationDepth.get()
-            if (depth > 0 && playlistBridgeShouldReport("smart-file-load", 24)) {
-                val file = chain.getArg(0) as? File
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "SMART LINK SOURCE READ | depth=$depth | " +
-                        PlaylistBridgeDiagnosticPolicy.safePath(file?.absolutePath)
-                )
-            }
-            chain.proceed()
-        }
+        return installed
+    }
 
-        hook(nativeIn).intercept { chain ->
-            val depth = playlistBridgeEvaluationDepth.get()
-            if (depth > 0 && playlistBridgeShouldReport("native-in", 16)) {
-                val field = chain.getArg(0)
-                val values = chain.getArg(1) as? List<*>
-                val fieldName = runCatching {
-                    getFieldName.invoke(field)?.toString()
-                }.getOrNull()
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "NATIVE IN DURING SMART LINK | depth=$depth" +
-                        " | field=" + (fieldName ?: "unknown") +
-                        " | values=" + (values?.size ?: -1)
-                )
-            }
-            chain.proceed()
-        }
+    private fun playlistBridgeResultSchema(result: Any?): String {
+        val first = (result as? Collection<*>)
+            ?.firstOrNull()
+            ?: return "item=none"
 
-        hook(dataSourceConstructor).intercept { chain ->
-            val state = chain.getArg(1)
-            val snapshot = playlistBridgeReaderSnapshot(state)
-            val report = snapshot.file != null &&
-                playlistBridgeShouldReport("playlist-reader-init", 20)
-            if (report) {
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "PLAYLIST READER INIT | " +
-                        PlaylistBridgeDiagnosticPolicy
-                            .safePath(snapshot.file?.absolutePath) +
-                        " | mode=" + chain.getArg(2) +
-                        " | flag=" + chain.getArg(3) +
-                        " | parsed=" + (snapshot.parsedEntries ?: -1) +
-                        " | cache=" + (snapshot.cachedEntries ?: -1)
-                )
-            }
-            chain.proceed()
+        return runCatching {
+            val fields = first.javaClass.declaredFields
+                .take(24)
+                .joinToString(",") {
+                    it.name + ":" + it.type.simpleName
+                }
+            val noArgMethods = first.javaClass.declaredMethods
+                .filter { it.parameterCount == 0 }
+                .take(24)
+                .joinToString(",") {
+                    it.name + ":" + it.returnType.simpleName
+                }
+            "itemClass=" + first.javaClass.name +
+                " | itemFields=" + fields +
+                " | itemNoArg=" + noArgMethods
+        }.getOrElse {
+            "itemClass=" + first.javaClass.name + " | schema=unavailable"
         }
+    }
 
-        hook(readPlaylistPage).intercept { chain ->
-            val before = playlistBridgeReaderSnapshotFromDataSource(
-                chain.getThisObject()
-            )
-            val result = chain.proceed()
-            if (
-                before.file != null &&
-                playlistBridgeShouldReport("playlist-reader-page", 32)
-            ) {
-                val after = playlistBridgeReaderSnapshotFromDataSource(
-                    chain.getThisObject()
-                )
-                Log.i(
-                    PLAYLIST_BRIDGE_TAG,
-                    "PLAYLIST READER PAGE | " +
-                        PlaylistBridgeDiagnosticPolicy
-                            .safePath(after.file?.absolutePath ?: before.file?.absolutePath) +
-                        " | from=" + chain.getArg(0) +
-                        " | count=" + chain.getArg(1) +
-                        " | returned=" + ((result as? Collection<*>)?.size ?: -1) +
-                        " | parsed=" + (after.parsedEntries ?: -1) +
-                        " | cache=" + (after.cachedEntries ?: -1)
-                )
-            }
-            result
-        }
+    private fun playlistBridgeInfo(message: String) {
+        Log.i("GoneSmartPlaylist", "BRIDGE | " + message)
+        Log.i(PLAYLIST_BRIDGE_TAG, message)
+    }
 
-        Log.i(
-            PLAYLIST_BRIDGE_TAG,
-            "DIAG INSTALLED | smart-link persistence/evaluation + native playlist reader" +
-                " | read-only"
-        )
+    private fun playlistBridgeWarn(
+        message: String,
+        error: Throwable
+    ) {
+        Log.w("GoneSmartPlaylist", "BRIDGE | " + message, error)
+        Log.w(PLAYLIST_BRIDGE_TAG, message, error)
     }
 
     private fun playlistBridgeShouldReport(key: String, limit: Long): Boolean {
@@ -1865,9 +2009,12 @@ class GoneSmartModule : XposedModule() {
     private fun playlistBridgeRuleSummary(
         snapshot: PlaylistBridgeRuleSnapshot
     ): String =
-        "o=\${snapshot.rawO} | p=\${snapshot.rawP} | r=\${snapshot.rawR}" +
-            " | ruleId=\${snapshot.ruleId}" +
-            " | ref=" + PlaylistBridgeDiagnosticPolicy.safeReference(snapshot.value)
+        "o=" + snapshot.rawO +
+            " | p=" + snapshot.rawP +
+            " | r=" + snapshot.rawR +
+            " | ruleId=" + snapshot.ruleId +
+            " | ref=" +
+            PlaylistBridgeDiagnosticPolicy.safeReference(snapshot.value)
 
     private fun playlistBridgeReaderSnapshotFromDataSource(
         dataSource: Any?

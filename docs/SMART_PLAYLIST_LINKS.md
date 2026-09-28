@@ -4,7 +4,7 @@
 
 ## User goal and proposed names
 
-The GMMP Smart Playlist editor already has **Link Smart Playlist**: it imports another `.spl` file's RULES, not the membership of a normal playlist. Add a SECOND native-looking toolbar action **Link Playlist** that selects an existing ordinary playlist (including physical nested folders when GoneSmart Playlist folders is enabled), dynamically includes its actual songs in the smart rule/group and saves the link in the edited Smart Playlist. Proposed GoneSmart companion feature name: **Playlist Bridge**. The user must NOT have to convert ordinary M3U playlists into duplicate visible Smart Playlists or refresh copied snapshots manually. Existing Link Smart Playlist is unchanged.
+The GMMP Smart Playlist editor already has **Link Smart Playlist**: it imports another `.spl` file's RULES, not the membership of a normal playlist. Add a SECOND native-looking toolbar action **Link Playlist** that selects an existing ordinary playlist (including physical nested folders when GoneSmart Playlist folders is enabled), dynamically includes its actual songs in the smart rule/group and saves the link in the edited Smart Playlist. Approved GoneSmart feature name (maintainer decision 2026-09-28): **Playlist Bridge**. The user must NOT have to convert ordinary M3U playlists into duplicate visible Smart Playlists or refresh copied snapshots manually. Existing Link Smart Playlist is unchanged.
 
 GMMP's own editor documentation: https://gonemadmusicplayer.blogspot.com/p/help-smart-playlist-editor.html . The developer explicitly said regular playlist CONTENTS were not indexed into the smart-rule database and the original application does not offer this native operation: https://www.reddit.com/r/gonemadmusicplayer/comments/1ghiv3l/ . This source-level investigation must not be described as a successful working device prototype.
 
@@ -70,3 +70,19 @@ Use disposable data only.
 - Capture Logcat for package `gonemad.gmmp` filtered by tag **GoneSmartPlaylistBridge**. The diagnostic intentionally logs hashes/counts instead of actual playlist paths or track metadata.
 
 Do **not** manually edit a `.spl` for this test. The next build should only write a synthetic ordinary-playlist link after these logs establish the native lifecycle and after the stock editor's validation/persistence boundary is mapped.
+
+
+## Diagnostic v2 after first device log — 28 September 2026
+
+The maintainer's first supplied device log exercised the Smart Playlist list/editor and an ordinary playlist, but contained **no** `GoneSmartPlaylistBridge` markers. At the same time the older debug-only native save observer was active, proving that GoneSmart debug hooks in general were running. The Smart rule RecyclerView and native `ds4` presenter were both reached during the test. This does not prove whether the wrong local branch/build was installed or whether one eager reflection lookup aborted the original all-or-nothing bridge installer.
+
+The v2 diagnostic therefore changes the instrumentation architecture, not GMMP behavior:
+
+- all candidate hooks install independently; one missing obfuscated class/method no longer disables the rest;
+- every Bridge event is mirrored under the already-visible `GoneSmartPlaylist` tag with prefix `BRIDGE |`, while retaining the dedicated `GoneSmartPlaylistBridge` tag;
+- startup emits `DIAG V2 START`, one `HOOK READY/MISSING` line per candidate and `DIAG V2 READY`, making a branch/build mismatch immediately visible;
+- `ft4.z` compile logging now covers every native `ft4` rule and separately marks whether its value is a native linked `.spl`;
+- native `ip3.F` logging reports only the returned item's CLASS/FIELD/METHOD SCHEMA (no field values, paths or track metadata) so the exact native song-ID/URI accessor can be mapped before any query injection is attempted;
+- still no button, custom rule persistence, query replacement or playlist mutation.
+
+The next writable proof-of-concept remains gated on these v2 runtime observations.
