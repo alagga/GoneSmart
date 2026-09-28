@@ -28,6 +28,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
@@ -35,6 +36,8 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.ArrayList
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
@@ -61,8 +64,13 @@ internal class SmartPlaylistFolderController {
         private const val TAG = "GoneSmartSmartFolders"
         private const val SMART_LIST_ID = "smartListRecyclerView"
         private const val SMART_LIST_MENU = "menu_gm_smart_list"
+        private const val SMART_CONTEXT_MENU = "menu_gm_context_smart"
         private const val MAX_ATTACH_RETRIES = 24
         private const val ATTACH_RETRY_MS = 120L
+        private const val QUICK_NAV_METRICS_PREFS =
+            "gonesmart_gmmp_quicknav_metrics"
+        private const val QUICK_NAV_TITLE_RATIO_KEY = "title_ratio"
+        private const val GMMP_420_QUICK_NAV_TITLE_RATIO = 1.225f
     }
 
     private data class Bindings(
@@ -75,6 +83,7 @@ internal class SmartPlaylistFolderController {
         val modelRead: Method,
         val modelName: Field,
         val modelFile: Field,
+        val modelRules: Field,
         val holderModel: Field,
         val adapterDiffer: Field,
         val differSubmit: Method,
@@ -84,7 +93,17 @@ internal class SmartPlaylistFolderController {
         val presenterState: Field,
         val stateSort: Field,
         val sortOrder: Method,
-        val sortDescending: Method
+        val sortDescending: Method,
+        val leafRuleClass: Class<*>,
+        val leafRuleValue: Field,
+        val groupRuleClass: Class<*>,
+        val groupRules: Field,
+        val actionModeBaseClass: Class<*>,
+        val smartFragmentClass: Class<*>,
+        val actionModeView: Field,
+        val actionModeSelection: Field,
+        val selectionEntries: Field,
+        val selectionEntryModel: Field
     )
 
     private data class NativeStyle(
@@ -98,6 +117,13 @@ internal class SmartPlaylistFolderController {
         val titlePaddingStart: Int,
         val titlePaddingEnd: Int,
         val paint: TextPaint,
+        val letterSpacing: Float,
+        val textScaleX: Float,
+        val includeFontPadding: Boolean,
+        val lineSpacingExtra: Float,
+        val lineSpacingMultiplier: Float,
+        val maxLines: Int,
+        val ellipsize: android.text.TextUtils.TruncateAt?,
         val rowBackground: Drawable.ConstantState?
     )
 
@@ -106,6 +132,13 @@ internal class SmartPlaylistFolderController {
         val folders: List<File>,
         val models: List<Any>,
         val modelsByPath: Map<String, Any>
+    )
+
+    private data class BreadcrumbSegment(
+        val key: String,
+        val label: String,
+        val directory: File? = null,
+        val otherLocations: Boolean = false
     )
 
     private data class Browser(
@@ -123,19 +156,25 @@ internal class SmartPlaylistFolderController {
         val originalClipToPadding: Boolean,
         val root: File,
         var current: File,
+        var otherLocations: Boolean,
         var style: NativeStyle?,
         val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
         var generation: Long = 0L,
         var actionPending: Boolean = false,
-        var nativeOrder: List<String> = emptyList()
+        var nativeOrder: List<String> = emptyList(),
+        var moveSources: List<String>? = null,
+        var movePreviousDirectory: String? = null,
+        var movePreviousOtherLocations: Boolean = false,
+        var moveActionMode: android.view.ActionMode? = null,
+        var moveFab: View? = null
     )
 
     private inner class BreadcrumbAdapter(
         private val browser: Browser
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-        private val segments = arrayListOf<Pair<File, String>>()
+        private val segments = arrayListOf<BreadcrumbSegment>()
 
         init {
             setHasStableIds(true)
@@ -146,11 +185,9 @@ internal class SmartPlaylistFolderController {
 
         override fun getItemViewType(position: Int): Int = position % 2
 
-        override fun getItemId(position: Int): Long {
-            val pair = segments[position / 2]
-            return (pair.first.path.hashCode().toLong() shl 1) xor
+        override fun getItemId(position: Int): Long =
+            (segments[position / 2].key.hashCode().toLong() shl 1) xor
                 (position % 2).toLong()
-        }
 
         override fun onCreateViewHolder(
             parent: ViewGroup,
@@ -203,26 +240,46 @@ internal class SmartPlaylistFolderController {
         ) {
             if (position % 2 != 0) return
             val segment = segments.getOrNull(position / 2) ?: return
-            val label = findTextView(holder.itemView) ?: return
-            label.text = segment.second
-            browser.style?.let {
-                label.paint.set(it.paint)
-                label.setTextSize(TypedValue.COMPLEX_UNIT_PX, it.textSizePx)
-                label.setTextColor(it.textColor)
-                label.typeface = Typeface.create(it.typeface, Typeface.BOLD)
+            val label = (holder.itemView as? TextView)
+                ?: findTextView(holder.itemView)
+                ?: return
+            label.text = segment.label
+            browser.style?.let { style ->
+                // Match the already accepted normal Playlist-folders
+                // quick-nav typography. GMMP 4.2.0's live qg1 title is
+                // 58.8 px vs 48 px row title = 1.225x until a verified
+                // live ratio is persisted by the normal playlist surface.
+                label.paint.set(style.paint)
+                label.setTextSize(
+                    TypedValue.COMPLEX_UNIT_PX,
+                    style.paint.textSize * quickNavTitleRatio(browser.list)
+                )
+                label.setTextColor(style.textColor)
+                label.typeface = Typeface.create(style.typeface, Typeface.BOLD)
+                label.letterSpacing = style.letterSpacing
+                label.includeFontPadding = style.includeFontPadding
+                label.requestLayout()
             }
+            // Never overwrite rv_horiz_metadata's native XML padding/ripple.
             label.isClickable = true
             label.isFocusable = true
             label.setOnClickListener {
                 if (browsers[browser.list] !== browser) return@setOnClickListener
-                if (sameFile(browser.current, segment.first)) {
-                    return@setOnClickListener
+                when {
+                    segment.otherLocations -> {
+                        if (!browser.otherLocations) navigateOtherLocations(browser)
+                    }
+                    segment.directory != null -> {
+                        if (!browser.otherLocations &&
+                            sameFile(browser.current, segment.directory)
+                        ) return@setOnClickListener
+                        navigate(browser, segment.directory)
+                    }
                 }
-                navigate(browser, segment.first)
             }
         }
 
-        fun submit(next: List<Pair<File, String>>) {
+        fun submit(next: List<BreadcrumbSegment>) {
             segments.clear()
             segments.addAll(next)
             notifyDataSetChanged()
@@ -238,12 +295,15 @@ internal class SmartPlaylistFolderController {
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
+    private val moveMenuId = View.generateViewId()
 
     @Volatile private var enabled = false
+    @Volatile private var groupRootPlaylists = false
     @Volatile private var bindings: Bindings? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var folderCreator: NativeGmmpFolderCreator? = null
     @Volatile private var rememberedDirectory: String? = null
+    @Volatile private var rememberedOtherLocations = false
     @Volatile private var pendingCreationDirectory: String? = null
     @Volatile private var pendingCreationAt = 0L
 
@@ -258,6 +318,12 @@ internal class SmartPlaylistFolderController {
             val storageClass = loader.loadClass("tx4")
             val storageLocationClass = loader.loadClass("rx4")
             val sortExtensions = loader.loadClass("ou4")
+            val leafRuleClass = loader.loadClass("ft4")
+            val groupRuleClass = loader.loadClass("jt4")
+            val actionModeBaseClass = loader.loadClass("n3")
+            val smartFragmentClass = loader.loadClass("os4")
+            val selectionTrackerClass = loader.loadClass("s3")
+            val selectionEntryClass = loader.loadClass("s3\$a")
 
             Bindings(
                 loader = loader,
@@ -280,6 +346,8 @@ internal class SmartPlaylistFolderController {
                 modelName = modelClass.getDeclaredField("o")
                     .apply { isAccessible = true },
                 modelFile = modelClass.getDeclaredField("v")
+                    .apply { isAccessible = true },
+                modelRules = findField(modelClass, "u")
                     .apply { isAccessible = true },
                 holderModel = holderClass.getDeclaredField("A")
                     .apply { isAccessible = true },
@@ -314,6 +382,22 @@ internal class SmartPlaylistFolderController {
                 sortOrder = sortStateClass.getDeclaredMethod("b")
                     .apply { isAccessible = true },
                 sortDescending = sortStateClass.getDeclaredMethod("c")
+                    .apply { isAccessible = true },
+                leafRuleClass = leafRuleClass,
+                leafRuleValue = findField(leafRuleClass, "q")
+                    .apply { isAccessible = true },
+                groupRuleClass = groupRuleClass,
+                groupRules = findField(groupRuleClass, "o")
+                    .apply { isAccessible = true },
+                actionModeBaseClass = actionModeBaseClass,
+                smartFragmentClass = smartFragmentClass,
+                actionModeView = findField(actionModeBaseClass, "q")
+                    .apply { isAccessible = true },
+                actionModeSelection = findField(actionModeBaseClass, "s")
+                    .apply { isAccessible = true },
+                selectionEntries = findField(selectionTrackerClass, "c")
+                    .apply { isAccessible = true },
+                selectionEntryModel = findField(selectionEntryClass, "b")
                     .apply { isAccessible = true }
             )
         }.onFailure {
@@ -329,18 +413,44 @@ internal class SmartPlaylistFolderController {
     }
 
     fun setEnabled(next: Boolean) {
-        if (enabled == next) return
-        enabled = next
+        setOptions(next, groupRootPlaylists)
+    }
+
+    fun setOptions(nextEnabled: Boolean, nextGroupRoot: Boolean) {
+        val enabledChanged = enabled != nextEnabled
+        val groupingChanged = groupRootPlaylists != nextGroupRoot
+        if (!enabledChanged && !groupingChanged) return
+        enabled = nextEnabled
+        groupRootPlaylists = nextGroupRoot
         main.post {
+            if (!groupRootPlaylists) {
+                rememberedOtherLocations = false
+                browsers.values.toList().forEach { browser ->
+                    if (browser.otherLocations) {
+                        browser.otherLocations = false
+                        browser.current = browser.root
+                    }
+                }
+            }
             updateMenus()
-            if (next) {
-                knownLists.keys.toList().forEach { scheduleAttach(it, 0) }
-            } else {
+            if (enabledChanged && !nextEnabled) {
                 pendingCreationDirectory = null
                 browsers.values.toList().forEach(::restoreRootAndRemove)
+            } else if (nextEnabled) {
+                knownLists.keys.toList().forEach { list ->
+                    if (browsers.containsKey(list)) {
+                        browsers[list]?.let(::refresh)
+                    } else {
+                        scheduleAttach(list, 0)
+                    }
+                }
             }
         }
-        Log.i(TAG, "SMART FOLDERS OPTION | enabled=" + next)
+        Log.i(
+            TAG,
+            "SMART FOLDERS OPTION | enabled=" + nextEnabled +
+                " | groupRoot=" + nextGroupRoot
+        )
     }
 
     fun capturePresenter(presenter: Any?) {
@@ -438,19 +548,93 @@ internal class SmartPlaylistFolderController {
         val name = runCatching {
             context.resources.getResourceEntryName(menuResId)
         }.getOrNull() ?: return
-        if (name != SMART_LIST_MENU) return
-        menuRefs.removeAll { it.get() == null }
-        menuRefs += WeakReference(menu)
-        if (enabled) {
-            installNewFolderMenu(menu, context)
-        } else {
-            menu.findItem(newFolderMenuId)?.isVisible = false
+        when (name) {
+            SMART_LIST_MENU -> {
+                menuRefs.removeAll { it.get() == null }
+                menuRefs += WeakReference(menu)
+                if (enabled) {
+                    installNewFolderMenu(menu, context)
+                } else {
+                    menu.findItem(newFolderMenuId)?.isVisible = false
+                }
+            }
+            SMART_CONTEXT_MENU -> {
+                if (enabled && currentBrowser() != null) {
+                    installMoveMenu(menu, context)
+                }
+            }
         }
+    }
+
+    /** Exact GMMP 4.2.0 nt4.c(Context, zn0, MenuItem) dispatch. */
+    fun interceptNativeContextMove(
+        context: android.content.Context?,
+        holder: Any?,
+        item: MenuItem?
+    ): Boolean {
+        if (item?.itemId != moveMenuId) return false
+        if (!enabled) return true
+        val native = bindings ?: return true
+        val browser = currentBrowser() ?: return true
+        val model = holder?.takeIf(native.holderClass::isInstance)?.let {
+            runCatching { native.holderModel.get(it) }.getOrNull()
+        }
+        val path = model?.let(::modelPath)
+        if (path == null) {
+            showMoveError(context ?: browser.list.context)
+            return true
+        }
+        beginMove(browser, listOf(path), null)
+        return true
+    }
+
+    /** Add GoneSmart Move to GMMP's ORIGINAL Smart selection ActionMode. */
+    fun onNativeSmartActionModeCreated(callback: Any?, menu: Menu?) {
+        if (!enabled || menu == null || !isSmartActionMode(callback)) return
+        val context = currentBrowser()?.list?.context ?: return
+        installMoveMenu(menu, context)
+    }
+
+    /** Exact n3 selected models: s3.c -> s3$a.b -> ws4. */
+    fun interceptNativeSmartActionModeMove(
+        callback: Any?,
+        mode: Any?,
+        item: MenuItem?
+    ): Boolean {
+        if (item?.itemId != moveMenuId) return false
+        if (!enabled || !isSmartActionMode(callback)) return true
+        val browser = currentBrowser() ?: return true
+        val paths = selectedSmartPaths(callback)
+        if (paths.isEmpty()) {
+            showMoveError(browser.list.context)
+            return true
+        }
+        beginMove(browser, paths, mode)
+        return true
     }
 
     fun consumeBack(): Boolean {
         if (!enabled) return false
         val browser = currentBrowser() ?: return false
+        if (browser.moveSources != null) {
+            if (!sameFile(browser.current, browser.root)) {
+                val parent = browser.current.parentFile?.canonicalFile ?: return true
+                navigate(browser, parent)
+            } else {
+                closeMoveBrowser(browser)
+            }
+            return true
+        }
+        if (browser.otherLocations) {
+            browser.otherLocations = false
+            browser.current = browser.root
+            rememberedDirectory = browser.root.path
+            rememberedOtherLocations = false
+            startObserver(browser)
+            refresh(browser)
+            updateMenus()
+            return true
+        }
         if (sameFile(browser.current, browser.root)) return false
         val parent = browser.current.parentFile?.canonicalFile ?: return false
         if (!SmartPlaylistFolderPolicy.isInsideRoot(
@@ -512,6 +696,10 @@ internal class SmartPlaylistFolderController {
             }
             ?.canonicalFile
             ?: root
+        val restoreOtherLocations =
+            groupRootPlaylists &&
+                rememberedOtherLocations &&
+                sameFile(remembered, root)
 
         val overlay = FrameLayout(list.context).apply {
             isClickable = true
@@ -585,6 +773,7 @@ internal class SmartPlaylistFolderController {
             originalClipToPadding = list.clipToPadding,
             root = root,
             current = remembered,
+            otherLocations = restoreOtherLocations,
             style = initialStyle,
             layoutListener = layoutListener,
             detachListener = detachListener
@@ -619,6 +808,7 @@ internal class SmartPlaylistFolderController {
             TAG,
             "SMART FOLDERS READY | root=" + safePath(root) +
                 " | restored=" + safePath(remembered) +
+                " | otherLocations=" + restoreOtherLocations +
                 " | nativeAdapter=ls4"
         )
     }
@@ -632,10 +822,27 @@ internal class SmartPlaylistFolderController {
             )
         ) return
         browser.current = canonical
-        rememberedDirectory = canonical.path
+        browser.otherLocations = false
+        if (browser.moveSources == null) {
+            rememberedDirectory = canonical.path
+            rememberedOtherLocations = false
+        }
         startObserver(browser)
         refresh(browser)
+        updateMenus()
         Log.i(TAG, "SMART FOLDERS NAV | current=" + safePath(canonical))
+    }
+
+    private fun navigateOtherLocations(browser: Browser) {
+        if (!groupRootPlaylists || browser.moveSources != null) return
+        browser.current = browser.root
+        browser.otherLocations = true
+        rememberedDirectory = browser.root.path
+        rememberedOtherLocations = true
+        startObserver(browser)
+        refresh(browser)
+        updateMenus()
+        Log.i(TAG, "SMART FOLDERS NAV | virtual=other-locations")
     }
 
     private fun refresh(browser: Browser) {
@@ -643,6 +850,7 @@ internal class SmartPlaylistFolderController {
         val generation = refreshGeneration.incrementAndGet()
         browser.generation = generation
         val directory = browser.current
+        val otherLocations = browser.otherLocations
         worker.execute {
             val snapshot = runCatching {
                 loadSnapshot(directory)
@@ -652,11 +860,20 @@ internal class SmartPlaylistFolderController {
             main.post {
                 if (!enabled || browsers[browser.list] !== browser ||
                     browser.generation != generation ||
-                    !sameFile(browser.current, snapshot.directory)
+                    !sameFile(browser.current, snapshot.directory) ||
+                    browser.otherLocations != otherLocations
                 ) return@post
-                applyNativeModels(browser, snapshot.models)
+                val models = when {
+                    browser.moveSources != null -> emptyList()
+                    browser.otherLocations -> snapshot.models
+                    groupRootPlaylists &&
+                        sameFile(browser.current, browser.root) -> emptyList()
+                    else -> snapshot.models
+                }
+                browser.nativeOrder = models.mapNotNull(::modelPath)
+                applyNativeModels(browser, models)
                 browser.style = sampleNativeStyle(browser.list) ?: browser.style
-                render(browser, snapshot)
+                render(browser, snapshot, models.size)
                 positionOverlay(browser)
             }
         }
@@ -769,11 +986,21 @@ internal class SmartPlaylistFolderController {
         }
     }
 
-    private fun render(browser: Browser, snapshot: Snapshot) {
+    private fun render(
+        browser: Browser,
+        snapshot: Snapshot,
+        visibleSmartCount: Int
+    ) {
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
 
-        snapshot.folders.forEach { folder ->
+        val moving = browser.moveSources != null
+        val folders = if (browser.otherLocations) {
+            emptyList()
+        } else {
+            snapshot.folders
+        }
+        folders.forEach { folder ->
             val row = createRow(
                 browser,
                 folder.name,
@@ -785,31 +1012,61 @@ internal class SmartPlaylistFolderController {
             browser.rows.addView(row)
         }
 
+        val showOtherLocations =
+            !moving &&
+                groupRootPlaylists &&
+                !browser.otherLocations &&
+                sameFile(browser.current, browser.root)
+        if (showOtherLocations) {
+            val otherLabel = NativeGmmpUiText.otherLocations(browser.list.context)
+            val row = createRow(
+                browser,
+                otherLabel,
+                folder = true,
+                contextMenuSource = null,
+                onContext = null
+            )
+            row.setOnClickListener { navigateOtherLocations(browser) }
+            browser.rows.addView(row)
+        }
+
         // Real Smart-Playlist rows remain 100% native. They are already
         // filtered by applyNativeModels() through GMMP's original differ.
         browser.overlay.post {
             if (browsers[browser.list] === browser) {
                 updateNativeInset(browser)
+                if (moving) positionMoveFab(browser)
             }
         }
 
         Log.i(
             TAG,
             "SMART FOLDERS RENDER | current=" + safePath(browser.current) +
-                " | folders=" + snapshot.folders.size +
-                " | smart=" + snapshot.models.size +
-                " | nativeRows=true"
+                " | virtualOther=" + browser.otherLocations +
+                " | folders=" + (folders.size + if (showOtherLocations) 1 else 0) +
+                " | smart=" + visibleSmartCount +
+                " | nativeRows=true | move=" + moving
         )
     }
 
     private fun renderBreadcrumb(browser: Browser) {
-        val next = arrayListOf<Pair<File, String>>()
+        val next = arrayListOf<BreadcrumbSegment>()
         val rootLabel = NativeGmmpUiText.string(
             browser.list.context,
             "smart_playlists"
         ) ?: NativeGmmpUiText.smartPlaylist(browser.list.context)
-        next += browser.root to rootLabel
-        if (!sameFile(browser.current, browser.root)) {
+        next += BreadcrumbSegment(
+            key = "root",
+            label = rootLabel,
+            directory = browser.root
+        )
+        if (browser.otherLocations) {
+            next += BreadcrumbSegment(
+                key = "other-locations",
+                label = NativeGmmpUiText.otherLocations(browser.list.context),
+                otherLocations = true
+            )
+        } else if (!sameFile(browser.current, browser.root)) {
             val relative = runCatching {
                 browser.current.relativeTo(browser.root).path
             }.getOrDefault("")
@@ -818,7 +1075,11 @@ internal class SmartPlaylistFolderController {
                 .filter(String::isNotBlank)
                 .forEach { name ->
                     cursor = File(cursor, name)
-                    next += cursor to name
+                    next += BreadcrumbSegment(
+                        key = "dir:" + canonicalPath(cursor.path),
+                        label = name,
+                        directory = cursor
+                    )
                 }
         }
         (browser.breadcrumb.adapter as? BreadcrumbAdapter)?.submit(next)
@@ -834,10 +1095,8 @@ internal class SmartPlaylistFolderController {
         onContext: (() -> Unit)?
     ): View {
         val style = browser.style
-        // Only clone a row layout after it was sampled from a real bound
-        // native Smart row. An empty root has no bound text/style template.
         val layoutId = style?.rowLayoutId?.takeIf { it != 0 } ?: 0
-        val root = if (layoutId != 0) {
+        val template = if (layoutId != 0) {
             runCatching {
                 LayoutInflater.from(browser.list.context).inflate(
                     layoutId,
@@ -846,92 +1105,81 @@ internal class SmartPlaylistFolderController {
                 )
             }.getOrNull()
         } else null
+        val title = if (template != null && style?.titleViewId != 0) {
+            template.findViewById<TextView>(style!!.titleViewId)
+        } else null
 
-        if (root != null) {
-            val title = style?.titleViewId
-                ?.takeIf { it != 0 }
-                ?.let { root.findViewById<TextView>(it) }
-                ?: findTextView(root)
-            if (title != null) {
-                title.text = text
-                style?.let {
-                    title.paint.set(it.paint)
-                    title.setTextSize(
-                        TypedValue.COMPLEX_UNIT_PX,
-                        it.textSizePx
-                    )
-                    title.setTextColor(it.textColor)
-                    title.typeface = it.typeface
-                    title.gravity = it.titleGravity
-                    title.setPaddingRelative(
-                        it.titlePaddingStart,
-                        title.paddingTop,
-                        it.titlePaddingEnd,
-                        title.paddingBottom
-                    )
-                }
-                if (folder) {
-                    title.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                        FolderOutlineDrawable(
-                            style?.textColor
-                                ?: resolveColor(
-                                    browser.list,
-                                    android.R.attr.textColorPrimary,
-                                    Color.WHITE
-                                ),
-                            dp(browser.list, 24)
-                        ),
-                        null,
-                        null,
-                        null
-                    )
-                    title.compoundDrawablePadding = dp(browser.list, 12)
-                }
-                hideOtherText(root, title)
-            }
-            root.layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                style?.rowHeight ?: dp(browser.list, 54)
+        if (template != null && title != null && style != null) {
+            // Same complete live native title copy used by the accepted
+            // normal Playlist-folders implementation.
+            title.text = text
+            title.setTextSize(TypedValue.COMPLEX_UNIT_PX, style.textSizePx)
+            title.setTextColor(style.textColor)
+            if (style.typeface != null) title.typeface = style.typeface
+            title.gravity = style.titleGravity
+            title.letterSpacing = style.letterSpacing
+            title.textScaleX = style.textScaleX
+            title.includeFontPadding = style.includeFontPadding
+            title.setLineSpacing(
+                style.lineSpacingExtra,
+                style.lineSpacingMultiplier
             )
-            root.minimumHeight = style?.rowHeight ?: dp(browser.list, 54)
-            style?.rowBackground?.newDrawable(browser.list.resources)
-                ?.mutate()?.let { root.background = it }
+            title.maxLines = style.maxLines
+            title.ellipsize = style.ellipsize
+            title.setPaddingRelative(
+                style.titlePaddingStart,
+                title.paddingTop,
+                style.titlePaddingEnd,
+                title.paddingBottom
+            )
+            title.paint.set(style.paint)
+            title.requestLayout()
+
+            template.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                style.rowHeight
+            )
+            template.minimumHeight = style.rowHeight
+            hideOtherText(template, title)
             configureContextMenu(
-                root,
+                template,
                 browser.list,
                 folder,
                 contextMenuSource,
                 onContext
             )
-            root.isClickable = true
-            root.isFocusable = true
-            return root
+            if (folder) addNativeFolderIcon(template, title, browser.list, style)
+            style.rowBackground?.newDrawable(browser.list.resources)
+                ?.mutate()?.let { template.background = it }
+            template.isClickable = true
+            template.isFocusable = true
+            return template
         }
 
+        // Defensive fallback when a live row template is not available.
         return TextView(browser.list.context).apply {
             this.text = text
             gravity = Gravity.CENTER_VERTICAL
-            minHeight = dp(browser.list, 54)
-            setPadding(dp(browser.list, 16), 0, dp(browser.list, 16), 0)
-            setTextColor(
-                style?.textColor ?: resolveColor(
-                    browser.list,
-                    android.R.attr.textColorPrimary,
-                    Color.WHITE
-                )
+            val textColor = style?.textColor ?: resolveColor(
+                browser.list,
+                android.R.attr.textColorPrimary,
+                Color.WHITE
             )
+            minHeight = style?.rowHeight ?: dp(browser.list, 54)
+            setPadding(dp(browser.list, 12), 0, dp(browser.list, 16), 0)
+            setTextColor(textColor)
             setTextSize(
                 TypedValue.COMPLEX_UNIT_PX,
                 style?.textSizePx
                     ?: browser.list.resources.displayMetrics.scaledDensity * 16f
             )
-            background = selectableBackground(browser.list)
+            typeface = style?.typeface
+            background = style?.rowBackground
+                ?.newDrawable(browser.list.resources)?.mutate()
+                ?: selectableBackground(browser.list)
             if (folder) {
                 setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    FolderOutlineDrawable(
-                        currentTextColor,
-                        dp(browser.list, 24)
-                    ),
+                    FolderOutlineDrawable(textColor, dp(browser.list, 24)),
                     null,
                     null,
                     null
@@ -939,6 +1187,45 @@ internal class SmartPlaylistFolderController {
                 compoundDrawablePadding = dp(browser.list, 12)
             }
         }
+    }
+
+    private fun addNativeFolderIcon(
+        root: View,
+        title: TextView,
+        host: View,
+        style: NativeStyle
+    ) {
+        val content = root as? ViewGroup ?: return
+        val image = ImageView(host.context).apply {
+            setImageDrawable(
+                FolderOutlineDrawable(style.textColor, dp(host, 24))
+            )
+            contentDescription = NativeGmmpUiText.string(host.context, "folder")
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val size = dp(host, 24)
+        if (content is FrameLayout) {
+            content.addView(
+                image,
+                FrameLayout.LayoutParams(
+                    size,
+                    size,
+                    Gravity.START or Gravity.CENTER_VERTICAL
+                ).apply {
+                    marginStart = dp(host, 12)
+                }
+            )
+        } else {
+            content.addView(image, ViewGroup.LayoutParams(size, size))
+        }
+        title.setPaddingRelative(
+            title.paddingStart + dp(host, 28),
+            title.paddingTop,
+            title.paddingEnd,
+            title.paddingBottom
+        )
     }
 
     private fun configureContextMenu(
@@ -1099,12 +1386,19 @@ internal class SmartPlaylistFolderController {
                 titleViewId = title.id,
                 rowHeight = row.height.coerceAtLeast(dp(list, 44)),
                 textColor = title.currentTextColor,
-                textSizePx = title.textSize,
+                textSizePx = title.paint.textSize,
                 typeface = title.typeface,
                 titleGravity = title.gravity,
                 titlePaddingStart = title.paddingStart,
                 titlePaddingEnd = title.paddingEnd,
                 paint = TextPaint(title.paint),
+                letterSpacing = title.letterSpacing,
+                textScaleX = title.textScaleX,
+                includeFontPadding = title.includeFontPadding,
+                lineSpacingExtra = title.lineSpacingExtra,
+                lineSpacingMultiplier = title.lineSpacingMultiplier,
+                maxLines = title.maxLines,
+                ellipsize = title.ellipsize,
                 rowBackground = row.background?.constantState
             )
         }
@@ -1125,6 +1419,475 @@ internal class SmartPlaylistFolderController {
             if (button.visibility == View.VISIBLE) return button
         }
         return null
+    }
+
+    private fun nativeMoveLabel(context: android.content.Context): String =
+        GoneSmartGmmpStrings.move(context.resources.configuration.locales[0])
+
+    private fun installMoveMenu(
+        menu: Menu,
+        context: android.content.Context
+    ) {
+        if (menu.findItem(moveMenuId) != null) return
+        val order = (0 until menu.size())
+            .map(menu::getItem)
+            .maxOfOrNull { it.order }
+            ?.plus(1)
+            ?: 0
+        menu.add(
+            Menu.NONE,
+            moveMenuId,
+            order,
+            nativeMoveLabel(context)
+        ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
+    }
+
+    private fun isSmartActionMode(callback: Any?): Boolean {
+        val native = bindings ?: return false
+        if (callback == null ||
+            !native.actionModeBaseClass.isInstance(callback)
+        ) return false
+        val view = runCatching {
+            native.actionModeView.get(callback)
+        }.getOrNull() ?: return false
+        return native.smartFragmentClass.isInstance(view)
+    }
+
+    private fun selectedSmartPaths(callback: Any?): List<String> {
+        val native = bindings ?: return emptyList()
+        if (callback == null ||
+            !native.actionModeBaseClass.isInstance(callback)
+        ) return emptyList()
+        val tracker = runCatching {
+            native.actionModeSelection.get(callback)
+        }.getOrNull() ?: return emptyList()
+        val entries = runCatching {
+            native.selectionEntries.get(tracker) as? Iterable<*>
+        }.getOrNull() ?: return emptyList()
+        return entries.mapNotNull { entry ->
+            if (entry == null) null else {
+                val model = runCatching {
+                    native.selectionEntryModel.get(entry)
+                }.getOrNull()
+                model?.takeIf(native.modelClass::isInstance)?.let(::modelPath)
+            }
+        }.distinct()
+    }
+
+    private fun beginMove(
+        browser: Browser,
+        sources: List<String>,
+        originalMode: Any?
+    ) {
+        if (browser.moveSources != null) return
+        val rootPath = canonicalPath(browser.root.path)
+        val selected = sources
+            .map(::canonicalPath)
+            .distinct()
+            .filter {
+                SmartPlaylistFolderPolicy.isInsideRoot(rootPath, it) &&
+                    File(it).isFile &&
+                    File(it).extension.equals("spl", ignoreCase = true)
+            }
+        if (selected.size != sources.distinct().size || selected.isEmpty()) {
+            Log.w(TAG, "SMART MOVE | invalid native selection")
+            showMoveError(browser.list.context)
+            return
+        }
+        browser.movePreviousDirectory = browser.current.path
+        browser.movePreviousOtherLocations = browser.otherLocations
+        browser.moveSources = selected
+        browser.current = browser.root
+        browser.otherLocations = false
+        runCatching {
+            originalMode?.javaClass?.getMethod("finish")?.invoke(originalMode)
+        }
+        startObserver(browser)
+        refresh(browser)
+        updateMenus()
+        browser.list.post {
+            if (browsers[browser.list] === browser &&
+                browser.moveSources != null
+            ) installMoveChrome(browser)
+        }
+        Log.i(TAG, "SMART MOVE UI | destination browser opened | count=" +
+            selected.size)
+    }
+
+    private fun closeMoveBrowser(browser: Browser) {
+        val previous = browser.movePreviousDirectory
+        val previousOther = browser.movePreviousOtherLocations
+        browser.moveSources = null
+        browser.movePreviousDirectory = null
+        browser.movePreviousOtherLocations = false
+        endMoveChrome(browser)
+        val restored = previous
+            ?.let(::File)
+            ?.takeIf {
+                it.isDirectory &&
+                    SmartPlaylistFolderPolicy.isInsideRoot(
+                        browser.root.path,
+                        it.path
+                    )
+            }
+            ?.let { runCatching { it.canonicalFile }.getOrNull() }
+            ?: browser.root
+        browser.current = restored
+        browser.otherLocations =
+            groupRootPlaylists &&
+                previousOther &&
+                sameFile(restored, browser.root)
+        startObserver(browser)
+        refresh(browser)
+        updateMenus()
+    }
+
+    private fun confirmMoveBrowser(browser: Browser) {
+        val paths = browser.moveSources ?: return
+        val root = browser.root
+        val destination = browser.current
+        val prepared = SmartPlaylistMovePolicy.prepare(
+            root = root,
+            destination = destination,
+            sources = paths.map(::File)
+        )
+        if (prepared is SmartPlaylistMovePolicy.Result.Blocked) {
+            Log.w(TAG, "SMART MOVE BLOCKED | " + prepared.reason)
+            showMoveError(browser.list.context)
+            return
+        }
+        val plan = (prepared as SmartPlaylistMovePolicy.Result.Ready).moves
+        val context = browser.list.context
+        worker.execute {
+            val inbound = runCatching {
+                selectedSourcesHaveInboundNativeLinks(root, paths.toSet())
+            }.onFailure {
+                Log.e(TAG, "SMART MOVE | inbound-link scan failed", it)
+            }.getOrElse { true }
+            if (inbound) {
+                main.post {
+                    if (browsers[browser.list] === browser) {
+                        Log.w(
+                            TAG,
+                            "SMART MOVE BLOCKED | selected Smart-Playlist " +
+                                "is referenced by a native Smart-Playlist link"
+                        )
+                        showMoveError(context)
+                    }
+                }
+                return@execute
+            }
+
+            val completed = arrayListOf<SmartPlaylistMovePolicy.Move>()
+            val success = runCatching {
+                for (move in plan) {
+                    moveFile(move.source, move.target)
+                    completed += move
+                }
+            }.onFailure { error ->
+                Log.e(TAG, "SMART MOVE | file move failed; rolling back", error)
+                completed.asReversed().forEach { move ->
+                    runCatching {
+                        moveFile(move.target, move.source)
+                    }.onFailure {
+                        Log.e(TAG, "SMART MOVE | rollback failed", it)
+                    }
+                }
+            }.isSuccess
+
+            main.post {
+                if (browsers[browser.list] !== browser) return@post
+                if (success) {
+                    Log.i(TAG, "SMART MOVE | completed | count=" + plan.size)
+                    closeMoveBrowser(browser)
+                    browsers.values.toList()
+                        .filter { it.list.isAttachedToWindow }
+                        .forEach(::refresh)
+                } else {
+                    showMoveError(context)
+                }
+            }
+        }
+    }
+
+    private fun moveFile(source: File, target: File) {
+        target.parentFile?.let {
+            require(it.isDirectory) { "Move destination is unavailable" }
+        }
+        runCatching {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        }.getOrElse {
+            Files.move(source.toPath(), target.toPath())
+        }
+    }
+
+    private fun selectedSourcesHaveInboundNativeLinks(
+        root: File,
+        selected: Set<String>
+    ): Boolean {
+        val native = bindings ?: return true
+        val canonicalSelected = selected.map(::canonicalPath).toSet()
+        val candidates = root.walkTopDown()
+            .filter {
+                it.isFile && it.extension.equals("spl", ignoreCase = true)
+            }
+        for (file in candidates) {
+            val model = runCatching {
+                native.modelConstructor.newInstance(
+                    null, 0, 0, 0, null, 255
+                ).also {
+                    native.modelRead.invoke(it, file)
+                }
+            }.getOrNull() ?: continue
+            val rules = runCatching {
+                native.modelRules.get(model) as? Iterable<*>
+            }.getOrNull() ?: continue
+            if (rules.any { ruleReferencesSelected(native, it, canonicalSelected) }) {
+                Log.i(
+                    TAG,
+                    "SMART MOVE LINK BLOCK | owner=" + safePath(file)
+                )
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun ruleReferencesSelected(
+        native: Bindings,
+        rule: Any?,
+        selected: Set<String>
+    ): Boolean {
+        if (rule == null) return false
+        if (native.groupRuleClass.isInstance(rule)) {
+            val children = runCatching {
+                native.groupRules.get(rule) as? Iterable<*>
+            }.getOrNull() ?: return false
+            return children.any {
+                ruleReferencesSelected(native, it, selected)
+            }
+        }
+        if (!native.leafRuleClass.isInstance(rule)) return false
+        val value = runCatching {
+            native.leafRuleValue.get(rule) as? String
+        }.getOrNull() ?: return false
+        if (PlaylistBridgeReference.isBridgeValue(value) ||
+            !PlaylistBridgeDiagnosticPolicy
+                .isNativeSmartPlaylistReference(value)
+        ) return false
+        val path = value.substringBefore('|', "").takeUnless(String::isBlank)
+            ?: return false
+        return canonicalPath(path) in selected
+    }
+
+    private fun installMoveChrome(browser: Browser) {
+        if (browser.moveSources == null || browser.moveActionMode != null) return
+        val list = browser.list
+        val callback = object : android.view.ActionMode.Callback {
+            override fun onCreateActionMode(
+                mode: android.view.ActionMode,
+                menu: Menu
+            ): Boolean {
+                mode.title = nativeMoveLabel(list.context)
+                return true
+            }
+
+            override fun onPrepareActionMode(
+                mode: android.view.ActionMode,
+                menu: Menu
+            ): Boolean = false
+
+            override fun onActionItemClicked(
+                mode: android.view.ActionMode,
+                item: MenuItem
+            ): Boolean = false
+
+            override fun onDestroyActionMode(mode: android.view.ActionMode) {
+                if (browser.moveActionMode === mode) {
+                    browser.moveActionMode = null
+                    if (browser.moveSources != null &&
+                        browsers[list] === browser
+                    ) {
+                        closeMoveBrowser(browser)
+                    }
+                }
+            }
+        }
+        val mode = runCatching {
+            list.startActionMode(
+                callback,
+                android.view.ActionMode.TYPE_PRIMARY
+            )
+        }.onFailure {
+            Log.w(TAG, "SMART MOVE UI | ActionMode unavailable", it)
+        }.getOrNull()
+        if (mode == null) {
+            closeMoveBrowser(browser)
+            return
+        }
+        browser.moveActionMode = mode
+        val fab = installMoveFab(browser)
+        if (fab == null) {
+            Log.w(TAG, "SMART MOVE UI | native AestheticFab unavailable")
+            closeMoveBrowser(browser)
+            return
+        }
+        browser.list.post {
+            if (browsers[list] === browser &&
+                browser.moveSources != null &&
+                positionMoveFab(browser)
+            ) {
+                runCatching {
+                    fab.javaClass.getMethod("show").invoke(fab)
+                }.onFailure {
+                    fab.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    private fun installMoveFab(browser: Browser): View? = runCatching {
+        val list = browser.list
+        val clazz = list.javaClass.classLoader
+            ?.loadClass("com.afollestad.aesthetic.views.AestheticFab")
+            ?: error("GMMP AestheticFab unavailable")
+        val fab = clazz.getConstructor(
+            android.content.Context::class.java,
+            android.util.AttributeSet::class.java
+        ).newInstance(list.context, null) as? View
+            ?: error("GMMP AestheticFab is not a View")
+        val image = fab as? ImageView
+            ?: error("GMMP AestheticFab is not an ImageView")
+        image.imageTintList = null
+        image.setImageDrawable(PlaylistConfirmDrawable(dp(list, 24)))
+        image.contentDescription = nativeMoveLabel(list.context)
+        image.setOnClickListener {
+            if (browser.moveSources != null) confirmMoveBrowser(browser)
+        }
+        val size = list.resources.getIdentifier(
+            "design_fab_size_normal",
+            "dimen",
+            list.context.packageName
+        ).takeIf { it != 0 }?.let {
+            runCatching {
+                list.resources.getDimensionPixelSize(it)
+            }.getOrNull()
+        } ?: dp(list, 56)
+        runCatching {
+            clazz.getMethod(
+                "setCustomSize",
+                Int::class.javaPrimitiveType
+            ).invoke(fab, size)
+        }
+        browser.host.addView(
+            fab,
+            ViewGroup.LayoutParams(size, size)
+        )
+        fab.elevation = dp(list, 8).toFloat()
+        fab.visibility = View.INVISIBLE
+        browser.moveFab = fab
+        fab.post {
+            if (browser.moveFab === fab &&
+                browser.moveSources != null &&
+                positionMoveFab(browser)
+            ) {
+                runCatching { clazz.getMethod("show").invoke(fab) }
+                    .onFailure { fab.visibility = View.VISIBLE }
+            }
+        }
+        fab
+    }.onFailure {
+        Log.w(TAG, "SMART MOVE UI | native AestheticFab clone failed", it)
+    }.getOrNull()
+
+    private fun nativeMiniPlayerTop(list: View): Int? {
+        val visible = Rect()
+        if (!list.getGlobalVisibleRect(visible)) return null
+        return listOf(
+            "miniPlayerWrapper",
+            "miniPlayerLayout",
+            "libraryTabMiniPlayer"
+        ).mapNotNull { name ->
+            val id = list.resources.getIdentifier(
+                name,
+                "id",
+                list.context.packageName
+            )
+            if (id == 0) return@mapNotNull null
+            val player = list.rootView.findViewById<View>(id)
+                ?: return@mapNotNull null
+            val bounds = Rect()
+            if (player.isShown &&
+                player.getGlobalVisibleRect(bounds) &&
+                bounds.height() > 0 &&
+                bounds.top > visible.top + visible.height() / 3
+            ) {
+                bounds.top
+            } else null
+        }.minOrNull()
+    }
+
+    private fun positionMoveFab(browser: Browser): Boolean {
+        val fab = browser.moveFab ?: return false
+        if (browser.moveSources == null ||
+            !browser.list.isAttachedToWindow
+        ) return false
+        val visible = Rect()
+        if (!browser.list.getGlobalVisibleRect(visible) ||
+            visible.height() <= 0
+        ) return false
+        val safeBottom = minOf(
+            visible.bottom,
+            nativeMiniPlayerTop(browser.list) ?: visible.bottom
+        )
+        val hostLocation = IntArray(2)
+        browser.host.getLocationOnScreen(hostLocation)
+        val margin = dp(browser.list, 16)
+        val width = fab.width.takeIf { it > 0 }
+            ?: fab.layoutParams?.width?.takeIf { it > 0 }
+            ?: return false
+        val height = fab.height.takeIf { it > 0 }
+            ?: fab.layoutParams?.height?.takeIf { it > 0 }
+            ?: return false
+        fab.x = (
+            visible.right - hostLocation[0] - width - margin
+        ).toFloat()
+        fab.y = (
+            safeBottom - hostLocation[1] - height - margin
+        ).toFloat()
+        return true
+    }
+
+    private fun endMoveChrome(browser: Browser) {
+        val mode = browser.moveActionMode
+        browser.moveActionMode = null
+        mode?.finish()
+        val fab = browser.moveFab
+        browser.moveFab = null
+        if (fab != null) {
+            fab.visibility = View.GONE
+            val host = fab.parent as? ViewGroup
+            if (host != null) {
+                main.post {
+                    if (fab.parent === host) host.removeView(fab)
+                }
+            }
+        }
+    }
+
+    private fun showMoveError(context: android.content.Context) {
+        Toast.makeText(
+            context,
+            NativeGmmpUiText.error(
+                context,
+                nativeMoveLabel(context)
+            ),
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun startObserver(browser: Browser) {
@@ -1148,7 +1911,12 @@ internal class SmartPlaylistFolderController {
     private fun installNewFolderMenu(menu: Menu, context: android.content.Context) {
         val existing = menu.findItem(newFolderMenuId)
         if (existing != null) {
-            existing.isVisible = enabled
+            val browser = currentBrowser()
+            existing.isVisible =
+                enabled &&
+                    browser != null &&
+                    !browser.otherLocations &&
+                    browser.moveSources == null
             return
         }
         val title = NativeGmmpUiText.string(context, "files_new_folder")
@@ -1200,6 +1968,7 @@ internal class SmartPlaylistFolderController {
 
     private fun requestFolderCreation() {
         val browser = currentBrowser() ?: return
+        if (browser.otherLocations || browser.moveSources != null) return
         val creator = folderCreator ?: return
         creator.show(
             browser.list.context,
@@ -1215,10 +1984,14 @@ internal class SmartPlaylistFolderController {
 
     private fun updateMenus() {
         menuRefs.removeAll { it.get() == null }
+        val browser = currentBrowser()
         menuRefs.forEach { reference ->
             val menu = reference.get() ?: return@forEach
             menu.findItem(newFolderMenuId)?.isVisible =
-                enabled && currentBrowser() != null
+                enabled &&
+                    browser != null &&
+                    !browser.otherLocations &&
+                    browser.moveSources == null
         }
     }
 
@@ -1240,6 +2013,7 @@ internal class SmartPlaylistFolderController {
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
         browser.observer?.stopWatching()
+        endMoveChrome(browser)
         browser.list.alpha = browser.originalAlpha
         browser.list.setPadding(
             browser.originalPaddingLeft,
@@ -1322,7 +2096,10 @@ internal class SmartPlaylistFolderController {
             if (nextStyle != null) browser.style = nextStyle
         }
         browser.overlay.post {
-            if (browsers[list] === browser) updateNativeInset(browser)
+            if (browsers[list] === browser) {
+                updateNativeInset(browser)
+                if (browser.moveSources != null) positionMoveFab(browser)
+            }
         }
     }
 
@@ -1543,6 +2320,28 @@ internal class SmartPlaylistFolderController {
         return runCatching {
             view.resources.getResourceEntryName(id)
         }.getOrDefault("")
+    }
+
+    private fun quickNavTitleRatio(view: View): Float =
+        view.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS,
+            android.content.Context.MODE_PRIVATE
+        ).getFloat(
+            QUICK_NAV_TITLE_RATIO_KEY,
+            GMMP_420_QUICK_NAV_TITLE_RATIO
+        ).takeIf { it in 0.8f..1.8f }
+            ?: GMMP_420_QUICK_NAV_TITLE_RATIO
+
+    private fun findField(type: Class<*>, name: String): Field {
+        var current: Class<*>? = type
+        while (current != null) {
+            try {
+                return current.getDeclaredField(name)
+            } catch (_: NoSuchFieldException) {
+                current = current.superclass
+            }
+        }
+        throw NoSuchFieldException(type.name + "." + name)
     }
 
     private fun safePath(file: File): String =

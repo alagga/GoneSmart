@@ -224,3 +224,24 @@ The implementation now follows a stricter native-first contract:
 - current-folder filtering still uses the verified original `ls4.y` differ path.
 
 The same device log still showed the repeated Android `Invalid ID 0x00000000…04` stream. The prior guard covered only the Smart-folder controller's own resource-name probe. GoneSmart also has shared hierarchy/menu scanners (normal Playlist folders, multi-select and player badge detection) that can encounter generated zero-package-byte View/Menu IDs introduced by extension UI. Those hot resource-name paths are now all gated by `NativeResourceIdPolicy` before calling Android Resources APIs.
+
+
+## Smart-Playlist folder visual parity, root grouping and Move — 29 September 2026
+
+The next device log confirms the native-row architecture is stable: the real `ls4` list attaches, the root renders 85 native Smart-Playlist rows plus one physical folder, and entering that folder switches cleanly to its physical-folder snapshot without a crash. The remaining black row is therefore isolated to the one synthetic GoneSmart folder row rather than GMMP's Smart items.
+
+This build makes Smart-folder chrome follow the already accepted normal Playlist-folders implementation:
+- synthetic folder rows clone the live GMMP row XML and copy effective glyph paint, size, color, typeface, gravity, letter spacing, text scale, font padding, line spacing, max-lines and ellipsize;
+- the outlined folder glyph is a separate 24dp ImageView with the same inset used by normal Playlist folders, rather than a compound drawable on an incompletely bound row;
+- breadcrumb labels use GMMP's `rv_horiz_metadata` / separator XML and the verified 4.2.0 quick-nav title ratio (1.225 fallback, shared persisted ratio when available), without overwriting native XML padding/ripple.
+
+A separate companion toggle **Group root Smart-Playlists** (default off) mirrors the normal Playlist-folders root grouping. When enabled, root .spl files are shown in a virtual, GMMP-localized **Other Locations** node while physical folders remain at Smart root. The virtual node is never offered as a physical move destination.
+
+A fresh source-level audit of the supplied GMMP 4.2.0 APK established the exact Smart Move boundaries:
+- `nt4.c(Context, zn0, MenuItem)` receives the exact `vs4` row holder and its `ws4` model for the Smart three-dot menu;
+- generic native selection `n3` stores selected models in `s3.c -> s3$a.b`; for the Smart surface those models are `ws4`;
+- GMMP exposes no native physical .spl Move writer/action.
+
+GoneSmart therefore injects its localized **Move** command into both the Smart context menu and original Smart multi-selection ActionMode, then reuses the accepted destination UX: physical-folder navigation, ActionMode back/cancel and a clean white-check native AestheticFab. The file move itself is extension-owned because GMMP has no equivalent writer. It is restricted to .spl files inside the configured Smart root, never overwrites, uses atomic move when available with a normal Files.move fallback, and rolls back earlier items if a later multi-move fails.
+
+Native Smart links persist absolute .spl paths. Before moving, GoneSmart parses every Smart Playlist under the configured root through original `ws4.r(File)` and recursively scans `ws4.u` / `jt4.o` / `ft4.q`. If another native Smart rule references any selected source, the move is blocked rather than silently breaking that link. Playlist Bridge sentinel rules are excluded from this inbound-native-link test.

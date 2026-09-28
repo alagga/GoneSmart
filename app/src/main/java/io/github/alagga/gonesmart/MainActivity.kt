@@ -574,6 +574,14 @@ class MainActivity : AppCompatActivity() {
                 "Browse physical folders directly inside GMMP's " +
                     "Smart-Playlists tab.",
                 COLOR_ACCENT
+            ),
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                "⌂",
+                "Group root Smart-Playlists",
+                "Show root Smart-Playlists inside the virtual Other Locations " +
+                    "folder. Keeps the virtual folder available even when empty.",
+                COLOR_ACCENT
             )
         )))
         container.addView(verticalGap(12))
@@ -817,6 +825,18 @@ class MainActivity : AppCompatActivity() {
                 "list without an extra popup; actual failures are reported. " +
                 "GoneSmart uses GMMP's original playlist delete and scan " +
                 "operations with a recoverable private staging step."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "How do Smart-Playlist folders work?",
+            body = "Enable Smart-Playlist folders to browse physical .spl " +
+                "folders in GMMP's Smart-Playlists tab. Group root " +
+                "Smart-Playlists optionally places root .spl files in the " +
+                "virtual Other Locations folder. Use Move from a Smart-Playlist " +
+                "three-dot menu or native multi-selection to choose a physical " +
+                "destination. A move is blocked if another native Smart-Playlist " +
+                "links to the selected file by its absolute path."
         ))
 
         container.addView(verticalGap(12))
@@ -1086,9 +1106,14 @@ class MainActivity : AppCompatActivity() {
             GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
             options.smartPlaylistFoldersEnabled
         )
+        setSwitch(
+            GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+            options.smartGroupRootPlaylists
+        )
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)
         refreshPlaylistFolderAvailability(options)
+        refreshSmartPlaylistFolderAvailability(options)
         setSwitch(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
@@ -1135,6 +1160,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun refreshSmartPlaylistFolderAvailability(
+        options: GoneSmartOptions = settingsRepository.read()
+    ) {
+        val key = GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
+        switches[key]?.isEnabled = options.smartPlaylistFoldersEnabled
+        settingRows[key]?.alpha =
+            if (options.smartPlaylistFoldersEnabled) 1f else 0.45f
+    }
+
     /**
      * Rating fallback is meaningful only if Minimum rating or Smart rating
      * can actually exclude tracks. Disable and uncheck it otherwise. A
@@ -1177,6 +1211,9 @@ class MainActivity : AppCompatActivity() {
         settingsRepository.setBoolean(key, checked)
         if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS) {
             refreshPlaylistFolderAvailability()
+        }
+        if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) {
+            refreshSmartPlaylistFolderAvailability()
         }
         if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) {
             refreshRatingFallbackAvailability()

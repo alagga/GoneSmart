@@ -123,10 +123,16 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
-            if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) {
-                val next = options.smartPlaylistFoldersEnabled
+            if (
+                key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS ||
+                key == GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
+            ) {
+                val next = options
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    smartPlaylistFolderController.setEnabled(next)
+                    smartPlaylistFolderController.setOptions(
+                        next.smartPlaylistFoldersEnabled,
+                        next.smartGroupRootPlaylists
+                    )
                 }
             }
 
@@ -166,6 +172,7 @@ class GoneSmartModule : XposedModule() {
                 key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
                 key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
                 key != GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
@@ -584,8 +591,9 @@ class GoneSmartModule : XposedModule() {
                     smartPlaylistFolderController.setNativeFolderCreator(
                         param.classLoader
                     )
-                    smartPlaylistFolderController.setEnabled(
-                        options.smartPlaylistFoldersEnabled
+                    smartPlaylistFolderController.setOptions(
+                        options.smartPlaylistFoldersEnabled,
+                        options.smartGroupRootPlaylists
                     )
                     installSmartPlaylistFolderFeatureHooks(param)
                     installSmartPlaylistSaveHook(param)
@@ -1850,6 +1858,91 @@ class GoneSmartModule : XposedModule() {
             Log.w(
                 "GoneSmartSmartFolders",
                 "SMART FOLDERS HOOK MISSING | ss4\$b.invoke",
+                it
+            )
+        }
+
+        runCatching {
+            // APK-proven Smart context dispatch: nt4.c(Context, zn0, MenuItem)
+            // receives the exact vs4 holder and therefore its exact ws4 model.
+            val behavior = loader.loadClass("nt4")
+            val holderBase = loader.loadClass("zn0")
+            val method = behavior.getDeclaredMethod(
+                "c",
+                android.content.Context::class.java,
+                holderBase,
+                android.view.MenuItem::class.java
+            ).apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (smartPlaylistFolderController.interceptNativeContextMove(
+                        chain.getArg(0) as? android.content.Context,
+                        chain.getArg(1),
+                        chain.getArg(2) as? android.view.MenuItem
+                    )
+                ) {
+                    true
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK READY | nt4.c native context dispatch"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK MISSING | nt4.c",
+                it
+            )
+        }
+
+        runCatching {
+            // APK-proven generic native selection: n3 stores selected ws4
+            // models in s3.c -> s3$a.b and calls onActionItemClicked.
+            val base = loader.loadClass("n3")
+            val nativeMode = loader.loadClass(
+                "androidx.appcompat.view.ActionMode"
+            )
+            val create = base.getDeclaredMethod(
+                "onCreateActionMode",
+                nativeMode,
+                android.view.Menu::class.java
+            ).apply { isAccessible = true }
+            hook(create).intercept { chain ->
+                val result = chain.proceed()
+                smartPlaylistFolderController.onNativeSmartActionModeCreated(
+                    chain.getThisObject(),
+                    chain.getArg(1) as? android.view.Menu
+                )
+                result
+            }
+            val click = base.getDeclaredMethod(
+                "onActionItemClicked",
+                nativeMode,
+                android.view.MenuItem::class.java
+            ).apply { isAccessible = true }
+            hook(click).intercept { chain ->
+                if (smartPlaylistFolderController
+                        .interceptNativeSmartActionModeMove(
+                            chain.getThisObject(),
+                            chain.getArg(0),
+                            chain.getArg(1) as? android.view.MenuItem
+                        )
+                ) {
+                    true
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK READY | native n3 ActionMode selection"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK MISSING | native n3 ActionMode",
                 it
             )
         }

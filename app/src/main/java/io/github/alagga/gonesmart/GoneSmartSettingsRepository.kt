@@ -34,6 +34,10 @@ class GoneSmartSettingsRepository(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 local.smartPlaylistFoldersEnabled
             )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                local.smartGroupRootPlaylists
+            )
             .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, local.groupExternalPlaylists)
             .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, local.groupRootPlaylists)
             .putBoolean(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, local.flipQueueEnabled)
@@ -153,6 +157,10 @@ class GoneSmartSettingsRepository(
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 options.smartPlaylistFoldersEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                options.smartGroupRootPlaylists
             )
             .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
             .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)

@@ -227,3 +227,10 @@ After folder acceptance, remove the obsolete `BuildConfig.DEBUG` condition from 
 
 
 - **Generated Android view IDs:** never call `Resources.getResourceEntryName()` for `View.generateViewId()` / zero-package-byte IDs. Android logs an `Invalid ID` error before throwing; guard with `NativeResourceIdPolicy` first. The first Smart-Playlist-folders device build exposed this as a frame-rate log flood.
+
+
+### Smart-Playlist folder parity / move contract (2026-09-29)
+- Synthetic Smart-Playlist **folder rows and breadcrumbs must use the same native-style copy rules as accepted normal Playlist folders**: clone the live row XML, copy the effective title paint/spacing/line metrics, use the separate outlined folder ImageView, and use the verified GMMP 4.2.0 quick-nav title ratio (1.225 fallback) rather than Smart-row text size directly.
+- **Group root Smart-Playlists** is a separate Smart-folder option (default off). When enabled, root .spl files are hidden from the root Smart list and shown in the virtual GMMP-localized **Other Locations** node; physical folders stay at root. Move destination mode never exposes the virtual node.
+- Smart-Playlist Move is added to the existing Smart context menu and native multi-selection ActionMode only through the APK-verified `nt4.c` / `n3` model paths. GMMP 4.2.0 has no native physical .spl move writer.
+- Before a physical .spl move, parse the Smart tree with original `ws4.r(File)` and recursively inspect native `ft4.q` links (including nested `jt4.o`). If any selected source is referenced by a native absolute Smart-Playlist link, **fail closed and do not move it**. Playlist Bridge sentinel rules are not treated as inbound native Smart links. Moves never overwrite and multi-moves roll back already-completed files after a later failure.
