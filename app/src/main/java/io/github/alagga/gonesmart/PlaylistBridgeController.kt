@@ -400,6 +400,16 @@ internal class PlaylistBridgeController {
         @Suppress("UNCHECKED_CAST")
         val rules = native.smartPlaylistRules.get(smartPlaylist)
             as? List<Any?> ?: return null
+
+        // Most native ws4 writes do not contain a Playlist Bridge rule.
+        // Exit before compatibility-file initialization. In particular,
+        // the two neutral compatibility .spl files are themselves written
+        // through this ORIGINAL GMMP method, so this guard also prevents
+        // recursive initialization through our own writer observer.
+        if (rules.none { containsBridge(native, it) }) {
+            return PortableSaveToken(emptyList())
+        }
+
         val matchAll = native.smartPlaylistMatchAll.getBoolean(smartPlaylist)
         val originals = mutableListOf<Pair<Any, String?>>()
 
