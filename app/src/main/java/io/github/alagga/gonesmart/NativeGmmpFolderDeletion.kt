@@ -99,7 +99,9 @@ internal class NativeGmmpFolderDeletion(
                     view.visibility == View.VISIBLE &&
                     !view.text.isNullOrBlank()
                 ) {
-                    val idName = if (view.id != View.NO_ID && view.id > 0) {
+                    val idName = if (
+                        NativeResourceIdPolicy.canResolveEntryName(view.id)
+                    ) {
                         runCatching {
                             view.resources.getResourceEntryName(view.id)
                         }.getOrNull()

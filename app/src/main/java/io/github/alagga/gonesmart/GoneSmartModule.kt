@@ -2098,7 +2098,9 @@ class GoneSmartModule : XposedModule() {
                 if (playlistBridgeSmartChooserTitleDepth.get() > 0) {
                     val id = chain.getArg(0) as? Int ?: 0
                     val context = playlistBridgeController.currentContext()
-                    val resourceName = context?.let {
+                    val resourceName = context?.takeIf {
+                        NativeResourceIdPolicy.canResolveEntryName(id)
+                    }?.let {
                         runCatching {
                             it.resources.getResourceEntryName(id)
                         }.getOrNull()

@@ -1070,9 +1070,10 @@ internal class PlaylistFolderPreviewController(
             val item = nativeMenu.getItem(index)
             val original = originalDrawerPlaylistTitles[item]
                 ?: item.title ?: continue
-            val nativeId = runCatching {
-                resources.getResourceEntryName(item.itemId)
-            }.getOrDefault("")
+            val nativeId = resourceEntryName(
+                resources,
+                item.itemId
+            ).orEmpty()
             if (PlaylistDrawerBadgePolicy.matchesNativePlaylist(
                     nativeNames, nativeId, original.toString()
                 )
@@ -1154,14 +1155,16 @@ internal class PlaylistFolderPreviewController(
             }.getOrNull() ?: return
         // Passive, bounded discovery only. No native move method is called.
         onNativeMoveDiscovery?.invoke(context)
-        val name = runCatching {
-            context.resources.getResourceEntryName(resourceId)
-        }.getOrNull() ?: return
+        val name = resourceEntryName(
+            context.resources,
+            resourceId
+        ) ?: return
         val items = (0 until menu.size()).map { position ->
             val item = menu.getItem(position)
-            val idName = runCatching {
-                context.resources.getResourceEntryName(item.itemId)
-            }.getOrElse { item.itemId.toString() }
+            val idName = resourceEntryName(
+                context.resources,
+                item.itemId
+            ) ?: item.itemId.toString()
             idName + "=" + item.title?.toString().orEmpty() +
                 ":visible=" + item.isVisible
         }
@@ -1774,9 +1777,7 @@ internal class PlaylistFolderPreviewController(
         if (iconId == 0) return
         val nativeAdd = (0 until menu.size()).map(menu::getItem)
             .firstOrNull {
-                runCatching {
-                    resources.getResourceEntryName(it.itemId) == "menuAdd"
-                }.getOrDefault(false)
+                resourceEntryName(resources, it.itemId) == "menuAdd"
             }
         // Reuse the SAME GMMP-localized title as its adjacent menuAdd
         // item. A native GMMP folder drawable is prepended inline: Android
@@ -4183,11 +4184,10 @@ internal class PlaylistFolderPreviewController(
                 title.includeFontPadding
             ).joinToString(":")
             if (observedMenus.add("native-row-style-" + surface(list))) {
-                val layoutName = runCatching {
-                    list.resources.getResourceEntryName(
-                        nativeRow.sourceLayoutResId
-                    )
-                }.getOrDefault("programmatic-or-unavailable")
+                val layoutName = resourceEntryName(
+                    list.resources,
+                    nativeRow.sourceLayoutResId
+                ) ?: "programmatic-or-unavailable"
                 Log.i(
                     TAG,
                     "FOLDER NATIVE STYLE | surface=" + surface(list) +
@@ -4429,11 +4429,11 @@ internal class PlaylistFolderPreviewController(
                 physicalFolderParent(normal) != null
         for (i in 0 until menu.size()) {
             val item = menu.getItem(i)
-            val id = runCatching {
-                val context = normal?.list?.context
-                    ?: knownLists.keys.firstOrNull()?.context
-                context?.resources?.getResourceEntryName(item.itemId)
-            }.getOrNull()
+            val context = normal?.list?.context
+                ?: knownLists.keys.firstOrNull()?.context
+            val id = context?.let {
+                resourceEntryName(it.resources, item.itemId)
+            }
             if (id == "menuAdd") {
                 if (item.isVisible == state.normalMenuVisible) break
                 item.isVisible = state.normalMenuVisible
@@ -4806,9 +4806,13 @@ internal class PlaylistFolderPreviewController(
                 true
             )
         ) {
-            runCatching {
-                view.context.getDrawable(out.resourceId)
-            }.getOrNull()
+            if (out.resourceId != 0) {
+                runCatching {
+                    view.context.getDrawable(out.resourceId)
+                }.getOrNull()
+            } else {
+                null
+            }
         } else null
     }
 
@@ -4882,7 +4886,16 @@ internal class PlaylistFolderPreviewController(
         (view.resources.displayMetrics.density * value + 0.5f)
             .toInt()
 
-    private fun resourceName(view: View): String = runCatching {
-        view.resources.getResourceEntryName(view.id)
-    }.getOrDefault("")
+    private fun resourceEntryName(
+        resources: android.content.res.Resources,
+        id: Int
+    ): String? {
+        if (!NativeResourceIdPolicy.canResolveEntryName(id)) return null
+        return runCatching {
+            resources.getResourceEntryName(id)
+        }.getOrNull()
+    }
+
+    private fun resourceName(view: View): String =
+        resourceEntryName(view.resources, view.id).orEmpty()
 }

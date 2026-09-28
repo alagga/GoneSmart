@@ -206,3 +206,21 @@ A second DEX pass established the exact contract crossed by that build:
 - Action scrolling uses the submitted `ws4` order rather than `ls4.x`.
 - The Invalid-ID flood was independent: page-front detection repeatedly called `getResourceEntryName()` for generated View IDs with a zero package byte. Those are now rejected before the Resources API is called.
 - If no native Smart row exists to sample (for example an empty root containing folders), synthetic folder rows use a visible theme-derived TextView fallback instead of an unbound metadata XML row.
+
+
+## Smart-Playlist folders second-device-build result: native rows must stay native — 29 September 2026
+
+The corrective differ build (`080acd1`) removed the earlier `ws4 -> t23` crash: the supplied device Logcat contains no exception and shows current-folder snapshots rendering successfully, including one folder with zero Smart Playlists and the root with 85 Smart Playlists. However the visible surface could still alternate between a correct native screen and a black screen containing only three-dot handles.
+
+That behavior exposed the remaining architectural mistake rather than another model-type error. The controller still set the real `smartListRecyclerView.alpha = 0` and covered the full list with GoneSmart-created copies of every Smart-Playlist row. Consequently GMMP's correctly bound `vs4` rows existed underneath while GoneSmart's copied row XML/theme sampling determined whether title text happened to be visible. Lifecycle/layout timing could therefore make one opening look correct and the next one black.
+
+The implementation now follows a stricter native-first contract:
+
+- the real `smartListRecyclerView` is never hidden;
+- GMMP's original `ls4/vs4` draws and handles every actual Smart-Playlist row, including text, theme, context menu, click and long-click behavior;
+- GoneSmart renders only a compact breadcrumb + physical-folder header;
+- the native RecyclerView receives temporary top padding equal to the measured header height, with clipping enabled so native rows do not paint behind the header;
+- original padding/clip state is restored when the controller detaches or the feature is disabled;
+- current-folder filtering still uses the verified original `ls4.y` differ path.
+
+The same device log still showed the repeated Android `Invalid ID 0x00000000…04` stream. The prior guard covered only the Smart-folder controller's own resource-name probe. GoneSmart also has shared hierarchy/menu scanners (normal Playlist folders, multi-select and player badge detection) that can encounter generated zero-package-byte View/Menu IDs introduced by extension UI. Those hot resource-name paths are now all gated by `NativeResourceIdPolicy` before calling Android Resources APIs.

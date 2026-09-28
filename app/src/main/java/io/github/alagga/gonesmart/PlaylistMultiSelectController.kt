@@ -2266,6 +2266,7 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun resourceName(view: View): String {
+        if (!NativeResourceIdPolicy.canResolveEntryName(view.id)) return ""
         return runCatching {
             view.resources.getResourceEntryName(view.id)
         }.getOrDefault("")

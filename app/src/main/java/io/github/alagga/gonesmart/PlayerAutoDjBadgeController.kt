@@ -282,12 +282,9 @@ class PlayerAutoDjBadgeController {
     }
 
     private fun resourceName(view: View): String {
+        if (!NativeResourceIdPolicy.canResolveEntryName(view.id)) return ""
         return try {
-            if (view.id != View.NO_ID) {
-                view.resources.getResourceEntryName(view.id)
-            } else {
-                ""
-            }
+            view.resources.getResourceEntryName(view.id)
         } catch (_: Throwable) {
             ""
         }
