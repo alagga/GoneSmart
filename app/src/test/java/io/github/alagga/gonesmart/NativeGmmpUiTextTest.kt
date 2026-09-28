@@ -39,4 +39,57 @@ class NativeGmmpUiTextTest {
             NativeGmmpUiText.errorLabel(null, "DJ automatique"))
         assertEquals("Erreur", NativeGmmpUiText.errorLabel("Erreur", " "))
     }
+
+    @Test fun playlistBridgeUsesExactGermanAndEnglishSmartPlaylistWording() {
+        assertEquals(
+            "Smart Playlist",
+            NativeGmmpUiText.smartPlaylistLabel("de", "Smart-Playlists")
+        )
+        assertEquals(
+            "Smart Playlist verlinken",
+            NativeGmmpUiText.linkSmartPlaylistLabel(
+                "de",
+                "Playlist verlinken",
+                "Playlist",
+                "Smart Playlist"
+            )
+        )
+        assertEquals(
+            "Link Smart Playlist",
+            NativeGmmpUiText.linkSmartPlaylistLabel(
+                "en",
+                "Link playlist",
+                "Playlist",
+                "Smart Playlist"
+            )
+        )
+    }
+
+    @Test fun playlistBridgeKeepsHostLocalizedFallbackOutsideVerifiedGrammar() {
+        assertEquals(
+            "Listes intelligentes",
+            NativeGmmpUiText.smartPlaylistLabel(
+                "fr",
+                "Listes intelligentes"
+            )
+        )
+        assertEquals(
+            "Lier Smart",
+            NativeGmmpUiText.linkSmartPlaylistLabel(
+                "xx",
+                "Lier Playlist",
+                "Playlist",
+                "Smart"
+            )
+        )
+        assertEquals(
+            "Smart local",
+            NativeGmmpUiText.linkSmartPlaylistLabel(
+                "xx",
+                "Forme fléchie",
+                "Playlist",
+                "Smart local"
+            )
+        )
+    }
 }

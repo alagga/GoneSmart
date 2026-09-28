@@ -319,6 +319,9 @@ class GoneSmartModule : XposedModule() {
     private val playlistBridgeEvaluationDepth =
         ThreadLocal.withInitial { 0 }
 
+    private val playlistBridgeSmartChooserTitleDepth =
+        ThreadLocal.withInitial { 0 }
+
     private val playlistBridgeTraceCounts =
         java.util.concurrent.ConcurrentHashMap<String, AtomicLong>()
 
@@ -1735,6 +1738,82 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeInfo("HOOK READY | ft4.t(XmlSerializer)")
         }.onFailure {
             playlistBridgeWarn("HOOK MISSING | ft4.t(XmlSerializer)", it)
+        }
+
+        // Native ds4.g2 ultimately creates its list dialog inside ds4$g.accept.
+        // Scope only that original call so bx.K0(link_playlist) can use the
+        // more precise "Link Smart Playlist" title without renaming any
+        // ordinary playlist chooser elsewhere in GMMP.
+        runCatching {
+            val consumerClass = loader.loadClass("ds4\$g")
+            val method = consumerClass
+                .getDeclaredMethod("accept", Any::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val previous = playlistBridgeSmartChooserTitleDepth.get()
+                playlistBridgeSmartChooserTitleDepth.set(previous + 1)
+                try {
+                    chain.proceed()
+                } finally {
+                    playlistBridgeSmartChooserTitleDepth.set(previous)
+                }
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | ds4\$g.accept(Object) title scope")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | ds4\$g.accept(Object)", it)
+        }
+
+        runCatching {
+            val basePresenterClass = loader.loadClass("bx")
+            val method = basePresenterClass
+                .getDeclaredMethod("K0", Integer.TYPE)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (playlistBridgeSmartChooserTitleDepth.get() > 0) {
+                    val id = chain.getArg(0) as? Int ?: 0
+                    val context = playlistBridgeController.currentContext()
+                    val resourceName = context?.let {
+                        runCatching {
+                            it.resources.getResourceEntryName(id)
+                        }.getOrNull()
+                    }
+                    if (resourceName == "link_playlist") {
+                        playlistBridgeController
+                            .nativeSmartPlaylistLinkTitle()
+                            ?.let { return@intercept it }
+                    }
+                }
+                chain.proceed()
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | bx.K0(int) Smart title override")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | bx.K0(int)", it)
+        }
+
+        // SmartEditorAdapter renders rule summaries through os2.U(gt4).
+        // Native linked .spl rules currently reuse the generic "Playlist:"
+        // prefix. Change ONLY those original linked-Smart rules to
+        // "Smart Playlist:". Playlist Bridge rules deliberately keep the
+        // original localized "Playlist:" prefix.
+        runCatching {
+            val metadataTextClass = loader.loadClass("os2")
+            val baseRuleClass = loader.loadClass("gt4")
+            val method = metadataTextClass
+                .getDeclaredMethod("U", baseRuleClass)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val original = chain.proceed() as? String
+                playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
+                    chain.getArg(0),
+                    original
+                )
+            }
+            installed++
+            playlistBridgeInfo("HOOK READY | os2.U(gt4) Smart rule label")
+        }.onFailure {
+            playlistBridgeWarn("HOOK MISSING | os2.U(gt4)", it)
         }
 
         return installed

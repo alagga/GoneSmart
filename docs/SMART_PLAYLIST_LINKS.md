@@ -108,3 +108,20 @@ The correct device log from the first diagnostic build established the two block
 Use one disposable ordinary playlist and one disposable Smart Playlist. Confirm the second sparkle link icon; select the ordinary playlist; save and verify Smart results; reopen and edit the linked Bridge rule; modify the ordinary source without editing the Smart Playlist and verify membership updates; then use normal Smart Playlist Play. Capture Logcat filtered by GoneSmartPlaylistBridge. Relevant markers are POC MENU, POC CHOOSER, POC ADD/EDIT, POC SOURCE, POC COMPILE and POC RULE COMPILE END.
 
 If any step fails, preserve the disposable Smart Playlist file and log but do not hand-edit it. The next change should target the single failing native boundary rather than split the feature into many speculative builds.
+
+
+## UI consolidation after successful end-to-end device test — 28 September 2026
+
+The maintainer confirmed the first writable Playlist Bridge PoC worked end to end on the first device run, including saving/reopening the bridge rule, normal Smart Playlist display/playback, and live source-playlist membership changes. The supplied log shows the same persisted M3U bridge compiling through GMMP's native `track_uri IN (...)` path with 16 members and, after the ordinary source changed, 6 members without editing the Smart Playlist.
+
+The next build intentionally leaves that proven persistence/evaluation path unchanged and only consolidates the Smart Editor UI:
+
+- GMMP's **single original `menuLink` toolbar action/icon remains**; the synthetic second toolbar item is removed.
+- Clicking that original action opens GMMP's host AppCompat `PopupMenu` anchored below the same button, with **Smart Playlist** and native **Playlist** choices.
+- The Playlist choice carries the existing lilac GoneSmart sparkle as an inline baseline-aligned badge.
+- Smart Playlist dispatch calls the original `ds4.g2(false)`; Playlist dispatch enters the already-proven Playlist Bridge chooser. Existing linked Smart Playlist editing still uses original `ds4.g2(true)`; existing Bridge-rule editing remains scoped to the Bridge chooser.
+- The original Smart Playlist chooser title is changed only inside the verified `ds4$g.accept -> bx.K0(link_playlist)` call to **Link Smart Playlist / Smart Playlist verlinken** on the tested English/German locales. Other host locales first reuse GMMP's own localized Smart-Playlists/link/playlist vocabulary.
+- The original Smart Editor rule-summary formatter `os2.U(gt4)` is reused. Only native linked `.spl` rules change from the ambiguous **Playlist: ...** prefix to **Smart Playlist: ...**. Playlist Bridge rules continue to use GMMP's original localized **Playlist: ...** prefix.
+- The former synthetic toolbar action ID is gone, which also removes the repeated Android resource lookup noise for `0x47534201`.
+
+This remains debug-only until the compatibility/disable contract and broader locale/UI coverage are finalized.

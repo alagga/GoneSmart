@@ -1,17 +1,17 @@
 package io.github.alagga.gonesmart
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.ColorFilter
-import android.graphics.PixelFormat
-import android.graphics.Rect
-import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.app.Activity
+import android.content.ContextWrapper
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
+import android.view.View
 import android.widget.Toast
 import java.io.File
 import java.lang.ref.WeakReference
@@ -21,7 +21,6 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import kotlin.math.min
 
 internal class PlaylistBridgeController {
     companion object {
@@ -29,7 +28,6 @@ internal class PlaylistBridgeController {
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val SMART_EDITOR_MENU = "menu_gm_smart_editor"
         private const val NATIVE_LINK_ITEM = "menuLink"
-        private const val ACTION_ID = 0x47534201
         private const val MAX_IN_VALUES = 800
         private const val LILAC = 0xFFA39AFF.toInt()
         private val SUPPORTED_EXTENSIONS = setOf("m3u", "m3u8", "pls", "wpl")
@@ -76,7 +74,13 @@ internal class PlaylistBridgeController {
         val dialogCallbackClass: Class<*>,
         val eventBusGet: Method,
         val eventBusPost: Method,
-        val unitValue: Any?
+        val unitValue: Any?,
+        val presenterLinkSmartPlaylist: Method,
+        val popupMenuConstructor: Constructor<*>,
+        val popupMenuGetMenu: Method,
+        val popupMenuSetListener: Method,
+        val popupMenuShow: Method,
+        val popupMenuListenerClass: Class<*>
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -118,11 +122,6 @@ internal class PlaylistBridgeController {
         }.getOrNull() ?: return
         if (menuName != SMART_EDITOR_MENU) return
 
-        menu.findItem(ACTION_ID)?.let {
-            it.isVisible = true
-            return
-        }
-
         val nativeLinkId = context.resources.getIdentifier(
             NATIVE_LINK_ITEM, "id", GMMP_PACKAGE
         )
@@ -132,28 +131,164 @@ internal class PlaylistBridgeController {
             return
         }
 
-        val label = NativeGmmpUiText.string(context, "link_playlist")
-            ?: original.title?.toString()
-            ?: return
-        val item = menu.add(
-            original.groupId,
-            ACTION_ID,
-            original.order + 1,
-            label
-        )
-        val baseIcon = original.icon?.constantState
-            ?.newDrawable(context.resources)?.mutate()
-            ?: original.icon?.mutate()
-        if (baseIcon != null) {
-            item.icon = BridgeIconDrawable(baseIcon)
-        }
-        item.contentDescription = label
-        item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        item.setOnMenuItemClickListener {
-            openChooser(edit = false)
+        // Keep GMMP's one ORIGINAL toolbar action/icon. Its click now opens
+        // the host AppCompat popup menu below that exact action item and
+        // dispatches either back into ds4.g2(false) or Playlist Bridge.
+        original.setOnMenuItemClickListener {
+            if (!showLinkTypeMenu(context, nativeLinkId)) {
+                Log.w(
+                    TAG,
+                    "POC TYPE MENU FALLBACK | anchor/popup unavailable; " +
+                        "opening original Smart Playlist linker"
+                )
+                openNativeSmartPlaylistChooser()
+            }
             true
         }
-        Log.i(TAG, "POC MENU | Link Playlist action installed beside native menuLink")
+        Log.i(
+            TAG,
+            "POC MENU | original menuLink reused as Smart Playlist / Playlist chooser"
+        )
+    }
+
+    fun currentContext(): Context? = contextRef?.get()
+
+    fun nativeSmartPlaylistLinkTitle(): String? =
+        contextRef?.get()?.let(NativeGmmpUiText::linkSmartPlaylist)
+
+    fun rewriteNativeSmartPlaylistRuleLabel(
+        rule: Any?,
+        original: String?
+    ): String? {
+        val native = bindings ?: return original
+        if (rule == null || !native.smartRuleClass.isInstance(rule)) {
+            return original
+        }
+        val value = runCatching {
+            findField(rule.javaClass, "q")
+                .apply { isAccessible = true }
+                .get(rule) as? String
+        }.getOrNull()
+        if (
+            !PlaylistBridgeDiagnosticPolicy
+                .isNativeSmartPlaylistReference(value)
+        ) {
+            return original
+        }
+        val display = value
+            ?.substringAfter('|', "")
+            ?.takeUnless(String::isBlank)
+            ?: return original
+        val context = contextRef?.get() ?: return original
+        return NativeGmmpUiText.smartPlaylist(context) + ": " + display
+    }
+
+    private fun showLinkTypeMenu(
+        context: Context,
+        nativeLinkId: Int
+    ): Boolean {
+        val native = bindings ?: return false
+        val activity = findActivity(context)
+            ?: contextRef?.get()?.let(::findActivity)
+            ?: return false
+        val anchor = activity.window?.decorView
+            ?.findViewById<View>(nativeLinkId)
+            ?: return false
+
+        return runCatching {
+            val popup = native.popupMenuConstructor.newInstance(context, anchor)
+            val popupMenu = native.popupMenuGetMenu.invoke(popup) as? Menu
+                ?: return@runCatching false
+            popupMenu.clear()
+
+            val smartTitle = NativeGmmpUiText.smartPlaylist(context)
+            val playlistTitle = decoratedPlaylistTitle(context)
+            popupMenu.add(
+                Menu.NONE,
+                Menu.NONE,
+                0,
+                smartTitle
+            )
+            popupMenu.add(
+                Menu.NONE,
+                Menu.NONE,
+                1,
+                playlistTitle
+            )
+
+            val listener = Proxy.newProxyInstance(
+                native.loader,
+                arrayOf(native.popupMenuListenerClass)
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "onMenuItemClick" -> {
+                        val selected = args?.getOrNull(0) as? MenuItem
+                        when (selected?.order) {
+                            0 -> openNativeSmartPlaylistChooser()
+                            1 -> openChooser(edit = false)
+                        }
+                        true
+                    }
+                    "toString" -> "PlaylistBridgeTypeMenuCallback"
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "equals" -> proxy === args?.getOrNull(0)
+                    else -> null
+                }
+            }
+            native.popupMenuSetListener.invoke(popup, listener)
+            native.popupMenuShow.invoke(popup)
+            Log.i(
+                TAG,
+                "POC TYPE MENU | host PopupMenu shown | options=smart,playlist"
+            )
+            true
+        }.onFailure {
+            Log.e(TAG, "POC TYPE MENU FAILED", it)
+        }.getOrDefault(false)
+    }
+
+    private fun openNativeSmartPlaylistChooser() {
+        val native = bindings ?: return
+        val presenter = presenterRef?.get() ?: run {
+            Log.w(TAG, "POC SMART CHOOSER | no active SmartEditorPresenter")
+            return
+        }
+        runCatching {
+            native.presenterLinkSmartPlaylist.invoke(presenter, false)
+        }.onFailure {
+            Log.e(TAG, "POC SMART CHOOSER | original ds4.g2(false) failed", it)
+        }
+    }
+
+    private fun decoratedPlaylistTitle(context: Context): CharSequence {
+        val playlist = NativeGmmpUiText.string(context, "playlist")
+            ?: "Playlist"
+        val label = SpannableStringBuilder(playlist)
+            .append("  \uFFFC")
+        val marker = label.lastIndexOf('\uFFFC')
+        label.setSpan(
+            BaselineCenteredSparkleSpan(
+                context,
+                PlayerAutoDjBadgeController.SparkleBadgeDrawable(
+                    LILAC,
+                    scale = 1.85f
+                )
+            ),
+            marker,
+            marker + 1,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        return label
+    }
+
+    private fun findActivity(context: Context): Activity? {
+        var current: Context? = context
+        val visited = java.util.HashSet<Context>()
+        while (current != null && visited.add(current)) {
+            if (current is Activity) return current
+            current = (current as? ContextWrapper)?.baseContext
+        }
+        return null
     }
 
     fun interceptNativeLinkedEditor(presenter: Any?, edit: Boolean): Boolean {
@@ -584,6 +719,12 @@ internal class PlaylistBridgeController {
         val eventBusClass = loader.loadClass("gc1")
         val unitClass = loader.loadClass("uf5")
         val viewClass = loader.loadClass("fo2")
+        val popupMenuClass =
+            loader.loadClass("androidx.appcompat.widget.PopupMenu")
+        val popupMenuListenerClass =
+            loader.loadClass(
+                "androidx.appcompat.widget.PopupMenu\$OnMenuItemClickListener"
+            )
 
         return Bindings(
             loader = loader,
@@ -689,7 +830,29 @@ internal class PlaylistBridgeController {
             unitValue = unitClass
                 .getDeclaredField("a")
                 .apply { isAccessible = true }
-                .get(null)
+                .get(null),
+            presenterLinkSmartPlaylist = presenterClass
+                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
+                .apply { isAccessible = true },
+            popupMenuConstructor = popupMenuClass
+                .getDeclaredConstructor(
+                    Context::class.java,
+                    View::class.java
+                )
+                .apply { isAccessible = true },
+            popupMenuGetMenu = popupMenuClass
+                .getDeclaredMethod("getMenu")
+                .apply { isAccessible = true },
+            popupMenuSetListener = popupMenuClass
+                .getDeclaredMethod(
+                    "setOnMenuItemClickListener",
+                    popupMenuListenerClass
+                )
+                .apply { isAccessible = true },
+            popupMenuShow = popupMenuClass
+                .getDeclaredMethod("show")
+                .apply { isAccessible = true },
+            popupMenuListenerClass = popupMenuListenerClass
         )
     }
 
@@ -724,47 +887,5 @@ internal class PlaylistBridgeController {
         throw NoSuchFieldException(type.name + "." + name)
     }
 
-    private class BridgeIconDrawable(
-        private val base: Drawable
-    ) : Drawable() {
-        private val sparkle =
-            PlayerAutoDjBadgeController.SparkleBadgeDrawable(
-                LILAC,
-                scale = 1.12f
-            )
 
-        override fun onBoundsChange(bounds: Rect) {
-            base.bounds = bounds
-            val size = (
-                min(bounds.width(), bounds.height()) * 0.58f
-            ).toInt().coerceAtLeast(1)
-            sparkle.setBounds(
-                bounds.right - size,
-                bounds.bottom - size,
-                bounds.right,
-                bounds.bottom
-            )
-        }
-
-        override fun draw(canvas: Canvas) {
-            base.draw(canvas)
-            sparkle.draw(canvas)
-        }
-
-        override fun setAlpha(alpha: Int) {
-            base.alpha = alpha
-            sparkle.alpha = alpha
-        }
-
-        override fun setColorFilter(colorFilter: ColorFilter?) {
-            base.colorFilter = colorFilter
-            sparkle.colorFilter = colorFilter
-        }
-
-        @Deprecated("Deprecated in Android")
-        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-
-        override fun getIntrinsicWidth(): Int = base.intrinsicWidth
-        override fun getIntrinsicHeight(): Int = base.intrinsicHeight
-    }
 }
