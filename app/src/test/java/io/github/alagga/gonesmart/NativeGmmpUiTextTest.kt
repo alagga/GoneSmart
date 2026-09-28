@@ -50,7 +50,7 @@ class NativeGmmpUiTextTest {
             )
         )
         assertEquals(
-            "Smart Playlist",
+            "Smart-Playlist",
             NativeGmmpUiText.smartPlaylistLabel(
                 "en",
                 "Smart Playlist Editor",
@@ -66,11 +66,11 @@ class NativeGmmpUiTextTest {
             )
         )
         assertEquals(
-            "Link Smart Playlist",
+            "Link Smart-Playlist",
             NativeGmmpUiText.linkSmartPlaylistLabel(
                 "Link Playlist",
                 "Playlist",
-                "Smart Playlist"
+                "Smart-Playlist"
             )
         )
     }

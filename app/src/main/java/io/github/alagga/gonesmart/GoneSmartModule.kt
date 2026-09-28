@@ -549,6 +549,20 @@ class GoneSmartModule : XposedModule() {
                         it
                     )
                 }
+
+                // One bundled pass for the maintainer's next requested
+                // feature. These hooks are read-only and only map the
+                // original Smart-Playlist root loader / adapter / observer
+                // lifecycle before a separate opt-in folder view is exposed.
+                runCatching {
+                    installSmartPlaylistFolderDiagnostics(param)
+                }.onFailure {
+                    Log.w(
+                        "GoneSmartSmartFolders",
+                        "DIAG INSTALL FAILED | native Smart-Playlist tab unchanged",
+                        it
+                    )
+                }
             }
 
             // Accepted folder functionality is available in debug AND
@@ -1582,6 +1596,167 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylist",
             "NATIVE SAVE DISCOVERY | installed=$installed/5" +
                 " | original methods untouched"
+        )
+    }
+
+    private fun installSmartPlaylistFolderDiagnostics(
+        param: PackageReadyParam
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val loader = param.classLoader
+        val tag = "GoneSmartSmartFolders"
+        var installed = 0
+
+        runCatching {
+            val presenter = loader.loadClass("ss4")
+            val view = loader.loadClass("fo2")
+            val method = presenter
+                .getDeclaredMethod("P1", view)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                Log.i(tag, "SMART FOLDERS LOAD REQUEST | ss4.P1")
+                chain.proceed()
+            }
+            installed++
+            Log.i(tag, "HOOK READY | ss4.P1(fo2)")
+        }.onFailure {
+            Log.w(tag, "HOOK MISSING | ss4.P1(fo2)", it)
+        }
+
+        runCatching {
+            val presenter = loader.loadClass("ss4")
+            val lambda = loader.loadClass("jz")
+            val modeField = findField(lambda, "o").apply { isAccessible = true }
+            val ownerField = findField(lambda, "p").apply { isAccessible = true }
+            val method = lambda
+                .getDeclaredMethod("apply", Any::class.java)
+                .apply { isAccessible = true }
+
+            hook(method).intercept { chain ->
+                val owner = runCatching {
+                    ownerField.get(chain.getThisObject())
+                }.getOrNull()
+                val mode = runCatching {
+                    modeField.getInt(chain.getThisObject())
+                }.getOrDefault(-1)
+                val root = chain.getArg(0) as? File
+
+                if (mode != 5 || owner == null ||
+                    !presenter.isInstance(owner) || root == null
+                ) {
+                    return@intercept chain.proceed()
+                }
+
+                val direct = runCatching {
+                    root.listFiles()?.toList().orEmpty()
+                }.getOrDefault(emptyList())
+                val directDirectories = direct.count { it.isDirectory }
+                val directSpl = direct.count {
+                    it.isFile && it.extension.equals("spl", ignoreCase = true)
+                }
+
+                val started = SystemClock.elapsedRealtimeNanos()
+                val result = chain.proceed()
+                val loaded = (result as? Collection<*>)?.size ?: -1
+                Log.i(
+                    tag,
+                    "SMART FOLDERS ROOT LOAD | " +
+                        PlaylistBridgeDiagnosticPolicy.safePath(
+                            root.absolutePath
+                        ) +
+                        " | directDirs=$directDirectories" +
+                        " | directSpl=$directSpl" +
+                        " | nativeLoaded=$loaded" +
+                        " | elapsedMs=" +
+                        ((SystemClock.elapsedRealtimeNanos() - started) /
+                            1_000_000L)
+                )
+                result
+            }
+            installed++
+            Log.i(tag, "HOOK READY | jz.apply(Object) mode=5 Smart loader")
+        }.onFailure {
+            Log.w(tag, "HOOK MISSING | jz.apply(Object)", it)
+        }
+
+        runCatching {
+            val fragment = loader.loadClass("os4")
+            val method = fragment
+                .getDeclaredMethod(
+                    "B2",
+                    Integer.TYPE,
+                    java.util.List::class.java
+                )
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val items = chain.getArg(1) as? List<*>
+                Log.i(
+                    tag,
+                    "SMART FOLDERS FRAGMENT BIND | mode=" + chain.getArg(0) +
+                        " | items=" + (items?.size ?: -1)
+                )
+                chain.proceed()
+            }
+            installed++
+            Log.i(tag, "HOOK READY | os4.B2(int,List)")
+        }.onFailure {
+            Log.w(tag, "HOOK MISSING | os4.B2(int,List)", it)
+        }
+
+        runCatching {
+            val adapter = loader.loadClass("ls4")
+            val method = adapter
+                .getDeclaredMethod("U", java.util.List::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val items = chain.getArg(0) as? List<*>
+                val result = chain.proceed()
+                Log.i(
+                    tag,
+                    "SMART FOLDERS ADAPTER UPDATE | items=" +
+                        (items?.size ?: -1)
+                )
+                result
+            }
+            installed++
+            Log.i(tag, "HOOK READY | ls4.U(List)")
+        }.onFailure {
+            Log.w(tag, "HOOK MISSING | ls4.U(List)", it)
+        }
+
+        runCatching {
+            val observer = loader.loadClass("qs4")
+            val method = observer
+                .getDeclaredMethod(
+                    "onEvent",
+                    Integer.TYPE,
+                    String::class.java
+                )
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val event = chain.getArg(0) as? Int ?: -1
+                val path = chain.getArg(1) as? String
+                Log.i(
+                    tag,
+                    "SMART FOLDERS OBSERVER | event=0x" +
+                        event.toString(16) +
+                        " | ext=" +
+                        path?.substringAfterLast('.', "")
+                            ?.lowercase(java.util.Locale.ROOT)
+                            .orEmpty()
+                )
+                chain.proceed()
+            }
+            installed++
+            Log.i(tag, "HOOK READY | qs4.onEvent(int,String)")
+        }.onFailure {
+            Log.w(tag, "HOOK MISSING | qs4.onEvent(int,String)", it)
+        }
+
+        Log.i(
+            tag,
+            "DIAG READY | hooks=$installed | readOnly=true | " +
+                "no Smart-Playlist folder behavior changed"
         )
     }
 

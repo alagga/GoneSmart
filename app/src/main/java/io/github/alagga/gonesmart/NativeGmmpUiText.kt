@@ -92,12 +92,22 @@ internal object NativeGmmpUiText {
             return editor.removeSuffix("-Editor")
         }
         if (normalized == "en" && editor?.endsWith(" Editor") == true) {
-            return editor.removeSuffix(" Editor")
+            return editor
+                .removeSuffix(" Editor")
+                .replace("Smart Playlist", "Smart-Playlist")
         }
-        return nativePlural
+
+        // Keep GMMP's own localized noun whenever no safe singular can be
+        // derived. If that native wording literally uses the English token
+        // pair "Smart Playlist", normalize only the maintainer-requested
+        // punctuation and leave every other translated word untouched.
+        val native = nativePlural
             ?.takeUnless(String::isBlank)
             ?: editor
-            ?: if (normalized == "de") "Smart-Playlist" else "Smart Playlist"
+        if (native != null) {
+            return native.replace("Smart Playlist", "Smart-Playlist")
+        }
+        return "Smart-Playlist"
     }
 
     fun smartPlaylist(context: Context): String =
