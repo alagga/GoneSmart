@@ -1751,7 +1751,8 @@ class GoneSmartModule : XposedModule() {
                 .apply { isAccessible = true }
             hook(method).intercept { chain ->
                 val token = playlistBridgeController.preparePortableSave(
-                    chain.getThisObject()
+                    chain.getThisObject(),
+                    chain.getArg(0) as? File
                 )
                 try {
                     chain.proceed()

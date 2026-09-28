@@ -19,6 +19,7 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
@@ -100,8 +101,6 @@ internal class PlaylistBridgeController {
     @Volatile private var bindings: Bindings? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var contextRef: WeakReference<Context>? = null
-    @Volatile private var trueCompatibilityPath: String? = null
-    @Volatile private var falseCompatibilityPath: String? = null
 
     internal data class PortableSaveToken(
         val originals: List<Pair<Any, String?>>
@@ -122,18 +121,7 @@ internal class PlaylistBridgeController {
         val native = bindings ?: return
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
-        context?.let {
-            contextRef = WeakReference(it)
-            runCatching { ensureCompatibilitySmartPlaylists(it) }
-                .onFailure { error ->
-                    Log.e(
-                        TAG,
-                        "PORTABLE COMPATIBILITY INIT FAILED | " +
-                            "existing Bridge behavior remains active",
-                        error
-                    )
-                }
-        }
+        context?.let { contextRef = WeakReference(it) }
         Log.i(TAG, "POC PRESENTER | captured=${presenter.javaClass.name}")
     }
 
@@ -389,37 +377,38 @@ internal class PlaylistBridgeController {
         return result
     }
 
-    fun preparePortableSave(smartPlaylist: Any?): PortableSaveToken? {
+    fun preparePortableSave(
+        smartPlaylist: Any?,
+        destination: File?
+    ): PortableSaveToken? {
         val native = bindings ?: return null
-        if (smartPlaylist == null) return null
+        if (smartPlaylist == null || destination == null) return null
         val context = contextRef?.get() ?: return null
-        ensureCompatibilitySmartPlaylists(context)
-        val truePath = trueCompatibilityPath ?: return null
-        val falsePath = falseCompatibilityPath ?: return null
 
         @Suppress("UNCHECKED_CAST")
         val rules = native.smartPlaylistRules.get(smartPlaylist)
             as? List<Any?> ?: return null
 
         // Most native ws4 writes do not contain a Playlist Bridge rule.
-        // Exit before compatibility-file initialization. In particular,
-        // the two neutral compatibility .spl files are themselves written
-        // through this ORIGINAL GMMP method, so this guard also prevents
-        // recursive initialization through our own writer observer.
+        // Exit before creating any compatibility file. The neutral files
+        // are themselves written through GMMP's ORIGINAL ws4.t(File), so
+        // this guard also prevents writer recursion.
         if (rules.none { containsBridge(native, it) }) {
             return PortableSaveToken(emptyList())
         }
 
         val matchAll = native.smartPlaylistMatchAll.getBoolean(smartPlaylist)
         val originals = mutableListOf<Pair<Any, String?>>()
+        val destinationKey = canonicalPath(destination)
 
         rewritePortableRuleList(
             native = native,
             rules = rules,
             matchAll = matchAll,
             targetIfBridgeOnly = true,
-            truePath = truePath,
-            falsePath = falsePath,
+            context = context,
+            destinationKey = destinationKey,
+            treePath = "root",
             originals = originals
         )
 
@@ -427,7 +416,8 @@ internal class PlaylistBridgeController {
             Log.i(
                 TAG,
                 "PORTABLE SAVE PREPARED | bridgeRules=${originals.size}" +
-                    " | rootMatchAll=$matchAll"
+                    " | rootMatchAll=$matchAll | target=" +
+                    PlaylistBridgeDiagnosticPolicy.safePath(destinationKey)
             )
         }
         return PortableSaveToken(originals)
@@ -448,8 +438,9 @@ internal class PlaylistBridgeController {
         rules: List<Any?>,
         matchAll: Boolean,
         targetIfBridgeOnly: Boolean,
-        truePath: String,
-        falsePath: String,
+        context: Context,
+        destinationKey: String,
+        treePath: String,
         originals: MutableList<Pair<Any, String?>>
     ) {
         if (rules.isEmpty()) return
@@ -460,8 +451,9 @@ internal class PlaylistBridgeController {
                 rules,
                 matchAll,
                 targetIfBridgeOnly,
-                truePath,
-                falsePath,
+                context,
+                destinationKey,
+                treePath,
                 originals
             )
             return
@@ -472,13 +464,15 @@ internal class PlaylistBridgeController {
         val identity = matchAll
         rules.forEachIndexed { index, rule ->
             if (rule == null) return@forEachIndexed
+            val childPath = "$treePath/$index"
             if (bridgeOnly[index]) {
                 assignBridgeOnlyRule(
                     native,
                     rule,
                     identity,
-                    truePath,
-                    falsePath,
+                    context,
+                    destinationKey,
+                    childPath,
                     originals
                 )
             } else if (
@@ -493,9 +487,10 @@ internal class PlaylistBridgeController {
                     children,
                     native.groupMatchAll.getBoolean(rule),
                     targetIfBridgeOnly = identity,
-                    truePath,
-                    falsePath,
-                    originals
+                    context = context,
+                    destinationKey = destinationKey,
+                    treePath = childPath,
+                    originals = originals
                 )
             }
         }
@@ -506,8 +501,9 @@ internal class PlaylistBridgeController {
         rules: List<Any?>,
         matchAll: Boolean,
         target: Boolean,
-        truePath: String,
-        falsePath: String,
+        context: Context,
+        destinationKey: String,
+        treePath: String,
         originals: MutableList<Pair<Any, String?>>
     ) {
         if (rules.isEmpty()) return
@@ -523,8 +519,9 @@ internal class PlaylistBridgeController {
                 native,
                 rule,
                 childTarget,
-                truePath,
-                falsePath,
+                context,
+                destinationKey,
+                "$treePath/$index",
                 originals
             )
         }
@@ -534,8 +531,9 @@ internal class PlaylistBridgeController {
         native: Bindings,
         rule: Any,
         target: Boolean,
-        truePath: String,
-        falsePath: String,
+        context: Context,
+        destinationKey: String,
+        treePath: String,
         originals: MutableList<Pair<Any, String?>>
     ) {
         if (native.smartRuleClass.isInstance(rule) && isBridgeRule(rule)) {
@@ -544,13 +542,20 @@ internal class PlaylistBridgeController {
             }
             val original = field.get(rule) as? String
             val reference = PlaylistBridgeReference.decode(original) ?: return
+            val compatibilityPath = compatibilitySmartPlaylistPath(
+                native = native,
+                context = context,
+                destinationKey = destinationKey,
+                treePath = treePath,
+                shouldMatch = target
+            )
             originals += rule to original
             field.set(
                 rule,
                 PlaylistBridgeReference.encodePortable(
                     reference.path,
                     reference.displayName,
-                    if (target) truePath else falsePath
+                    compatibilityPath
                 )
             )
             return
@@ -565,8 +570,9 @@ internal class PlaylistBridgeController {
                 children,
                 native.groupMatchAll.getBoolean(rule),
                 target,
-                truePath,
-                falsePath,
+                context,
+                destinationKey,
+                treePath,
                 originals
             )
         }
@@ -598,9 +604,13 @@ internal class PlaylistBridgeController {
         return children.any { containsBridge(native, it) }
     }
 
-    @Synchronized
-    private fun ensureCompatibilitySmartPlaylists(context: Context) {
-        val native = bindings ?: return
+    private fun compatibilitySmartPlaylistPath(
+        native: Bindings,
+        context: Context,
+        destinationKey: String,
+        treePath: String,
+        shouldMatch: Boolean
+    ): String {
         val directory = File(
             context.filesDir,
             "gonesmart/playlist-bridge"
@@ -609,24 +619,24 @@ internal class PlaylistBridgeController {
             "Could not create Playlist Bridge compatibility directory"
         }
 
-        val trueFile = File(directory, "bridge-true.spl")
-        val falseFile = File(directory, "bridge-false.spl")
-        writeCompatibilitySmartPlaylist(native, trueFile, shouldMatch = true)
-        writeCompatibilitySmartPlaylist(native, falseFile, shouldMatch = false)
-        trueCompatibilityPath = canonicalPath(trueFile)
-        falseCompatibilityPath = canonicalPath(falseFile)
-
-        Log.i(
-            TAG,
-            "PORTABLE COMPATIBILITY READY | true=" +
-                PlaylistBridgeDiagnosticPolicy.safePath(
-                    trueCompatibilityPath
-                ) +
-                " | false=" +
-                PlaylistBridgeDiagnosticPolicy.safePath(
-                    falseCompatibilityPath
-                )
+        // GMMP's linked-Smart recursion detector keeps every visited path
+        // for the full compilation. Therefore each Bridge occurrence needs
+        // its own deterministic compatibility path; shared true/false files
+        // would make a second Bridge look recursive.
+        val key = destinationKey + "|" + treePath + "|" + shouldMatch
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(key.toByteArray(Charsets.UTF_8))
+            .take(12)
+            .joinToString("") { "%02x".format(it) }
+        val file = File(
+            directory,
+            "bridge-" + (if (shouldMatch) "true-" else "false-") +
+                digest + ".spl"
         )
+        if (!file.isFile || file.length() <= 0L) {
+            writeCompatibilitySmartPlaylist(native, file, shouldMatch)
+        }
+        return canonicalPath(file)
     }
 
     private fun writeCompatibilitySmartPlaylist(
@@ -659,6 +669,13 @@ internal class PlaylistBridgeController {
         check(file.isFile && file.length() > 0L) {
             "GMMP native Smart Playlist writer did not create file"
         }
+        Log.i(
+            TAG,
+            "PORTABLE COMPATIBILITY WRITTEN | match=$shouldMatch | " +
+                PlaylistBridgeDiagnosticPolicy.safePath(
+                    canonicalPath(file)
+                )
+        )
     }
 
     private fun openChooser(

@@ -139,12 +139,14 @@ The new persisted V2 representation remains a **valid native linked Smart Playli
 
 GMMP 4.2.0 reads component 0 as the linked `.spl` and component 1 as the displayed linked-playlist name; the verified native evaluator/summary ignore later components. GoneSmart reads the final component and compiles the live normal-playlist membership exactly as before.
 
-Two tiny compatibility Smart Playlists are written with GMMP's original `ws4.t(File)` serializer into GMMP's own private files directory:
+Tiny compatibility Smart Playlists are written with GMMP's original `ws4.t(File)` serializer into GMMP's own private files directory. Their predicate is either:
 
 - **true**: native `track_id != Long.MIN_VALUE`
 - **false**: native `track_id = Long.MIN_VALUE`
 
-The field mapping is the verified GMMP 4.2.0 `cg.A(100) -> z75.ID`; native operator 1 is `!=` and operator 0 is `=`. The files live under GMMP app data, so disabling or uninstalling GoneSmart does not remove them.
+Each Bridge occurrence gets its **own deterministic compatibility filename**, keyed from the owning Smart Playlist destination plus its rule-tree position and true/false role. This is required because GMMP 4.2.0's linked-Smart recursion detector keeps every visited source path for the complete compilation; reusing one shared true/false file would make a later Bridge rule look recursive.
+
+The field mapping is the verified GMMP 4.2.0 `cg.A(100) -> z75.ID`; native operator 1 is `!=` and operator 0 is `=`. The files live under GMMP app data, so disabling or uninstalling GoneSmart does not remove them. Stale compatibility files are harmless private app-data artifacts; a moved/re-saved Bridge rule simply receives the deterministic path for its new tree position.
 
 During the original `ws4.t(File)` save only, Bridge rules are temporarily pointed at true/false compatibility files. The choice is derived recursively from the actual native rule tree so a Bridge-only subtree is neutral to its nearest surviving AND/OR expression; if an entire Smart Playlist contains only Bridge rules, it degrades to the same unfiltered/all-tracks semantics as an empty native Smart Playlist. The live editor objects are restored in `finally` immediately after the native writer returns. V1 PoC values remain readable and migrate to V2 on the next save.
 
