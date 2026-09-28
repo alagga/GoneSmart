@@ -1809,26 +1809,27 @@ class GoneSmartModule : XposedModule() {
         }
 
         runCatching {
-            val adapter = loader.loadClass("ls4")
-            val method = adapter.getDeclaredMethod(
-                "U",
+            // Native item path proven from GMMP 4.2.0:
+            // ss4 -> j7 -> os4.j2(List<ws4>) -> ls4.y differ.b(List).
+            // ls4.U(List) is List<t23> metadata configuration instead.
+            val fragment = loader.loadClass("os4")
+            val method = fragment.getDeclaredMethod(
+                "j2",
                 java.util.List::class.java
             ).apply { isAccessible = true }
             hook(method).intercept { chain ->
                 val result = chain.proceed()
-                smartPlaylistFolderController.onNativeAdapterUpdated(
-                    chain.getThisObject()
-                )
+                smartPlaylistFolderController.onNativeSmartListSubmitted()
                 result
             }
             Log.i(
                 "GoneSmartSmartFolders",
-                "SMART FOLDERS HOOK READY | ls4.U native refresh"
+                "SMART FOLDERS HOOK READY | os4.j2 native ws4 submit"
             )
         }.onFailure {
             Log.w(
                 "GoneSmartSmartFolders",
-                "SMART FOLDERS HOOK MISSING | ls4.U",
+                "SMART FOLDERS HOOK MISSING | os4.j2",
                 it
             )
         }

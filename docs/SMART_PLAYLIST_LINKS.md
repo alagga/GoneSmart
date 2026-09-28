@@ -189,3 +189,20 @@ The bundled Smart-folder trace also confirmed the real `smartListRecyclerView` u
 - a FileObserver is scoped to the currently open nested folder because GMMP's own `qs4` observer is rooted at the native Smart root.
 
 One writer hook now coordinates the new-folder destination redirect and Playlist Bridge's already-tested temporary V2 persistence rewrite so the two features cannot race or double-hook `ws4.t(File)`.
+
+
+## Smart-Playlist folders first-device-build failure and corrected native adapter contract — 28 September 2026
+
+The first functional Smart-folder build (`4491cea`) was **not accepted** after device testing. The screen could go black and Logcat showed `java.lang.ClassCastException: ws4 cannot be cast to t23` from `r1.c` while `ls4.onCreateViewHolder` was creating Smart-list rows. The same capture also contained a high-rate `Invalid ID 0x00000000…04` stream.
+
+A second DEX pass established the exact contract crossed by that build:
+
+- `ls4.x` is metadata-row configuration; `ls4.U(List)` only assigns it.
+- `r1.c(w23,int)` reads `w23.i0()` / `ls4.x` and casts entries to `t23`.
+- Smart-Playlist items themselves live in `ls4.y`, the native AsyncListDiffer.
+- `ns4`, the native differ callback, compares `ws4` objects.
+- `os4.j2(List)` is GMMP's native Smart-item submission path and calls `ls4.y.b(List)`.
+- GoneSmart therefore submits current-folder `List<ws4>` through the same differ and never through `ls4.U(List)`.
+- Action scrolling uses the submitted `ws4` order rather than `ls4.x`.
+- The Invalid-ID flood was independent: page-front detection repeatedly called `getResourceEntryName()` for generated View IDs with a zero package byte. Those are now rejected before the Resources API is called.
+- If no native Smart row exists to sample (for example an empty root containing folders), synthetic folder rows use a visible theme-derived TextView fallback instead of an unbound metadata XML row.

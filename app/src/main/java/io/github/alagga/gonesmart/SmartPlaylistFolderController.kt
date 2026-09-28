@@ -37,7 +37,6 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.ArrayList
-import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -47,6 +46,10 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Native-first contract:
  * - GMMP's original ls4 adapter remains installed on smartListRecyclerView.
+ * - ls4.x / ls4.U(List) is GMMP's metadata-row configuration (List<t23>)
+ *   and is NEVER modified by GoneSmart.
+ * - Smart-Playlist items (List<ws4>) are submitted through the original
+ *   ls4.y AsyncListDiffer, matching native os4.j2(List).
  * - Current-folder .spl files are parsed by original ws4.r(File).
  * - Current-folder ordering uses original ou4.e(...).
  * - Real Smart-Playlist clicks/long-clicks/context menus are forwarded only
@@ -73,7 +76,8 @@ internal class SmartPlaylistFolderController {
         val modelName: Field,
         val modelFile: Field,
         val holderModel: Field,
-        val adapterUpdate: Method,
+        val adapterDiffer: Field,
+        val differSubmit: Method,
         val storagePath: Method,
         val smartStorageLocation: Any,
         val nativeSort: Method,
@@ -119,7 +123,8 @@ internal class SmartPlaylistFolderController {
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
         var generation: Long = 0L,
-        var actionPending: Boolean = false
+        var actionPending: Boolean = false,
+        var nativeOrder: List<String> = emptyList()
     )
 
     private inner class BreadcrumbAdapter(
@@ -226,9 +231,6 @@ internal class SmartPlaylistFolderController {
     private val refreshGeneration = AtomicLong(0L)
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
-    private val applyingAdapters = Collections.newSetFromMap(
-        WeakHashMap<Any, Boolean>()
-    )
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
 
@@ -276,10 +278,16 @@ internal class SmartPlaylistFolderController {
                     .apply { isAccessible = true },
                 holderModel = holderClass.getDeclaredField("A")
                     .apply { isAccessible = true },
-                adapterUpdate = adapterClass.getDeclaredMethod(
-                    "U",
-                    java.util.List::class.java
-                ).apply { isAccessible = true },
+                adapterDiffer = adapterClass.getDeclaredField("y")
+                    .apply { isAccessible = true },
+                differSubmit = adapterClass.getDeclaredField("y")
+                    .apply { isAccessible = true }
+                    .type
+                    .getDeclaredMethod(
+                        "b",
+                        java.util.List::class.java
+                    )
+                    .apply { isAccessible = true },
                 storagePath = storageClass.getDeclaredMethod(
                     "b",
                     storageLocationClass
@@ -344,16 +352,18 @@ internal class SmartPlaylistFolderController {
         if (enabled) scheduleAttach(list, 0)
     }
 
-    fun onNativeAdapterUpdated(adapter: Any?) {
-        val native = bindings ?: return
-        if (adapter == null || !native.adapterClass.isInstance(adapter)) return
-        synchronized(applyingAdapters) {
-            if (applyingAdapters.contains(adapter)) return
-        }
+    /**
+     * Native os4.j2(List<ws4>) has just submitted a Smart-Playlist list.
+     * If a GoneSmart nested folder is open, re-apply that folder after the
+     * original root refresh. Our own submit goes straight to ls4.y and
+     * therefore cannot recurse through this callback.
+     */
+    fun onNativeSmartListSubmitted() {
+        if (!enabled) return
         main.post {
-            browsers.values.firstOrNull {
-                it.nativeAdapter === adapter && it.list.isAttachedToWindow
-            }?.let(::refresh)
+            browsers.values.toList()
+                .filter { it.list.isAttachedToWindow }
+                .forEach(::refresh)
         }
     }
 
@@ -732,21 +742,31 @@ internal class SmartPlaylistFolderController {
         }?.invoke(preference)
     }
 
+    /**
+     * DEX-proven GMMP 4.2.0 contract:
+     * - ls4.x + U(List) = List<t23> metadata configuration.
+     * - ls4.y = AsyncListDiffer whose ns4 callback compares ws4 objects.
+     * - os4.j2(List<ws4>) calls ls4.y.b(List).
+     *
+     * Never route ws4 through U(List): r1.c(...) casts that list to t23 and
+     * crashes SmartListAdapter.onCreateViewHolder.
+     */
     private fun applyNativeModels(browser: Browser, models: List<Any>) {
         val native = bindings ?: return
-        synchronized(applyingAdapters) {
-            applyingAdapters.add(browser.nativeAdapter)
-        }
-        try {
-            native.adapterUpdate.invoke(browser.nativeAdapter, models)
-        } finally {
-            synchronized(applyingAdapters) {
-                applyingAdapters.remove(browser.nativeAdapter)
-            }
+        val differ = runCatching {
+            native.adapterDiffer.get(browser.nativeAdapter)
+        }.onFailure {
+            Log.e(TAG, "SMART FOLDERS DIFFER | native ls4.y unavailable", it)
+        }.getOrNull() ?: return
+        runCatching {
+            native.differSubmit.invoke(differ, models)
+        }.onFailure {
+            Log.e(TAG, "SMART FOLDERS DIFFER | native ws4 submit failed", it)
         }
     }
 
     private fun render(browser: Browser, snapshot: Snapshot) {
+        browser.nativeOrder = snapshot.models.mapNotNull(::modelPath)
         browser.rows.removeAllViews()
         renderBreadcrumb(browser)
         val menuSource = firstNativeContextMenu(browser.list)
@@ -838,12 +858,9 @@ internal class SmartPlaylistFolderController {
         onContext: (() -> Unit)?
     ): View {
         val style = browser.style
-        val layoutId = style?.rowLayoutId?.takeIf { it != 0 }
-            ?: browser.list.resources.getIdentifier(
-                "rv_listitem_metadata_compact",
-                "layout",
-                browser.list.context.packageName
-            )
+        // Only clone a row layout after it was sampled from a real bound
+        // native Smart row. An empty root has no bound text/style template.
+        val layoutId = style?.rowLayoutId?.takeIf { it != 0 } ?: 0
         val root = if (layoutId != 0) {
             runCatching {
                 LayoutInflater.from(browser.list.context).inflate(
@@ -1002,16 +1019,11 @@ internal class SmartPlaylistFolderController {
             )
         ) return true
 
-        val native = bindings ?: return false
-        val models = runCatching {
-            val field = native.adapterClass.getDeclaredField("x")
-                .apply { isAccessible = true }
-            @Suppress("UNCHECKED_CAST")
-            field.get(browser.nativeAdapter) as? List<Any>
-        }.getOrNull().orEmpty()
-        val position = models.indexOfFirst {
-            modelPath(it) == canonicalPath(targetPath)
-        }
+        // ls4.x is List<t23> metadata configuration, not Smart items.
+        // The submitted ws4 snapshot order is the native adapter order.
+        val position = browser.nativeOrder.indexOf(
+            canonicalPath(targetPath)
+        )
         if (position < 0) return false
         browser.actionPending = true
         runCatching {
@@ -1177,7 +1189,7 @@ internal class SmartPlaylistFolderController {
             "drawable",
             context.packageName
         )
-        context.getDrawable(iconId)?.mutate()?.let { icon ->
+        if (iconId != 0) context.getDrawable(iconId)?.mutate()?.let { icon ->
             val size = dp(context, 18)
             val color = resolveColor(
                 context,
@@ -1395,12 +1407,12 @@ internal class SmartPlaylistFolderController {
         root: View,
         expectedText: String? = null
     ): TextView? {
+        if (root is TextView && expectedText.isNullOrBlank()) return root
         val found = arrayListOf<TextView>()
         fun walk(view: View, depth: Int) {
             if (depth > 8 || found.size > 40) return
             if (view is TextView) {
-                val text = view.text?.toString()?.trim().orEmpty()
-                if (text.isNotBlank()) found += view
+                found += view
             }
             if (view is ViewGroup) {
                 for (index in 0 until view.childCount) {
@@ -1506,9 +1518,13 @@ internal class SmartPlaylistFolderController {
         }.getOrNull()
     }
 
-    private fun resourceName(view: View): String = runCatching {
-        view.resources.getResourceEntryName(view.id)
-    }.getOrDefault("")
+    private fun resourceName(view: View): String {
+        val id = view.id
+        if (!NativeResourceIdPolicy.canResolveEntryName(id)) return ""
+        return runCatching {
+            view.resources.getResourceEntryName(id)
+        }.getOrDefault("")
+    }
 
     private fun safePath(file: File): String =
         PlaylistBridgeDiagnosticPolicy.safePath(
