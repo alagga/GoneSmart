@@ -135,6 +135,9 @@ class GoneSmartModule : XposedModule() {
                         next.smartGroupRootPlaylists,
                         next.smartMultiPlaylistEnabled
                     )
+                    playlistFolderPreview.setSmartFolderBadgeEnabled(
+                        next.smartPlaylistFoldersEnabled
+                    )
                 }
             }
 
@@ -598,6 +601,9 @@ class GoneSmartModule : XposedModule() {
                         options.smartPlaylistFoldersEnabled,
                         options.smartGroupRootPlaylists,
                         options.smartMultiPlaylistEnabled
+                    )
+                    playlistFolderPreview.setSmartFolderBadgeEnabled(
+                        options.smartPlaylistFoldersEnabled
                     )
                     installSmartPlaylistFolderFeatureHooks(param)
                     installSmartPlaylistSaveHook(param)

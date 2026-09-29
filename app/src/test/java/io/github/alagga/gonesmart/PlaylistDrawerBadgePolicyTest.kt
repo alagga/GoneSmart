@@ -33,4 +33,25 @@ class PlaylistDrawerBadgePolicyTest {
             )
         )
     }
+
+    @Test fun distinguishesSmartPlaylistDrawerEntry() {
+        assertFalse(
+            PlaylistDrawerBadgePolicy.matchesNativePlaylist(
+                listOf("Wiedergabelisten", "Wiedergabeliste"),
+                "menuSmartPlaylists", "Smarte Playlists"
+            )
+        )
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                listOf("Smarte Playlists", "Smart-Playlist"),
+                "menuSmartPlaylists", "Smarte Playlists"
+            )
+        )
+        assertFalse(
+            PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                listOf("Smarte Playlists"),
+                "menuPlaylists", "Wiedergabelisten"
+            )
+        )
+    }
 }

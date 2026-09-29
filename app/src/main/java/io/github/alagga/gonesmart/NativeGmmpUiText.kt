@@ -24,6 +24,11 @@ internal object NativeGmmpUiText {
         return if (action == null) error else "$error · $action"
     }
 
+    fun storage(context: Context): String =
+        string(context, "storage")
+            ?: string(context, "files")
+            ?: "⌂"
+
     /**
      * Prefer the installed player's existing phrase if present. The
      * virtual folder is GoneSmart-owned, so its separate fully mapped

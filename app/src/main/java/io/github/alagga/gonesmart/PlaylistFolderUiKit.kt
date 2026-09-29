@@ -7,7 +7,11 @@ import android.graphics.Path
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.text.TextPaint
+import android.text.style.ForegroundColorSpan
+import android.text.style.ImageSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -54,6 +58,14 @@ internal object PlaylistFolderUiKit {
         val label: String
     )
 
+    data class BreadcrumbAlignment(
+        val measuredTextStart: Int,
+        val appliedPaddingStart: Int?,
+        val aligned: Boolean
+    )
+
+    private var rememberedNativeAddTitle: CharSequence? = null
+
     fun selectionTitle(context: android.content.Context, count: Int): String {
         val id = context.resources.getIdentifier(
             "num_selected", "string", context.packageName
@@ -65,6 +77,113 @@ internal object PlaylistFolderUiKit {
                 ?.let { return it }
         }
         return count.toString()
+    }
+
+    fun rememberNativeAddTitle(
+        menu: android.view.Menu,
+        context: android.content.Context
+    ) {
+        val add = findNativeAddItem(menu, context) ?: return
+        add.title?.let { rememberedNativeAddTitle = it }
+    }
+
+    fun installNativeFolderAddMenu(
+        menu: android.view.Menu,
+        context: android.content.Context,
+        itemId: Int,
+        rowTextColor: Int?,
+        preferRememberedAddTitle: Boolean,
+        onClick: () -> Unit
+    ): android.view.MenuItem? {
+        menu.findItem(itemId)?.let { return it }
+        val nativeAdd = findNativeAddItem(menu, context)
+        if (!preferRememberedAddTitle) {
+            nativeAdd?.title?.let { rememberedNativeAddTitle = it }
+        }
+        val title = if (preferRememberedAddTitle) {
+            rememberedNativeAddTitle
+                ?: NativeGmmpUiText.string(context, "add")
+                ?: NativeGmmpUiText.string(context, "add_to_playlist")
+                ?: nativeAdd?.title
+        } else {
+            nativeAdd?.title
+        } ?: return null
+
+        val iconId = context.resources.getIdentifier(
+            "ic_gm_new_folder", "drawable", context.packageName
+        )
+        if (iconId == 0) return null
+        val label = SpannableStringBuilder(title)
+        context.getDrawable(iconId)?.mutate()?.let { icon ->
+            val fallbackSize =
+                (18f * context.resources.displayMetrics.density).toInt()
+            val width = icon.intrinsicWidth.takeIf { it > 0 } ?: fallbackSize
+            val height = icon.intrinsicHeight.takeIf { it > 0 } ?: fallbackSize
+            val spanColor = (title as? Spanned)?.let { source ->
+                source.getSpans(
+                    0, source.length, ForegroundColorSpan::class.java
+                ).lastOrNull()?.foregroundColor
+            }
+            icon.setTint(
+                spanColor ?: rowTextColor ?: resolveTextColor(context)
+            )
+            icon.setBounds(0, 0, width, height)
+            label.insert(0, "\uFFFC  ")
+            label.setSpan(
+                ImageSpan(icon, ImageSpan.ALIGN_BOTTOM),
+                0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        val order = (nativeAdd?.order ?: 0) + 1
+        return menu.add(
+            android.view.Menu.NONE, itemId, order, label
+        ).apply {
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
+            setOnMenuItemClickListener {
+                onClick()
+                true
+            }
+        }
+    }
+
+    fun alignBreadcrumbStart(
+        header: RecyclerView,
+        expectedTextStart: Int,
+        maxCorrectionPx: Int
+    ): BreadcrumbAlignment? {
+        if (!header.isAttachedToWindow || header.width <= 0 ||
+            header.canScrollHorizontally(-1)
+        ) return null
+        val first = header.layoutManager?.findViewByPosition(0) ?: return null
+        val label = findFirstTextView(first) ?: return null
+        if (first.width <= 0 || label.width <= 0 || header.isLayoutRequested) {
+            return null
+        }
+        val headerLocation = IntArray(2)
+        val labelLocation = IntArray(2)
+        header.getLocationOnScreen(headerLocation)
+        label.getLocationOnScreen(labelLocation)
+        val measured = labelLocation[0] - headerLocation[0] +
+            label.compoundPaddingStart
+        val correction = NativeQuickNavInsetPolicy.correctedPadding(
+            currentPadding = header.paddingStart,
+            measuredTextStart = measured,
+            expectedTextStart = expectedTextStart,
+            maxCorrection = maxCorrectionPx
+        )
+        if (correction != null) {
+            header.setPaddingRelative(
+                correction,
+                header.paddingTop,
+                header.paddingEnd,
+                header.paddingBottom
+            )
+        }
+        return BreadcrumbAlignment(
+            measuredTextStart = measured,
+            appliedPaddingStart = correction,
+            aligned = correction == null
+        )
     }
 
     fun menuButtonId(host: View): Int =
@@ -387,6 +506,32 @@ internal object PlaylistFolderUiKit {
         button.setOnClickListener { onContext(button) }
     }
 
+    private fun findNativeAddItem(
+        menu: android.view.Menu,
+        context: android.content.Context
+    ): android.view.MenuItem? {
+        for (index in 0 until menu.size()) {
+            val item = menu.getItem(index)
+            if (!NativeResourceIdPolicy.canResolveEntryName(item.itemId)) {
+                continue
+            }
+            val name = runCatching {
+                context.resources.getResourceEntryName(item.itemId)
+            }.getOrNull()
+            if (name == "menuAdd") return item
+        }
+        return null
+    }
+
+    private fun findFirstTextView(view: View): TextView? {
+        if (view is TextView) return view
+        val group = view as? ViewGroup ?: return null
+        for (index in 0 until group.childCount) {
+            findFirstTextView(group.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
     private fun selectableBackground(host: View): Drawable? {
         val attrs = intArrayOf(
             android.R.attr.selectableItemBackgroundBorderless
@@ -399,8 +544,11 @@ internal object PlaylistFolderUiKit {
         }
     }
 
-    private fun resolveTextColor(host: View): Int {
-        val typed = host.context.obtainStyledAttributes(
+    private fun resolveTextColor(host: View): Int =
+        resolveTextColor(host.context)
+
+    private fun resolveTextColor(context: android.content.Context): Int {
+        val typed = context.obtainStyledAttributes(
             intArrayOf(android.R.attr.textColorPrimary)
         )
         return try {

@@ -118,6 +118,41 @@ internal class PlaylistMultiSelectController {
     fun nativeContextBarColor(list: ViewGroup): Int? =
         (findContextBar(list.rootView)?.background as? ColorDrawable)?.color
 
+    /**
+     * Same 50% native-primary overlay used by the accepted playlist
+     * multi-selection, but without requiring the Add-picker Session.
+     * Resolve it once when a standalone Smart selection starts so the first
+     * long-pressed row cannot differ from rows selected afterwards.
+     */
+    fun standaloneSelectionOverlayColor(view: View): Int {
+        val contextBar = (findContextBar(view.rootView)?.background
+            as? ColorDrawable)?.color?.takeIf {
+                Color.alpha(it) >= 200
+            }
+        val resources = view.resources
+        val packageName = view.context.packageName
+        val attrs = intArrayOf(
+            resources.getIdentifier(
+                "colorPrimary", "attr", packageName
+            ),
+            resources.getIdentifier(
+                "colorAccent", "attr", packageName
+            ),
+            android.R.attr.colorAccent
+        )
+        val accent = contextBar ?: attrs.asSequence()
+            .filter { it != 0 }
+            .mapNotNull { themeColor(view, it) }
+            .firstOrNull { Color.alpha(it) >= 200 }
+            ?: 0xFF36A8BE.toInt()
+        return Color.argb(
+            128,
+            Color.red(accent),
+            Color.green(accent),
+            Color.blue(accent)
+        )
+    }
+
     fun confirmFolderSelection(list: ViewGroup): Boolean {
         val session = active ?: return false
         if (!enabled || session.list !== list ||

@@ -4,42 +4,50 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SmartFolderHeaderScrollPolicyTest {
-    @Test fun folderBandStartsFullyVisibleAtNativeListTop() {
+    @Test fun folderBandStartsVisibleAtFirstRowTop() {
         assertEquals(
             0,
             SmartFolderHeaderScrollPolicy.folderScrollOffset(
                 folderHeight = 120,
-                nativeScrollOffset = 0
+                listPaddingTop = 180,
+                firstChildTop = 180,
+                firstAdapterPosition = 0
             )
         )
     }
 
-    @Test fun folderBandTracksPartialNativeScroll() {
+    @Test fun folderBandTracksActualFirstRowPixels() {
         assertEquals(
             48,
             SmartFolderHeaderScrollPolicy.folderScrollOffset(
                 folderHeight = 120,
-                nativeScrollOffset = 48
+                listPaddingTop = 180,
+                firstChildTop = 132,
+                firstAdapterPosition = 0
             )
         )
     }
 
-    @Test fun folderBandIsGoneAfterScrollingPastItsHeight() {
+    @Test fun folderBandIsFullyGoneAfterFirstRowRecycles() {
         assertEquals(
             120,
             SmartFolderHeaderScrollPolicy.folderScrollOffset(
                 folderHeight = 120,
-                nativeScrollOffset = 240
+                listPaddingTop = 180,
+                firstChildTop = 170,
+                firstAdapterPosition = 1
             )
         )
     }
 
-    @Test fun negativeOffsetsClampToTop() {
+    @Test fun missingVisibleChildDoesNotInventEstimatedOffset() {
         assertEquals(
             0,
             SmartFolderHeaderScrollPolicy.folderScrollOffset(
                 folderHeight = 120,
-                nativeScrollOffset = -30
+                listPaddingTop = 180,
+                firstChildTop = null,
+                firstAdapterPosition = -1
             )
         )
     }

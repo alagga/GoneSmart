@@ -322,6 +322,9 @@ internal class PlaylistFolderPreviewController(
     // drawer row and not an overlay that interferes with its native ripple.
     private val originalDrawerPlaylistTitles =
         WeakHashMap<android.view.MenuItem, CharSequence>()
+    private val originalDrawerSmartPlaylistTitles =
+        WeakHashMap<android.view.MenuItem, CharSequence>()
+    @Volatile private var smartFolderBadgeEnabled = false
     private val observedDrawerLists = WeakHashMap<ViewGroup, Boolean>()
     private val drawerRefreshPending = WeakHashMap<ViewGroup, Boolean>()
     private val drawerBadgeProbes = WeakHashMap<ViewGroup, Int>()
@@ -392,6 +395,13 @@ internal class PlaylistFolderPreviewController(
             }
         }
         knownLists.keys.toList().forEach { scheduleAttach(it, 0) }
+    }
+
+    fun setSmartFolderBadgeEnabled(enabled: Boolean) {
+        if (smartFolderBadgeEnabled == enabled) return
+        smartFolderBadgeEnabled = enabled
+        observedDrawerLists.keys.toList()
+            .forEach(::scheduleDrawerBadgeRefresh)
     }
 
     /**
@@ -876,8 +886,6 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun updateDrawerPlaylistBadge(drawer: ViewGroup) {
-        // A menu is available from GMMP's ACTUAL parent
-        // AestheticNavigationView, not from the RecyclerView adapter.
         var parent: View? = drawer
         var menu: android.view.Menu? = null
         repeat(5) {
@@ -891,48 +899,73 @@ internal class PlaylistFolderPreviewController(
             }
             parent = view.parent as? View
         }
-        if (menu == null) return
         val nativeMenu = menu ?: return
         val resources = drawer.resources
-        val nativeNames = listOf("playlists", "playlist").mapNotNull {
+        val playlistNames = listOf("playlists", "playlist").mapNotNull {
             val id = resources.getIdentifier(
                 it, "string", drawer.context.packageName
             )
-            if (id != 0) {
-                runCatching { drawer.context.getString(id) }.getOrNull()
-            } else null
-        }.map { it.trim() }
-        var target: android.view.MenuItem? = null
+            if (id != 0) runCatching {
+                drawer.context.getString(id)
+            }.getOrNull() else null
+        }.map(String::trim)
+        val smartNames = listOfNotNull(
+            NativeGmmpUiText.string(drawer.context, "smart_playlists"),
+            NativeGmmpUiText.smartPlaylist(drawer.context)
+        ).map(String::trim)
+
+        var playlistItem: android.view.MenuItem? = null
+        var smartItem: android.view.MenuItem? = null
         for (index in 0 until nativeMenu.size()) {
             val item = nativeMenu.getItem(index)
             val original = originalDrawerPlaylistTitles[item]
+                ?: originalDrawerSmartPlaylistTitles[item]
                 ?: item.title ?: continue
             val nativeId = resourceEntryName(
-                resources,
-                item.itemId
+                resources, item.itemId
             ).orEmpty()
-            if (PlaylistDrawerBadgePolicy.matchesNativePlaylist(
-                    nativeNames, nativeId, original.toString()
+            if (playlistItem == null &&
+                PlaylistDrawerBadgePolicy.matchesNativePlaylist(
+                    playlistNames, nativeId, original.toString()
                 )
             ) {
-                target = item
-                break
+                playlistItem = item
             }
-        }
-        if (target == null) {
-            val attempts = drawerBadgeProbes[drawer] ?: 0
-            if (attempts < 2 && settings.enabled) {
-                drawerBadgeProbes[drawer] = attempts + 1
-                Log.i(
-                    TAG, "FOLDER DRAWER BADGE | native Playlists " +
-                        "menu entry not bound yet | items=" + nativeMenu.size()
+            if (smartItem == null &&
+                PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                    smartNames, nativeId, original.toString()
                 )
+            ) {
+                smartItem = item
             }
-            return
         }
-        val item = target
-        if (settings.enabled) {
-            if (originalDrawerPlaylistTitles.containsKey(item)) {
+
+        updateDrawerSparkle(
+            drawer,
+            playlistItem,
+            settings.enabled,
+            originalDrawerPlaylistTitles,
+            "Playlists"
+        )
+        updateDrawerSparkle(
+            drawer,
+            smartItem,
+            smartFolderBadgeEnabled,
+            originalDrawerSmartPlaylistTitles,
+            "Smart Playlists"
+        )
+    }
+
+    private fun updateDrawerSparkle(
+        drawer: ViewGroup,
+        item: android.view.MenuItem?,
+        enabled: Boolean,
+        originals: WeakHashMap<android.view.MenuItem, CharSequence>,
+        diagnostic: String
+    ) {
+        item ?: return
+        if (enabled) {
+            if (originals.containsKey(item)) {
                 val existing = item.title
                 if (existing is Spanned &&
                     existing.getSpans(
@@ -940,16 +973,13 @@ internal class PlaylistFolderPreviewController(
                         BaselineCenteredSparkleSpan::class.java
                     ).isNotEmpty()
                 ) return
-                // The original GMMP menu might have rebound this title
-                // after a theme/locale update. Restore the true CURRENT
-                // native text before decorating it again.
-                originalDrawerPlaylistTitles.remove(item)
+                originals.remove(item)
             }
             val original = item.title ?: return
-            val newTitle = android.text.SpannableStringBuilder(original)
+            val decorated = android.text.SpannableStringBuilder(original)
                 .append("  \uFFFC")
-            val marker = newTitle.lastIndexOf('\uFFFC')
-            newTitle.setSpan(
+            val marker = decorated.lastIndexOf('\uFFFC')
+            decorated.setSpan(
                 BaselineCenteredSparkleSpan(
                     drawer.context,
                     PlayerAutoDjBadgeController.SparkleBadgeDrawable(
@@ -958,16 +988,20 @@ internal class PlaylistFolderPreviewController(
                 ),
                 marker, marker + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
-            originalDrawerPlaylistTitles[item] = original
-            item.title = newTitle
+            originals[item] = original
+            item.title = decorated
             Log.i(
-                TAG, "FOLDER DRAWER BADGE | existing native " +
-                    "Playlists menu decorated"
+                TAG,
+                "FOLDER DRAWER BADGE | existing native $diagnostic " +
+                    "menu decorated"
             )
         } else {
-            originalDrawerPlaylistTitles.remove(item)?.let { original ->
+            originals.remove(item)?.let { original ->
                 item.title = original
-                Log.i(TAG, "FOLDER DRAWER BADGE | native title restored")
+                Log.i(
+                    TAG,
+                    "FOLDER DRAWER BADGE | native $diagnostic title restored"
+                )
             }
         }
     }
@@ -1366,78 +1400,23 @@ internal class PlaylistFolderPreviewController(
         menu: android.view.Menu,
         context: android.content.Context
     ) {
-        if (menu.findItem(newFolderMenuId) != null) return
-        val resources = context.resources
-        val iconId = resources.getIdentifier(
-            "ic_gm_new_folder", "drawable", context.packageName
-        )
-        if (iconId == 0) return
-        val nativeAdd = (0 until menu.size()).map(menu::getItem)
-            .firstOrNull {
-                resourceEntryName(resources, it.itemId) == "menuAdd"
-            }
-        // Reuse the SAME GMMP-localized title as its adjacent menuAdd
-        // item. A native GMMP folder drawable is prepended inline: Android
-        // overflow menus do not consistently show MenuItem.icon.
-        val originalAdd = nativeAdd ?: return
-        val originalTitle = originalAdd.title ?: return
-        val label = android.text.SpannableStringBuilder(originalTitle)
-        val folderIcon = context.getDrawable(iconId)?.mutate()
-        if (folderIcon != null) {
-            val fallbackSize = (
-                18f * context.resources.displayMetrics.density
-            ).toInt()
-            val width = folderIcon.intrinsicWidth.takeIf { it > 0 }
-                ?: fallbackSize
-            val height = folderIcon.intrinsicHeight.takeIf { it > 0 }
-                ?: fallbackSize
-            // The inline ImageSpan does not inherit its parent TextView's
-            // text color. Prefer the original item's foreground span, then
-            // the CURRENT bound native playlist row, then the host's own
-            // active textColorPrimary. Never use the untinted black asset.
-            val nativeSpanColor = (originalTitle as? Spanned)?.let { source ->
-                source.getSpans(0, source.length, ForegroundColorSpan::class.java)
-                    .lastOrNull()?.foregroundColor
-            }
-            val rowColor = currentBrowser(picker = false)?.let {
-                styles[it.list]?.textColor
-            }
-            val nativeTextColor = nativeSpanColor ?: rowColor ?: run {
-                val attrs = context.obtainStyledAttributes(
-                    intArrayOf(android.R.attr.textColorPrimary)
-                )
-                try {
-                    attrs.getColorStateList(0)?.getColorForState(
-                        intArrayOf(android.R.attr.state_enabled),
-                        attrs.getColor(0, Color.WHITE)
-                    ) ?: attrs.getColor(0, Color.WHITE)
-                } finally {
-                    attrs.recycle()
-                }
-            }
-            folderIcon.setTint(nativeTextColor)
-            folderIcon.setBounds(0, 0, width, height)
-            // Keep all original GMMP localized/title spans: inserting
-            // before the original text shifts them automatically.
-            label.insert(0, "\uFFFC  ")
-            label.setSpan(
-                android.text.style.ImageSpan(
-                    folderIcon, android.text.style.ImageSpan.ALIGN_BOTTOM
-                ),
-                0, 1,
-                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
+        PlaylistFolderUiKit.rememberNativeAddTitle(menu, context)
+        val before = menu.findItem(newFolderMenuId)
+        val rowColor = currentBrowser(picker = false)?.let {
+            styles[it.list]?.textColor
         }
-        val item = menu.add(
-            android.view.Menu.NONE, newFolderMenuId,
-            originalAdd.order + 1, label
-        )
-        item.setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
-        item.setOnMenuItemClickListener {
+        val item = PlaylistFolderUiKit.installNativeFolderAddMenu(
+            menu = menu,
+            context = context,
+            itemId = newFolderMenuId,
+            rowTextColor = rowColor,
+            preferRememberedAddTitle = false
+        ) {
             currentBrowser(picker = false)?.let(::requestNativeFolderCreation)
-            true
         }
-        Log.i(TAG, "FOLDER CREATE MENU | native icon/title installed")
+        if (before == null && item != null) {
+            Log.i(TAG, "FOLDER CREATE MENU | native icon/title installed")
+        }
     }
 
     private fun physicalFolderParent(browser: Browser): java.io.File? {
@@ -2473,12 +2452,7 @@ internal class PlaylistFolderPreviewController(
                 list, browser.parent, it
             )
         }
-        val storageId = list.resources.getIdentifier(
-            "storage", "string", list.context.packageName
-        )
-        val storageLabel = if (storageId != 0) {
-            list.context.getString(storageId)
-        } else "⌂"
+        val storageLabel = NativeGmmpUiText.storage(list.context)
         val sharedSegments = sourceSegments.mapIndexed { index, segment ->
             PlaylistFolderUiKit.BreadcrumbSegment(
                 key = segment.folderId?.let { "folder:" + it } ?: "root",
@@ -2543,11 +2517,14 @@ internal class PlaylistFolderPreviewController(
      */
     private fun scheduleQuickNavParityCheck(
         browser: Browser,
-        generation: Long
+        generation: Long,
+        attempt: Int = 0
     ) {
         val source = observedNativeBreadcrumbStyle
         val expectedFirstX = source?.nativeFirstTextStartPx
-            ?: verifiedNativeFirstTextX(browser.list) ?: return
+            ?: verifiedNativeFirstTextX(browser.list)
+            ?: styles[browser.list]?.titleInset
+            ?: return
         val styleKey = source?.signature ?: "cached:" + expectedFirstX
         val strip = browser.breadcrumbScroller
         strip.postOnAnimation {
@@ -2555,57 +2532,56 @@ internal class PlaylistFolderPreviewController(
                 browser.breadcrumbRenderGeneration != generation ||
                 !strip.isAttachedToWindow
             ) return@postOnAnimation
-            // Do not interpret a horizontally clipped first holder as
-            // a permanent negative start-inset error.
-            if (strip.canScrollHorizontally(-1)) return@postOnAnimation
-            val first = strip.layoutManager?.findViewByPosition(0)
-                as? TextView ?: return@postOnAnimation
-            if (first.left < strip.paddingStart) return@postOnAnimation
-            val expectedX = expectedFirstX
-            val measuredX = first.left + first.compoundPaddingStart
-            val correction = NativeQuickNavInsetPolicy.correctedPadding(
-                currentPadding = strip.paddingStart,
-                measuredTextStart = measuredX,
-                expectedTextStart = expectedX,
-                maxCorrection = dp(strip, 24)
+            val result = PlaylistFolderUiKit.alignBreadcrumbStart(
+                strip,
+                expectedTextStart = expectedFirstX,
+                maxCorrectionPx = dp(strip, 24)
             )
-            if (correction != null) {
+            if (result == null) {
+                if (attempt < 12) {
+                    scheduleQuickNavParityCheck(
+                        browser, generation, attempt + 1
+                    )
+                }
+                return@postOnAnimation
+            }
+            result.appliedPaddingStart?.let { correction ->
                 calibratedHeaderStarts[strip] = styleKey to correction
-                strip.setPaddingRelative(
-                    correction, strip.paddingTop,
-                    strip.paddingEnd, strip.paddingBottom
-                )
                 if (BuildConfig.DEBUG) {
                     Log.i(
                         TAG,
                         "FOLDER QUICKNAV INSET | surface=" +
                             surface(browser.list) +
-                            " | nativeX=" + expectedX +
-                            " | measuredX=" + measuredX +
+                            " | nativeX=" + expectedFirstX +
+                            " | measuredX=" + result.measuredTextStart +
                             " | paddingStart=" + correction +
                             " | source=" +
-                            if (source != null) "live-qg1" else "verified-cache"
+                            if (source != null) "live-qg1"
+                            else "verified/fallback"
                     )
                 }
-                // Do not record parity until the original XML relayout
-                // with its corrected native viewport inset has completed.
+                if (attempt < 12) {
+                    scheduleQuickNavParityCheck(
+                        browser, generation, attempt + 1
+                    )
+                }
                 return@postOnAnimation
             }
             if (!BuildConfig.DEBUG || source == null) return@postOnAnimation
+            val first = strip.layoutManager?.findViewByPosition(0) ?: return@postOnAnimation
             val separator = strip.layoutManager?.findViewByPosition(1)
             val actual = NativeQuickNavParity.Metrics(
-                firstTextStartPx = first.left + first.paddingStart,
+                firstTextStartPx = result.measuredTextStart,
                 separatorWidthPx = separator?.width,
-                textSizePx = first.textSize
+                textSizePx = findNativeTitleTextView(first)?.textSize
+                    ?: source.effectivePaint.textSize
             )
             val expected = NativeQuickNavParity.Metrics(
                 firstTextStartPx = source.nativeFirstTextStartPx,
                 separatorWidthPx = source.nativeSeparatorWidthPx,
                 textSizePx = source.effectivePaint.textSize
             )
-            val difference = NativeQuickNavParity.compare(
-                expected, actual
-            )
+            val difference = NativeQuickNavParity.compare(expected, actual)
             val signature = listOf(
                 surface(browser.list),
                 expected.toString(),
