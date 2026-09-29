@@ -809,3 +809,16 @@ Smart selection now paints all chosen native rows using one cached 50%-alpha GMM
 The Smart folder band again follows actual first-child geometry rather than RecyclerView's estimated `computeVerticalScrollOffset()`. This avoids holder-recycling discontinuities while retaining the native `ls4/vs4` row list.
 
 The normal and Smart overflow folder actions now share `PlaylistFolderUiKit.installNativeFolderAddMenu`. Smart places the folder-icon action directly after its native New Smart-Playlist item but uses the verified normal-Playlist Add title when available (otherwise GMMP's own Add string), not the Smart New title. Duplicate menu references and no-op visibility writes are suppressed.
+
+## 29 September 2026 — popup feedback loop and selection/scroll regression fix
+The accepted Smart overflow folder-add wording/icon and corrected **Speicher** breadcrumb are retained unchanged.
+
+The remaining top-overflow log storm was traced to GoneSmart observing ViewTree-wide global layouts for Smart overlay placement. A native PopupWindow causes repeated global-layout/traversal activity while open, so that listener fed the popup activity back into `positionOverlay()`. Smart overlay placement now reacts only to actual `smartListRecyclerView` bounds changes through `OnLayoutChangeListener`, and no-op x/y/visibility assignments are skipped.
+
+Smart folder scrolling now stays continuous when the native RecyclerView recycles holders. The synthetic folder-band offset is derived from the first visible native adapter position, the sampled fixed native Smart row height and the child's exact top pixel. A transient no-child layout retains the last exact offset. This replaces both scrollbar-estimate coupling and the later discontinuous position-0/position->0 shortcut.
+
+Smart selected rows now deliberately use the same visual source as accepted normal Playlist-folder rows: live host `colorAccent` at 50% alpha. Contextual-bar/primary color is not used for the Smart row overlay.
+
+Normal Playlist main multi-selection no longer rebuilds the complete synthetic folder browser after every selection change. The existing row views are retained and only their selected foreground is updated. Real navigation/model insertions keep the native-style render/animation path; selection alone must never trigger that large insertion/move animation.
+
+The drawer matcher now recognizes the already-existing native Smart item from either the installed localized Smart title or a native menu resource entry containing `smart`. The ordinary Playlist matcher still excludes Smart IDs; no synthetic navigation entry is created.

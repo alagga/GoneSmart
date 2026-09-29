@@ -102,3 +102,16 @@ The Smart physical-folder scroll bridge is intentionally geometry-based, not scr
 Drawer decoration now covers the existing native Smart-Playlists item independently when Smart folders are enabled. The normal Playlist matcher explicitly excludes Smart IDs, preventing badge crossover.
 
 Folder-add overflow presentation is centralized in `PlaylistFolderUiKit`: the verified native new-folder drawable plus host Add wording. Smart's native New Smart-Playlist action remains untouched and the folder action is ordered immediately after it. No repeated menu object registration or same-value visibility mutation is required while the popup is open.
+
+## 2026-09-29 popup/layout and selection regression audit
+The accepted Smart **Add/Hinzufügen** overflow action and **Speicher** breadcrumb are unchanged.
+
+**Smart top overflow:** GoneSmart previously used a ViewTree-global layout observer to keep its Smart header overlay positioned. The native PopupWindow itself generates global-layout/traversal cycles; GoneSmart now uses a RecyclerView-local `OnLayoutChangeListener` so popup activity is not treated as page geometry movement. Overlay x/y/visibility writes are also guarded against no-op assignments.
+
+**Smart scroll bridge:** the synthetic folder band now uses continuous native-row geometry: `adapterPosition * nativeRowHeight + paddingTop - childTop`. This is clamped to the physical folder-band height, and transient no-child frames preserve the last offset. No scrollbar-estimate API is used.
+
+**Smart selection:** row highlight follows the same accepted normal Playlist-folder `colorAccent` at 50% alpha. ActionMode bar/primary color is not substituted for row tint.
+
+**Normal Playlist selection:** native selection state is mirrored onto already-rendered synthetic rows in place. The full folder render/ItemAnimator is reserved for actual dataset/navigation changes; it must not run on every select/deselect or ActionMode teardown.
+
+**Drawer badge:** the sparkle is attached only to GMMP's existing native Smart drawer MenuItem, matched by localized Smart title or native resource name containing `smart`. The normal Playlist matcher explicitly excludes Smart resource IDs. No duplicate navigation item is introduced.

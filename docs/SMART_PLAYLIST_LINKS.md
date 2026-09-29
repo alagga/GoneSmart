@@ -281,3 +281,16 @@ Smart multi-selection keeps real `vs4/ws4` rows native and adds only a cached 50
 The remaining folder-header scroll bridge no longer consumes RecyclerView's estimated vertical scroll offset. It uses the real top of the lowest adapter-position child while position 0 remains attached, and considers the finite folder band fully scrolled once position 0 is recycled.
 
 Smart's main overflow now uses the same shared folder-add menu builder as the normal Playlist tab: native folder icon, host-localized Add wording, and placement directly after the native New Smart-Playlist command. Menu references are identity-deduplicated and visibility changes are applied only when state actually changes.
+
+## 29 September 2026 — runtime popup/scroll/selection follow-up
+The Smart overflow **Hinzufügen** action and the corrected **Speicher** breadcrumb spacing passed device feedback and are intentionally untouched.
+
+The Smart browser no longer listens to global ViewTree layout events for overlay placement. Native overflow PopupWindows produce their own repeated global-layout/traversal cycles; reacting to those cycles caused unnecessary overlay positioning work and a large stream of PopupWindow relayout logs. Only actual Smart RecyclerView bounds changes now reposition the overlay.
+
+The remaining folder-header motion is synchronized continuously from the first attached native row: adapter position times sampled native row height plus the exact padding/top pixel delta. Missing-child transition frames keep the previous offset. This makes RecyclerView holder recycling a continuous coordinate change instead of a folder-band jump.
+
+GoneSmart Smart multi-selection row tint now uses the same `colorAccent + 0x80 alpha` presentation as the accepted normal Playlist folder browser. The contextual ActionMode bar remains native but does not define the row overlay color.
+
+Normal Playlist main-selection mirroring updates existing rendered row foregrounds in place. It does not rerun the full synthetic browser render or insertion animator for a pure select/deselect operation.
+
+The existing native Smart drawer entry is decorated using either the host-localized Smart title or its native resource ID containing `smart`, while still prohibiting a duplicate drawer item.
