@@ -1577,8 +1577,8 @@ internal class PlaylistMultiSelectController {
         view: View
     ): Int =
         session.liveFabAccent
-            ?: NativeGmmpAccent.current(view)
             ?: session.liveAccent
+            ?: NativeGmmpAccent.current(view)
             ?: session.livePrimary
             ?: gmmpAccent(session, view)
 
