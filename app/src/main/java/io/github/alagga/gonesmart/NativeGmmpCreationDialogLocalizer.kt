@@ -228,6 +228,13 @@ internal object NativeGmmpCreationDialogLocalizer {
             if (text != null && key(text) in playlistTitleKeys) {
                 view.text = folderTitle
                 changed++
+            } else if (
+                text != null &&
+                key(text) in playlistNameKeys &&
+                view !is EditText
+            ) {
+                view.visibility = View.GONE
+                changed++
             }
             val hint = view.hint?.toString()?.takeUnless(String::isBlank)
             if (hint != null && key(hint) in playlistNameKeys) {

@@ -46,6 +46,7 @@ internal class NativeGmmpFolderCreator(
         private var pending: PendingShell? = null
         private val shellDialogs = WeakHashMap<Dialog, Boolean>()
         private val legacyDialogs = WeakHashMap<Dialog, Boolean>()
+        private val legacyShowDepth = ThreadLocal<Int>()
 
         private data class PendingShell(
             val token: Any,
@@ -58,8 +59,16 @@ internal class NativeGmmpFolderCreator(
 
         fun observeMainPlaylistPresenter(presenter: Any?) {
             if (presenter?.javaClass?.name != "tp3") return
-            synchronized(lock) {
+            val changed = synchronized(lock) {
+                val previous = presenterRef.get()
                 presenterRef = WeakReference(presenter)
+                previous !== presenter
+            }
+            if (changed) {
+                Log.i(
+                    TAG,
+                    "FOLDER CREATE SHELL | live tp3 presenter captured"
+                )
             }
         }
 
@@ -70,6 +79,14 @@ internal class NativeGmmpFolderCreator(
          */
         fun classifyBeforeShow(dialog: Dialog): DialogKind {
             synchronized(lock) {
+                if ((legacyShowDepth.get() ?: 0) > 0) {
+                    legacyDialogs[dialog] = true
+                    Log.i(
+                        TAG,
+                        "FOLDER CREATE FALLBACK | visible child dialog claimed"
+                    )
+                    return DialogKind.LEGACY_FOLDER
+                }
                 if (legacyDialogs.containsKey(dialog)) {
                     return DialogKind.LEGACY_FOLDER
                 }
@@ -198,19 +215,15 @@ internal class NativeGmmpFolderCreator(
             return walk(root)
         }
 
-        private fun markLegacy(dialog: Dialog) {
-            synchronized(lock) {
-                legacyDialogs[dialog] = true
+        private inline fun <T> withLegacyShowScope(block: () -> T): T {
+            val previous = legacyShowDepth.get() ?: 0
+            legacyShowDepth.set(previous + 1)
+            return try {
+                block()
+            } finally {
+                if (previous == 0) legacyShowDepth.remove()
+                else legacyShowDepth.set(previous)
             }
-            dialog.window?.decorView?.addOnAttachStateChangeListener(
-                object : View.OnAttachStateChangeListener {
-                    override fun onViewAttachedToWindow(v: View) = Unit
-                    override fun onViewDetachedFromWindow(v: View) {
-                        synchronized(lock) { legacyDialogs.remove(dialog) }
-                        v.removeOnAttachStateChangeListener(this)
-                    }
-                }
-            )
         }
     }
 
@@ -337,8 +350,6 @@ internal class NativeGmmpFolderCreator(
             Context::class.java,
             behaviorType
         ).apply { isAccessible = true }.newInstance(context, behavior)
-        (parentDialog as? Dialog)?.let(::markLegacy)
-
         val unit = kotlinUnitType.getDeclaredField("a")
             .apply { isAccessible = true }.get(null)
         val callback = Proxy.newProxyInstance(
@@ -363,7 +374,9 @@ internal class NativeGmmpFolderCreator(
             Integer::class.java,
             callbackType
         ).apply { isAccessible = true }
-        creator.invoke(null, parentDialog, directory, null, callback)
+        withLegacyShowScope {
+            creator.invoke(null, parentDialog, directory, null, callback)
+        }
         true
     }.onFailure {
         Log.e(

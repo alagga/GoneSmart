@@ -1423,22 +1423,43 @@ class GoneSmartModule : XposedModule() {
     ) {
         runCatching {
             val presenterType = param.classLoader.loadClass("tp3")
-            val lifecycle = presenterType.getDeclaredMethod("y2")
-                .apply { isAccessible = true }
-            hook(lifecycle).intercept { chain ->
-                NativeGmmpFolderCreator.observeMainPlaylistPresenter(
-                    chain.getThisObject()
-                )
-                chain.proceed()
+            val constructors = presenterType.declaredConstructors
+            require(constructors.isNotEmpty()) {
+                "tp3 has no declared constructors"
             }
+            constructors.forEach { constructor ->
+                constructor.isAccessible = true
+                hook(constructor).intercept { chain ->
+                    val result = chain.proceed()
+                    NativeGmmpFolderCreator.observeMainPlaylistPresenter(
+                        chain.getThisObject()
+                    )
+                    result
+                }
+            }
+
+            // Secondary only. The device showed y2 alone can miss the live
+            // presenter even though tp3 is already serving the Playlist tab.
+            runCatching {
+                val lifecycle = presenterType.getDeclaredMethod("y2")
+                    .apply { isAccessible = true }
+                hook(lifecycle).intercept { chain ->
+                    NativeGmmpFolderCreator.observeMainPlaylistPresenter(
+                        chain.getThisObject()
+                    )
+                    chain.proceed()
+                }
+            }
+
             Log.i(
                 "GoneSmartPlaylist",
-                "FOLDER CREATE SHELL | tp3 presenter observer installed"
+                "FOLDER CREATE SHELL | tp3 constructor observer installed" +
+                    " | constructors=" + constructors.size
             )
         }.onFailure {
             Log.w(
                 "GoneSmartPlaylist",
-                "FOLDER CREATE SHELL | tp3 presenter observer unavailable",
+                "FOLDER CREATE SHELL | tp3 constructor observer unavailable",
                 it
             )
         }
