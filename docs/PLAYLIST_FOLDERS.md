@@ -792,3 +792,8 @@ The normal Playlist move still waits for `NativeGmmpPlaylistMover`'s verified co
 The accepted normal Playlist-folder row geometry is now also a runtime reference for the Smart-Playlist tab: its measured native title inset is cached per density so Smart native titles can share the same horizontal start. This does not change the accepted normal Playlist layout.
 
 The existing `NativeGmmpFolderDeletion` adapter remains generic by design: Smart physical folders now reuse the same original GMMP `py0.b` confirmation/worker after `FolderDeletePolicy` verifies that the selected subtree contains only the supplied `.spl` files and directories. Smart folder menus expose Delete only; no folder-move behavior has been added.
+
+### 2026-09-29 Smart header stability / menu fallback
+Smart-folder parity now additionally requires that an unchanged synthetic header is retained rather than rebuilt during native Smart refresh events. Scroll-away position is derived from the original Smart RecyclerView's cumulative vertical scroll offset and clamped to the folder-band height; first-visible-child recycling must not drive the synthetic header.
+
+For folder overflow parity, a visible bound native row is preferred but is no longer required. When root grouping leaves no native row available, Smart folder rows use the same native-resource fallback already accepted for normal Playlist-folder rows: GMMP's `rvContextMenu` ID, `ic_gm_more_vert`, native/live tint and menu accessibility label. The action remains Delete only and continues through the original GMMP delete transaction.
