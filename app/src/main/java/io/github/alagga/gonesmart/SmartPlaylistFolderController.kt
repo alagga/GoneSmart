@@ -2520,23 +2520,6 @@ internal class SmartPlaylistFolderController(
         return found.maxByOrNull { it.textSize }
     }
 
-    private fun hideOtherText(root: View, title: TextView) {
-        fun walk(view: View) {
-            if (view is TextView && view !== title) {
-                view.visibility = View.GONE
-            }
-            if (view is ViewGroup) {
-                for (index in 0 until view.childCount) {
-                    walk(view.getChildAt(index))
-                }
-            }
-        }
-        walk(root)
-    }
-
-    private fun firstTextView(root: View): TextView? =
-        if (root is TextView) root else findTextView(root)
-
     private fun cloneBackground(view: View): Drawable? =
         runCatching {
             view.rootView.background?.constantState
@@ -2652,54 +2635,5 @@ internal class SmartPlaylistFolderController(
     private fun dp(context: android.content.Context, value: Int): Int =
         (context.resources.displayMetrics.density * value + 0.5f).toInt()
 
-    private class FolderOutlineDrawable(
-        color: Int,
-        private val sizePx: Int
-    ) : Drawable() {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 1.25f
-            strokeJoin = Paint.Join.ROUND
-            strokeCap = Paint.Cap.ROUND
-            this.color = color
-        }
 
-        override fun draw(canvas: Canvas) {
-            val b = bounds
-            val scale = minOf(
-                b.width().toFloat() / 24f,
-                b.height().toFloat() / 24f
-            )
-            if (scale <= 0f) return
-            canvas.save()
-            canvas.translate(b.left.toFloat(), b.top.toFloat())
-            canvas.scale(scale, scale)
-            val path = Path().apply {
-                moveTo(3f, 6f)
-                lineTo(9f, 6f)
-                lineTo(11f, 8.5f)
-                lineTo(21f, 8.5f)
-                lineTo(21f, 19f)
-                lineTo(3f, 19f)
-                close()
-            }
-            canvas.drawPath(path, paint)
-            canvas.restore()
-        }
-
-        override fun setAlpha(alpha: Int) {
-            paint.alpha = alpha
-        }
-
-        override fun setColorFilter(filter: android.graphics.ColorFilter?) {
-            paint.colorFilter = filter
-        }
-
-        @Suppress("DEPRECATION")
-        override fun getOpacity(): Int =
-            android.graphics.PixelFormat.TRANSLUCENT
-
-        override fun getIntrinsicWidth(): Int = sizePx
-        override fun getIntrinsicHeight(): Int = sizePx
-    }
 }
