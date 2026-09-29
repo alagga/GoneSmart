@@ -823,7 +823,7 @@ internal class SmartPlaylistFolderController(
                     // Normal scrolling stays driven only by native consumed
                     // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
                     // so synthetic physical folders deform with native rows.
-                    syncNativeTopOverscroll(browser)
+                    syncNativeVerticalOverscroll(browser)
                     alignVisibleNativeTitles(browser)
                     syncVisibleSmartRowInteractions(browser)
                 }
@@ -2696,46 +2696,93 @@ internal class SmartPlaylistFolderController(
         )
     }.getOrDefault(false)
 
-    private fun syncNativeTopOverscroll(browser: Browser) {
+    private fun syncNativeVerticalOverscroll(browser: Browser) {
         if (android.os.Build.VERSION.SDK_INT < 31 ||
-            browsers[browser.list] !== browser ||
-            browser.nativeScrollDistancePx != 0 ||
-            nativeCanScrollVertically(browser.list, -1) == true
+            browsers[browser.list] !== browser
         ) {
-            if (browser.folderViewport.scaleY != 1f) {
-                browser.folderViewport.scaleY = 1f
-            }
-            browser.overscrollReported = false
+            resetFolderOverscroll(browser)
             return
         }
 
-        val distance = nativeTopEdgeDistance(browser.list)
-            .coerceIn(0f, 1f)
-        val scale = SmartFolderHeaderScrollPolicy.topStretchScale(distance)
-        browser.folderViewport.pivotY = 0f
+        val list = browser.list
+        val atTop = nativeCanScrollVertically(list, -1) != true
+        val atBottom = nativeCanScrollVertically(list, 1) != true
+        if (!atTop && !atBottom) {
+            resetFolderOverscroll(browser)
+            return
+        }
+
+        val topDistance = if (atTop) {
+            nativeEdgeDistance(list, "mTopGlow")
+        } else 0f
+        val bottomDistance = if (atBottom) {
+            nativeEdgeDistance(list, "mBottomGlow")
+        } else 0f
+        val edge = when {
+            bottomDistance > topDistance && bottomDistance > 0f -> "bottom"
+            topDistance > 0f -> "top"
+            else -> null
+        }
+        if (edge == null) {
+            resetFolderOverscroll(browser)
+            return
+        }
+
+        val distance = if (edge == "bottom") {
+            bottomDistance
+        } else {
+            topDistance
+        }.coerceIn(0f, 1f)
+        val scale = SmartFolderHeaderScrollPolicy.edgeStretchScale(distance)
+
+        // Android's vertical StretchEffect is symmetric: top overscroll is
+        // anchored at y=0; bottom overscroll is anchored at the bottom of the
+        // native viewport. The breadcrumb is intentionally fixed, so convert
+        // the host-list bottom into folderViewport-local coordinates.
+        val breadcrumbHeight = if (
+            browser.breadcrumb.visibility == View.VISIBLE
+        ) browser.breadcrumb.height.coerceAtLeast(0) else 0
+        browser.folderViewport.pivotY = if (edge == "bottom") {
+            (list.height - breadcrumbHeight).coerceAtLeast(0).toFloat()
+        } else {
+            0f
+        }
         if (kotlin.math.abs(browser.folderViewport.scaleY - scale) > 0.0005f) {
             browser.folderViewport.scaleY = scale
         }
-        if (distance > 0f && !browser.overscrollReported) {
+        if (!browser.overscrollReported) {
             browser.overscrollReported = true
             Log.i(
                 TAG,
-                "SMART FOLDERS OVERSCROLL | nativeDistance=" + distance +
-                    " | folderScaleY=" + scale
+                "SMART FOLDERS OVERSCROLL | edge=" + edge +
+                    " | nativeDistance=" + distance +
+                    " | folderScaleY=" + scale +
+                    " | pivotY=" + browser.folderViewport.pivotY
             )
-        } else if (distance <= 0f) {
-            browser.overscrollReported = false
         }
     }
 
-    private fun nativeTopEdgeDistance(list: ViewGroup): Float {
+    private fun resetFolderOverscroll(browser: Browser) {
+        if (browser.folderViewport.scaleY != 1f) {
+            browser.folderViewport.scaleY = 1f
+        }
+        browser.folderViewport.pivotY = 0f
+        browser.overscrollReported = false
+    }
+
+    private fun nativeEdgeDistance(
+        list: ViewGroup,
+        preferredFieldName: String
+    ): Float {
         val fields = nativeEdgeEffectFields(list.javaClass)
-        val named = fields.firstOrNull { it.name == "mTopGlow" }
+        val named = fields.firstOrNull { it.name == preferredFieldName }
         if (named != null) {
             return edgeEffectDistance(named, list)
         }
-        // R8 can rename private RecyclerView fields. At the real top of this
-        // vertical-only list, use the largest active EdgeEffect as fallback.
+        // R8 may rename RecyclerView's private glow fields. This method is
+        // called only while the requested vertical boundary is reached; use
+        // the active EdgeEffect with the largest distance as a fail-open
+        // fallback. On the tested AndroidX build the standard names remain.
         return fields.maxOfOrNull { edgeEffectDistance(it, list) } ?: 0f
     }
 

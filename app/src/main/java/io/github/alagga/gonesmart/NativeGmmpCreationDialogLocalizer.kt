@@ -32,6 +32,39 @@ internal object NativeGmmpCreationDialogLocalizer {
     private val accentColors = WeakHashMap<Dialog, Int>()
     private val inputDiagnostics = WeakHashMap<Dialog, Boolean>()
     private val pendingRevealAlpha = WeakHashMap<Dialog, Float>()
+    private val pendingWindowAlpha = WeakHashMap<Dialog, Float>()
+
+    /**
+     * Called from the intercepted native MaterialDialog.show() BEFORE GMMP
+     * attaches/draws the dialog window. Only creation dialogs are touched.
+     * This closes the last first-frame gap where Material could render its
+     * static red focus tint before !mainColorAccent arrived.
+     */
+    fun prepareBeforeShow(dialog: Dialog): Boolean {
+        if (!isCreationDialog(dialog)) return false
+        val window = dialog.window ?: return false
+        val originalWindowAlpha = window.attributes.alpha
+        pendingWindowAlpha[dialog] = originalWindowAlpha
+        setWindowAlpha(dialog, 0f)
+
+        ensureInputAccent(dialog)
+        localize(dialog)
+
+        // A synchronous Aesthetic emission may already have supplied the
+        // correct color. In that case reveal before native show(); otherwise
+        // keep the whole dialog surface transparent until the observer fires.
+        if (accentColors.containsKey(dialog)) {
+            pendingWindowAlpha.remove(dialog)?.let {
+                setWindowAlpha(dialog, it)
+            }
+        }
+        Log.i(
+            TAG,
+            "CREATION DIALOG PRE-SHOW | prepared=true" +
+                " | accentReady=" + accentColors.containsKey(dialog)
+        )
+        return true
+    }
 
     fun localizeWhenReady(dialog: Dialog) {
         ensureInputAccent(dialog)
@@ -252,11 +285,13 @@ internal object NativeGmmpCreationDialogLocalizer {
         val subscription = NativeGmmpAccent.observe(
             decor,
             onColor = { color ->
-                if (!dialog.isShowing) return@observe
                 val previous = accentColors.put(dialog, color)
                 applyInputAccent(decor, color)
                 pendingRevealAlpha.remove(dialog)?.let { alpha ->
                     decor.alpha = alpha
+                }
+                pendingWindowAlpha.remove(dialog)?.let { alpha ->
+                    setWindowAlpha(dialog, alpha)
                 }
                 if (previous != color) {
                     Log.i(
@@ -270,6 +305,9 @@ internal object NativeGmmpCreationDialogLocalizer {
                 pendingRevealAlpha.remove(dialog)?.let { alpha ->
                     decor.alpha = alpha
                 }
+                pendingWindowAlpha.remove(dialog)?.let { alpha ->
+                    setWindowAlpha(dialog, alpha)
+                }
                 Log.w(
                     TAG,
                     "CREATION DIALOG ACCENT | live GMMP accent unavailable",
@@ -279,6 +317,9 @@ internal object NativeGmmpCreationDialogLocalizer {
         ) ?: run {
             pendingRevealAlpha.remove(dialog)?.let { alpha ->
                 decor.alpha = alpha
+            }
+            pendingWindowAlpha.remove(dialog)?.let { alpha ->
+                setWindowAlpha(dialog, alpha)
             }
             return
         }
@@ -290,6 +331,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                     accentSubscriptions.remove(dialog)?.dispose()
                     accentColors.remove(dialog)
                     pendingRevealAlpha.remove(dialog)
+                    pendingWindowAlpha.remove(dialog)
                     v.removeOnAttachStateChangeListener(this)
                 }
             }
@@ -436,6 +478,41 @@ internal object NativeGmmpCreationDialogLocalizer {
         method.invoke(view, value)
         true
     }.getOrDefault(false)
+
+    private fun isCreationDialog(dialog: Dialog): Boolean {
+        val root = dialog.window?.decorView ?: return false
+        val locale = dialog.context.resources.configuration.locales[0]
+        val textViews = arrayListOf<TextView>()
+        collectTextViews(root, textViews)
+        val inputs = arrayListOf<View>()
+        collectInputViews(root, inputs)
+        if (inputs.none { it is EditText }) return false
+
+        val strings = buildList {
+            textViews.forEach { view ->
+                view.text?.toString()?.takeUnless(String::isBlank)?.let(::add)
+                view.hint?.toString()?.takeUnless(String::isBlank)?.let(::add)
+            }
+            inputs.forEach { view ->
+                inputHint(view)?.takeUnless(String::isBlank)?.let(::add)
+            }
+            collectInputAncestors(inputs).forEach { view ->
+                reflectiveHint(view)?.takeUnless(String::isBlank)?.let(::add)
+            }
+        }
+        return strings.any {
+            GoneSmartGmmpStrings.creationDialog(locale, it) != null ||
+                GoneSmartGmmpStrings.creationInputLabel(locale, it) != null
+        }
+    }
+
+    private fun setWindowAlpha(dialog: Dialog, alpha: Float) {
+        val window = dialog.window ?: return
+        val attrs = window.attributes
+        if (kotlin.math.abs(attrs.alpha - alpha) < 0.001f) return
+        attrs.alpha = alpha
+        window.attributes = attrs
+    }
 
     private fun collectInputViews(view: View, out: MutableList<View>) {
         if (view is EditText || isTextInputLayout(view)) out += view

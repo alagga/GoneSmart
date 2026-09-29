@@ -28,7 +28,7 @@ internal object SmartFolderHeaderScrollPolicy {
         return scrollDistance.coerceIn(0, folderHeight)
     }
 
-    fun topStretchScale(edgeDistance: Float): Float {
+    fun edgeStretchScale(edgeDistance: Float): Float {
         val distance = edgeDistance.coerceIn(0f, 1f)
         if (distance <= 0f) return 1f
         val vector =

@@ -647,6 +647,10 @@ class GoneSmartModule : XposedModule() {
                                 // No second visible GMMP delete prompt.
                                 null
                             } else {
+                                originalDialog?.let {
+                                    NativeGmmpCreationDialogLocalizer
+                                        .prepareBeforeShow(it)
+                                }
                                 val result = chain.proceed()
                                 originalDialog?.let {
                                     NativeGmmpCreationDialogLocalizer.localizeWhenReady(it)
