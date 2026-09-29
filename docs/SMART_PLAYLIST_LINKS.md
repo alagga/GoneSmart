@@ -273,3 +273,11 @@ For scrolling, an unchanged folder header is no longer destroyed/re-inflated on 
 After repeated Smart-folder parity fixes, the accepted normal Playlist-folder implementation is now the explicit UI reference instead of maintaining parallel copies. Both controllers use `PlaylistFolderUiKit` for native folder rows, overflow fallback, Delete-only popup plumbing, selection presentation primitives and the segmented breadcrumb adapter using `NativeQuickNavDiff`. Both also use `PlaylistFolderMoveChrome` for the same native ActionMode, AestheticFab, live `!mainColorAccent` palette observer and cleanup.
 
 The Smart surface still cannot be structurally identical to the normal Playlist browser because real Smart rows must remain GMMP-owned `ls4/vs4/ws4` rows. Therefore the only Smart-specific presentation bridge that remains is the physical-folder header over the native RecyclerView and its scroll synchronization. New parity work should change the shared chrome first unless the difference is proven to originate from that native Smart data/rendering boundary.
+## 29 September 2026 — shared parity polish
+Smart breadcrumb root is now the same GMMP-localized **Storage** root used by the normal Playlist folder browser. First-text alignment uses the shared post-layout calibration path with the persisted verified Files/qg1 text start or accepted Playlist-title inset fallback.
+
+Smart multi-selection keeps real `vs4/ws4` rows native and adds only a cached 50% native-primary overlay. The overlay color is resolved once per selection session after ActionMode creation, so the first long-pressed row and every later row are identical.
+
+The remaining folder-header scroll bridge no longer consumes RecyclerView's estimated vertical scroll offset. It uses the real top of the lowest adapter-position child while position 0 remains attached, and considers the finite folder band fully scrolled once position 0 is recycled.
+
+Smart's main overflow now uses the same shared folder-add menu builder as the normal Playlist tab: native folder icon, host-localized Add wording, and placement directly after the native New Smart-Playlist command. Menu references are identity-deduplicated and visibility changes are applied only when state actually changes.

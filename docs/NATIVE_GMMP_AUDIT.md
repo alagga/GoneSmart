@@ -92,3 +92,13 @@ Classification remains **NATIVE + EXTENSION**: the shared layer clones/reuses ve
 
 ## 2026-09-29 Smart-tab crash hotfix
 The shared-folder refactor initially stored native Smart-row interaction and selection-visual state with `View.setTag(Int, ...)` keys created by `View.generateViewId()`. Android rejects those runtime-generated IDs as keyed-tag resource keys, causing the Smart-Playlist tab to terminate on its first pre-draw. The Smart controller now keeps both states in browser-owned `WeakHashMap<View, ...>` instances. No keyed View tag is used for Smart row bookkeeping.
+## 2026-09-29 shared-folder UI audit follow-up
+Breadcrumb root and first-text geometry are now common host-native behavior: both Playlist and Smart-Playlist nested paths use GMMP's `storage` label and the same qg1-derived/persisted first-text X calibration. The first render is retried after holder layout instead of depending on visiting Files first.
+
+Smart selected-row presentation now matches the accepted Playlist model: a single 50%-alpha native-primary overlay value per selection session. Native row foreground/ripple ownership remains with GMMP.
+
+The Smart physical-folder scroll bridge is intentionally geometry-based, not scrollbar-metric based. `computeVerticalScrollOffset()` is an estimated RecyclerView scrollbar metric and is not a stable animation coordinate for the synthetic finite folder band.
+
+Drawer decoration now covers the existing native Smart-Playlists item independently when Smart folders are enabled. The normal Playlist matcher explicitly excludes Smart IDs, preventing badge crossover.
+
+Folder-add overflow presentation is centralized in `PlaylistFolderUiKit`: the verified native new-folder drawable plus host Add wording. Smart's native New Smart-Playlist action remains untouched and the folder action is ordered immediately after it. No repeated menu object registration or same-value visibility mutation is required while the popup is open.
