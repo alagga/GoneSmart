@@ -31,6 +31,12 @@ import java.util.WeakHashMap
 internal class NativeGmmpFolderCreator(
     private val classLoader: ClassLoader
 ) {
+    internal enum class DialogKind {
+        NONE,
+        PLAYLIST_SHELL,
+        LEGACY_FOLDER
+    }
+
     companion object {
         private const val TAG = "GoneSmartPlaylist"
         private const val SHELL_TIMEOUT_MS = 600L
@@ -40,12 +46,6 @@ internal class NativeGmmpFolderCreator(
         private var pending: PendingShell? = null
         private val shellDialogs = WeakHashMap<Dialog, Boolean>()
         private val legacyDialogs = WeakHashMap<Dialog, Boolean>()
-
-        internal enum class DialogKind {
-            NONE,
-            PLAYLIST_SHELL,
-            LEGACY_FOLDER
-        }
 
         private data class PendingShell(
             val token: Any,
