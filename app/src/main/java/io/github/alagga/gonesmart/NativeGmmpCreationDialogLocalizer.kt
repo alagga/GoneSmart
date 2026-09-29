@@ -230,6 +230,25 @@ internal object NativeGmmpCreationDialogLocalizer {
             }, 120L)
         }
 
+        // AestheticTextInputLayout may re-apply its focused state after
+        // attachment. Re-assert the resolved native color at the last
+        // possible point before the first visible frame.
+        if (decor.viewTreeObserver.isAlive) {
+            val firstDrawGuard =
+                object : android.view.ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if (decor.viewTreeObserver.isAlive) {
+                            decor.viewTreeObserver.removeOnPreDrawListener(this)
+                        }
+                        accentColors[dialog]?.let {
+                            applyInputAccent(decor, it)
+                        }
+                        return true
+                    }
+                }
+            decor.viewTreeObserver.addOnPreDrawListener(firstDrawGuard)
+        }
+
         val subscription = NativeGmmpAccent.observe(
             decor,
             onColor = { color ->
