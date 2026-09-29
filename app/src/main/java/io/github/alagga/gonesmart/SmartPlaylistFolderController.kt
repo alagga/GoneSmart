@@ -172,6 +172,7 @@ internal class SmartPlaylistFolderController(
         var otherLocations: Boolean,
         var style: NativeStyle?,
         val layoutListener: View.OnLayoutChangeListener,
+        val nativeScrollListener: RecyclerView.OnScrollListener,
         val scrollDrawListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
@@ -727,9 +728,23 @@ internal class SmartPlaylistFolderController(
                 positionOverlay(browser)
             }
         }
+        val nativeScrollListener = object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(
+                recyclerView: RecyclerView,
+                dx: Int,
+                dy: Int
+            ) {
+                if (browsers[list] === browser && dy != 0) {
+                    syncFolderRowsScrollByDelta(browser, dy)
+                }
+            }
+        }
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
+                    // Holder/path geometry is a reconciliation fallback only.
+                    // Exact consumed RecyclerView dy drives normal scrolling so
+                    // a transient/stale holder can never pin the folder band.
                     syncFolderRowsScroll(browser)
                     alignVisibleNativeTitles(browser)
                     syncVisibleSmartRowInteractions(browser)
@@ -761,6 +776,7 @@ internal class SmartPlaylistFolderController(
             otherLocations = restoreOtherLocations,
             style = initialStyle,
             layoutListener = layoutListener,
+            nativeScrollListener = nativeScrollListener,
             scrollDrawListener = scrollDrawListener,
             detachListener = detachListener
         )
@@ -803,6 +819,7 @@ internal class SmartPlaylistFolderController(
         browsers[list] = browser
         list.addOnAttachStateChangeListener(detachListener)
         list.addOnLayoutChangeListener(layoutListener)
+        (list as? RecyclerView)?.addOnScrollListener(nativeScrollListener)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
@@ -2366,6 +2383,8 @@ internal class SmartPlaylistFolderController(
         restoreAlignedNativeTitles(browser)
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
+        (browser.list as? RecyclerView)
+            ?.removeOnScrollListener(browser.nativeScrollListener)
         if (browser.list.viewTreeObserver.isAlive) {
             browser.list.viewTreeObserver.removeOnPreDrawListener(
                 browser.scrollDrawListener
@@ -2407,6 +2426,25 @@ internal class SmartPlaylistFolderController(
             )
         }
         list.clipToPadding = false
+    }
+
+    private fun syncFolderRowsScrollByDelta(
+        browser: Browser,
+        dy: Int
+    ) {
+        val list = browser.list
+        if (!list.isAttachedToWindow || browsers[list] !== browser ||
+            !browser.folderScrollSyncReady
+        ) return
+        val folderHeight = browser.folderBand.height.coerceAtLeast(0)
+        val offset = SmartFolderHeaderScrollPolicy.folderScrollOffsetAfterDelta(
+            folderHeight = folderHeight,
+            currentOffset = browser.lastFolderScrollOffset,
+            dy = dy
+        )
+        if (browser.lastFolderScrollOffset == offset) return
+        browser.lastFolderScrollOffset = offset
+        browser.folderBand.translationY = -offset.toFloat()
     }
 
     private fun syncFolderRowsScroll(browser: Browser) {
