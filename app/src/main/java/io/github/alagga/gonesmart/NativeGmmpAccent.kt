@@ -12,6 +12,41 @@ import java.lang.reflect.Proxy
  * retain an unrelated/red theme value on the tested GMMP skin.
  */
 internal object NativeGmmpAccent {
+    /**
+     * Synchronous read of GMMP Aesthetic's current accent. This uses the
+     * same current-color getter already verified by the native multi-select
+     * palette bridge, so first-frame dialog chrome never needs Android's
+     * unrelated static/red colorAccent while waiting for !mainColorAccent.
+     */
+    fun current(view: View): Int? = runCatching {
+        val loader = view.context.classLoader
+            ?: view.javaClass.classLoader
+            ?: error("GMMP classloader missing")
+        val theme = runCatching {
+            loader.loadClass("com.afollestad.aesthetic.a\$a")
+                .getDeclaredMethod("c")
+                .apply { isAccessible = true }
+                .invoke(null)
+        }.getOrElse {
+            loader.loadClass("com.afollestad.aesthetic.Aesthetic")
+                .getDeclaredMethod("get")
+                .apply { isAccessible = true }
+                .invoke(null)
+        } ?: error("GMMP Aesthetic not initialized")
+        val attr = view.resources.getIdentifier(
+            "colorAccent", "attr", view.context.packageName
+        )
+        require(attr != 0) { "GMMP colorAccent attr unavailable" }
+        val getter = theme.javaClass.declaredMethods.firstOrNull {
+            it.name == "e" &&
+                it.parameterCount == 1 &&
+                it.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                it.returnType == Int::class.javaPrimitiveType
+        }?.apply { isAccessible = true }
+            ?: error("GMMP current accent getter unavailable")
+        (getter.invoke(theme, attr) as? Number)?.toInt()
+    }.getOrNull()
+
     internal class Subscription(
         @Suppress("unused")
         private val observer: Any,

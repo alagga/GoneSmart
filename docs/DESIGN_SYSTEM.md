@@ -153,3 +153,10 @@ The first visible frame of Move FAB must start ABOVE GMMP's original persistent 
 The maintainer accepted the tested GMMP 4.2.0 folder UI on device: the original full native Playlists drawer entry retains its 28dp lilac sparkle only while folders are enabled; the independent actual AestheticFab for Move keeps the shared pure white checkmark **without** sparkle and appears above the original native mini-player on its first visible frame. Nested picker toolbar Back navigates up one folder at a time and original playlist-list content no longer flashes during initial folder overlay load. Earlier chronological notes in this document calling these details pending or showing a lilac sparkle on the Move FAB are superseded. Neither acceptance nor source-level parity is a claim about every GMMP skin.
 
 All new injected control descriptions and GMMP-hosted error/status Toasts should use the installed host player's current localized nouns and error terms, falling back to neutral icons if a native sentence does not exist; the English-only GoneSmart Logs can retain detailed engineering explanations. The brand-new virtual Other Locations node can use a central GoneSmart host-locale translation when no installed native equivalent exists. Physical folder/playlist names are never translated. Detailed per-view/operation results: [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md).
+
+
+### Native multi-select tint and first-frame dialog accent — 2026-09-29
+
+Selected playlist/folder rows inside GMMP use a 50% overlay of the player's current live selection/accent color, not a neutral `colorPrimary` slot that may resolve gray. Both normal and Smart Add-to-Playlist surfaces share this rule.
+
+Creation-dialog input chrome must already have GMMP's current Aesthetic accent before its first visible frame. Use the verified synchronous Aesthetic current-color getter for the initial frame, then keep `!mainColorAccent` subscribed for live updates. If the synchronous native color is unavailable, hold only the dialog decor transparent briefly rather than flashing Android's unrelated red fallback.

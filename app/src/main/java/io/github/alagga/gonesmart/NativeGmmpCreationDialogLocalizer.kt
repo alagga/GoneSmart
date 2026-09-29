@@ -31,10 +31,11 @@ internal object NativeGmmpCreationDialogLocalizer {
         WeakHashMap<Dialog, NativeGmmpAccent.Subscription>()
     private val accentColors = WeakHashMap<Dialog, Int>()
     private val inputDiagnostics = WeakHashMap<Dialog, Boolean>()
+    private val pendingRevealAlpha = WeakHashMap<Dialog, Float>()
 
     fun localizeWhenReady(dialog: Dialog) {
-        localize(dialog)
         ensureInputAccent(dialog)
+        localize(dialog)
         val decor = dialog.window?.decorView ?: return
         decor.post { localize(dialog) }
         decor.postDelayed({ localize(dialog) }, 60L)
@@ -206,12 +207,38 @@ internal object NativeGmmpCreationDialogLocalizer {
     private fun ensureInputAccent(dialog: Dialog) {
         if (accentSubscriptions.containsKey(dialog)) return
         val decor = dialog.window?.decorView ?: return
+
+        val initial = NativeGmmpAccent.current(decor)
+        if (initial != null) {
+            accentColors[dialog] = initial
+            applyInputAccent(decor, initial)
+            Log.i(
+                TAG,
+                "CREATION DIALOG ACCENT | initial GMMP accent=#" +
+                    Integer.toHexString(initial)
+            )
+        } else {
+            // Never expose Material/Android's unrelated red focus accent as
+            // the dialog's first frame. Hold only this decor transparent
+            // until the live GMMP accent arrives, with a short fail-open.
+            pendingRevealAlpha[dialog] = decor.alpha
+            decor.alpha = 0f
+            decor.postDelayed({
+                pendingRevealAlpha.remove(dialog)?.let { alpha ->
+                    if (dialog.isShowing) decor.alpha = alpha
+                }
+            }, 120L)
+        }
+
         val subscription = NativeGmmpAccent.observe(
             decor,
             onColor = { color ->
                 if (!dialog.isShowing) return@observe
                 val previous = accentColors.put(dialog, color)
                 applyInputAccent(decor, color)
+                pendingRevealAlpha.remove(dialog)?.let { alpha ->
+                    decor.alpha = alpha
+                }
                 if (previous != color) {
                     Log.i(
                         TAG,
@@ -221,13 +248,21 @@ internal object NativeGmmpCreationDialogLocalizer {
                 }
             },
             onError = {
+                pendingRevealAlpha.remove(dialog)?.let { alpha ->
+                    decor.alpha = alpha
+                }
                 Log.w(
                     TAG,
                     "CREATION DIALOG ACCENT | live GMMP accent unavailable",
                     it
                 )
             }
-        ) ?: return
+        ) ?: run {
+            pendingRevealAlpha.remove(dialog)?.let { alpha ->
+                decor.alpha = alpha
+            }
+            return
+        }
         accentSubscriptions[dialog] = subscription
         decor.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
@@ -235,6 +270,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 override fun onViewDetachedFromWindow(v: View) {
                     accentSubscriptions.remove(dialog)?.dispose()
                     accentColors.remove(dialog)
+                    pendingRevealAlpha.remove(dialog)
                     v.removeOnAttachStateChangeListener(this)
                 }
             }

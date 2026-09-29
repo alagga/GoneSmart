@@ -96,7 +96,7 @@ internal class PlaylistMultiSelectController {
     fun folderSelectionAccent(list: ViewGroup): Int? {
         val session = active ?: return null
         if (!enabled || session.list !== list) return null
-        return gmmpPrimary(session, list)
+        return gmmpSelectionAccent(session, list)
     }
 
     fun folderNativeFab(list: ViewGroup): View? =
@@ -129,21 +129,14 @@ internal class PlaylistMultiSelectController {
             as? ColorDrawable)?.color?.takeIf {
                 Color.alpha(it) >= 200
             }
-        val resources = view.resources
-        val packageName = view.context.packageName
-        val attrs = intArrayOf(
-            resources.getIdentifier(
-                "colorPrimary", "attr", packageName
-            ),
-            resources.getIdentifier(
-                "colorAccent", "attr", packageName
-            ),
-            android.R.attr.colorAccent
+        val nativeAccentAttr = view.resources.getIdentifier(
+            "colorAccent", "attr", view.context.packageName
         )
-        val accent = contextBar ?: attrs.asSequence()
-            .filter { it != 0 }
-            .mapNotNull { themeColor(view, it) }
-            .firstOrNull { Color.alpha(it) >= 200 }
+        val accent = NativeGmmpAccent.current(view)
+            ?.takeIf { Color.alpha(it) >= 200 }
+            ?: contextBar
+            ?: nativeAccentAttr.takeIf { it != 0 }
+                ?.let { themeColor(view, it) }
             ?: 0xFF36A8BE.toInt()
         return Color.argb(
             128,
@@ -1579,6 +1572,16 @@ internal class PlaylistMultiSelectController {
             ?: session.liveAccent
             ?: gmmpAccent(session, view)
 
+    private fun gmmpSelectionAccent(
+        session: Session,
+        view: View
+    ): Int =
+        session.liveFabAccent
+            ?: NativeGmmpAccent.current(view)
+            ?: session.liveAccent
+            ?: session.livePrimary
+            ?: gmmpAccent(session, view)
+
     private fun gmmpAccent(session: Session, view: View): Int {
         // Aesthetic's observable value is the real GMMP accent, even
         // when a new cover updates it while this picker remains open.
@@ -1649,7 +1652,7 @@ internal class PlaylistMultiSelectController {
         session: Session,
         row: FrameLayout
     ): Int {
-        val accent = gmmpPrimary(session, row)
+        val accent = gmmpSelectionAccent(session, row)
         val color = Color.argb(
             128,
             Color.red(accent),
@@ -1660,7 +1663,7 @@ internal class PlaylistMultiSelectController {
             session.lastLoggedAccent = accent
             Log.i(
                 TAG,
-                "MULTI STYLE | native dynamic primary=#" +
+                "MULTI STYLE | native dynamic selection accent=#" +
                     Integer.toHexString(accent) +
                     " | row overlay=#" +
                     Integer.toHexString(color)
