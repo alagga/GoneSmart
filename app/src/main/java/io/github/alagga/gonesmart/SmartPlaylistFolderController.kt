@@ -182,13 +182,8 @@ internal class SmartPlaylistFolderController(
         var moveSources: List<String>? = null,
         var movePreviousDirectory: String? = null,
         var movePreviousOtherLocations: Boolean = false,
-        var moveActionMode: android.view.ActionMode? = null,
-        var moveFab: View? = null,
-        var moveFabColor: Int? = null,
-        var moveLastColor: Int? = null,
-        var moveBarTintApplied: Boolean = false,
-        var moveThemeObserver: Any? = null,
-        val moveThemeDisposables: ArrayList<Any> = arrayListOf(),
+        val moveChrome: PlaylistFolderMoveChrome.State =
+            PlaylistFolderMoveChrome.State(),
         var lastFolderScrollOffset: Int = Int.MIN_VALUE,
         val selectedSmartPaths: LinkedHashSet<String> = linkedSetOf(),
         var selectionActionMode: android.view.ActionMode? = null,
@@ -197,122 +192,10 @@ internal class SmartPlaylistFolderController(
         val originalRowForegrounds: WeakHashMap<View, Drawable?> = WeakHashMap()
     )
 
-    private inner class BreadcrumbAdapter(
-        private val browser: Browser
-    ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-        private val segments = arrayListOf<BreadcrumbSegment>()
-
-        init {
-            setHasStableIds(true)
-        }
-
-        override fun getItemCount(): Int =
-            if (segments.isEmpty()) 0 else segments.size * 2 - 1
-
-        override fun getItemViewType(position: Int): Int = position % 2
-
-        override fun getItemId(position: Int): Long =
-            (segments[position / 2].key.hashCode().toLong() shl 1) xor
-                (position % 2).toLong()
-
-        override fun onCreateViewHolder(
-            parent: ViewGroup,
-            viewType: Int
-        ): RecyclerView.ViewHolder {
-            val layoutName = if (viewType == 0) {
-                "rv_horiz_metadata"
-            } else {
-                "rv_horiz_separator"
-            }
-            val layoutId = parent.resources.getIdentifier(
-                layoutName,
-                "layout",
-                parent.context.packageName
-            )
-            val native = if (layoutId != 0) {
-                runCatching {
-                    LayoutInflater.from(parent.context)
-                        .inflate(layoutId, parent, false)
-                }.getOrNull()
-            } else null
-            val view = native ?: if (viewType == 0) {
-                TextView(parent.context).apply {
-                    minHeight = dp(parent, 48)
-                    gravity = Gravity.CENTER_VERTICAL
-                    background = selectableBackground(parent)
-                }
-            } else {
-                ImageView(parent.context).apply {
-                    val icon = resources.getIdentifier(
-                        "ic_gm_keyboard_arrow_right",
-                        "drawable",
-                        context.packageName
-                    )
-                    if (icon != 0) setImageResource(icon)
-                }
-            }
-            if (view.layoutParams == null) {
-                view.layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            }
-            return object : RecyclerView.ViewHolder(view) {}
-        }
-
-        override fun onBindViewHolder(
-            holder: RecyclerView.ViewHolder,
-            position: Int
-        ) {
-            if (position % 2 != 0) return
-            val segment = segments.getOrNull(position / 2) ?: return
-            val label = (holder.itemView as? TextView)
-                ?: findTextView(holder.itemView)
-                ?: return
-            label.text = segment.label
-            browser.style?.let { style ->
-                // Match the already accepted normal Playlist-folders
-                // quick-nav typography. GMMP 4.2.0's live qg1 title is
-                // 58.8 px vs 48 px row title = 1.225x until a verified
-                // live ratio is persisted by the normal playlist surface.
-                label.paint.set(style.paint)
-                label.setTextSize(
-                    TypedValue.COMPLEX_UNIT_PX,
-                    style.paint.textSize * quickNavTitleRatio(browser.list)
-                )
-                label.setTextColor(style.textColor)
-                label.typeface = Typeface.create(style.typeface, Typeface.BOLD)
-                label.letterSpacing = style.letterSpacing
-                label.includeFontPadding = style.includeFontPadding
-                label.requestLayout()
-            }
-            // Never overwrite rv_horiz_metadata's native XML padding/ripple.
-            label.isClickable = true
-            label.isFocusable = true
-            label.setOnClickListener {
-                if (browsers[browser.list] !== browser) return@setOnClickListener
-                when {
-                    segment.otherLocations -> {
-                        if (!browser.otherLocations) navigateOtherLocations(browser)
-                    }
-                    segment.directory != null -> {
-                        if (!browser.otherLocations &&
-                            sameFile(browser.current, segment.directory)
-                        ) return@setOnClickListener
-                        navigate(browser, segment.directory)
-                    }
-                }
-            }
-        }
-
-        fun submit(next: List<BreadcrumbSegment>) {
-            segments.clear()
-            segments.addAll(next)
-            notifyDataSetChanged()
-        }
-    }
-
     private val main = Handler(Looper.getMainLooper())
+    private val moveChromeUi = PlaylistFolderMoveChrome(
+        multiSelect, main, TAG, "SMART"
+    )
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "GoneSmartSmartFolders").apply { isDaemon = true }
     }
@@ -861,7 +744,42 @@ internal class SmartPlaylistFolderController(
             scrollDrawListener = scrollDrawListener,
             detachListener = detachListener
         )
-        breadcrumb.adapter = BreadcrumbAdapter(browser)
+        breadcrumb.adapter = NativeFolderBreadcrumbAdapter(
+            tag = TAG,
+            host = list,
+            onStyleLabel = { label ->
+                browser.style?.let { style ->
+                    label.paint.set(style.paint)
+                    label.setTextSize(
+                        TypedValue.COMPLEX_UNIT_PX,
+                        style.paint.textSize * quickNavTitleRatio(browser.list)
+                    )
+                    label.setTextColor(style.textColor)
+                    label.typeface = Typeface.create(
+                        style.typeface, Typeface.BOLD
+                    )
+                    label.letterSpacing = style.letterSpacing
+                    label.includeFontPadding = style.includeFontPadding
+                    label.requestLayout()
+                }
+            },
+            onSegmentClick = { segment ->
+                if (browsers[browser.list] !== browser) {
+                    Unit
+                } else if (segment.key == "other-locations") {
+                    if (!browser.otherLocations) navigateOtherLocations(browser)
+                } else if (segment.key == "root") {
+                    if (browser.otherLocations ||
+                        !sameFile(browser.current, browser.root)
+                    ) navigate(browser, browser.root)
+                } else if (segment.key.startsWith("dir:")) {
+                    val directory = File(segment.key.removePrefix("dir:"))
+                    if (browser.otherLocations ||
+                        !sameFile(browser.current, directory)
+                    ) navigate(browser, directory)
+                }
+            }
+        )
         browsers[list] = browser
         list.addOnAttachStateChangeListener(detachListener)
         if (list.viewTreeObserver.isAlive) {
@@ -1206,21 +1124,19 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun renderBreadcrumb(browser: Browser) {
-        val next = arrayListOf<BreadcrumbSegment>()
+        val next = arrayListOf<PlaylistFolderUiKit.BreadcrumbSegment>()
         val rootLabel = NativeGmmpUiText.string(
             browser.list.context,
             "smart_playlists"
         ) ?: NativeGmmpUiText.smartPlaylist(browser.list.context)
-        next += BreadcrumbSegment(
+        next += PlaylistFolderUiKit.BreadcrumbSegment(
             key = "root",
-            label = rootLabel,
-            directory = browser.root
+            label = rootLabel
         )
         if (browser.otherLocations) {
-            next += BreadcrumbSegment(
+            next += PlaylistFolderUiKit.BreadcrumbSegment(
                 key = "other-locations",
-                label = NativeGmmpUiText.otherLocations(browser.list.context),
-                otherLocations = true
+                label = NativeGmmpUiText.otherLocations(browser.list.context)
             )
         } else if (!sameFile(browser.current, browser.root)) {
             val relative = runCatching {
@@ -1231,16 +1147,50 @@ internal class SmartPlaylistFolderController(
                 .filter(String::isNotBlank)
                 .forEach { name ->
                     cursor = File(cursor, name)
-                    next += BreadcrumbSegment(
+                    next += PlaylistFolderUiKit.BreadcrumbSegment(
                         key = "dir:" + canonicalPath(cursor.path),
-                        label = name,
-                        directory = cursor
+                        label = name
                     )
                 }
         }
-        (browser.breadcrumb.adapter as? BreadcrumbAdapter)?.submit(next)
+        val signature = browser.style?.let {
+            it.rowLayoutId.toString() + ":" +
+                it.titleViewId + ":" +
+                it.rowHeight + ":" +
+                it.textColor + ":" +
+                it.textSizePx
+        }.orEmpty()
+        (browser.breadcrumb.adapter as? NativeFolderBreadcrumbAdapter)
+            ?.submit(next, signature)
         browser.breadcrumb.visibility =
             if (next.size > 1) View.VISIBLE else View.GONE
+    }
+
+    private fun sharedRowStyle(
+        host: View,
+        style: NativeStyle?
+    ): PlaylistFolderUiKit.RowStyle? = style?.let {
+        PlaylistFolderUiKit.RowStyle(
+            rowLayoutId = it.rowLayoutId,
+            titleViewId = it.titleViewId,
+            rowHeight = it.rowHeight,
+            textColor = it.textColor,
+            textSizePx = it.textSizePx,
+            typeface = it.typeface,
+            titleGravity = it.titleGravity,
+            titlePaddingStart = it.titlePaddingStart,
+            titlePaddingEnd = it.titlePaddingEnd,
+            effectivePaint = it.paint,
+            letterSpacing = it.letterSpacing,
+            textScaleX = it.textScaleX,
+            includeFontPadding = it.includeFontPadding,
+            lineSpacingExtra = it.lineSpacingExtra,
+            lineSpacingMultiplier = it.lineSpacingMultiplier,
+            maxLines = it.maxLines,
+            ellipsize = it.ellipsize,
+            rowBackground = it.rowBackground,
+            titleInset = playlistTitleInset(host)
+        )
     }
 
     private fun createRow(
@@ -1250,249 +1200,18 @@ internal class SmartPlaylistFolderController(
         contextMenuSource: ImageView?,
         onContext: ((View) -> Unit)?
     ): View {
-        val style = browser.style
-        val layoutId = style?.rowLayoutId?.takeIf { it != 0 } ?: 0
-        val template = if (layoutId != 0) {
-            runCatching {
-                LayoutInflater.from(browser.list.context).inflate(
-                    layoutId,
-                    browser.rows,
-                    false
-                )
-            }.getOrNull()
-        } else null
-        val title = if (template != null && style?.titleViewId != 0) {
-            template.findViewById<TextView>(style!!.titleViewId)
-        } else null
-
-        if (template != null && title != null && style != null) {
-            // Same complete live native title copy used by the accepted
-            // normal Playlist-folders implementation.
-            title.text = text
-            title.setTextSize(TypedValue.COMPLEX_UNIT_PX, style.textSizePx)
-            title.setTextColor(style.textColor)
-            if (style.typeface != null) title.typeface = style.typeface
-            title.gravity = style.titleGravity
-            title.letterSpacing = style.letterSpacing
-            title.textScaleX = style.textScaleX
-            title.includeFontPadding = style.includeFontPadding
-            title.setLineSpacing(
-                style.lineSpacingExtra,
-                style.lineSpacingMultiplier
-            )
-            title.maxLines = style.maxLines
-            title.ellipsize = style.ellipsize
-            title.setPaddingRelative(
-                style.titlePaddingStart,
-                title.paddingTop,
-                style.titlePaddingEnd,
-                title.paddingBottom
-            )
-            title.paint.set(style.paint)
-            title.requestLayout()
-
-            template.layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                style.rowHeight
-            )
-            template.minimumHeight = style.rowHeight
-            hideOtherText(template, title)
-            val contextConfigured = configureContextMenu(
-                template,
-                browser.list,
-                contextMenuSource,
-                onContext
-            )
-            if (folder) addNativeFolderIcon(template, title, browser.list, style)
-            style.rowBackground?.newDrawable(browser.list.resources)
-                ?.mutate()?.let { template.background = it }
-            template.isClickable = true
-            template.isFocusable = true
-            return if (onContext != null && !contextConfigured) {
-                wrapContextMenuFallback(
-                    template, browser.list, style.rowHeight,
-                    contextMenuSource, onContext
-                )
-            } else template
-        }
-
-        // Defensive fallback when a live row template is not available.
-        val fallback = TextView(browser.list.context).apply {
-            this.text = text
-            gravity = Gravity.CENTER_VERTICAL
-            val textColor = style?.textColor ?: resolveColor(
-                browser.list,
-                android.R.attr.textColorPrimary,
-                Color.WHITE
-            )
-            minHeight = style?.rowHeight ?: dp(browser.list, 54)
-            setPadding(dp(browser.list, 12), 0, dp(browser.list, 16), 0)
-            setTextColor(textColor)
-            setTextSize(
-                TypedValue.COMPLEX_UNIT_PX,
-                style?.textSizePx
-                    ?: browser.list.resources.displayMetrics.scaledDensity * 16f
-            )
-            typeface = style?.typeface
-            background = style?.rowBackground
-                ?.newDrawable(browser.list.resources)?.mutate()
-                ?: selectableBackground(browser.list)
-            if (folder) {
-                setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    FolderOutlineDrawable(textColor, dp(browser.list, 24)),
-                    null,
-                    null,
-                    null
-                )
-                compoundDrawablePadding = dp(browser.list, 12)
-            }
-        }
-        return if (onContext != null) {
-            wrapContextMenuFallback(
-                fallback,
-                browser.list,
-                style?.rowHeight ?: dp(browser.list, 54),
-                contextMenuSource,
-                onContext
-            )
-        } else fallback
-    }
-
-    private fun addNativeFolderIcon(
-        root: View,
-        title: TextView,
-        host: View,
-        style: NativeStyle
-    ) {
-        val content = root as? ViewGroup ?: return
-        val image = ImageView(host.context).apply {
-            setImageDrawable(
-                FolderOutlineDrawable(style.textColor, dp(host, 24))
-            )
-            contentDescription = NativeGmmpUiText.string(host.context, "folder")
-            isClickable = false
-            isFocusable = false
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        val size = dp(host, 24)
-        if (content is FrameLayout) {
-            content.addView(
-                image,
-                FrameLayout.LayoutParams(
-                    size,
-                    size,
-                    Gravity.START or Gravity.CENTER_VERTICAL
-                ).apply {
-                    marginStart = dp(host, 12)
-                }
-            )
-        } else {
-            content.addView(image, ViewGroup.LayoutParams(size, size))
-        }
-        title.setPaddingRelative(
-            title.paddingStart + dp(host, 28),
-            title.paddingTop,
-            title.paddingEnd,
-            title.paddingBottom
+        val style = sharedRowStyle(browser.list, browser.style)
+        return PlaylistFolderUiKit.createRow(
+            parent = browser.rows,
+            host = browser.list,
+            text = text,
+            style = style,
+            folder = folder,
+            selected = false,
+            selectionAccent = style?.accentColor ?: Color.TRANSPARENT,
+            contextMenuSource = contextMenuSource,
+            onContext = onContext
         )
-    }
-
-    private fun configureContextMenu(
-        root: View,
-        host: View,
-        source: ImageView?,
-        onContext: ((View) -> Unit)?
-    ): Boolean {
-        val id = host.resources.getIdentifier(
-            "rvContextMenu",
-            "id",
-            host.context.packageName
-        )
-        if (id == 0) return false
-        val button = root.findViewById<ImageView>(id) ?: return false
-        if (onContext == null) {
-            button.visibility = View.GONE
-            button.setOnClickListener(null)
-            return true
-        }
-        styleContextMenuButton(button, host, source, onContext)
-        return true
-    }
-
-    private fun styleContextMenuButton(
-        button: ImageView,
-        host: View,
-        source: ImageView?,
-        onContext: (View) -> Unit
-    ) {
-        val clone = source?.drawable?.constantState
-            ?.newDrawable(host.resources)?.mutate()
-        if (clone != null) {
-            button.setImageDrawable(clone)
-        } else {
-            val icon = host.resources.getIdentifier(
-                "ic_gm_more_vert",
-                "drawable",
-                host.context.packageName
-            )
-            if (icon != 0) button.setImageResource(icon)
-        }
-        button.imageTintList = source?.imageTintList
-            ?: android.content.res.ColorStateList.valueOf(
-                resolveColor(
-                    host,
-                    android.R.attr.textColorPrimary,
-                    Color.WHITE
-                )
-            )
-        button.contentDescription = source?.contentDescription
-            ?: NativeGmmpUiText.string(host.context, "menu")
-        button.visibility = View.VISIBLE
-        button.isEnabled = true
-        button.isClickable = true
-        button.isFocusable = true
-        button.setOnClickListener { onContext(button) }
-    }
-
-    private fun wrapContextMenuFallback(
-        content: View,
-        host: View,
-        rowHeight: Int,
-        source: ImageView?,
-        onContext: (View) -> Unit
-    ): View {
-        val wrapper = FrameLayout(host.context).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                rowHeight
-            )
-            minimumHeight = rowHeight
-        }
-        wrapper.addView(
-            content,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                rowHeight
-            )
-        )
-        val buttonId = host.resources.getIdentifier(
-            "rvContextMenu", "id", host.context.packageName
-        )
-        val width = source?.width?.takeIf { it > 0 } ?: dp(host, 48)
-        val button = ImageButton(host.context).apply {
-            if (buttonId != 0) id = buttonId
-            background = selectableBackground(host)
-        }
-        styleContextMenuButton(button, host, source, onContext)
-        wrapper.addView(
-            button,
-            FrameLayout.LayoutParams(
-                width,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.END or Gravity.CENTER_VERTICAL
-            )
-        )
-        return wrapper
     }
 
     private fun dispatchNativeAction(
@@ -1639,19 +1358,9 @@ internal class SmartPlaylistFolderController(
     private fun selectionTitle(
         browser: Browser,
         count: Int
-    ): String {
-        val context = browser.list.context
-        val id = context.resources.getIdentifier(
-            "num_selected", "string", context.packageName
-        )
-        if (id != 0) {
-            runCatching { context.getString(id, count) }
-                .getOrNull()
-                ?.takeUnless(String::isBlank)
-                ?.let { return it }
-        }
-        return count.toString()
-    }
+    ): String = PlaylistFolderUiKit.selectionTitle(
+        browser.list.context, count
+    )
 
     private fun beginSmartSelection(
         browser: Browser,
@@ -1944,21 +1653,8 @@ internal class SmartPlaylistFolderController(
         }
     }
 
-    private fun firstNativeContextMenu(list: ViewGroup): ImageView? {
-        val id = list.resources.getIdentifier(
-            "rvContextMenu",
-            "id",
-            list.context.packageName
-        )
-        if (id == 0) return null
-        for (index in 0 until list.childCount) {
-            val button = list.getChildAt(index)
-                ?.findViewById<ImageView>(id)
-                ?: continue
-            if (button.visibility == View.VISIBLE) return button
-        }
-        return null
-    }
+    private fun firstNativeContextMenu(list: ViewGroup): ImageView? =
+        PlaylistFolderUiKit.firstBoundContextMenu(list)
 
     private fun nativeMoveLabel(context: android.content.Context): String =
         GoneSmartGmmpStrings.move(context.resources.configuration.locales[0])
@@ -2229,296 +1925,47 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun installMoveChrome(browser: Browser) {
-        if (browser.moveSources == null || browser.moveActionMode != null) return
-        val list = browser.list
-        val callback = object : android.view.ActionMode.Callback {
-            override fun onCreateActionMode(
-                mode: android.view.ActionMode,
-                menu: Menu
-            ): Boolean {
-                mode.title = nativeMoveLabel(list.context)
-                return true
-            }
-
-            override fun onPrepareActionMode(
-                mode: android.view.ActionMode,
-                menu: Menu
-            ): Boolean = false
-
-            override fun onActionItemClicked(
-                mode: android.view.ActionMode,
-                item: MenuItem
-            ): Boolean = false
-
-            override fun onDestroyActionMode(mode: android.view.ActionMode) {
-                if (browser.moveActionMode === mode) {
-                    browser.moveActionMode = null
-                    if (browser.moveSources != null &&
-                        browsers[list] === browser
-                    ) {
-                        closeMoveBrowser(browser)
-                    }
-                }
-            }
-        }
-        val mode = runCatching {
-            list.startActionMode(
-                callback,
-                android.view.ActionMode.TYPE_PRIMARY
-            )
-        }.onFailure {
-            Log.w(TAG, "SMART MOVE UI | ActionMode unavailable", it)
-        }.getOrNull()
-        if (mode == null) {
-            closeMoveBrowser(browser)
-            return
-        }
-        browser.moveActionMode = mode
-        val fab = installMoveFab(browser)
-        if (fab == null) {
-            Log.w(TAG, "SMART MOVE UI | native AestheticFab unavailable")
-            closeMoveBrowser(browser)
-            return
-        }
-        observeMoveFabPalette(browser)
-        syncMoveChromePalette(browser)
-        browser.list.post {
-            if (browsers[list] === browser &&
-                browser.moveSources != null &&
+        if (browser.moveSources == null ||
+            browser.moveChrome.actionMode != null
+        ) return
+        val installed = moveChromeUi.install(
+            state = browser.moveChrome,
+            list = browser.list,
+            label = nativeMoveLabel(browser.list.context),
+            isActive = {
+                browsers[browser.list] === browser &&
+                    browser.moveSources != null
+            },
+            addFab = { fab, size ->
+                browser.host.addView(
+                    fab,
+                    ViewGroup.LayoutParams(size, size)
+                )
+            },
+            positionFab = {
                 positionMoveFab(browser)
-            ) {
-                syncMoveChromePalette(browser)
-                runCatching {
-                    fab.javaClass.getMethod("show").invoke(fab)
-                }.onFailure {
-                    fab.visibility = View.VISIBLE
+            },
+            onConfirm = {
+                if (browser.moveSources != null) {
+                    confirmMoveBrowser(browser)
+                }
+            },
+            onCancel = {
+                if (browser.moveSources != null &&
+                    browsers[browser.list] === browser
+                ) {
+                    closeMoveBrowser(browser)
                 }
             }
-        }
-    }
-
-    private fun installMoveFab(browser: Browser): View? = runCatching {
-        val list = browser.list
-        val clazz = list.javaClass.classLoader
-            ?.loadClass("com.afollestad.aesthetic.views.AestheticFab")
-            ?: error("GMMP AestheticFab unavailable")
-        val fab = clazz.getConstructor(
-            android.content.Context::class.java,
-            android.util.AttributeSet::class.java
-        ).newInstance(list.context, null) as? View
-            ?: error("GMMP AestheticFab is not a View")
-        val image = fab as? ImageView
-            ?: error("GMMP AestheticFab is not an ImageView")
-        image.imageTintList = null
-        image.setImageDrawable(PlaylistConfirmDrawable(dp(list, 24)))
-        image.contentDescription = nativeMoveLabel(list.context)
-        image.setOnClickListener {
-            if (browser.moveSources != null) confirmMoveBrowser(browser)
-        }
-        val size = list.resources.getIdentifier(
-            "design_fab_size_normal",
-            "dimen",
-            list.context.packageName
-        ).takeIf { it != 0 }?.let {
-            runCatching {
-                list.resources.getDimensionPixelSize(it)
-            }.getOrNull()
-        } ?: dp(list, 56)
-        runCatching {
-            clazz.getMethod(
-                "setCustomSize",
-                Int::class.javaPrimitiveType
-            ).invoke(fab, size)
-        }
-        browser.host.addView(
-            fab,
-            ViewGroup.LayoutParams(size, size)
         )
-        fab.elevation = dp(list, 8).toFloat()
-        fab.visibility = View.INVISIBLE
-        browser.moveFab = fab
-        fab.post {
-            if (browser.moveFab === fab &&
-                browser.moveSources != null &&
-                positionMoveFab(browser)
-            ) {
-                runCatching { clazz.getMethod("show").invoke(fab) }
-                    .onFailure { fab.visibility = View.VISIBLE }
-            }
+        if (!installed) {
+            Log.w(TAG, "SMART MOVE UI | shared native chrome unavailable")
+            closeMoveBrowser(browser)
         }
-        fab
-    }.onFailure {
-        Log.w(TAG, "SMART MOVE UI | native AestheticFab clone failed", it)
-    }.getOrNull()
-
-    private fun nativeFabDrawableTint(
-        drawable: Drawable?,
-        depth: Int = 0
-    ): android.content.res.ColorStateList? {
-        if (drawable == null || depth > 6) return null
-        val tint = runCatching {
-            drawable.javaClass.methods.firstOrNull {
-                it.name == "getTintList" && it.parameterCount == 0
-            }?.invoke(drawable) as? android.content.res.ColorStateList
-        }.getOrNull()
-        if (tint != null) return tint
-        val fill = runCatching {
-            drawable.javaClass.methods.firstOrNull {
-                it.name == "getFillColor" && it.parameterCount == 0
-            }?.invoke(drawable) as? android.content.res.ColorStateList
-        }.getOrNull()
-        if (fill != null) return fill
-        if (drawable is ColorDrawable) {
-            return android.content.res.ColorStateList.valueOf(drawable.color)
-        }
-        if (drawable is android.graphics.drawable.LayerDrawable) {
-            for (index in 0 until drawable.numberOfLayers) {
-                nativeFabDrawableTint(
-                    drawable.getDrawable(index), depth + 1
-                )?.let { return it }
-            }
-        }
-        if (drawable is android.graphics.drawable.InsetDrawable) {
-            return nativeFabDrawableTint(drawable.drawable, depth + 1)
-        }
-        return null
-    }
-
-    private fun observeMoveFabPalette(browser: Browser) {
-        if (browser.moveThemeObserver != null || browser.moveFab == null) return
-        runCatching {
-            val list = browser.list
-            val loader = list.javaClass.classLoader
-                ?: error("GMMP classloader missing")
-            val theme = runCatching {
-                loader.loadClass("com.afollestad.aesthetic.a\$a")
-                    .getDeclaredMethod("c")
-                    .apply { isAccessible = true }.invoke(null)
-            }.getOrElse {
-                loader.loadClass("com.afollestad.aesthetic.Aesthetic")
-                    .getDeclaredMethod("get")
-                    .apply { isAccessible = true }.invoke(null)
-            } ?: error("GMMP Aesthetic not initialized")
-            val attr = list.resources.getIdentifier(
-                "colorAccent", "attr", list.context.packageName
-            )
-            require(attr != 0)
-            val fallback = theme.javaClass.getDeclaredMethod(
-                "b", Int::class.javaPrimitiveType
-            ).apply { isAccessible = true }.invoke(theme, attr)
-                ?: error("GMMP accent observable missing")
-            val utility = loader.loadClass("oy0")
-            val method = utility.declaredMethods.first {
-                it.name == "h" && it.parameterCount == 3 &&
-                    it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
-                    it.parameterTypes[1] == String::class.java
-            }.apply { isAccessible = true }
-            val observable = method.invoke(
-                null, theme, "!mainColorAccent", fallback
-            ) ?: error("GMMP native FAB observable unavailable")
-            val observerType = loader.loadClass("nf3")
-            val listener = java.lang.reflect.Proxy.newProxyInstance(
-                observerType.classLoader, arrayOf(observerType)
-            ) { _, callback, args ->
-                when (callback.name) {
-                    "a" -> (args?.firstOrNull() as? Number)?.let { value ->
-                        list.post {
-                            if (browsers[list] === browser &&
-                                browser.moveSources != null
-                            ) {
-                                browser.moveFabColor = value.toInt()
-                                syncMoveChromePalette(browser)
-                            }
-                        }
-                    }
-                    "c" -> args?.firstOrNull()?.let {
-                        browser.moveThemeDisposables.add(it)
-                    }
-                    "onError" -> Log.w(
-                        TAG, "SMART MOVE UI | GMMP FAB palette observer error",
-                        args?.firstOrNull() as? Throwable
-                    )
-                }
-                null
-            }
-            browser.moveThemeObserver = listener
-            observable.javaClass.getMethod("b", observerType)
-                .invoke(observable, listener)
-            Log.i(TAG, "SMART MOVE UI | native !mainColorAccent observer active")
-        }.onFailure {
-            Log.w(
-                TAG, "SMART MOVE UI | native FAB observer unavailable; " +
-                    "using original AestheticFab live background",
-                it
-            )
-        }
-    }
-
-    private fun nativeMovePaletteFallback(browser: Browser): Int? {
-        val fab = browser.moveFab ?: return null
-        val tint = runCatching {
-            fab.javaClass.getMethod("getBackgroundTintList")
-                .invoke(fab) as? android.content.res.ColorStateList
-        }.getOrNull() ?: nativeFabDrawableTint(fab.background)
-        return tint?.getColorForState(
-            fab.drawableState, tint.defaultColor
-        )?.takeIf { Color.alpha(it) >= 200 }
-    }
-
-    private fun syncMoveChromePalette(browser: Browser) {
-        if (browser.moveSources == null || browser.moveActionMode == null) return
-        val fab = browser.moveFab ?: return
-        val color = browser.moveFabColor
-            ?: nativeMovePaletteFallback(browser)
-            ?: return
-        val changed = browser.moveLastColor != color
-        val previousBarTint = browser.moveBarTintApplied
-        browser.moveLastColor = color
-        if (changed) {
-            fab.backgroundTintList =
-                android.content.res.ColorStateList.valueOf(color)
-        }
-        browser.moveBarTintApplied =
-            multiSelect.tintNativeContextBar(browser.list, color)
-        if (changed || (!previousBarTint && browser.moveBarTintApplied)) {
-            Log.i(
-                TAG,
-                "SMART MOVE UI | native picker FAB color=#" +
-                    Integer.toHexString(color) +
-                    " | originalActionBarTint=" + browser.moveBarTintApplied
-            )
-        }
-    }
-
-    private fun nativeMiniPlayerTop(list: View): Int? {
-        val visible = Rect()
-        if (!list.getGlobalVisibleRect(visible)) return null
-        return listOf(
-            "miniPlayerWrapper",
-            "miniPlayerLayout",
-            "libraryTabMiniPlayer"
-        ).mapNotNull { name ->
-            val id = list.resources.getIdentifier(
-                name,
-                "id",
-                list.context.packageName
-            )
-            if (id == 0) return@mapNotNull null
-            val player = list.rootView.findViewById<View>(id)
-                ?: return@mapNotNull null
-            val bounds = Rect()
-            if (player.isShown &&
-                player.getGlobalVisibleRect(bounds) &&
-                bounds.height() > 0 &&
-                bounds.top > visible.top + visible.height() / 3
-            ) {
-                bounds.top
-            } else null
-        }.minOrNull()
     }
 
     private fun positionMoveFab(browser: Browser): Boolean {
-        val fab = browser.moveFab ?: return false
+        val fab = browser.moveChrome.fab ?: return false
         if (browser.moveSources == null ||
             !browser.list.isAttachedToWindow
         ) return false
@@ -2528,7 +1975,7 @@ internal class SmartPlaylistFolderController(
         ) return false
         val safeBottom = minOf(
             visible.bottom,
-            nativeMiniPlayerTop(browser.list) ?: visible.bottom
+            moveChromeUi.nativeMiniPlayerTop(browser.list) ?: visible.bottom
         )
         val hostLocation = IntArray(2)
         browser.host.getLocationOnScreen(hostLocation)
@@ -2549,30 +1996,7 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun endMoveChrome(browser: Browser) {
-        val mode = browser.moveActionMode
-        browser.moveActionMode = null
-        mode?.finish()
-        browser.moveFabColor = null
-        browser.moveLastColor = null
-        browser.moveBarTintApplied = false
-        browser.moveThemeDisposables.forEach { disposable ->
-            runCatching {
-                disposable.javaClass.getMethod("b").invoke(disposable)
-            }
-        }
-        browser.moveThemeDisposables.clear()
-        browser.moveThemeObserver = null
-        val fab = browser.moveFab
-        browser.moveFab = null
-        if (fab != null) {
-            fab.visibility = View.GONE
-            val host = fab.parent as? ViewGroup
-            if (host != null) {
-                main.post {
-                    if (fab.parent === host) host.removeView(fab)
-                }
-            }
-        }
+        moveChromeUi.close(browser.moveChrome)
     }
 
     private fun showMoveError(context: android.content.Context) {
@@ -2626,31 +2050,12 @@ internal class SmartPlaylistFolderController(
         anchor: View
     ) {
         if (browser.moveSources != null || browser.otherLocations) return
-        val context = anchor.context
-        val menuId = context.resources.getIdentifier(
-            "menu_gm_context_smart", "menu", context.packageName
-        )
-        val deleteId = context.resources.getIdentifier(
-            "menuContextDelete", "id", context.packageName
-        )
-        if (menuId == 0 || deleteId == 0) return
-        val popup = android.widget.PopupMenu(context, anchor)
-        if (!runCatching {
-                popup.menuInflater.inflate(menuId, popup.menu)
-            }.isSuccess
-        ) return
-        val originalDelete = popup.menu.findItem(deleteId) ?: return
-        val nativeTitle = originalDelete.title
-        val nativeIcon = originalDelete.icon
-        popup.menu.clear()
-        popup.menu.add(Menu.NONE, deleteId, 0, nativeTitle).setIcon(nativeIcon)
-        popup.setOnMenuItemClickListener { item ->
-            if (item.itemId == deleteId) {
-                requestNativeFolderDeletion(browser, folder)
-                true
-            } else false
+        PlaylistFolderUiKit.showDeleteOnlyPopup(
+            anchor = anchor,
+            menuResourceName = "menu_gm_context_smart"
+        ) {
+            requestNativeFolderDeletion(browser, folder)
         }
-        popup.show()
     }
 
     private fun requestNativeFolderDeletion(

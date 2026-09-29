@@ -1280,8 +1280,7 @@ internal class PlaylistMultiSelectController {
     ): String {
         val context = session.list?.context
             ?: return count.toString()
-        return gmmpString(context, "num_selected", count)
-            ?: count.toString()
+        return PlaylistFolderUiKit.selectionTitle(context, count)
     }
 
     private fun updateSelectionBar(session: Session) {

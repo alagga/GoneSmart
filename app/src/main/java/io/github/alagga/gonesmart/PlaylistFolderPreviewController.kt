@@ -158,7 +158,7 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbRenderGeneration: Long = 0L,
         var lastRenderedFolderId: String? = null,
         var lastRenderedOrder: List<String>? = null,
-        var breadcrumbAdapter: NativeQuickNavAdapter? = null,
+        var breadcrumbAdapter: NativeFolderBreadcrumbAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
             NativeMainPlaylistSelectionMirror(),
         var folderFab: View? = null,
@@ -170,14 +170,8 @@ internal class PlaylistFolderPreviewController(
         // No independent folder-list dialog or guessed native UI.
         var moveSources: List<String>? = null,
         var movePreviousFolder: String? = null,
-        var moveActionMode: android.view.ActionMode? = null,
-        var moveFab: View? = null,
-        var moveFabColor: Int? = null,
-        var moveLastColor: Int? = null,
-        var moveBarTintApplied: Boolean = false,
-        var moveLastBottomOcclusion: Int = -1,
-        var moveThemeObserver: Any? = null,
-        val moveThemeDisposables: MutableList<Any> = arrayListOf()
+        val moveChrome: PlaylistFolderMoveChrome.State =
+            PlaylistFolderMoveChrome.State()
     )
 
     /**
@@ -188,167 +182,6 @@ internal class PlaylistFolderPreviewController(
      * forced guesses for the first inset and used a 40dp separator where
      * GMMP's real separator layout measures 64dp on the tested device.
      */
-    private inner class NativeQuickNavAdapter(
-        private val browser: Browser
-    ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-        private val segments = arrayListOf<PlaylistBreadcrumbPath.Segment>()
-        private var rootLabel = ""
-        private var currentStyle = ""
-
-        init {
-            setHasStableIds(true)
-        }
-
-        override fun getItemCount(): Int =
-            NativeQuickNavDiff.itemCount(segments.size)
-
-        override fun getItemViewType(position: Int): Int = position % 2
-
-        override fun getItemId(position: Int): Long {
-            val segment = segments[position / 2]
-            val identifier = (segment.folderId ?: "root").hashCode().toLong()
-            return (identifier shl 1) xor (position % 2).toLong()
-        }
-
-        override fun onCreateViewHolder(
-            parent: ViewGroup,
-            viewType: Int
-        ): RecyclerView.ViewHolder {
-            val name = if (viewType == 0) {
-                "rv_horiz_metadata"
-            } else "rv_horiz_separator"
-            val layoutId = parent.resources.getIdentifier(
-                name, "layout", parent.context.packageName
-            )
-            val native = if (layoutId != 0) runCatching {
-                LayoutInflater.from(parent.context).inflate(
-                    layoutId, parent, false
-                )
-            }.onFailure {
-                Log.w(TAG, "FOLDER QUICKNAV | native XML inflation failed", it)
-            }.getOrNull() else null
-            // Only for a future GMMP version that removes the two verified
-            // 4.2.0 layouts. Normal operation uses the original native XML.
-            val view = native ?: if (viewType == 0) {
-                TextView(parent.context).apply {
-                    minHeight = dp(parent, 48)
-                    gravity = Gravity.CENTER_VERTICAL
-                    background = typedSelectableBackground(
-                        parent, borderless = true
-                    )
-                }
-            } else {
-                ImageView(parent.context).apply {
-                    val icon = resources.getIdentifier(
-                        "ic_gm_keyboard_arrow_right", "drawable",
-                        context.packageName
-                    )
-                    if (icon != 0) setImageResource(icon)
-                    setPadding(dp(parent, 8), 0, dp(parent, 8), 0)
-                }
-            }
-            if (native == null) {
-                Log.w(
-                    TAG, "FOLDER QUICKNAV | XML missing | layout=" + name
-                )
-            }
-            if (view.layoutParams == null) {
-                view.layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            }
-            return object : RecyclerView.ViewHolder(view) {}
-        }
-
-        override fun onBindViewHolder(
-            holder: RecyclerView.ViewHolder, position: Int
-        ) {
-            if (position % 2 != 0) return
-            val segment = segments.getOrNull(position / 2) ?: return
-            val label = holder.itemView as? TextView ?: return
-            val list = browser.list
-            val nav = observedNativeBreadcrumbStyle
-            val native = styles[list]
-            label.text = if (position == 0) rootLabel else segment.name
-            val nativePaint = nav?.effectivePaint ?: native?.effectivePaint
-            if (nativePaint != null) {
-                label.paint.set(nativePaint)
-                val nativeSize = if (nav != null) nativePaint.textSize
-                    else nativePaint.textSize * nativeQuickNavTitleRatio(list)
-                label.setTextSize(TypedValue.COMPLEX_UNIT_PX, nativeSize)
-            }
-            label.typeface = nav?.effectivePaint?.typeface
-                ?: Typeface.create(native?.typeface, Typeface.BOLD)
-            label.setTextColor(nav?.effectivePaint?.color
-                ?: native?.textColor ?: resolveTextColor(list))
-            label.letterSpacing = nav?.letterSpacing
-                ?: native?.letterSpacing ?: 0f
-            label.includeFontPadding = nav?.includeFontPadding
-                ?: native?.includeFontPadding ?: true
-            // The original native XML already contains its own text
-            // padding. The former early "native" sample read zero before
-            // qg1 was bound, then ERASED the XML's true start padding.
-            // Never overwrite this real layout with an unverified sample.
-            // Native rv_horiz_metadata already supplies the exact item
-            // width, minHeight, inset and ROUND selectable background.
-            // Never overwrite its XML padding or ripple with guessed dp.
-            label.isClickable = true
-            label.isFocusable = true
-            label.setOnClickListener {
-                if (browsers[list] !== browser ||
-                    browser.currentFolderId == segment.folderId
-                ) return@setOnClickListener
-                label.postOnAnimation {
-                    if (browsers[list] !== browser ||
-                        browser.currentFolderId == segment.folderId
-                    ) return@postOnAnimation
-                    browser.currentFolderId = segment.folderId
-                    if (browser.moveSources == null) rememberFolder(browser)
-                    activeBrowser = WeakReference(list)
-                    safeRender(browser)
-                    updatePlaylistMenu()
-                    updatePickerFab(browser)
-                }
-            }
-        }
-
-        /**
-         * qg1 is an alternating list of text and arrow holders:
-         * [Storage, >, Music, >, House].
-         * Native notifyItemRangeInserted/Removed, unlike notifyDataSetChanged
-         * on a single giant holder, activates the installed ItemAnimator on
-         * BOTH entering and returning from a nested folder.
-         */
-        fun submit(
-            next: List<PlaylistBreadcrumbPath.Segment>,
-            localizedRoot: String,
-            styleSignature: String
-        ): Boolean {
-            val oldIds = segments.map { (it.folderId ?: "root") + "\u0000" + it.name }
-            val newIds = next.map { (it.folderId ?: "root") + "\u0000" + it.name }
-            val diff = NativeQuickNavDiff.between(oldIds, newIds)
-            val styleChanged = styleSignature != currentStyle ||
-                rootLabel != localizedRoot
-            val pathChanged = oldIds != newIds
-            rootLabel = localizedRoot
-            currentStyle = styleSignature
-
-            if (diff.removedCount > 0) {
-                segments.subList(diff.sharedSegments, segments.size).clear()
-                notifyItemRangeRemoved(diff.retainedItems, diff.removedCount)
-            }
-            if (diff.insertedCount > 0) {
-                segments.addAll(next.drop(diff.sharedSegments))
-                notifyItemRangeInserted(diff.retainedItems, diff.insertedCount)
-            }
-            if (styleChanged && itemCount > 0 && !pathChanged) {
-                notifyItemRangeChanged(0, itemCount, "native-style")
-            }
-            return pathChanged
-        }
-    }
-
     private var settings = Settings()
     private var nativeMainCreateRedirectReady = false
     private var nativePickerCreateRedirectReady = false
@@ -456,6 +289,9 @@ internal class PlaylistFolderPreviewController(
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val moveChromeUi = PlaylistFolderMoveChrome(
+        multiSelect, mainHandler, TAG, "PLAYLIST"
+    )
     private val pendingLayoutObservers = WeakHashMap<
         ViewGroup,
         android.view.ViewTreeObserver.OnGlobalLayoutListener
@@ -1319,7 +1155,7 @@ internal class PlaylistFolderPreviewController(
             findFolder(browser.index, it) != null
         }
         browser.movePreviousFolder = null
-        browser.moveLastBottomOcclusion = -1
+        browser.moveChrome.lastBottomOcclusion = -1
         browser.lastRenderedOrder = null
         safeRender(browser)
     }
@@ -1406,281 +1242,55 @@ internal class PlaylistFolderPreviewController(
      * No separate bottom Cancel/Select action bar.
      */
     private fun installMoveChrome(browser: Browser) {
-        if (browser.moveSources == null || browser.moveActionMode != null) return
-        val list = browser.list
-        val callback = object : android.view.ActionMode.Callback {
-            override fun onCreateActionMode(
-                mode: android.view.ActionMode,
-                menu: android.view.Menu
-            ): Boolean {
-                mode.title = nativeMoveLabel(list.context)
-                return true
-            }
-
-            override fun onPrepareActionMode(
-                mode: android.view.ActionMode,
-                menu: android.view.Menu
-            ): Boolean = false
-
-            override fun onActionItemClicked(
-                mode: android.view.ActionMode,
-                item: android.view.MenuItem
-            ): Boolean = false
-
-            override fun onDestroyActionMode(mode: android.view.ActionMode) {
-                if (browser.moveActionMode === mode) {
-                    browser.moveActionMode = null
-                    if (browser.moveSources != null &&
-                        browsers[list] === browser
-                    ) {
-                        Log.i(TAG, "PLAYLIST MOVE UI | native back arrow cancelled")
-                        closeMoveBrowser(browser)
-                    }
-                }
-            }
-        }
-        val mode = runCatching {
-            list.startActionMode(callback, android.view.ActionMode.TYPE_PRIMARY)
-        }.onFailure {
-            Log.w(TAG, "PLAYLIST MOVE UI | original ActionMode unavailable", it)
-        }.getOrNull()
-        if (mode == null) {
-            // No lookalike toolbar if the original native component
-            // cannot be instantiated on a different host version.
-            closeMoveBrowser(browser)
-            return
-        }
-        browser.moveActionMode = mode
-        val fab = installMoveFab(browser)
-        if (fab == null) {
-            Log.w(TAG, "PLAYLIST MOVE UI | native AestheticFab unavailable")
-            closeMoveBrowser(browser)
-            return
-        }
-        Log.i(TAG, "PLAYLIST MOVE UI | native ActionMode and native AestheticFab ready")
-        list.post {
-            if (browsers[list] === browser && browser.moveSources != null) {
-                positionOverlay(browser)
-                observeMoveFabPalette(browser)
-                syncMoveChromePalette(browser)
-                positionMoveFab(browser)
-            }
-        }
-    }
-
-    /** Native GMMP 4.2.0 AestheticFab class, NOT an approximate button. */
-    private fun installMoveFab(browser: Browser): View? = runCatching {
-        val list = browser.list
-        val native = list.javaClass.classLoader
-            ?.loadClass("com.afollestad.aesthetic.views.AestheticFab")
-            ?: error("GMMP AestheticFab class unavailable")
-        val fab = native.getConstructor(
-            android.content.Context::class.java,
-            android.util.AttributeSet::class.java
-        ).newInstance(list.context, null) as? View
-            ?: error("Host AestheticFab not a View")
-        val image = fab as? ImageView
-            ?: error("Host AestheticFab not an ImageView")
-        image.imageTintList = null
-        image.setImageDrawable(PlaylistConfirmDrawable(dp(list, 24)))
-        image.contentDescription = nativeMoveLabel(list.context)
-        image.setOnClickListener {
-            if (browser.moveSources != null) {
-                Log.i(TAG, "PLAYLIST MOVE UI | native confirm FAB clicked")
-                // The currently displayed PHYSICAL folder determines the
-                // destination. Never use the original selection folder.
-                confirmMoveBrowser(browser)
-            }
-        }
-
-        val nativeSize = list.resources.getIdentifier(
-            "design_fab_size_normal", "dimen", list.context.packageName
-        ).takeIf { it != 0 }?.let {
-            runCatching { list.resources.getDimensionPixelSize(it) }.getOrNull()
-        } ?: dp(list, 56)
-        runCatching {
-            native.getMethod("setCustomSize", Int::class.javaPrimitiveType)
-                .invoke(fab, nativeSize)
-        }
-        val params = FrameLayout.LayoutParams(
-            nativeSize, nativeSize, Gravity.END or Gravity.BOTTOM
-        )
-        params.marginEnd = dp(list, 16)
-        params.bottomMargin = dp(list, 16)
-        browser.overlay.addView(fab, params)
-        fab.elevation = dp(list, 8).toFloat()
-        browser.moveFab = fab
-        fab.visibility = View.INVISIBLE
-        // No branding on the move confirmation FAB: the maintainer
-        // wants just the same clean white checkmark as the Add picker.
-        // Do not reveal the native FAB while its original page/mini-player
-        // geometry is still being measured; that previously flashed it
-        // underneath the persistent mini-player on first entry.
-        fab.visibility = View.INVISIBLE
-        fab.addOnLayoutChangeListener {
-                _, _, _, _, _, _, _, _, _ ->
-            if (browser.moveSources != null) {
-                positionOverlay(browser)
-                positionMoveFab(browser)
-            }
-        }
-        fab.post {
-            if (browser.moveFab === fab && browser.moveSources != null) {
-                // First synchronize the overlay with the ORIGINAL native
-                // recycler/mini-player geometry. The first button frame
-                // must not appear in the pre-layout bottom position.
-                positionOverlay(browser)
-                if (positionMoveFab(browser)) {
-                    runCatching { native.getMethod("show").invoke(fab) }
-                        .onFailure { fab.visibility = View.VISIBLE }
-                }
-            }
-        }
-        fab
-    }.onFailure {
-        Log.w(TAG, "PLAYLIST MOVE UI | original AestheticFab clone failed", it)
-    }.getOrNull()
-
-    /**
-     * Original GMMP Add-picker FAB uses dynamic color "!mainColorAccent".
-     * Subscribe through the SAME Aesthetic/oy0.h/nf3 observable as the
-     * existing GoneSmart multi-picker, rather than colorAccent (#8e0e00
-     * on the tested skin, while the actual native picker FAB was #bfbfcc).
-     */
-    private fun observeMoveFabPalette(browser: Browser) {
-        if (browser.moveThemeObserver != null || browser.moveFab == null) return
-        runCatching {
-            val list = browser.list
-            val loader = list.javaClass.classLoader
-                ?: error("GMMP classloader missing")
-            val theme = runCatching {
-                loader.loadClass("com.afollestad.aesthetic.a\$a")
-                    .getDeclaredMethod("c")
-                    .apply { isAccessible = true }.invoke(null)
-            }.getOrElse {
-                loader.loadClass("com.afollestad.aesthetic.Aesthetic")
-                    .getDeclaredMethod("get")
-                    .apply { isAccessible = true }.invoke(null)
-            } ?: error("GMMP Aesthetic not initialized")
-            val attr = list.resources.getIdentifier(
-                "colorAccent", "attr", list.context.packageName
-            )
-            require(attr != 0)
-            val fallback = theme.javaClass.getDeclaredMethod(
-                "b", Int::class.javaPrimitiveType
-            ).apply { isAccessible = true }.invoke(theme, attr)
-                ?: error("GMMP accent observable missing")
-            val utility = loader.loadClass("oy0")
-            val method = utility.declaredMethods.first {
-                it.name == "h" && it.parameterCount == 3 &&
-                    it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
-                    it.parameterTypes[1] == String::class.java
-            }.apply { isAccessible = true }
-            val observable = method.invoke(
-                null, theme, "!mainColorAccent", fallback
-            ) ?: error("GMMP native FAB observable unavailable")
-            val observerType = loader.loadClass("nf3")
-            val listener = java.lang.reflect.Proxy.newProxyInstance(
-                observerType.classLoader, arrayOf(observerType)
-            ) { _, callback, args ->
-                when (callback.name) {
-                    "a" -> (args?.firstOrNull() as? Number)?.let { value ->
-                        list.post {
-                            if (browsers[list] === browser &&
-                                browser.moveSources != null
-                            ) {
-                                browser.moveFabColor = value.toInt()
-                                syncMoveChromePalette(browser)
-                            }
-                        }
-                    }
-                    "c" -> args?.firstOrNull()?.let {
-                        browser.moveThemeDisposables.add(it)
-                    }
-                    "onError" -> Log.w(
-                        TAG, "PLAYLIST MOVE UI | GMMP FAB palette observer error",
-                        args?.firstOrNull() as? Throwable
-                    )
-                }
-                null
-            }
-            browser.moveThemeObserver = listener
-            observable.javaClass.getMethod("b", observerType)
-                .invoke(observable, listener)
-            Log.i(TAG, "PLAYLIST MOVE UI | native !mainColorAccent observer active")
-        }.onFailure {
-            Log.w(
-                TAG, "PLAYLIST MOVE UI | native FAB observer unavailable; " +
-                    "using original AestheticFab's live background",
-                it
-            )
-        }
-    }
-
-    private fun nativeMovePaletteFallback(browser: Browser): Int? {
-        val fab = browser.moveFab ?: return null
-        val tint = runCatching {
-            fab.javaClass.getMethod("getBackgroundTintList")
-                .invoke(fab) as? android.content.res.ColorStateList
-        }.getOrNull() ?: nativeFabDrawableTint(fab.background)
-        return tint?.getColorForState(
-            fab.drawableState, tint.defaultColor
-        )?.takeIf { Color.alpha(it) >= 200 }
-    }
-
-    private fun syncMoveChromePalette(browser: Browser) {
-        if (browser.moveSources == null || browser.moveActionMode == null) return
-        val fab = browser.moveFab ?: return
-        // The observable delivers the ORIGINAL dynamic picker-FAB color.
-        // Reading the attached native FAB itself is the defensive fallback
-        // for an obfuscated class change; don't derive from colorAccent.
-        val color = browser.moveFabColor
-            ?: nativeMovePaletteFallback(browser)
-            ?: return
-        if (browser.moveLastColor == color &&
-            browser.moveBarTintApplied
+        if (browser.moveSources == null ||
+            browser.moveChrome.actionMode != null
         ) return
-        val changed = browser.moveLastColor != color
-        browser.moveLastColor = color
-        if (changed) {
-            fab.backgroundTintList =
-                android.content.res.ColorStateList.valueOf(color)
+        val installed = moveChromeUi.install(
+            state = browser.moveChrome,
+            list = browser.list,
+            label = nativeMoveLabel(browser.list.context),
+            isActive = {
+                browsers[browser.list] === browser &&
+                    browser.moveSources != null
+            },
+            addFab = { fab, size ->
+                val params = FrameLayout.LayoutParams(
+                    size, size, Gravity.END or Gravity.BOTTOM
+                ).apply {
+                    marginEnd = dp(browser.list, 16)
+                    bottomMargin = dp(browser.list, 16)
+                }
+                browser.overlay.addView(fab, params)
+            },
+            positionFab = {
+                positionOverlay(browser)
+                positionMoveFab(browser)
+            },
+            onConfirm = {
+                if (browser.moveSources != null) {
+                    Log.i(
+                        TAG,
+                        "PLAYLIST MOVE UI | native confirm FAB clicked"
+                    )
+                    confirmMoveBrowser(browser)
+                }
+            },
+            onCancel = {
+                if (browser.moveSources != null &&
+                    browsers[browser.list] === browser
+                ) {
+                    closeMoveBrowser(browser)
+                }
+            }
+        )
+        if (!installed) {
+            Log.w(TAG, "PLAYLIST MOVE UI | shared native chrome unavailable")
+            closeMoveBrowser(browser)
         }
-        browser.moveBarTintApplied =
-            multiSelect.tintNativeContextBar(browser.list, color)
-        if (changed || browser.moveBarTintApplied) {
-            Log.i(TAG, "PLAYLIST MOVE UI | native picker FAB color=#" +
-                Integer.toHexString(color) +
-                " | originalActionBarTint=" + browser.moveBarTintApplied)
-        }
-    }
-
-    /**
-     * Place the floating confirm ABOVE the true visible native Playlists
-     * viewport; original overlay extends behind the persistent mini-player.
-     */
-    private fun nativeMiniPlayerTop(list: View): Int? {
-        val visible = Rect()
-        if (!list.getGlobalVisibleRect(visible)) return null
-        return listOf(
-            "miniPlayerWrapper", "miniPlayerLayout", "libraryTabMiniPlayer"
-        ).mapNotNull { name ->
-            val id = list.resources.getIdentifier(
-                name, "id", list.context.packageName
-            )
-            if (id == 0) return@mapNotNull null
-            val player = list.rootView.findViewById<View>(id)
-                ?: return@mapNotNull null
-            val bounds = Rect()
-            if (player.isShown && player.getGlobalVisibleRect(bounds) &&
-                bounds.height() > 0 &&
-                bounds.top > visible.top + visible.height() / 3
-            ) bounds.top else null
-        }.minOrNull()
     }
 
     private fun positionMoveFab(browser: Browser): Boolean {
-        val fab = browser.moveFab ?: return false
+        val fab = browser.moveChrome.fab ?: return false
         if (browser.moveSources == null ||
             !browser.list.isAttachedToWindow ||
             browser.overlay.height <= 0
@@ -1690,7 +1300,7 @@ internal class PlaylistFolderPreviewController(
             visible.height() == 0
         ) return false
 
-        val miniBottom = nativeMiniPlayerTop(browser.list)
+        val miniBottom = moveChromeUi.nativeMiniPlayerTop(browser.list)
         val safeBottom = MoveConfirmationUiPolicy.safeBottom(
             visible.bottom, miniBottom
         )
@@ -1709,24 +1319,23 @@ internal class PlaylistFolderPreviewController(
             params.bottomMargin = targetMargin
             fab.layoutParams = params
         }
-        val wasUnpositioned = browser.moveLastBottomOcclusion == -1
-        if (browser.moveLastBottomOcclusion != occlusion) {
-            browser.moveLastBottomOcclusion = occlusion
+        val wasUnpositioned =
+            browser.moveChrome.lastBottomOcclusion == -1
+        if (browser.moveChrome.lastBottomOcclusion != occlusion) {
+            browser.moveChrome.lastBottomOcclusion = occlusion
             Log.i(
-                TAG, "PLAYLIST MOVE UI | FAB above native mini-player | " +
+                TAG,
+                "PLAYLIST MOVE UI | FAB above native mini-player | " +
                     "occlusion=" + occlusion +
                     " | nativeVisibleBottom=" + visible.bottom +
                     " | nativeMiniPlayerTop=" + (miniBottom ?: "unknown") +
                     " | initial=" + wasUnpositioned
             )
         }
-        // This method is also called from the native page's global-layout
-        // and 400 ms pre-draw callbacks: an initially unavailable wrapper
-        // is automatically measured before revealing the confirm button.
         val geometryReady = fab.width > 0 && fab.height > 0 &&
             !fab.isLayoutRequested && !browser.overlay.isLayoutRequested &&
             (miniBottom != null || occlusion > 0 ||
-                nativeMiniPlayerTop(browser.list) == null)
+                moveChromeUi.nativeMiniPlayerTop(browser.list) == null)
         if (fab.visibility == View.INVISIBLE && geometryReady) {
             fab.visibility = View.VISIBLE
         }
@@ -1734,27 +1343,7 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun endMoveChrome(browser: Browser) {
-        val mode = browser.moveActionMode
-        browser.moveActionMode = null
-        mode?.finish()
-        browser.moveFabColor = null
-        browser.moveLastColor = null
-        browser.moveBarTintApplied = false
-        browser.moveThemeDisposables.forEach { disposable ->
-            runCatching {
-                disposable.javaClass.getMethod("b").invoke(disposable)
-            }
-        }
-        browser.moveThemeDisposables.clear()
-        browser.moveThemeObserver = null
-        val fab = browser.moveFab
-        browser.moveFab = null
-        if (fab != null) {
-            fab.visibility = View.GONE
-            (fab.parent as? ViewGroup)?.let { host ->
-                mainHandler.post { if (fab.parent === host) host.removeView(fab) }
-            }
-        }
+        moveChromeUi.close(browser.moveChrome)
     }
 
     private fun readActualNativePaths(browser: Browser): List<String>? {
@@ -1952,33 +1541,12 @@ internal class PlaylistFolderPreviewController(
         anchor: View
     ) {
         if (folder.virtual || isPicker(browser.list)) return
-        val context = anchor.context
-        val menuId = context.resources.getIdentifier(
-            "menu_gm_context_playlist_list",
-            "menu", context.packageName
-        )
-        val deleteId = context.resources.getIdentifier(
-            "menuContextDelete", "id", context.packageName
-        )
-        if (menuId == 0 || deleteId == 0) return
-        val popup = android.widget.PopupMenu(context, anchor)
-        if (!runCatching {
-            popup.menuInflater.inflate(menuId, popup.menu)
-        }.isSuccess) return
-        val originalDelete = popup.menu.findItem(deleteId) ?: return
-        val nativeTitle = originalDelete.title
-        val nativeIcon = originalDelete.icon
-        popup.menu.clear()
-        popup.menu.add(
-            android.view.Menu.NONE, deleteId, 0, nativeTitle
-        ).setIcon(nativeIcon)
-        popup.setOnMenuItemClickListener { item ->
-            if (item.itemId == deleteId) {
-                requestNativeFolderDeletion(browser, folder)
-                true
-            } else false
+        PlaylistFolderUiKit.showDeleteOnlyPopup(
+            anchor = anchor,
+            menuResourceName = "menu_gm_context_playlist_list"
+        ) {
+            requestNativeFolderDeletion(browser, folder)
         }
-        popup.show()
     }
 
     /**
@@ -2453,7 +2021,58 @@ internal class PlaylistFolderPreviewController(
             detachListener = detachListener,
             currentFolderId = rememberedFolder
         )
-        browser.breadcrumbAdapter = NativeQuickNavAdapter(browser)
+        browser.breadcrumbAdapter = NativeFolderBreadcrumbAdapter(
+            tag = TAG,
+            host = list,
+            onStyleLabel = { label ->
+                val nav = observedNativeBreadcrumbStyle
+                val nativeRow = styles[list]
+                val nativePaint = nav?.effectivePaint
+                    ?: nativeRow?.effectivePaint
+                if (nativePaint != null) {
+                    label.paint.set(nativePaint)
+                    val size = if (nav != null) {
+                        nativePaint.textSize
+                    } else {
+                        nativePaint.textSize * nativeQuickNavTitleRatio(list)
+                    }
+                    label.setTextSize(
+                        TypedValue.COMPLEX_UNIT_PX, size
+                    )
+                }
+                label.typeface = nav?.effectivePaint?.typeface
+                    ?: Typeface.create(nativeRow?.typeface, Typeface.BOLD)
+                label.setTextColor(
+                    nav?.effectivePaint?.color
+                        ?: nativeRow?.textColor
+                        ?: resolveTextColor(list)
+                )
+                label.letterSpacing = nav?.letterSpacing
+                    ?: nativeRow?.letterSpacing ?: 0f
+                label.includeFontPadding = nav?.includeFontPadding
+                    ?: nativeRow?.includeFontPadding ?: true
+            },
+            onSegmentClick = { segment ->
+                if (browsers[list] !== browser) {
+                    Unit
+                } else {
+                    val target = when (segment.key) {
+                        "root" -> null
+                        else -> segment.key.removePrefix("folder:")
+                    }
+                    if (browser.currentFolderId != target) {
+                        browser.currentFolderId = target
+                        if (browser.moveSources == null) {
+                            rememberFolder(browser)
+                        }
+                        activeBrowser = WeakReference(list)
+                        safeRender(browser)
+                        updatePlaylistMenu()
+                        updatePickerFab(browser)
+                    }
+                }
+            }
+        )
         breadcrumbScroller.adapter = browser.breadcrumbAdapter
         browsers[list] = browser
         styles[list] = nativeStyle
@@ -2524,7 +2143,7 @@ internal class PlaylistFolderPreviewController(
         // A native sibling mini-player can cover our FAB despite its
         // correct margin. Clip the Move overlay itself above that sibling.
         val nativeMiniTop = if (browser.moveSources != null) {
-            nativeMiniPlayerTop(list)
+            moveChromeUi.nativeMiniPlayerTop(list)
         } else null
         val screen = IntArray(2)
         list.getLocationOnScreen(screen)
@@ -2590,7 +2209,7 @@ internal class PlaylistFolderPreviewController(
         }
         // Aesthetic dynamically derives its colors from the current cover.
         // Keep the destination confirmation on the SAME native palette.
-        syncMoveChromePalette(browser)
+        moveChromeUi.syncPalette(browser.moveChrome, browser.list)
         positionMoveFab(browser)
         val breadcrumbSignature =
             observedNativeBreadcrumbStyle?.signature ?: "native-playlist-fallback"
@@ -2827,7 +2446,7 @@ internal class PlaylistFolderPreviewController(
         val folderChanged =
             browser.lastBreadcrumbFolderId != browser.currentFolderId
         browser.lastBreadcrumbFolderId = browser.currentFolderId
-        val segments = PlaylistBreadcrumbPath.forFolder(
+        val sourceSegments = PlaylistBreadcrumbPath.forFolder(
             browser.index, browser.currentFolderId
         )
         val nav = observedNativeBreadcrumbStyle
@@ -2835,9 +2454,9 @@ internal class PlaylistFolderPreviewController(
         browser.renderedBreadcrumbSignature =
             nav?.signature ?: "native-playlist-fallback"
         applyNativeQuickNavPhysics(strip)
-        if (segments.isEmpty()) {
+        if (sourceSegments.isEmpty()) {
             adapter.submit(
-                emptyList(), "", browser.renderedBreadcrumbSignature ?: ""
+                emptyList(), browser.renderedBreadcrumbSignature ?: ""
             )
             strip.visibility = View.GONE
             browser.breadcrumbContentSignature = null
@@ -2860,12 +2479,18 @@ internal class PlaylistFolderPreviewController(
         val storageLabel = if (storageId != 0) {
             list.context.getString(storageId)
         } else "⌂"
+        val sharedSegments = sourceSegments.mapIndexed { index, segment ->
+            PlaylistFolderUiKit.BreadcrumbSegment(
+                key = segment.folderId?.let { "folder:" + it } ?: "root",
+                label = if (index == 0) storageLabel else segment.name
+            )
+        }
         val appearance = listOf(
             browser.renderedBreadcrumbSignature,
             native?.signature ?: "-",
             storageLabel,
-            segments.joinToString("|") {
-                (it.folderId ?: "root") + "=" + it.name
+            sharedSegments.joinToString("|") {
+                it.key + "=" + it.label
             }
         ).joinToString("::")
         if (browser.breadcrumbContentSignature == appearance) return
@@ -2873,13 +2498,9 @@ internal class PlaylistFolderPreviewController(
             !folderChanged
         val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = appearance
-        val pathChanged = adapter.submit(segments, storageLabel, appearance)
+        val pathChanged = adapter.submit(sharedSegments, appearance)
         scheduleQuickNavParityCheck(browser, generation)
 
-        // The original qg1 is a segmented adapter. Bring the newly added
-        // last metadata holder into view, aligned to the right, AFTER the
-        // native LayoutManager has completed its insertion/move animation.
-        // A theme-only redraw must not undo the user's manual left swipe.
         if (!folderChanged && !pathChanged && !(styleOnly && oldAtEnd)) {
             return
         }
@@ -2901,8 +2522,6 @@ internal class PlaylistFolderPreviewController(
                     }
                     return
                 }
-                // RecyclerView's native smooth scroller supplies the
-                // forward/back movement; no custom ViewPropertyAnimator.
                 val visibleEnd = strip.width - strip.paddingEnd
                 val delta = child.right - visibleEnd
                 if (delta > 0) {
@@ -3058,7 +2677,7 @@ internal class PlaylistFolderPreviewController(
             )
         }
         if (browser.moveSources != null) {
-            syncMoveChromePalette(browser)
+            moveChromeUi.syncPalette(browser.moveChrome, browser.list)
             positionMoveFab(browser)
         }
         browser.rows.removeAllViews()
@@ -3082,10 +2701,8 @@ internal class PlaylistFolderPreviewController(
                     !isPicker(list) && !child.virtual
                 ) {
                     {
-                        val id = nativeMenuResources(list).buttonId
-                        val anchor = if (id != 0) {
-                            item.findViewById<View>(id)
-                        } else null
+                        val anchor =
+                            PlaylistFolderUiKit.contextAnchor(item, list)
                         if (anchor != null) {
                             showNativeFolderContextMenu(
                                 browser, child, anchor
@@ -3347,6 +2964,33 @@ internal class PlaylistFolderPreviewController(
         )
     }
 
+    private fun sharedRowStyle(
+        native: NativeRowStyle?
+    ): PlaylistFolderUiKit.RowStyle? = native?.let {
+        PlaylistFolderUiKit.RowStyle(
+            rowLayoutId = it.nativeRowLayoutId,
+            titleViewId = it.titleViewId,
+            rowHeight = it.rowHeight,
+            textColor = it.textColor,
+            textSizePx = it.textSizePx,
+            typeface = it.typeface,
+            titleGravity = it.titleGravity,
+            titlePaddingStart = it.titlePaddingStart,
+            titlePaddingEnd = it.titlePaddingEnd,
+            effectivePaint = it.effectivePaint,
+            letterSpacing = it.letterSpacing,
+            textScaleX = it.textScaleX,
+            includeFontPadding = it.includeFontPadding,
+            lineSpacingExtra = it.lineSpacingExtra,
+            lineSpacingMultiplier = it.lineSpacingMultiplier,
+            maxLines = it.maxLines,
+            ellipsize = it.ellipsize,
+            rowBackground = it.rowBackground,
+            titleInset = it.titleInset,
+            accentColor = it.accentColor
+        )
+    }
+
     private fun row(
         view: View,
         text: String,
@@ -3355,174 +2999,31 @@ internal class PlaylistFolderPreviewController(
         nativeMenuButton: ImageView? = null,
         onNativeContextMenu: (() -> Unit)? = null
     ): View {
+        val list = view as? ViewGroup
+            ?: error("Playlist folder row host is not a ViewGroup")
         val native = styles[view]
-        val parent = browsers[view as? ViewGroup]?.rows
-        // Clone GMMP's own current row XML first. Its AestheticTextViews
-        // retain native textAppearance, layout and live theme subscriptions.
-        val template = if (native != null && native.nativeRowLayoutId != 0) {
-            runCatching {
-                LayoutInflater.from(view.context).inflate(
-                    native.nativeRowLayoutId, parent, false
-                )
-            }.getOrNull()
-        } else null
-        val target = if (template != null) {
-            if (native?.titleViewId != 0) {
-                template.findViewById<TextView>(native!!.titleViewId)
-            } else null
-        } else null
-        if (target != null && template != null) {
-            if (native != null) {
-                // Reuse GMMP's exact currently-rendered title style. The
-                // source CharSequence may contain TextAppearance/size spans
-                // that are NOT represented by TextView.textSize alone.
-                // native.textSizePx is now the live EFFECTIVE native title
-                // paint size after GMMP's MetricAffectingSpan processing.
-                // Applying both that effective size and the original
-                // RelativeSizeSpan would double-scale it.
-                target.text = text
-                target.setTextSize(
-                    TypedValue.COMPLEX_UNIT_PX, native.textSizePx
-                )
-                target.setTextColor(native.textColor)
-                if (native.typeface != null) target.typeface = native.typeface
-                target.gravity = native.titleGravity
-                target.letterSpacing = native.letterSpacing
-                target.textScaleX = native.textScaleX
-                target.includeFontPadding = native.includeFontPadding
-                target.setLineSpacing(
-                    native.lineSpacingExtra,
-                    native.lineSpacingMultiplier
-                )
-                target.maxLines = native.maxLines
-                target.ellipsize = native.ellipsize
-                target.setPaddingRelative(
-                    native.titlePaddingStart,
-                    target.paddingTop,
-                    native.titlePaddingEnd,
-                    target.paddingBottom
-                )
-                // Copy all current font features (fake bold, skew, font
-                // variation, hinting and decoration) from the actual
-                // native glyph paint rather than approximating them.
-                target.paint.set(native.effectivePaint)
-                target.requestLayout()
-            } else {
-                target.text = text
+        val accent = multiSelect.folderSelectionAccent(list)
+            ?: native?.accentColor
+            ?: resolveAccent(view)
+        return PlaylistFolderUiKit.createRow(
+            parent = browsers[list]?.rows,
+            host = list,
+            text = text,
+            style = sharedRowStyle(native),
+            folder = folder,
+            selected = selected,
+            selectionAccent = accent,
+            contextMenuSource = nativeMenuButton,
+            onContext = onNativeContextMenu?.let { click ->
+                { _: View -> click() }
             }
-            val root = template
-            root.layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                native?.rowHeight ?: dp(view, 54)
-            )
-            root.minimumHeight = native?.rowHeight ?: dp(view, 54)
-            // A bare inflation is not bound by zn3. Hide unused template
-            // metadata until we have real native metadata for this model.
-            hideOtherTemplateLabels(root, target)
-            configureNativeContextMenu(
-                root, view, nativeMenuButton, onNativeContextMenu
-            )
-            if (folder) {
-                addNativeFolderIcon(root, native, view)
-            }
-            styleRowSelection(root, view, native, selected)
-            root.isClickable = true
-            root.isFocusable = true
-            return root
-        }
-        // Defensive fallback on custom native view modes without XML IDs.
-        val fallback = TextView(view.context).apply {
-            this.text = text
-            setTextColor(native?.textColor ?: resolveTextColor(view))
-            setTextSize(
-                TypedValue.COMPLEX_UNIT_PX,
-                native?.textSizePx
-                    ?: (view.resources.displayMetrics.scaledDensity * 16f)
-            )
-            typeface = native?.typeface
-            gravity = Gravity.CENTER_VERTICAL
-            val inset = (native?.titleInset ?: dp(view, 18)) +
-                if (folder) dp(view, 28) else 0
-            setPadding(inset, 0, dp(view, 12), 0)
-            minHeight = native?.rowHeight ?: dp(view, 54)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                native?.rowHeight ?: dp(view, 54)
-            )
-            background = native?.rowBackground?.newDrawable(resources)?.mutate()
-                ?: typedSelectableBackground(view)
-            if (folder) {
-                setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    FolderOutlineDrawable(
-                        native?.textColor ?: resolveTextColor(view),
-                        dp(view, 24)
-                    ), null, null, null
-                )
-                compoundDrawablePadding = dp(view, 12)
-                setPadding(native?.titleInset ?: dp(view, 12), 0, dp(view, 12), 0)
-            }
-            if (selected) {
-                foreground = ColorDrawable(
-                    withAlpha(
-                        multiSelect.folderSelectionAccent(view as ViewGroup)
-                            ?: native?.accentColor ?: resolveAccent(view),
-                        0x80
-                    )
-                )
-            }
-        }
-        if (onNativeContextMenu == null) {
-            return fallback
-        }
-        val height = native?.rowHeight ?: dp(view, 54)
-        val wrapper = FrameLayout(view.context).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, height
-            )
-            minimumHeight = height
-        }
-        wrapper.addView(
-            fallback,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, height
-            )
         )
-        val nativeWidth = nativeMenuButton?.width
-            ?.takeIf { it > 0 } ?: dp(view, 48)
-        val button = ImageButton(view.context).apply {
-            id = nativeMenuResources(view).buttonId
-            background = typedSelectableBackground(view)
-            imageTintList = nativeMenuButton?.imageTintList
-                ?: android.content.res.ColorStateList.valueOf(
-                    native?.textColor ?: resolveTextColor(view)
-                )
-        }
-        configureNativeContextMenu(
-            button, view, nativeMenuButton, onNativeContextMenu
-        )
-        wrapper.addView(
-            button,
-            FrameLayout.LayoutParams(
-                nativeWidth, ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.END or Gravity.CENTER_VERTICAL
-            )
-        )
-        return wrapper
     }
 
     /** Never synthesize a guessed menu: reuse the native row's own button. */
-    private fun firstBoundNativeContextMenu(list: ViewGroup): ImageView? {
-        val id = nativeMenuResources(list).buttonId
-        if (id == 0) return null
-        for (i in 0 until list.childCount) {
-            val native = list.getChildAt(i) ?: continue
-            val button = native.findViewById<ImageView>(id) ?: continue
-            if (button.visibility == View.VISIBLE &&
-                button.hasOnClickListeners()
-            ) return button
-        }
-        return null
-    }
+    private fun firstBoundNativeContextMenu(
+        list: ViewGroup
+    ): ImageView? = PlaylistFolderUiKit.firstBoundContextMenu(list)
 
     /**
      * The installed GMMP 4.2.0 APK's rv_listitem_metadata_compact XML
