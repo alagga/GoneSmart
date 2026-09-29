@@ -647,16 +647,41 @@ class GoneSmartModule : XposedModule() {
                                 // No second visible GMMP delete prompt.
                                 null
                             } else {
-                                originalDialog?.let {
-                                    NativeGmmpCreationDialogLocalizer
-                                        .prepareBeforeShow(it)
+                                val creationKind = originalDialog?.let {
+                                    NativeGmmpFolderCreator.classifyBeforeShow(it)
+                                } ?: NativeGmmpFolderCreator.DialogKind.NONE
+
+                                when (creationKind) {
+                                    NativeGmmpFolderCreator.DialogKind.PLAYLIST_SHELL ->
+                                        originalDialog?.let {
+                                            // Text only. Native GMMP owns all
+                                            // colors/focus/IME behavior.
+                                            NativeGmmpCreationDialogLocalizer
+                                                .localizeFolderShellTextOnly(it)
+                                        }
+                                    NativeGmmpFolderCreator.DialogKind.LEGACY_FOLDER ->
+                                        originalDialog?.let {
+                                            NativeGmmpCreationDialogLocalizer
+                                                .prepareBeforeShow(it)
+                                        }
+                                    NativeGmmpFolderCreator.DialogKind.NONE -> Unit
                                 }
+
                                 val result = chain.proceed()
                                 originalDialog?.let {
-                                    NativeGmmpCreationDialogLocalizer
-                                        .finishAfterShow(it)
-                                    NativeGmmpCreationDialogLocalizer
-                                        .localizeWhenReady(it)
+                                    when (creationKind) {
+                                        NativeGmmpFolderCreator.DialogKind.PLAYLIST_SHELL -> {
+                                            NativeGmmpFolderCreator
+                                                .onPlaylistShellShown(it)
+                                        }
+                                        NativeGmmpFolderCreator.DialogKind.LEGACY_FOLDER -> {
+                                            NativeGmmpCreationDialogLocalizer
+                                                .finishAfterShow(it)
+                                            NativeGmmpCreationDialogLocalizer
+                                                .localizeWhenReady(it)
+                                        }
+                                        NativeGmmpFolderCreator.DialogKind.NONE -> Unit
+                                    }
                                     playlistFolderPreview
                                         .onOriginalFolderDeleteDialogShown(it)
                                     smartPlaylistFolderController
@@ -1396,6 +1421,35 @@ class GoneSmartModule : XposedModule() {
     private fun installNativePlaylistCreationProbeHooks(
         param: PackageReadyParam
     ) {
+        runCatching {
+            val presenterType = param.classLoader.loadClass("tp3")
+            val lifecycle = presenterType.getDeclaredMethod("y2")
+                .apply { isAccessible = true }
+            hook(lifecycle).intercept { chain ->
+                NativeGmmpFolderCreator.observeMainPlaylistPresenter(
+                    chain.getThisObject()
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE SHELL | tp3 presenter observer installed"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE SHELL | tp3 presenter observer unavailable",
+                it
+            )
+        }
+
+        val kotlinUnit = runCatching {
+            param.classLoader.loadClass("uf5")
+                .getDeclaredField("a")
+                .apply { isAccessible = true }
+                .get(null)
+        }.getOrNull()
+
         val getterReady = runCatching {
             val nativeGetter = param.classLoader.loadClass("va4")
                 .getDeclaredMethod("getValue").apply { isAccessible = true }
@@ -1434,6 +1488,23 @@ class GoneSmartModule : XposedModule() {
                         "NATIVE CREATE PROBE | surface=$surface | entered"
                     )
                     try {
+                        if (surface == "main" &&
+                            kotlinUnit != null &&
+                            NativeGmmpFolderCreator
+                                .interceptNativeMainPlaylistCreate(
+                                    chain.getThisObject(),
+                                    chain.getArg(0),
+                                    chain.getArg(1)
+                                )
+                        ) {
+                            Log.i(
+                                "GoneSmartPlaylist",
+                                "NATIVE CREATE PROBE | surface=main | " +
+                                    "consumed by folder shell"
+                            )
+                            return@intercept kotlinUnit
+                        }
+
                         val createOnly = surface == "picker" &&
                             playlistController.canCreatePlaylistWithoutAdding()
                         val result = aroundNativePhysicalCreation(

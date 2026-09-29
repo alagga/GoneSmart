@@ -182,6 +182,86 @@ internal object NativeGmmpCreationDialogLocalizer {
         }
     }
 
+    /**
+     * Folder shell uses GMMP's ORIGINAL New Playlist dialog and therefore
+     * MUST keep its native Aesthetic colors/focus behavior untouched.
+     * Change text only: title -> folder wording, remove the redundant floating
+     * label, and keep one folder-name hint in the real EditText.
+     */
+    fun localizeFolderShellTextWhenReady(dialog: Dialog) {
+        localizeFolderShellTextOnly(dialog)
+        val decor = dialog.window?.decorView ?: return
+        decor.post { localizeFolderShellTextOnly(dialog) }
+        decor.postDelayed({ localizeFolderShellTextOnly(dialog) }, 60L)
+        decor.postDelayed({ localizeFolderShellTextOnly(dialog) }, 180L)
+    }
+
+    fun localizeFolderShellTextOnly(dialog: Dialog): Boolean {
+        val root = dialog.window?.decorView ?: return false
+        val locale = dialog.context.resources.configuration.locales[0]
+        val playlistTitle =
+            GoneSmartGmmpStrings.creationDialog(locale, "New Playlist")
+        val playlistName =
+            GoneSmartGmmpStrings.creationDialog(locale, "Playlist name")
+        val folderTitle =
+            GoneSmartGmmpStrings.creationDialog(locale, "New Folder")
+                ?: "New folder"
+        val folderName =
+            GoneSmartGmmpStrings.creationDialog(locale, "Folder name")
+                ?: "Folder name"
+
+        val playlistTitleKeys = setOfNotNull(
+            playlistTitle?.let(::key),
+            key("New Playlist")
+        )
+        val playlistNameKeys = setOfNotNull(
+            playlistName?.let(::key),
+            key("Playlist name"),
+            key("New Playlist Name")
+        )
+
+        var changed = 0
+        val textViews = arrayListOf<TextView>()
+        collectTextViews(root, textViews)
+        textViews.forEach { view ->
+            val text = view.text?.toString()?.takeUnless(String::isBlank)
+            if (text != null && key(text) in playlistTitleKeys) {
+                view.text = folderTitle
+                changed++
+            }
+            val hint = view.hint?.toString()?.takeUnless(String::isBlank)
+            if (hint != null && key(hint) in playlistNameKeys) {
+                view.hint = folderName
+                changed++
+            }
+        }
+
+        val inputs = arrayListOf<View>()
+        collectInputViews(root, inputs)
+        val field = inputs.filterIsInstance<EditText>().firstOrNull()
+        if (field != null && field.hint?.toString() != folderName) {
+            field.hint = folderName
+            changed++
+        }
+        collectInputAncestors(inputs).forEach { view ->
+            val hint = reflectiveHint(view)?.takeUnless(String::isBlank)
+            if (hint != null && key(hint) in playlistNameKeys) {
+                val disabled = invokeBoolean(view, "setHintEnabled", false)
+                val cleared = setReflectiveHint(view, null)
+                if (disabled || cleared) changed++
+            }
+        }
+
+        if (changed > 0) {
+            Log.i(
+                TAG,
+                "FOLDER CREATE SHELL | native playlist dialog relabeled" +
+                    " | locale=" + locale.toLanguageTag()
+            )
+        }
+        return changed > 0
+    }
+
     fun localizeWhenReady(dialog: Dialog) {
         ensureInputAccent(dialog)
         localize(dialog)
