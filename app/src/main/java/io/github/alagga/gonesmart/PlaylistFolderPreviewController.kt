@@ -165,6 +165,8 @@ internal class PlaylistFolderPreviewController(
             linkedMapOf(),
         val mainOriginalRowForegrounds: WeakHashMap<View, Drawable?> =
             WeakHashMap(),
+        var liveSelectionAccent: Int? = null,
+        var selectionAccentSubscription: NativeGmmpAccent.Subscription? = null,
         var folderFab: View? = null,
         var playlistFab: View? = null,
         var pickerAddExpanded: Boolean = false,
@@ -2101,6 +2103,7 @@ internal class PlaylistFolderPreviewController(
         breadcrumbScroller.adapter = browser.breadcrumbAdapter
         browsers[list] = browser
         styles[list] = nativeStyle
+        subscribeMainSelectionAccent(browser)
         if (!isPicker(list)) {
             val weak = WeakReference(list)
             nativePlaylistMover?.resume(
@@ -2317,6 +2320,8 @@ internal class PlaylistFolderPreviewController(
         browser.moveSources = null
         endMoveChrome(browser)
         closePickerAddOptions(browser)
+        browser.selectionAccentSubscription?.dispose()
+        browser.selectionAccentSubscription = null
         styles.remove(list)
 
         // GMMP's FragmentManager may be iterating the same ancestor's
@@ -3072,8 +3077,37 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    private fun subscribeMainSelectionAccent(browser: Browser) {
+        browser.liveSelectionAccent = NativeGmmpAccent.lastObserved()
+        browser.selectionAccentSubscription?.dispose()
+        browser.selectionAccentSubscription = NativeGmmpAccent.observe(
+            browser.list,
+            onColor = { color ->
+                if (browsers[browser.list] !== browser) return@observe
+                if (browser.liveSelectionAccent == color) return@observe
+                browser.liveSelectionAccent = color
+                syncMainSelectionVisuals(browser)
+                Log.i(
+                    TAG,
+                    "FOLDER MAIN SELECTION ACCENT | !mainColorAccent=#" +
+                        Integer.toHexString(color)
+                )
+            },
+            onError = {
+                Log.w(
+                    TAG,
+                    "FOLDER MAIN SELECTION ACCENT | live accent unavailable",
+                    it
+                )
+            }
+        )
+    }
+
     private fun mainSelectionAccent(browser: Browser): Int =
-        styles[browser.list]?.accentColor ?: resolveAccent(browser.list)
+        browser.liveSelectionAccent
+            ?: NativeGmmpAccent.lastObserved()
+            ?: styles[browser.list]?.accentColor
+            ?: resolveAccent(browser.list)
 
     private fun applyMainSelectionVisual(
         browser: Browser,

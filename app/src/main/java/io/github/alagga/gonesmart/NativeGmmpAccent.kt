@@ -12,11 +12,23 @@ import java.lang.reflect.Proxy
  * retain an unrelated/red theme value on the tested GMMP skin.
  */
 internal object NativeGmmpAccent {
+    @Volatile
+    private var lastObservedLiveColor: Int? = null
+
     /**
-     * Synchronous read of GMMP Aesthetic's current accent. This uses the
-     * same current-color getter already verified by the native multi-select
-     * palette bridge, so first-frame dialog chrome never needs Android's
-     * unrelated static/red colorAccent while waiting for !mainColorAccent.
+     * Last value actually emitted by GMMP's !mainColorAccent stream.
+     *
+     * Unlike the Aesthetic attr getter below, this is safe for dynamic
+     * playlist-selection/dialog chrome on the tested GMMP skin: the attr
+     * getter can still expose the stale red static colorAccent.
+     */
+    fun lastObserved(): Int? = lastObservedLiveColor
+
+    /**
+     * Legacy synchronous read of Aesthetic's colorAccent attribute.
+     * Do not use this for dynamic GMMP selection/dialog chrome: on the
+     * tested skin it can return the stale red static accent while
+     * !mainColorAccent already has a different live value.
      */
     fun current(view: View): Int? = runCatching {
         val loader = view.context.classLoader
@@ -107,6 +119,7 @@ internal object NativeGmmpAccent {
             when (callback.name) {
                 "a" -> (args?.firstOrNull() as? Number)?.let { value ->
                     val color = value.toInt()
+                    lastObservedLiveColor = color
                     // Aesthetic commonly emits the current value
                     // synchronously while we subscribe on GMMP's main
                     // thread. Posting that value delayed creation-dialog

@@ -206,6 +206,8 @@ internal class SmartPlaylistFolderController(
         var selectionTransitionToMove: Boolean = false,
         var suppressSelectionUpPath: String? = null,
         var selectionOverlayColor: Int? = null,
+        var liveSelectionAccent: Int? = null,
+        var selectionAccentSubscription: NativeGmmpAccent.Subscription? = null,
         val rowInteractionPaths: WeakHashMap<View, String> = WeakHashMap(),
         val selectionOverlays: WeakHashMap<View, ColorDrawable> = WeakHashMap(),
         var breadcrumbAlignmentGeneration: Long = 0L,
@@ -908,6 +910,7 @@ internal class SmartPlaylistFolderController(
             }
         )
         browsers[list] = browser
+        subscribeSmartSelectionAccent(browser)
         list.addOnAttachStateChangeListener(detachListener)
         list.addOnLayoutChangeListener(layoutListener)
         if (list.viewTreeObserver.isAlive) {
@@ -1700,8 +1703,37 @@ internal class SmartPlaylistFolderController(
         return null
     }
 
+    private fun subscribeSmartSelectionAccent(browser: Browser) {
+        browser.liveSelectionAccent = NativeGmmpAccent.lastObserved()
+        browser.selectionAccentSubscription?.dispose()
+        browser.selectionAccentSubscription = NativeGmmpAccent.observe(
+            browser.list,
+            onColor = { color ->
+                if (browsers[browser.list] !== browser) return@observe
+                if (browser.liveSelectionAccent == color) return@observe
+                browser.liveSelectionAccent = color
+                browser.selectionOverlayColor = null
+                syncVisibleSmartRowInteractions(browser)
+                Log.i(
+                    TAG,
+                    "SMART MULTI STYLE | !mainColorAccent=#" +
+                        Integer.toHexString(color)
+                )
+            },
+            onError = {
+                Log.w(
+                    TAG,
+                    "SMART MULTI STYLE | live accent unavailable",
+                    it
+                )
+            }
+        )
+    }
+
     private fun smartSelectionOverlayColor(browser: Browser): Int {
-        val accent = browser.style?.accentColor
+        val accent = browser.liveSelectionAccent
+            ?: NativeGmmpAccent.lastObserved()
+            ?: browser.style?.accentColor
             ?: resolveColor(
                 browser.list,
                 android.R.attr.colorAccent,
@@ -2611,6 +2643,8 @@ internal class SmartPlaylistFolderController(
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
         browser.observer?.stopWatching()
+        browser.selectionAccentSubscription?.dispose()
+        browser.selectionAccentSubscription = null
         clearSmartSelection(browser)
         endMoveChrome(browser)
         browser.list.alpha = browser.originalAlpha
@@ -2735,15 +2769,14 @@ internal class SmartPlaylistFolderController(
         }.coerceIn(0f, 1f)
         val scale = SmartFolderHeaderScrollPolicy.edgeStretchScale(distance)
 
-        // Android's vertical StretchEffect is symmetric: top overscroll is
-        // anchored at y=0; bottom overscroll is anchored at the bottom of the
-        // native viewport. The breadcrumb is intentionally fixed, so convert
-        // the host-list bottom into folderViewport-local coordinates.
-        val breadcrumbHeight = if (
-            browser.breadcrumb.visibility == View.VISIBLE
-        ) browser.breadcrumb.height.coerceAtLeast(0) else 0
+        // The native RecyclerView stretches around its own lower edge, but
+        // our synthetic folderViewport is only as tall as the folder band.
+        // Using the host list's ~screen-height bottom as this small view's
+        // pivot amplified a 0.1-1% scale into a large translation. Anchor
+        // bottom stretch to the synthetic viewport's ACTUAL lower edge so
+        // top and bottom deformation remain visually symmetric/subtle.
         browser.folderViewport.pivotY = if (edge == "bottom") {
-            (list.height - breadcrumbHeight).coerceAtLeast(0).toFloat()
+            browser.folderViewport.height.coerceAtLeast(0).toFloat()
         } else {
             0f
         }

@@ -132,7 +132,7 @@ internal class PlaylistMultiSelectController {
         val nativeAccentAttr = view.resources.getIdentifier(
             "colorAccent", "attr", view.context.packageName
         )
-        val accent = NativeGmmpAccent.current(view)
+        val accent = NativeGmmpAccent.lastObserved()
             ?.takeIf { Color.alpha(it) >= 200 }
             ?: contextBar
             ?: nativeAccentAttr.takeIf { it != 0 }
@@ -1576,9 +1576,9 @@ internal class PlaylistMultiSelectController {
         session: Session,
         view: View
     ): Int =
-        session.liveFabAccent
-            ?: session.liveAccent
-            ?: NativeGmmpAccent.current(view)
+        session.liveAccent
+            ?: NativeGmmpAccent.lastObserved()
+            ?: session.liveFabAccent
             ?: session.livePrimary
             ?: gmmpAccent(session, view)
 

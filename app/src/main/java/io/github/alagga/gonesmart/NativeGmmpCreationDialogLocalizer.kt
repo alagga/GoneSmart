@@ -241,26 +241,35 @@ internal object NativeGmmpCreationDialogLocalizer {
         if (accentSubscriptions.containsKey(dialog)) return
         val decor = dialog.window?.decorView ?: return
 
-        val initial = NativeGmmpAccent.current(decor)
+        val initial = NativeGmmpAccent.lastObserved()
         if (initial != null) {
             accentColors[dialog] = initial
             applyInputAccent(decor, initial)
             Log.i(
                 TAG,
-                "CREATION DIALOG ACCENT | initial GMMP accent=#" +
+                "CREATION DIALOG ACCENT | cached !mainColorAccent=#" +
                     Integer.toHexString(initial)
             )
         } else {
-            // Never expose Material/Android's unrelated red focus accent as
-            // the dialog's first frame. Hold only this decor transparent
-            // until the live GMMP accent arrives, with a short fail-open.
+            // The Aesthetic attr getter is intentionally NOT used here.
+            // Device logs proved it can still be the unrelated static red
+            // while !mainColorAccent already points at GMMP's real palette.
+            // Keep the input and the whole dialog surface hidden until the
+            // live stream emits. If it never does, fail open with the focused
+            // chrome suppressed rather than flashing the red fallback.
             pendingRevealAlpha[dialog] = decor.alpha
             decor.alpha = 0f
             decor.postDelayed({
-                pendingRevealAlpha.remove(dialog)?.let { alpha ->
-                    if (dialog.isShowing) decor.alpha = alpha
+                if (!accentColors.containsKey(dialog)) {
+                    applyPendingInputAccent(decor)
+                    pendingRevealAlpha.remove(dialog)?.let { alpha ->
+                        if (dialog.isShowing) decor.alpha = alpha
+                    }
+                    pendingWindowAlpha.remove(dialog)?.let { alpha ->
+                        setWindowAlpha(dialog, alpha)
+                    }
                 }
-            }, 120L)
+            }, 180L)
         }
 
         // AestheticTextInputLayout may re-apply its focused state after
