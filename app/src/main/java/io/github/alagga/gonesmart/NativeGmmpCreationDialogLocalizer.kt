@@ -113,7 +113,7 @@ internal object NativeGmmpCreationDialogLocalizer {
         }
     }
 
-    fun localizeWhenReady(dialog: Dialog)    fun localizeWhenReady(dialog: Dialog) {
+    fun localizeWhenReady(dialog: Dialog) {
         ensureInputAccent(dialog)
         localize(dialog)
         val decor = dialog.window?.decorView ?: return
@@ -375,7 +375,7 @@ internal object NativeGmmpCreationDialogLocalizer {
         )
     }
 
-    private fun applyInputAccent(root: View, accent: Int)    private fun applyInputAccent(root: View, accent: Int) {
+    private fun applyInputAccent(root: View, accent: Int) {
         val inputs = arrayListOf<View>()
         collectInputViews(root, inputs)
         inputs.forEach { view ->
