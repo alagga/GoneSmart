@@ -30,7 +30,6 @@ internal object NativeGmmpCreationDialogLocalizer {
     private val accentSubscriptions =
         WeakHashMap<Dialog, NativeGmmpAccent.Subscription>()
     private val accentColors = WeakHashMap<Dialog, Int>()
-    private val exactInputLabelViews = WeakHashMap<View, Boolean>()
     private val inputDiagnostics = WeakHashMap<Dialog, Boolean>()
 
     fun localizeWhenReady(dialog: Dialog) {
@@ -47,7 +46,6 @@ internal object NativeGmmpCreationDialogLocalizer {
         val locale = context.resources.configuration.locales[0]
         val root = dialog.window?.decorView ?: return false
         accentColors[dialog]?.let { applyInputAccent(root, it) }
-        if (locale.language.equals("en", ignoreCase = true)) return false
 
         val textViews = arrayListOf<TextView>()
         collectTextViews(root, textViews)
@@ -64,6 +62,9 @@ internal object NativeGmmpCreationDialogLocalizer {
             inputViews.forEach { view ->
                 inputHint(view)?.takeUnless(String::isBlank)?.let(::add)
             }
+            inputAncestors.forEach { view ->
+                reflectiveHint(view)?.takeUnless(String::isBlank)?.let(::add)
+            }
         }
         val creationCue = visibleStrings.any {
             GoneSmartGmmpStrings.creationDialog(locale, it) != null ||
@@ -77,60 +78,70 @@ internal object NativeGmmpCreationDialogLocalizer {
         var fallbackCount = 0
         var inputCount = 0
 
-        // MaterialDialogs 3.x can expose its floating label either as
-        // TextInputLayout.hint OR as a rendered TextView. Match the exact
-        // library literal first, regardless of which widget implementation
-        // produced it. This cannot touch the already-correct large
-        // "New Folder"/"New Playlist" title because the literal differs.
+        // The maintainer explicitly does not want MaterialDialogs' extra
+        // floating "New Folder Name" / "New Playlist Name" caption. Keep one
+        // useful localized placeholder inside the EditText and suppress only
+        // the redundant floating-label owner.
         textViews.forEach { view ->
             val text = view.text?.toString()
-            if (!text.isNullOrBlank()) {
-                val inputReplacement =
-                    GoneSmartGmmpStrings.creationInputLabel(locale, text)
-                if (inputReplacement != null &&
-                    inputReplacement != text
-                ) {
-                    view.text = inputReplacement
-                    exactInputLabelViews[view] = true
-                    fallbackCount++
-                    inputCount++
-                    changed++
-                }
-            }
-            val hint = view.hint?.toString()
-            if (!hint.isNullOrBlank()) {
-                val inputReplacement =
-                    GoneSmartGmmpStrings.creationInputLabel(locale, hint)
-                if (inputReplacement != null &&
-                    inputReplacement != hint
-                ) {
-                    view.hint = inputReplacement
-                    exactInputLabelViews[view] = true
-                    fallbackCount++
-                    inputCount++
-                    changed++
-                }
+            if (!text.isNullOrBlank() &&
+                GoneSmartGmmpStrings.creationInputLabel(locale, text) != null &&
+                view !is EditText
+            ) {
+                view.visibility = View.GONE
+                inputCount++
+                changed++
             }
         }
-
-        // The actually rendered Material floating label lives on an ancestor
-        // of md_input_message on the tested dialog. Do not depend on the
-        // concrete TextInputLayout class name: read/write any parent that
-        // exposes the standard CharSequence getHint/setHint contract.
         inputAncestors.forEach { view ->
             val source = reflectiveHint(view)?.takeUnless(String::isBlank)
                 ?: return@forEach
             val replacement =
                 GoneSmartGmmpStrings.creationInputLabel(locale, source)
                     ?: return@forEach
-            if (replacement != source &&
-                setReflectiveHint(view, replacement)
-            ) {
-                exactInputLabelViews[view] = true
+            val disabled = invokeBoolean(view, "setHintEnabled", false)
+            val cleared = setReflectiveHint(view, null)
+            if (disabled || cleared) {
                 fallbackCount++
                 inputCount++
                 changed++
             }
+            // The parent used to own the hint; keep a single useful hint in
+            // the actual field after disabling that parent caption.
+            inputViews.filterIsInstance<EditText>().firstOrNull()?.let { field ->
+                val current = field.hint?.toString()
+                if (current.isNullOrBlank() ||
+                    GoneSmartGmmpStrings.creationInputLabel(
+                        locale, current
+                    ) != null
+                ) {
+                    field.hint = replacement
+                }
+            }
+        }
+        inputViews.filterIsInstance<EditText>().forEach { field ->
+            val source = field.hint?.toString()?.takeUnless(String::isBlank)
+                ?: return@forEach
+            val replacement =
+                GoneSmartGmmpStrings.creationInputLabel(locale, source)
+                    ?: return@forEach
+            if (replacement != source) {
+                field.hint = replacement
+                fallbackCount++
+                inputCount++
+                changed++
+            }
+        }
+
+        // Until Aesthetic's live color arrives, explicitly suppress only the
+        // focused line/cursor state. This prevents Android's unrelated red
+        // static accent from drawing for one frame without hiding the field.
+        if (!accentColors.containsKey(dialog)) {
+            applyPendingInputAccent(root)
+        }
+
+        if (locale.language.equals("en", ignoreCase = true)) {
+            return changed > 0
         }
 
         // Keep the pre-existing native-first translation path for ordinary
@@ -158,24 +169,6 @@ internal object NativeGmmpCreationDialogLocalizer {
                     view.hint = replacement
                     changed++
                 }
-            }
-        }
-
-        // Exact small floating input-label path. It also covers EditText as a
-        // fallback in case a MaterialDialogs version stores the same literal
-        // directly on the field rather than TextInputLayout.
-        inputViews.forEach { view ->
-            val source = inputHint(view)?.takeUnless(String::isBlank)
-                ?: return@forEach
-            val replacement = native[key(source)]
-                ?: GoneSmartGmmpStrings.creationInputLabel(locale, source)
-            if (replacement != null && replacement != source &&
-                setInputHint(view, replacement)
-            ) {
-                if (native.containsKey(key(source))) nativeCount++
-                else fallbackCount++
-                inputCount++
-                changed++
             }
         }
 
@@ -281,20 +274,48 @@ internal object NativeGmmpCreationDialogLocalizer {
                 focusedColors(accent, normal)
             )
         }
-        // If MaterialDialogs rendered the floating label as its own TextView
-        // instead of exposing TextInputLayout.setHintTextColor, color the
-        // exact label view that we just identified. No other dialog text is
-        // recolored.
-        exactInputLabelViews.keys.toList().forEach { label ->
-            if (!label.isAttachedToWindow) return@forEach
-            if (label is TextView) {
-                label.setTextColor(accent)
-                label.setHintTextColor(accent)
+        // Floating input captions are intentionally disabled. Aesthetic's
+        // TextInputLayout box APIs still receive the native accent through the
+        // input-view loop above.
+    }
+
+    private fun applyPendingInputAccent(root: View) {
+        val inputs = arrayListOf<View>()
+        collectInputViews(root, inputs)
+        inputs.forEach { view ->
+            if (view is EditText) {
+                val normal = view.backgroundTintList?.defaultColor
+                    ?: resolveThemeColor(
+                        view.context,
+                        android.R.attr.textColorSecondary,
+                        android.graphics.Color.TRANSPARENT
+                    )
+                view.backgroundTintList = focusedColors(
+                    android.graphics.Color.TRANSPARENT,
+                    normal
+                )
+                tintCursor(view, android.graphics.Color.TRANSPARENT)
+                return@forEach
             }
-            val exactAccent = ColorStateList.valueOf(accent)
-            invokeColorStateList(label, "setHintTextColor", exactAccent)
-            invokeColorStateList(label, "setDefaultHintTextColor", exactAccent)
-            invokeInt(label, "setBoxStrokeColor", accent)
+            if (!isTextInputLayout(view)) return@forEach
+            val normal = resolveThemeColor(
+                view.context,
+                android.R.attr.textColorSecondary,
+                android.graphics.Color.TRANSPARENT
+            )
+            invokeInt(
+                view,
+                "setBoxStrokeColor",
+                android.graphics.Color.TRANSPARENT
+            )
+            invokeColorStateList(
+                view,
+                "setBoxStrokeColorStateList",
+                focusedColors(
+                    android.graphics.Color.TRANSPARENT,
+                    normal
+                )
+            )
         }
     }
 
@@ -347,6 +368,20 @@ internal object NativeGmmpCreationDialogLocalizer {
         }
     }
 
+    private fun invokeBoolean(
+        view: View,
+        methodName: String,
+        value: Boolean
+    ): Boolean = runCatching {
+        val method = view.javaClass.methods.firstOrNull {
+            it.name == methodName &&
+                it.parameterCount == 1 &&
+                it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+        } ?: return@runCatching false
+        method.invoke(view, value)
+        true
+    }.getOrDefault(false)
+
     private fun collectInputViews(view: View, out: MutableList<View>) {
         if (view is EditText || isTextInputLayout(view)) out += view
         val group = view as? ViewGroup ?: return
@@ -376,7 +411,7 @@ internal object NativeGmmpCreationDialogLocalizer {
             }?.invoke(view)?.toString()
         }.getOrNull()
 
-    private fun setReflectiveHint(view: View, value: CharSequence): Boolean =
+    private fun setReflectiveHint(view: View, value: CharSequence?): Boolean =
         runCatching {
             val method = view.javaClass.methods.firstOrNull {
                 it.name == "setHint" &&
@@ -402,8 +437,7 @@ internal object NativeGmmpCreationDialogLocalizer {
     }
 
     private fun isTextInputLayout(view: View): Boolean =
-        view.javaClass.name.endsWith(".TextInputLayout") ||
-            view.javaClass.simpleName == "TextInputLayout"
+        view.javaClass.simpleName.endsWith("TextInputLayout")
 
     private fun inputHint(view: View): String? {
         if (view is EditText) return view.hint?.toString()

@@ -26,6 +26,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -194,7 +195,11 @@ internal class SmartPlaylistFolderController(
         var movePreviousOtherLocations: Boolean = false,
         val moveChrome: PlaylistFolderMoveChrome.State =
             PlaylistFolderMoveChrome.State(),
-        var lastFolderScrollOffset: Int = Int.MIN_VALUE,
+        var nativeScrollDistancePx: Int = 0,
+        var folderGestureDownY: Float = 0f,
+        var folderGestureLastY: Float = 0f,
+        var folderGestureDragging: Boolean = false,
+        var folderGestureReported: Boolean = false,
         val selectedSmartPaths: LinkedHashSet<String> = linkedSetOf(),
         var selectionActionMode: android.view.ActionMode? = null,
         var selectionTransitionToMove: Boolean = false,
@@ -1207,7 +1212,7 @@ internal class SmartPlaylistFolderController(
         browser.renderedLocationKey = locationKey
         if (locationChanged) {
             browser.folderBand.translationY = 0f
-            browser.lastFolderScrollOffset = 0
+            browser.nativeScrollDistancePx = 0
             browser.folderScrollSyncReady = false
             browser.pendingFolderScrollReset = true
         }
@@ -1439,8 +1444,109 @@ internal class SmartPlaylistFolderController(
             selectionAccent = style?.accentColor ?: Color.TRANSPARENT,
             contextMenuSource = contextMenuSource,
             onContext = onContext
-        )
+        ).also { row ->
+            installFolderRowScrollRelay(browser, row)
+        }
     }
+
+    /**
+     * Synthetic physical-folder rows sit above GMMP's real Smart RecyclerView.
+     * A drag that starts on such a row would otherwise never reach the native
+     * list, so the folder can look pinned even though drags starting on a
+     * native Smart row scroll correctly. Relay only vertical drags after the
+     * platform touch slop; taps/context clicks remain the existing row action.
+     * The native RecyclerView still owns actual scrolling, and its original
+     * onScrolled(dy) callback remains the ONLY authority that moves the folder
+     * band.
+     */
+    private fun installFolderRowScrollRelay(
+        browser: Browser,
+        row: View
+    ) {
+        val touchSlop = ViewConfiguration.get(row.context).scaledTouchSlop
+        row.setOnTouchListener { touched, event ->
+            if (browsers[browser.list] !== browser ||
+                !browser.folderScrollSyncReady
+            ) return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    browser.folderGestureDownY = event.rawY
+                    browser.folderGestureLastY = event.rawY
+                    browser.folderGestureDragging = false
+                    touched.parent?.requestDisallowInterceptTouchEvent(true)
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val total = kotlin.math.abs(
+                        event.rawY - browser.folderGestureDownY
+                    )
+                    if (!browser.folderGestureDragging &&
+                        total > touchSlop
+                    ) {
+                        browser.folderGestureDragging = true
+                    }
+                    if (!browser.folderGestureDragging) {
+                        false
+                    } else {
+                        val dy = (browser.folderGestureLastY - event.rawY)
+                            .toInt()
+                        browser.folderGestureLastY = event.rawY
+                        if (dy != 0) {
+                            nativeScrollBy(browser.list, dy)
+                            if (!browser.folderGestureReported) {
+                                browser.folderGestureReported = true
+                                Log.i(
+                                    TAG,
+                                    "SMART FOLDERS FOLDER DRAG | relayed=true" +
+                                        " | canDown=" +
+                                        nativeCanScrollVertically(
+                                            browser.list, 1
+                                        ) +
+                                        " | canUp=" +
+                                        nativeCanScrollVertically(
+                                            browser.list, -1
+                                        ) +
+                                        " | nativeRows=" +
+                                        browser.nativeOrder.size
+                                )
+                            }
+                        }
+                        true
+                    }
+                }
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> {
+                    touched.parent?.requestDisallowInterceptTouchEvent(false)
+                    val consumed = browser.folderGestureDragging
+                    browser.folderGestureDragging = false
+                    consumed
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun nativeScrollBy(list: ViewGroup, dy: Int): Boolean =
+        runCatching {
+            list.javaClass.getMethod(
+                "scrollBy",
+                Integer.TYPE,
+                Integer.TYPE
+            ).invoke(list, 0, dy)
+            true
+        }.onFailure {
+            Log.w(TAG, "SMART FOLDERS FOLDER DRAG | native scrollBy unavailable", it)
+        }.getOrDefault(false)
+
+    private fun nativeCanScrollVertically(
+        list: ViewGroup,
+        direction: Int
+    ): Boolean? = runCatching {
+        list.javaClass.getMethod(
+            "canScrollVertically",
+            Integer.TYPE
+        ).invoke(list, direction) as? Boolean
+    }.getOrNull()
 
     private fun dispatchNativeAction(
         browser: Browser,
@@ -2591,10 +2697,13 @@ internal class SmartPlaylistFolderController(
             !browser.folderScrollSyncReady
         ) return
         val folderHeight = browser.folderBand.height.coerceAtLeast(0)
-        val offset = SmartFolderHeaderScrollPolicy.folderScrollOffsetAfterDelta(
-            folderHeight = folderHeight,
-            currentOffset = browser.lastFolderScrollOffset,
+        val distance = SmartFolderHeaderScrollPolicy.scrollDistanceAfterDelta(
+            currentDistance = browser.nativeScrollDistancePx,
             dy = dy
+        )
+        val offset = SmartFolderHeaderScrollPolicy.folderTranslation(
+            folderHeight = folderHeight,
+            scrollDistance = distance
         )
         if (!browser.scrollDeltaReported) {
             browser.scrollDeltaReported = true
@@ -2602,11 +2711,12 @@ internal class SmartPlaylistFolderController(
                 TAG,
                 "SMART FOLDERS SCROLL | firstConsumedDy=" + dy +
                     " | folderHeight=" + folderHeight +
+                    " | distance=" + distance +
                     " | nestedScroll=false"
             )
         }
-        if (browser.lastFolderScrollOffset == offset) return
-        browser.lastFolderScrollOffset = offset
+        browser.nativeScrollDistancePx = distance
+        if (browser.folderBand.translationY == -offset.toFloat()) return
         browser.folderBand.translationY = -offset.toFloat()
     }
 
@@ -2614,7 +2724,7 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
         browser.folderBand.translationY = 0f
-        browser.lastFolderScrollOffset = 0
+        browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
     }
 
@@ -2629,7 +2739,7 @@ internal class SmartPlaylistFolderController(
         }
         browser.folderScrollSyncReady = false
         browser.folderBand.translationY = 0f
-        browser.lastFolderScrollOffset = 0
+        browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
         browser.list.postOnAnimation {
             if (browsers[browser.list] !== browser ||
@@ -2649,7 +2759,7 @@ internal class SmartPlaylistFolderController(
                 browser.pendingFolderScrollReset = false
                 browser.folderScrollSyncReady = true
                 browser.folderBand.translationY = 0f
-                browser.lastFolderScrollOffset = 0
+                browser.nativeScrollDistancePx = 0
                 browser.scrollDeltaReported = false
                 revealInitialContent(browser)
                 positionOverlay(browser)

@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import android.os.Looper
 import android.view.View
 import java.lang.reflect.Proxy
 
@@ -70,7 +71,16 @@ internal object NativeGmmpAccent {
         ) { _, callback, args ->
             when (callback.name) {
                 "a" -> (args?.firstOrNull() as? Number)?.let { value ->
-                    view.post { onColor(value.toInt()) }
+                    val color = value.toInt()
+                    // Aesthetic commonly emits the current value
+                    // synchronously while we subscribe on GMMP's main
+                    // thread. Posting that value delayed creation-dialog
+                    // chrome by a visible frame (~80 ms on the test device).
+                    if (Looper.myLooper() == Looper.getMainLooper()) {
+                        onColor(color)
+                    } else {
+                        view.post { onColor(color) }
+                    }
                 }
                 "c" -> args?.firstOrNull()?.let(disposables::add)
                 "onError" -> onError(args?.firstOrNull() as? Throwable)
