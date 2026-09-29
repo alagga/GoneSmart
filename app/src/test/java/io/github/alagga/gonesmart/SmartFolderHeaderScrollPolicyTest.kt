@@ -66,4 +66,20 @@ class SmartFolderHeaderScrollPolicyTest {
             )
         )
     }
+
+    @Test fun topStretchIsNeutralWithoutOverscroll() {
+        assertEquals(
+            1f,
+            SmartFolderHeaderScrollPolicy.topStretchScale(0f),
+            0.0001f
+        )
+    }
+
+    @Test fun topStretchTracksAndroidEdgeEffectDamping() {
+        assertEquals(
+            1.1039f,
+            SmartFolderHeaderScrollPolicy.topStretchScale(1f),
+            0.001f
+        )
+    }
 }

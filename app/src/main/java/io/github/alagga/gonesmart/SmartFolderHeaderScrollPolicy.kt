@@ -27,4 +27,19 @@ internal object SmartFolderHeaderScrollPolicy {
         if (folderHeight <= 0) return 0
         return scrollDistance.coerceIn(0, folderHeight)
     }
+
+    fun topStretchScale(edgeDistance: Float): Float {
+        val distance = edgeDistance.coerceIn(0f, 1f)
+        if (distance <= 0f) return 1f
+        val vector =
+            0.016f * distance +
+                0.016f * (
+                    1.0 - kotlin.math.exp(
+                        -distance.toDouble() * kotlin.math.E / 0.33
+                    )
+                ).toFloat()
+        val numerator = (1f + vector) * (1f + vector)
+        val denominator = (1f - 1.1f * vector).coerceAtLeast(0.001f)
+        return numerator / denominator
+    }
 }

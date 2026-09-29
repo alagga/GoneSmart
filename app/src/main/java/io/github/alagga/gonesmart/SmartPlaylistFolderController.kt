@@ -167,6 +167,7 @@ internal class SmartPlaylistFolderController(
         val overlay: FrameLayout,
         val rows: LinearLayout,
         val folderBand: FrameLayout,
+        val folderViewport: FrameLayout,
         val breadcrumb: RecyclerView,
         val originalAlpha: Float,
         val originalPaddingLeft: Int,
@@ -213,7 +214,8 @@ internal class SmartPlaylistFolderController(
         var folderScrollSyncReady: Boolean = false,
         var pendingFolderScrollReset: Boolean = true,
         var scrollDeltaReported: Boolean = false,
-        var touchGuardReported: Boolean = false
+        var touchGuardReported: Boolean = false,
+        var overscrollReported: Boolean = false
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -818,9 +820,10 @@ internal class SmartPlaylistFolderController(
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
-                    // Scroll displacement is owned exclusively by the native
-                    // RecyclerView's consumed dy. PreDraw only synchronizes
-                    // native-row-dependent visuals/interactions.
+                    // Normal scrolling stays driven only by native consumed
+                    // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
+                    // so synthetic physical folders deform with native rows.
+                    syncNativeTopOverscroll(browser)
                     alignVisibleNativeTitles(browser)
                     syncVisibleSmartRowInteractions(browser)
                 }
@@ -850,6 +853,7 @@ internal class SmartPlaylistFolderController(
             overlay = overlay,
             rows = rows,
             folderBand = folderBand,
+            folderViewport = folderViewport,
             breadcrumb = breadcrumb,
             originalAlpha = originalAlpha,
             originalPaddingLeft = list.paddingLeft,
@@ -2621,6 +2625,8 @@ internal class SmartPlaylistFolderController(
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
         browser.list.parent?.requestDisallowInterceptTouchEvent(false)
+        browser.folderViewport.scaleY = 1f
+        browser.folderViewport.pivotY = 0f
         browser.originalNativeNestedScrollingEnabled?.let {
             setNativeNestedScrollingEnabled(browser.list, it)
         }
@@ -2690,6 +2696,69 @@ internal class SmartPlaylistFolderController(
         )
     }.getOrDefault(false)
 
+    private fun syncNativeTopOverscroll(browser: Browser) {
+        if (android.os.Build.VERSION.SDK_INT < 31 ||
+            browsers[browser.list] !== browser ||
+            browser.nativeScrollDistancePx != 0 ||
+            nativeCanScrollVertically(browser.list, -1) == true
+        ) {
+            if (browser.folderViewport.scaleY != 1f) {
+                browser.folderViewport.scaleY = 1f
+            }
+            browser.overscrollReported = false
+            return
+        }
+
+        val distance = nativeTopEdgeDistance(browser.list)
+            .coerceIn(0f, 1f)
+        val scale = SmartFolderHeaderScrollPolicy.topStretchScale(distance)
+        browser.folderViewport.pivotY = 0f
+        if (kotlin.math.abs(browser.folderViewport.scaleY - scale) > 0.0005f) {
+            browser.folderViewport.scaleY = scale
+        }
+        if (distance > 0f && !browser.overscrollReported) {
+            browser.overscrollReported = true
+            Log.i(
+                TAG,
+                "SMART FOLDERS OVERSCROLL | nativeDistance=" + distance +
+                    " | folderScaleY=" + scale
+            )
+        } else if (distance <= 0f) {
+            browser.overscrollReported = false
+        }
+    }
+
+    private fun nativeTopEdgeDistance(list: ViewGroup): Float {
+        val fields = nativeEdgeEffectFields(list.javaClass)
+        val named = fields.firstOrNull { it.name == "mTopGlow" }
+        if (named != null) {
+            return edgeEffectDistance(named, list)
+        }
+        // R8 can rename private RecyclerView fields. At the real top of this
+        // vertical-only list, use the largest active EdgeEffect as fallback.
+        return fields.maxOfOrNull { edgeEffectDistance(it, list) } ?: 0f
+    }
+
+    private fun edgeEffectDistance(field: Field, list: ViewGroup): Float =
+        runCatching {
+            field.isAccessible = true
+            val glow = field.get(list) ?: return@runCatching 0f
+            (glow.javaClass.getMethod("getDistance")
+                .invoke(glow) as? Number)?.toFloat() ?: 0f
+        }.getOrDefault(0f)
+
+    private fun nativeEdgeEffectFields(type: Class<*>): List<Field> {
+        val result = arrayListOf<Field>()
+        var cursor: Class<*>? = type
+        while (cursor != null) {
+            cursor.declaredFields.filterTo(result) {
+                it.type.name == "android.widget.EdgeEffect"
+            }
+            cursor = cursor.superclass
+        }
+        return result
+    }
+
     private fun syncFolderRowsScrollByDelta(
         browser: Browser,
         dy: Int
@@ -2726,8 +2795,11 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
         browser.folderBand.translationY = 0f
+        browser.folderViewport.scaleY = 1f
+        browser.folderViewport.pivotY = 0f
         browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
+        browser.overscrollReported = false
     }
 
     private fun settleFolderScrollAfterRefresh(
@@ -2741,8 +2813,11 @@ internal class SmartPlaylistFolderController(
         }
         browser.folderScrollSyncReady = false
         browser.folderBand.translationY = 0f
+        browser.folderViewport.scaleY = 1f
+        browser.folderViewport.pivotY = 0f
         browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
+        browser.overscrollReported = false
         browser.list.postOnAnimation {
             if (browsers[browser.list] !== browser ||
                 browser.generation != generation ||
@@ -2761,8 +2836,11 @@ internal class SmartPlaylistFolderController(
                 browser.pendingFolderScrollReset = false
                 browser.folderScrollSyncReady = true
                 browser.folderBand.translationY = 0f
+                browser.folderViewport.scaleY = 1f
+                browser.folderViewport.pivotY = 0f
                 browser.nativeScrollDistancePx = 0
                 browser.scrollDeltaReported = false
+                browser.overscrollReported = false
                 revealInitialContent(browser)
                 positionOverlay(browser)
             }
