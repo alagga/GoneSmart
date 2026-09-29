@@ -9,6 +9,11 @@ package io.github.alagga.gonesmart
  * it is a scrollbar estimate and can jump as holders are rebound.
  */
 internal object SmartFolderHeaderScrollPolicy {
+    fun rowMatchesSnapshot(
+        expectedPath: String?,
+        boundPath: String?
+    ): Boolean = expectedPath != null && expectedPath == boundPath
+
     fun folderScrollOffset(
         folderHeight: Int,
         listPaddingTop: Int,

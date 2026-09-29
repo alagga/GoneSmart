@@ -1798,6 +1798,10 @@ internal class PlaylistFolderPreviewController(
             suspendedNativeLists.containsKey(list) ||
             !list.isAttachedToWindow
         ) return
+        if (!attachSurfaceReady(list)) {
+            deferAttachUntilVisible(list, attempt)
+            return
+        }
         val adapter = nativeAdapter(list)
         if (adapter?.javaClass?.name != "zn3") {
             retry(list, attempt)
@@ -1969,7 +1973,10 @@ internal class PlaylistFolderPreviewController(
                 weakList.get()?.let { current ->
                     browsers[current]?.let { browser ->
                         runCatching {
-                            syncOverlayAppearance(browser)
+                            // GMMP can change the visible tab without changing
+                            // RecyclerView bounds. Re-evaluate visibility here
+                            // as the accepted pre-Smart implementation did.
+                            positionOverlay(browser)
                             scheduleNativePlaylistRefresh(browser)
                         }.onFailure { error ->
                             Log.e(TAG, "FOLDER INLINE ERROR | theme probe", error)
@@ -1990,7 +1997,12 @@ internal class PlaylistFolderPreviewController(
                         // while GMMP replaces its fragment after creation.
                         // The next attached browser reuses originalAlpha;
                         // bounded attach failure restores it explicitly.
-                        preserveNativeAlpha = settings.enabled
+                        preserveNativeAlpha =
+                            PlaylistFolderSurfaceLifecyclePolicy
+                                .preserveNativeAlphaOnDetach(
+                                    foldersEnabled = settings.enabled,
+                                    isPicker = isPicker(list)
+                                )
                     )
                 }
             }
@@ -2136,6 +2148,35 @@ internal class PlaylistFolderPreviewController(
                 " | safeHost=" + parent.javaClass.simpleName +
                 " | nativeStyle=" + nativeStyle.signature
         )
+    }
+
+    private fun attachSurfaceReady(list: ViewGroup): Boolean {
+        val bounds = Rect()
+        val visibleBounds = list.getGlobalVisibleRect(bounds) &&
+            bounds.width() > dp(list, 30) &&
+            bounds.height() > dp(list, 30)
+        return PlaylistFolderSurfaceLifecyclePolicy.shouldBuildBrowser(
+            isPicker = isPicker(list),
+            frontFragment = isFrontFragmentView(list),
+            nativeShown = list.isShown,
+            hasVisibleBounds = visibleBounds
+        )
+    }
+
+    private fun deferAttachUntilVisible(list: ViewGroup, attempt: Int) {
+        if (!settings.enabled || browsers.containsKey(list) ||
+            suspendedNativeLists.containsKey(list) ||
+            !list.isAttachedToWindow || pendingRetries.containsKey(list)
+        ) return
+        pendingRetries[list] = attempt
+        list.postDelayed({
+            if (pendingRetries[list] != attempt) return@postDelayed
+            pendingRetries.remove(list)
+            if (settings.enabled && !browsers.containsKey(list) &&
+                !suspendedNativeLists.containsKey(list) &&
+                list.isAttachedToWindow
+            ) attachIfReady(list, attempt)
+        }, 250L)
     }
 
     private fun retry(list: ViewGroup, attempt: Int) {
@@ -2823,14 +2864,8 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             if (!isPicker(list)) {
-                // The inflated native row can carry a borderless foreground
-                // ripple whose hotspot expands against our full overlay host.
-                // Native GMMP owns the real ActionMode; the synthetic mirror
-                // must not play that page-sized ripple on long press.
-                item.foreground = null
-                item.stateListAnimator = null
                 browser.mainRenderedPlaylistRows[playlist.path] = item
-                browser.mainOriginalRowForegrounds[item] = null
+                browser.mainOriginalRowForegrounds[item] = item.foreground
                 applyMainSelectionVisual(browser, playlist.path, item)
             }
             browser.rows.addView(item)

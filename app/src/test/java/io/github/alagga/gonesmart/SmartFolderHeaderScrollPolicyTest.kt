@@ -4,6 +4,23 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SmartFolderHeaderScrollPolicyTest {
+    @Test fun ignoresHolderFromPreviousFolderSnapshot() {
+        assertEquals(
+            false,
+            SmartFolderHeaderScrollPolicy.rowMatchesSnapshot(
+                expectedPath = "/smart/current.spl",
+                boundPath = "/smart/previous.spl"
+            )
+        )
+        assertEquals(
+            true,
+            SmartFolderHeaderScrollPolicy.rowMatchesSnapshot(
+                expectedPath = "/smart/current.spl",
+                boundPath = "/smart/current.spl"
+            )
+        )
+    }
+
     @Test fun startsAtZero() {
         assertEquals(
             0,

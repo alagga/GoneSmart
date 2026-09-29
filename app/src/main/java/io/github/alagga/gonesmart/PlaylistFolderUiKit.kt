@@ -243,8 +243,9 @@ internal object PlaylistFolderUiKit {
                 template, host, contextMenuSource, onContext
             )
             if (folder) addFolderIcon(template, title, host, style)
-            style.rowBackground?.newDrawable(host.resources)
-                ?.mutate()?.let { template.background = it }
+            template.background =
+                style.rowBackground?.newDrawable(host.resources)?.mutate()
+                    ?: selectableBackground(host)
             applySelection(template, selected, selectionAccent)
             template.isClickable = true
             template.isFocusable = true
@@ -463,7 +464,7 @@ internal object PlaylistFolderUiKit {
         val button = ImageButton(host.context).apply {
             val nativeId = menuButtonId(host)
             if (nativeId != 0) id = nativeId
-            background = selectableBackground(host)
+            background = selectableBackground(host, borderless = true)
         }
         styleContextMenuButton(button, host, source, onContext)
         wrapper.addView(
@@ -532,9 +533,16 @@ internal object PlaylistFolderUiKit {
         return null
     }
 
-    private fun selectableBackground(host: View): Drawable? {
+    private fun selectableBackground(
+        host: View,
+        borderless: Boolean = false
+    ): Drawable? {
         val attrs = intArrayOf(
-            android.R.attr.selectableItemBackgroundBorderless
+            if (borderless) {
+                android.R.attr.selectableItemBackgroundBorderless
+            } else {
+                android.R.attr.selectableItemBackground
+            }
         )
         val typed = host.context.obtainStyledAttributes(attrs)
         return try {

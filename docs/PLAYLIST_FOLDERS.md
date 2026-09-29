@@ -832,3 +832,10 @@ The Smart root overflow also defensively reinstalls the verified folder-Add item
 Normal Playlist main-selection no longer treats its synthetic native-row foreground ripple as part of selection feedback. The real hidden GMMP row still owns the original long-press/ActionMode behavior, while the visible synthetic row suppresses its inherited full-row borderless ripple/state animator and uses only the established static accent selection overlay. This targets the device-reported page-scale long-press animation without changing selection semantics.
 
 Playlist/folder creation dialogs are GMMP-referential UI: native localized GMMP resources are preferred, and only missing phrases fall back to the complete centralized `GoneSmartGmmpStrings.kt` locale table. MaterialDialogs are localized with bounded post-show passes because button/input labels can bind after `show()`.
+
+
+## 2026-09-29 lifecycle regression correction
+
+A device trace exposed a regression introduced while sharing folder chrome with Smart Playlists: GMMP can keep the normal Playlists RecyclerView attached while another page is frontmost. GoneSmart was still constructing the complete synthetic browser for that hidden surface and then tearing it down. The main Playlists browser now waits until the original RecyclerView is simultaneously frontmost, shown and globally visible; the Add picker is exempt because it is its own active dialog surface. Normal-main detach always restores the original native alpha. Only the picker retains the previous alpha-0 handoff used while GMMP replaces its internal picker fragment.
+
+The normal row pressed-state fallback is also restored to the accepted pre-Smart implementation: a missing sampled native row background receives Android's bounded `selectableItemBackground`. The three-dot control alone may use a borderless selectable background. Main multi-selection still changes only the existing row foreground in place; no selection action rebuilds or animates the whole folder browser.

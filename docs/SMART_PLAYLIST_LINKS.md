@@ -294,3 +294,10 @@ GoneSmart Smart multi-selection row tint now uses the same `colorAccent + 0x80 a
 Normal Playlist main-selection mirroring updates existing rendered row foregrounds in place. It does not rerun the full synthetic browser render or insertion animator for a pure select/deselect operation.
 
 The existing native Smart drawer entry is decorated using either the host-localized Smart title or its native resource ID containing `smart`, while still prohibiting a duplicate drawer item.
+
+
+## 2026-09-29 Smart header lifecycle correction
+
+The first-frame folder delay was previously attacked with a second, fast folder-only loader running in parallel with the full Smart snapshot. Device testing showed that this creates two authorities for the same synthetic header while the native `ls4.y` differ is also changing rows. That fast loader is removed: one background snapshot now supplies both physical folders and the current directory's `ws4` models, and initial native rows/header remain hidden only until that complete snapshot has been rendered.
+
+Because `ls4.y` is AsyncListDiffer-backed, a folder navigation temporarily suspends folder-band scroll coupling and resets it to the top. Coupling resumes after layout settling, and only a visible native `vs4` whose bound `ws4.v` path equals the expected path at the same current `nativeOrder` position may drive the synthetic header. Holders left over from the previous folder are ignored instead of moving the new header. An original `os4.j2` submission marks GoneSmart's prior submission stale before refresh so a nested folder cannot be replaced by GMMP's root list merely because its last GoneSmart signature was unchanged.
