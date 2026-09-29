@@ -1081,6 +1081,55 @@ class GoneSmartModule : XposedModule() {
             }
             result
         }
+
+        // The host and module can load AndroidX RecyclerView through separate
+        // classloaders. Observe GMMP's ORIGINAL host callbacks here instead
+        // of adding module RecyclerView listeners that can never attach to
+        // the native AestheticRecyclerView instance.
+        runCatching {
+            val onScrolled = recycler.declaredMethods.firstOrNull {
+                it.name == "onScrolled" &&
+                    it.parameterCount == 2 &&
+                    it.parameterTypes.all { type ->
+                        type == Int::class.javaPrimitiveType
+                    }
+            } ?: throw NoSuchMethodException("RecyclerView.onScrolled(int,int)")
+            onScrolled.isAccessible = true
+            hook(onScrolled).intercept { chain ->
+                val result = chain.proceed()
+                smartPlaylistFolderController.onNativeRecyclerScrolled(
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(1) as? Int ?: 0
+                )
+                result
+            }
+
+            val onTouch = recycler.declaredMethods.firstOrNull {
+                it.name == "onTouchEvent" &&
+                    it.parameterCount == 1 &&
+                    android.view.MotionEvent::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    )
+            } ?: throw NoSuchMethodException("RecyclerView.onTouchEvent(MotionEvent)")
+            onTouch.isAccessible = true
+            hook(onTouch).intercept { chain ->
+                smartPlaylistFolderController.onNativeRecyclerTouch(
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(0) as? android.view.MotionEvent
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOST RECYCLER | onScrolled/onTouchEvent hooks ready"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOST RECYCLER | hooks unavailable",
+                it
+            )
+        }
         // DEX-confirmed on the supplied GMMP 4.2.0 APK, not a guess:
         // zn3 -> bw -> zw -> yw -> RecyclerView$h (native Adapter).
         // Hook ONLY the actual native Adapter's existing notification

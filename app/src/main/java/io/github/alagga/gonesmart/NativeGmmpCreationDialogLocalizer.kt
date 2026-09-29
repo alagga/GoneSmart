@@ -9,7 +9,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
-import java.lang.reflect.Modifier
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -31,7 +30,8 @@ internal object NativeGmmpCreationDialogLocalizer {
     private val accentSubscriptions =
         WeakHashMap<Dialog, NativeGmmpAccent.Subscription>()
     private val accentColors = WeakHashMap<Dialog, Int>()
-    private val exactInputLabelViews = WeakHashMap<TextView, Boolean>()
+    private val exactInputLabelViews = WeakHashMap<View, Boolean>()
+    private val inputDiagnostics = WeakHashMap<Dialog, Boolean>()
 
     fun localizeWhenReady(dialog: Dialog) {
         localize(dialog)
@@ -54,6 +54,7 @@ internal object NativeGmmpCreationDialogLocalizer {
         val inputViews = arrayListOf<View>()
         collectInputViews(root, inputViews)
         if (textViews.isEmpty() && inputViews.isEmpty()) return false
+        val inputAncestors = collectInputAncestors(inputViews)
 
         val visibleStrings = buildList {
             textViews.forEach { view ->
@@ -112,6 +113,26 @@ internal object NativeGmmpCreationDialogLocalizer {
             }
         }
 
+        // The actually rendered Material floating label lives on an ancestor
+        // of md_input_message on the tested dialog. Do not depend on the
+        // concrete TextInputLayout class name: read/write any parent that
+        // exposes the standard CharSequence getHint/setHint contract.
+        inputAncestors.forEach { view ->
+            val source = reflectiveHint(view)?.takeUnless(String::isBlank)
+                ?: return@forEach
+            val replacement =
+                GoneSmartGmmpStrings.creationInputLabel(locale, source)
+                    ?: return@forEach
+            if (replacement != source &&
+                setReflectiveHint(view, replacement)
+            ) {
+                exactInputLabelViews[view] = true
+                fallbackCount++
+                inputCount++
+                changed++
+            }
+        }
+
         // Keep the pre-existing native-first translation path for ordinary
         // dialog text/hints. "New Folder Name" is intentionally NOT part of
         // GoneSmartGmmpStrings.creationDialog.
@@ -156,6 +177,24 @@ internal object NativeGmmpCreationDialogLocalizer {
                 inputCount++
                 changed++
             }
+        }
+
+        // Aesthetic/Material can restyle the input after show/focus. Apply
+        // the already-resolved live GMMP accent once more AFTER discovering
+        // the real floating-label owner, so the newly found target and cursor
+        // are corrected in the same pass.
+        accentColors[dialog]?.let { applyInputAccent(root, it) }
+
+        if (inputDiagnostics.put(dialog, true) == null) {
+            val field = inputViews.filterIsInstance<EditText>().firstOrNull()
+            val parents = inputAncestors.take(5)
+                .joinToString(">") { it.javaClass.simpleName }
+            Log.i(
+                TAG,
+                "CREATION DIALOG INPUT | field=" +
+                    (field?.javaClass?.simpleName ?: "none") +
+                    " | parentChain=" + parents
+            )
         }
 
         if (changed > 0) {
@@ -221,6 +260,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                         accent
                     )
                 view.backgroundTintList = focusedColors(accent, normal)
+                tintCursor(view, accent)
                 return@forEach
             }
             if (!isTextInputLayout(view)) return@forEach
@@ -245,12 +285,16 @@ internal object NativeGmmpCreationDialogLocalizer {
         // instead of exposing TextInputLayout.setHintTextColor, color the
         // exact label view that we just identified. No other dialog text is
         // recolored.
-        val labels = arrayListOf<TextView>()
-        collectTextViews(root, labels)
-        labels.forEach { label ->
-            if (exactInputLabelViews.containsKey(label)) {
+        exactInputLabelViews.keys.toList().forEach { label ->
+            if (!label.isAttachedToWindow) return@forEach
+            if (label is TextView) {
                 label.setTextColor(accent)
+                label.setHintTextColor(accent)
             }
+            val exactAccent = ColorStateList.valueOf(accent)
+            invokeColorStateList(label, "setHintTextColor", exactAccent)
+            invokeColorStateList(label, "setDefaultHintTextColor", exactAccent)
+            invokeInt(label, "setBoxStrokeColor", accent)
         }
     }
 
@@ -311,6 +355,52 @@ internal object NativeGmmpCreationDialogLocalizer {
         }
     }
 
+    private fun collectInputAncestors(inputs: List<View>): List<View> {
+        val result = linkedSetOf<View>()
+        inputs.filterIsInstance<EditText>().forEach { field ->
+            var parent = field.parent
+            var depth = 0
+            while (parent is View && depth < 6) {
+                result += parent
+                parent = parent.parent
+                depth++
+            }
+        }
+        return result.toList()
+    }
+
+    private fun reflectiveHint(view: View): String? =
+        runCatching {
+            view.javaClass.methods.firstOrNull {
+                it.name == "getHint" && it.parameterCount == 0
+            }?.invoke(view)?.toString()
+        }.getOrNull()
+
+    private fun setReflectiveHint(view: View, value: CharSequence): Boolean =
+        runCatching {
+            val method = view.javaClass.methods.firstOrNull {
+                it.name == "setHint" &&
+                    it.parameterCount == 1 &&
+                    CharSequence::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    )
+            } ?: return@runCatching false
+            method.invoke(view, value)
+            true
+        }.getOrDefault(false)
+
+    private fun tintCursor(view: EditText, accent: Int) {
+        if (android.os.Build.VERSION.SDK_INT < 29) return
+        runCatching {
+            val cursor = view.textCursorDrawable?.mutate()
+                ?: return@runCatching
+            cursor.setTint(accent)
+            view.textCursorDrawable = cursor
+        }.onFailure {
+            Log.w(TAG, "CREATION DIALOG ACCENT | cursor tint unavailable", it)
+        }
+    }
+
     private fun isTextInputLayout(view: View): Boolean =
         view.javaClass.name.endsWith(".TextInputLayout") ||
             view.javaClass.simpleName == "TextInputLayout"
@@ -349,46 +439,48 @@ internal object NativeGmmpCreationDialogLocalizer {
     ): Map<String, String> {
         val cacheKey = context.packageName + "|" + locale.toLanguageTag()
         return nativeMaps.getOrPut(cacheKey) {
-            runCatching {
-                val configuration = Configuration(context.resources.configuration)
-                configuration.setLocale(Locale.ENGLISH)
-                val englishContext =
-                    context.createConfigurationContext(configuration)
-                val type = Class.forName(
-                    context.packageName + ".R\$string",
-                    false,
-                    context.classLoader
-                )
-                val result = linkedMapOf<String, String>()
-                type.declaredFields.forEach { field ->
-                    if (field.type != Integer.TYPE ||
-                        !Modifier.isStatic(field.modifiers)
-                    ) return@forEach
-                    val id = runCatching {
-                        field.isAccessible = true
-                        field.getInt(null)
-                    }.getOrNull() ?: return@forEach
-                    val english = runCatching {
-                        englishContext.getString(id)
-                    }.getOrNull()?.takeUnless(String::isBlank)
-                        ?: return@forEach
-                    val current = runCatching {
-                        context.getString(id)
-                    }.getOrNull()?.takeUnless(String::isBlank)
-                        ?: return@forEach
-                    if (english.contains('%') || current.contains('%') ||
-                        english == current
-                    ) return@forEach
-                    result.putIfAbsent(key(english), current)
+            val configuration =
+                Configuration(context.resources.configuration).apply {
+                    setLocale(Locale.ENGLISH)
                 }
-                result
-            }.onFailure {
-                Log.w(
-                    TAG,
-                    "CREATION DIALOG I18N | native resource scan unavailable",
-                    it
+            val englishContext =
+                context.createConfigurationContext(configuration)
+            val result = linkedMapOf<String, String>()
+            // R8 does not retain a loadable gonemad.gmmp.R$string class in
+            // this installed GMMP build. Native-first lookup therefore uses
+            // Android Resources directly by the audited host resource names,
+            // exactly as AGENTS.md requires elsewhere in GoneSmart.
+            val names = listOf(
+                "files_new_folder",
+                "folder",
+                "folders",
+                "playlist",
+                "playlists",
+                "new_playlist",
+                "create",
+                "cancel",
+                "ok",
+                "add"
+            )
+            names.forEach { name ->
+                val id = context.resources.getIdentifier(
+                    name, "string", context.packageName
                 )
-            }.getOrDefault(emptyMap())
+                if (id == 0) return@forEach
+                val english = runCatching {
+                    englishContext.getString(id)
+                }.getOrNull()?.takeUnless(String::isBlank)
+                    ?: return@forEach
+                val current = runCatching {
+                    context.getString(id)
+                }.getOrNull()?.takeUnless(String::isBlank)
+                    ?: return@forEach
+                if (english.contains('%') || current.contains('%') ||
+                    english == current
+                ) return@forEach
+                result.putIfAbsent(key(english), current)
+            }
+            result
         }
     }
 

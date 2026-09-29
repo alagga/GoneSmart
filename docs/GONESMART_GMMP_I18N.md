@@ -52,3 +52,10 @@ MaterialDialogs can populate input hints/buttons during or just after `show()`. 
 The tested folder-creation dialog still displayed the literal small **New Folder Name** above the input after generic TextView/EditText localization. Treat that phrase (and the parallel **New Playlist Name**) as an exact MaterialDialogs input-label variant only, never as the large dialog title. Runtime localization now checks the exact literal across rendered TextView text, EditText hints and reflective TextInputLayout hints so MaterialDialogs implementation details cannot leave the small label English while the rest of GMMP is localized. The large title/buttons remain on the existing native-first path.
 
 The label/underline focus color is not a localization fallback: it must come from GMMP's live Aesthetic `!mainColorAccent` source, matching the player's own current dynamic controls.
+
+
+## 2026-09-29 creation-dialog runtime correction after the 17:04 device log
+
+The tested GMMP APK does not expose a loadable `gonemad.gmmp.R$string` class at runtime; the previous generic reflection scan therefore logged `ClassNotFoundException`. Native-first creation strings now use Android `Resources.getIdentifier/getString` with audited GMMP resource names instead. The centralized GoneSmart creation table remains fallback-only for MaterialDialogs-owned phrases GMMP genuinely does not supply.
+
+The same log identified the actual input widget as GMMP's `AestheticTextInputEditText#md_input_message`. The visible floating label can be owned by an ancestor rather than the field or a class literally named `TextInputLayout`. Localization now walks the bounded parent chain and rewrites only the exact MaterialDialogs literals `New Folder Name` / `New Playlist Name`; this still cannot touch the larger dialog title. After discovering that real owner, the already-resolved live `!mainColorAccent` is reapplied to its hint/floating-label API and to the EditText cursor. The underline keeps the same live native accent source.
