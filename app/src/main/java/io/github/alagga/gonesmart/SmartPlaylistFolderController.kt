@@ -205,6 +205,9 @@ internal class SmartPlaylistFolderController(
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "GoneSmartSmartFolders").apply { isDaemon = true }
     }
+    private val headerWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "GoneSmartSmartFolderHeader").apply { isDaemon = true }
+    }
     private val refreshGeneration = AtomicLong(0L)
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
@@ -861,6 +864,7 @@ internal class SmartPlaylistFolderController(
 
     private fun refresh(browser: Browser) {
         if (!enabled || browsers[browser.list] !== browser) return
+        scheduleFastFolderHeader(browser)
         val generation = refreshGeneration.incrementAndGet()
         browser.generation = generation
         val directory = browser.current
@@ -904,18 +908,65 @@ internal class SmartPlaylistFolderController(
         }
     }
 
+    private fun loadFolders(directory: File, root: File): List<File> {
+        val files = directory.listFiles()?.toList().orEmpty()
+        return files.asSequence()
+            .filter { it.isDirectory }
+            .mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
+            .filter {
+                SmartPlaylistFolderPolicy.isInsideRoot(root.path, it.path)
+            }
+            .sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
+            .toList()
+    }
+
+    private fun scheduleFastFolderHeader(browser: Browser) {
+        val directory = browser.current
+        val otherLocations = browser.otherLocations
+        val root = browser.root
+        headerWorker.execute {
+            val canonical = runCatching { directory.canonicalFile }.getOrNull()
+                ?: return@execute
+            val folders = runCatching {
+                loadFolders(canonical, root)
+            }.onFailure {
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS HEADER LOAD FAILED | " + safePath(canonical),
+                    it
+                )
+            }.getOrNull() ?: return@execute
+            main.post {
+                if (!enabled || browsers[browser.list] !== browser ||
+                    !sameFile(browser.current, canonical) ||
+                    browser.otherLocations != otherLocations
+                ) return@post
+                browser.style = sampleNativeStyle(browser.list) ?: browser.style
+                render(
+                    browser,
+                    Snapshot(
+                        directory = canonical,
+                        folders = folders,
+                        models = emptyList(),
+                        modelsByPath = emptyMap()
+                    ),
+                    nativeAdapterItemCount(browser)
+                )
+                positionOverlay(browser)
+            }
+        }
+    }
+
+    private fun nativeAdapterItemCount(browser: Browser): Int =
+        runCatching {
+            browser.nativeAdapter.javaClass.getMethod("getItemCount")
+                .invoke(browser.nativeAdapter) as Int
+        }.getOrDefault(browser.nativeOrder.size)
+
     private fun loadSnapshot(directory: File): Snapshot {
         val native = bindings ?: error("Smart-folder bindings missing")
         val files = directory.listFiles()?.toList().orEmpty()
-        val folders = files.filter { it.isDirectory }
-            .mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
-            .filter {
-                SmartPlaylistFolderPolicy.isInsideRoot(
-                    rootFile()?.path ?: directory.path,
-                    it.path
-                )
-            }
-            .sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
+        val folders = loadFolders(directory, rootFile() ?: directory)
 
         val models = ArrayList<Any>()
         for (file in files.filter {
@@ -2242,9 +2293,9 @@ internal class SmartPlaylistFolderController(
             val browser = currentBrowser()
             val visible =
                 enabled &&
-                    browser != null &&
-                    !browser.otherLocations &&
-                    browser.moveSources == null
+                    (browser == null ||
+                        (!browser.otherLocations &&
+                            browser.moveSources == null))
             if (existing.isVisible != visible) {
                 existing.isVisible = visible
             }
@@ -2292,9 +2343,9 @@ internal class SmartPlaylistFolderController(
             menu.findItem(newFolderMenuId)?.let { item ->
                 val visible =
                     enabled &&
-                        browser != null &&
-                        !browser.otherLocations &&
-                        browser.moveSources == null
+                        (browser == null ||
+                            (!browser.otherLocations &&
+                                browser.moveSources == null))
                 if (item.isVisible != visible) {
                     item.isVisible = visible
                 }

@@ -4,22 +4,37 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NativeGmmpUiTextTest {
-    @Test fun smartDjNoticesUseHostNativeNounsAndNeutralStatusSymbols() {
-        assertEquals("GoneSmart ⏳",
+    @Test fun pureGoneSmartNoticesStayUsefulEnglishInsteadOfSymbols() {
+        assertEquals(
+            "Preparing GoneSmart cache… This may take a moment.",
             NativeGmmpUiText.smartDjNoticeLabel(
-                "cache-preparing", "Auto-DJ", "Bewertung", "Fehler"))
-        assertEquals("Auto-DJ ↩",
+                "cache-preparing", "Auto-DJ", "Bewertung", "Fehler"
+            )
+        )
+        assertEquals(
+            "GoneSmart cache ready.",
             NativeGmmpUiText.smartDjNoticeLabel(
-                "offline-native-fallback", "Auto-DJ", "Bewertung", "Fehler"))
-        assertEquals("Fehler · Auto-DJ",
+                "cache-ready", "Auto-DJ", "Bewertung", "Fehler"
+            )
+        )
+        assertEquals(
+            "GoneSmart is offline. Using GMMP Auto-DJ fallback.",
             NativeGmmpUiText.smartDjNoticeLabel(
-                "no-seeds", "Auto-DJ", "Bewertung", "Fehler"))
-        assertEquals("Bewertung ↩",
+                "offline-native-fallback", "Auto-DJ", "Bewertung", "Fehler"
+            )
+        )
+        assertEquals(
+            "GoneSmart could not build a recommendation context for this queue.",
             NativeGmmpUiText.smartDjNoticeLabel(
-                "rating-fallback", "Auto-DJ", "Bewertung", "Fehler"))
-        assertEquals("Auto-DJ ⏹",
+                "no-seeds", "Auto-DJ", "Bewertung", "Fehler"
+            )
+        )
+        assertEquals(
+            "GoneSmart found no suitable tracks in your library. Auto-DJ stopped.",
             NativeGmmpUiText.smartDjNoticeLabel(
-                "no-matches-stopped", "Auto-DJ", "Bewertung", "Fehler"))
+                "no-matches-stopped", "Auto-DJ", "Bewertung", "Fehler"
+            )
+        )
     }
 
     @Test fun preservesTheHostPlayersErrorTranslation() {

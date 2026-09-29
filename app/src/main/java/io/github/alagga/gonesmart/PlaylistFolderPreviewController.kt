@@ -144,7 +144,7 @@ internal class PlaylistFolderPreviewController(
         var modelsByPath: Map<String, Any>,
         var nativeOrder: List<String>,
         val originalAlpha: Float,
-        val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
+        val layoutListener: View.OnLayoutChangeListener,
         val themeListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var currentFolderId: String? = null,
@@ -889,6 +889,22 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    private fun drawerMenuItems(
+        menu: android.view.Menu,
+        depth: Int = 0
+    ): List<android.view.MenuItem> {
+        if (depth > 4) return emptyList()
+        val result = arrayListOf<android.view.MenuItem>()
+        for (index in 0 until menu.size()) {
+            val item = menu.getItem(index)
+            result += item
+            item.subMenu?.let { child ->
+                result += drawerMenuItems(child, depth + 1)
+            }
+        }
+        return result
+    }
+
     private fun updateDrawerPlaylistBadge(drawer: ViewGroup) {
         var parent: View? = drawer
         var menu: android.view.Menu? = null
@@ -920,11 +936,10 @@ internal class PlaylistFolderPreviewController(
 
         var playlistItem: android.view.MenuItem? = null
         var smartItem: android.view.MenuItem? = null
-        for (index in 0 until nativeMenu.size()) {
-            val item = nativeMenu.getItem(index)
+        drawerMenuItems(nativeMenu).forEach { item ->
             val original = originalDrawerPlaylistTitles[item]
                 ?: originalDrawerSmartPlaylistTitles[item]
-                ?: item.title ?: continue
+                ?: item.title ?: return@forEach
             val nativeId = resourceEntryName(
                 resources, item.itemId
             ).orEmpty()
@@ -1916,18 +1931,22 @@ internal class PlaylistFolderPreviewController(
         )
 
         val weakList = WeakReference(list)
-        val layoutListener =
-            android.view.ViewTreeObserver.OnGlobalLayoutListener {
-                weakList.get()?.let { current ->
-                    val found = browsers[current] ?: return@let
-                    runCatching {
-                        positionOverlay(found)
-                    }.onFailure { error ->
-                        Log.e(TAG, "FOLDER INLINE ERROR | layout", error)
-                        removeBrowser(current)
-                    }
+        val layoutListener = View.OnLayoutChangeListener {
+                _, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom ->
+            if (left == oldLeft && top == oldTop &&
+                right == oldRight && bottom == oldBottom
+            ) return@OnLayoutChangeListener
+            weakList.get()?.let { current ->
+                val found = browsers[current] ?: return@let
+                runCatching {
+                    positionOverlay(found)
+                }.onFailure { error ->
+                    Log.e(TAG, "FOLDER INLINE ERROR | layout", error)
+                    removeBrowser(current)
                 }
             }
+        }
         var lastThemeProbe = 0L
         // Aesthetic can change color values from album artwork without
         // triggering a new layout. Probe the actual native row on redraw,
@@ -1939,7 +1958,7 @@ internal class PlaylistFolderPreviewController(
                 weakList.get()?.let { current ->
                     browsers[current]?.let { browser ->
                         runCatching {
-                            positionOverlay(browser)
+                            syncOverlayAppearance(browser)
                             scheduleNativePlaylistRefresh(browser)
                         }.onFailure { error ->
                             Log.e(TAG, "FOLDER INLINE ERROR | theme probe", error)
@@ -2072,8 +2091,8 @@ internal class PlaylistFolderPreviewController(
             )
         }
         list.addOnAttachStateChangeListener(detachListener)
+        list.addOnLayoutChangeListener(layoutListener)
         if (list.viewTreeObserver.isAlive) {
-            list.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
             list.viewTreeObserver.addOnPreDrawListener(themeListener)
         }
 
@@ -2147,8 +2166,14 @@ internal class PlaylistFolderPreviewController(
         val hostLocation = IntArray(2)
         list.getLocationOnScreen(listLocation)
         browser.parent.getLocationOnScreen(hostLocation)
-        overlay.x = (listLocation[0] - hostLocation[0]).toFloat()
-        overlay.y = (listLocation[1] - hostLocation[1]).toFloat()
+        val targetX = (listLocation[0] - hostLocation[0]).toFloat()
+        val targetY = (listLocation[1] - hostLocation[1]).toFloat()
+        if (kotlin.math.abs(overlay.x - targetX) >= 0.5f) {
+            overlay.x = targetX
+        }
+        if (kotlin.math.abs(overlay.y - targetY) >= 0.5f) {
+            overlay.y = targetY
+        }
         // Offscreen ViewPager pages may remain attached: they must not
         // intercept input on Now Playing or other library tabs.
         val visibleBounds = Rect()
@@ -2172,11 +2197,18 @@ internal class PlaylistFolderPreviewController(
             if (browser.pickerAddExpanded) closePickerAddOptions(browser)
             return
         }
+        syncOverlayAppearance(browser)
+    }
+
+    private fun syncOverlayAppearance(browser: Browser) {
+        val list = browser.list
+        val overlay = browser.overlay
+        if (!list.isAttachedToWindow ||
+            browsers[list] !== browser ||
+            overlay.visibility != View.VISIBLE
+        ) return
         updatePickerFab(browser)
         updatePlaylistMenu()
-        // GMMP may switch its own app-specific language while retaining an
-        // already attached ViewPager page. Refresh only our virtual label;
-        // real physical folder names must never be translated.
         browser.index.otherLocations?.let { virtual ->
             val localized = NativeGmmpUiText.otherLocations(list.context)
             if (virtual.name != localized) {
@@ -2190,8 +2222,6 @@ internal class PlaylistFolderPreviewController(
                 }
             }
         }
-        // Aesthetic dynamically derives its colors from the current cover.
-        // Keep the destination confirmation on the SAME native palette.
         moveChromeUi.syncPalette(browser.moveChrome, browser.list)
         positionMoveFab(browser)
         val breadcrumbSignature =
@@ -2209,10 +2239,6 @@ internal class PlaylistFolderPreviewController(
                 ) safeRender(browser)
             }
         }
-        // GMMP's Aesthetic theme can change live with album art or user
-        // settings. Mirror the real native row typography/background each
-        // time its rendered style changes; never freeze an Android theme
-        // color at startup.
         val updatedStyle = sampleNativeStyle(list)
         val oldStyle = styles[list]
         if (updatedStyle != null &&
@@ -2249,10 +2275,8 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.isFocusable = false
         list.alpha = if (preserveNativeAlpha) 0f else browser.originalAlpha
         list.removeOnAttachStateChangeListener(browser.detachListener)
+        list.removeOnLayoutChangeListener(browser.layoutListener)
         if (list.viewTreeObserver.isAlive) {
-            list.viewTreeObserver.removeOnGlobalLayoutListener(
-                browser.layoutListener
-            )
             list.viewTreeObserver.removeOnPreDrawListener(
                 browser.themeListener
             )
@@ -2774,6 +2798,14 @@ internal class PlaylistFolderPreviewController(
                                 longClick = true
                             )
                         }
+                        if (handled) {
+                            clearPressedState(item)
+                            item.postOnAnimation {
+                                if (item.isAttachedToWindow) {
+                                    clearPressedState(item)
+                                }
+                            }
+                        }
                         if (handled && isPicker(list)) safeRender(browser)
                         handled
                     }
@@ -2976,6 +3008,15 @@ internal class PlaylistFolderPreviewController(
             titleInset = it.titleInset,
             accentColor = it.accentColor
         )
+    }
+
+    private fun clearPressedState(view: View) {
+        view.isPressed = false
+        view.jumpDrawablesToCurrentState()
+        val group = view as? ViewGroup ?: return
+        for (index in 0 until group.childCount) {
+            clearPressedState(group.getChildAt(index))
+        }
     }
 
     private fun mainSelectionAccent(browser: Browser): Int =

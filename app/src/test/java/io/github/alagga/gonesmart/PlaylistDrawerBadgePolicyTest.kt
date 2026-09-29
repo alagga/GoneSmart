@@ -63,4 +63,25 @@ class PlaylistDrawerBadgePolicyTest {
             )
         )
     }
+
+    @Test fun smartTitleMatchingToleratesHostPunctuationAndProtectsPlaylist() {
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                listOf("Smart Playlists"),
+                "", "Smart-Playlists"
+            )
+        )
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                emptyList(),
+                "", "Smart-Playlists"
+            )
+        )
+        assertFalse(
+            PlaylistDrawerBadgePolicy.matchesNativePlaylist(
+                listOf("Playlists"),
+                "menuSmart", "Playlists"
+            )
+        )
+    }
 }

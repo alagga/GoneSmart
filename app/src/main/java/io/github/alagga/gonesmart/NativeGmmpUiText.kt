@@ -43,28 +43,37 @@ internal object NativeGmmpUiText {
     }
 
     /**
-     * Smart DJ is GoneSmart-owned. GMMP has native Auto-DJ and rating
-     * nouns, but no translations for our technical recommendation states.
-     * Preserve the full English explanation in the companion Logs while
-     * host-player notices use only installed GMMP words and neutral symbols.
+     * These notices describe GoneSmart's own recommendation/cache state, not
+     * a native GMMP command. GoneSmart intentionally remains English, so keep
+     * the useful English sentences instead of replacing them with opaque
+     * locale-neutral symbols. GMMP/playlist/folder actions are localized
+     * separately through host resources or GoneSmartGmmpStrings.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun smartDjNoticeLabel(
         notice: String,
         nativeAutoDj: String?,
         nativeRating: String?,
         nativeError: String?
-    ): String {
-        val dj = nativeAutoDj?.takeUnless(String::isBlank) ?: "Auto-DJ"
-        return when (notice) {
-            "cache-preparing" -> "GoneSmart ⏳"
-            "cache-ready" -> "GoneSmart ✓"
-            "offline-native-fallback", "no-matches-native-fallback" -> "$dj ↩"
-            "no-seeds" -> errorLabel(nativeError, dj)
-            "no-matches-stopped" -> "$dj ⏹"
-            "rating-fallback" -> (nativeRating?.takeUnless(String::isBlank)
-                ?: dj) + " ↩"
-            else -> errorLabel(nativeError, dj)
-        }
+    ): String = when (notice) {
+        "cache-preparing" ->
+            "Preparing GoneSmart cache… This may take a moment."
+        "cache-ready" ->
+            "GoneSmart cache ready."
+        "offline-native-fallback" ->
+            "GoneSmart is offline. Using GMMP Auto-DJ fallback."
+        "no-matches-native-fallback" ->
+            "GoneSmart found no suitable library matches. " +
+                "Using GMMP Auto-DJ fallback."
+        "no-seeds" ->
+            "GoneSmart could not build a recommendation context for this queue."
+        "no-matches-stopped" ->
+            "GoneSmart found no suitable tracks in your library. Auto-DJ stopped."
+        "rating-fallback" ->
+            "No suitable tracks met the current rating rules. GoneSmart is " +
+                "temporarily ignoring Minimum Rating and Smart Rating for " +
+                "this recommendation pool."
+        else -> "GoneSmart encountered an error."
     }
 
     fun smartDjNotice(context: Context, notice: String): String =

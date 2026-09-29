@@ -32,7 +32,7 @@ class GoneSmartStatusNotifier {
         } else fallback
     }
 
-    /** GMMP-hosted Toast; never display English companion diagnostics here. */
+    /** GMMP-hosted GoneSmart status Toast. Pure GoneSmart status stays English. */
     fun showNative(noticeKey: String) {
         val application = getCurrentApplication() ?: return
         Handler(Looper.getMainLooper()).post {

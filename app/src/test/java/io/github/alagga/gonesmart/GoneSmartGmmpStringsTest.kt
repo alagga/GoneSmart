@@ -142,4 +142,50 @@ class GoneSmartGmmpStringsTest {
             )
         )
     }
+
+    @Test fun coversCreationDialogFallbackForEveryGmmp420Language() {
+        assertEquals(
+            GoneSmartGmmpStrings.translatedLanguageCodes,
+            GoneSmartGmmpStrings.translatedCreationDialogLanguageCodes
+        )
+        val actualGmmp420 = (
+            "af,am,ar,as,az,be,bg,bn,bs,ca,cs,da,de,el,en,es," +
+                "et,eu,fa,fi,fr,gl,gu,he,hi,hr,hu,hy,id,in,is,it,iw,ja," +
+                "ka,kk,km,kn,ko,ky,lo,lt,lv,mk,ml,mn,mr,ms,my,nb,ne,nl," +
+                "or,pa,pl,pt,ro,ru,si,sk,sl,sq,sr,sv,sw,ta,te,th,tl,tr," +
+                "uk,ur,uz,vi,zh,zu"
+            ).split(",")
+        for (raw in actualGmmp420) {
+            assertTrue(
+                "Creation-dialog language is missing: $raw",
+                GoneSmartGmmpStrings.hasCreationDialogTranslation(Locale(raw))
+            )
+        }
+        assertEquals(
+            "Neuer Ordner",
+            GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "New Folder")
+        )
+        assertEquals(
+            "Ordnername",
+            GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "Folder name")
+        )
+        assertEquals(
+            "Neue Playlist",
+            GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "New playlist")
+        )
+        assertEquals(
+            "Erstellen",
+            GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "Create")
+        )
+        assertEquals(
+            "取消",
+            GoneSmartGmmpStrings.creationDialog(
+                Locale.forLanguageTag("zh-Hant-TW"), "Cancel"
+            )
+        )
+        assertEquals(
+            null,
+            GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "Delete")
+        )
+    }
 }
