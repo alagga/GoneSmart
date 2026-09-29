@@ -168,7 +168,6 @@ internal class SmartPlaylistFolderController(
         val folderBand: FrameLayout,
         val breadcrumb: RecyclerView,
         val originalAlpha: Float,
-        val originalNestedScrollingEnabled: Boolean,
         val originalPaddingLeft: Int,
         val originalPaddingTop: Int,
         val originalPaddingRight: Int,
@@ -180,6 +179,7 @@ internal class SmartPlaylistFolderController(
         var style: NativeStyle?,
         val layoutListener: View.OnLayoutChangeListener,
         val nativeScrollListener: RecyclerView.OnScrollListener,
+        val touchGuard: RecyclerView.OnItemTouchListener,
         val scrollDrawListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
@@ -208,7 +208,8 @@ internal class SmartPlaylistFolderController(
         var nativeContentReady: Boolean = false,
         var folderScrollSyncReady: Boolean = false,
         var pendingFolderScrollReset: Boolean = true,
-        var scrollDeltaReported: Boolean = false
+        var scrollDeltaReported: Boolean = false,
+        var touchGuardReported: Boolean = false
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -777,14 +778,51 @@ internal class SmartPlaylistFolderController(
                 }
             }
         }
+        val touchGuard = object : RecyclerView.SimpleOnItemTouchListener() {
+            override fun onInterceptTouchEvent(
+                recyclerView: RecyclerView,
+                event: MotionEvent
+            ): Boolean {
+                if (browsers[list] !== browser) return false
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN,
+                    MotionEvent.ACTION_MOVE -> {
+                        // The accepted normal Playlist browser owns its own
+                        // ScrollView, so GMMP's Coordinator never steals its
+                        // vertical gesture. Smart must keep ls4/vs4 native,
+                        // therefore retain the same gesture boundary by
+                        // preventing the Coordinator/toolbar parent from
+                        // intercepting this native RecyclerView gesture.
+                        recyclerView.parent
+                            ?.requestDisallowInterceptTouchEvent(true)
+                        if (!browser.touchGuardReported) {
+                            browser.touchGuardReported = true
+                            Log.i(
+                                TAG,
+                                "SMART FOLDERS TOUCH | native RecyclerView " +
+                                    "owns gesture | nestedScroll=" +
+                                    recyclerView.isNestedScrollingEnabled
+                            )
+                        }
+                    }
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        recyclerView.parent
+                            ?.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                // Never consume: original ls4/vs4 click, long-press, fling,
+                // ripple and RecyclerView scrolling remain fully native.
+                return false
+            }
+
+            override fun onRequestDisallowInterceptTouchEvent(
+                disallowIntercept: Boolean
+            ) = Unit
+        }
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
-                    (list as? RecyclerView)?.let { recycler ->
-                        if (recycler.isNestedScrollingEnabled) {
-                            recycler.isNestedScrollingEnabled = false
-                        }
-                    }
                     // Scroll displacement is owned exclusively by the native
                     // RecyclerView's consumed dy. PreDraw only synchronizes
                     // native-row-dependent visuals/interactions.
@@ -801,13 +839,6 @@ internal class SmartPlaylistFolderController(
         }
         val originalAlpha = pendingOriginalAlphas.remove(list) ?: list.alpha
         val nativeRecycler = list as? RecyclerView
-        val originalNestedScrollingEnabled =
-            nativeRecycler?.isNestedScrollingEnabled ?: false
-        // GMMP's Coordinator/AppBar consumes Smart-list nested scroll first,
-        // which collapses the "Smart Playlists" toolbar and leaves the
-        // synthetic folder outside the movement. Make the native RecyclerView
-        // the sole vertical scroll owner while this folder surface is active.
-        nativeRecycler?.isNestedScrollingEnabled = false
         browser = Browser(
             list = list,
             nativeAdapter = adapter,
@@ -817,7 +848,6 @@ internal class SmartPlaylistFolderController(
             folderBand = folderBand,
             breadcrumb = breadcrumb,
             originalAlpha = originalAlpha,
-            originalNestedScrollingEnabled = originalNestedScrollingEnabled,
             originalPaddingLeft = list.paddingLeft,
             originalPaddingTop = list.paddingTop,
             originalPaddingRight = list.paddingRight,
@@ -829,6 +859,7 @@ internal class SmartPlaylistFolderController(
             style = initialStyle,
             layoutListener = layoutListener,
             nativeScrollListener = nativeScrollListener,
+            touchGuard = touchGuard,
             scrollDrawListener = scrollDrawListener,
             detachListener = detachListener
         )
@@ -872,6 +903,7 @@ internal class SmartPlaylistFolderController(
         list.addOnAttachStateChangeListener(detachListener)
         list.addOnLayoutChangeListener(layoutListener)
         nativeRecycler?.addOnScrollListener(nativeScrollListener)
+        nativeRecycler?.addOnItemTouchListener(touchGuard)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
@@ -913,7 +945,8 @@ internal class SmartPlaylistFolderController(
                 " | restored=" + safePath(remembered) +
                 " | otherLocations=" + restoreOtherLocations +
                 " | nativeAdapter=ls4" +
-                " | nestedScroll=" + originalNestedScrollingEnabled + "->false"
+                " | nestedScroll=" +
+                (nativeRecycler?.isNestedScrollingEnabled ?: false)
         )
     }
 
@@ -2479,8 +2512,8 @@ internal class SmartPlaylistFolderController(
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
         (browser.list as? RecyclerView)?.let { recycler ->
             recycler.removeOnScrollListener(browser.nativeScrollListener)
-            recycler.isNestedScrollingEnabled =
-                browser.originalNestedScrollingEnabled
+            recycler.removeOnItemTouchListener(browser.touchGuard)
+            recycler.parent?.requestDisallowInterceptTouchEvent(false)
         }
         if (browser.list.viewTreeObserver.isAlive) {
             browser.list.viewTreeObserver.removeOnPreDrawListener(

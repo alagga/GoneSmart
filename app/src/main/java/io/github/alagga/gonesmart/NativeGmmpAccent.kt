@@ -31,7 +31,8 @@ internal object NativeGmmpAccent {
         onColor: (Int) -> Unit,
         onError: (Throwable?) -> Unit = {}
     ): Subscription? = runCatching {
-        val loader = view.javaClass.classLoader
+        val loader = view.context.classLoader
+            ?: view.javaClass.classLoader
             ?: error("GMMP classloader missing")
         val theme = runCatching {
             loader.loadClass("com.afollestad.aesthetic.a\$a")

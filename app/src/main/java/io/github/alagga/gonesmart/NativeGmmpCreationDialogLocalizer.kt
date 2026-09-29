@@ -31,6 +31,7 @@ internal object NativeGmmpCreationDialogLocalizer {
     private val accentSubscriptions =
         WeakHashMap<Dialog, NativeGmmpAccent.Subscription>()
     private val accentColors = WeakHashMap<Dialog, Int>()
+    private val exactInputLabelViews = WeakHashMap<TextView, Boolean>()
 
     fun localizeWhenReady(dialog: Dialog) {
         localize(dialog)
@@ -75,9 +76,45 @@ internal object NativeGmmpCreationDialogLocalizer {
         var fallbackCount = 0
         var inputCount = 0
 
+        // MaterialDialogs 3.x can expose its floating label either as
+        // TextInputLayout.hint OR as a rendered TextView. Match the exact
+        // library literal first, regardless of which widget implementation
+        // produced it. This cannot touch the already-correct large
+        // "New Folder"/"New Playlist" title because the literal differs.
+        textViews.forEach { view ->
+            val text = view.text?.toString()
+            if (!text.isNullOrBlank()) {
+                val inputReplacement =
+                    GoneSmartGmmpStrings.creationInputLabel(locale, text)
+                if (inputReplacement != null &&
+                    inputReplacement != text
+                ) {
+                    view.text = inputReplacement
+                    exactInputLabelViews[view] = true
+                    fallbackCount++
+                    inputCount++
+                    changed++
+                }
+            }
+            val hint = view.hint?.toString()
+            if (!hint.isNullOrBlank()) {
+                val inputReplacement =
+                    GoneSmartGmmpStrings.creationInputLabel(locale, hint)
+                if (inputReplacement != null &&
+                    inputReplacement != hint
+                ) {
+                    view.hint = inputReplacement
+                    exactInputLabelViews[view] = true
+                    fallbackCount++
+                    inputCount++
+                    changed++
+                }
+            }
+        }
+
         // Keep the pre-existing native-first translation path for ordinary
         // dialog text/hints. "New Folder Name" is intentionally NOT part of
-        // GoneSmartGmmpStrings.creationDialog anymore.
+        // GoneSmartGmmpStrings.creationDialog.
         textViews.forEach { view ->
             val text = view.text?.toString()
             if (!text.isNullOrBlank()) {
@@ -203,6 +240,17 @@ internal object NativeGmmpCreationDialogLocalizer {
                 "setBoxStrokeColorStateList",
                 focusedColors(accent, normal)
             )
+        }
+        // If MaterialDialogs rendered the floating label as its own TextView
+        // instead of exposing TextInputLayout.setHintTextColor, color the
+        // exact label view that we just identified. No other dialog text is
+        // recolored.
+        val labels = arrayListOf<TextView>()
+        collectTextViews(root, labels)
+        labels.forEach { label ->
+            if (exactInputLabelViews.containsKey(label)) {
+                label.setTextColor(accent)
+            }
         }
     }
 

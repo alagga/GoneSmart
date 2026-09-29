@@ -45,3 +45,10 @@ The language boundary is now explicit:
 - That table must cover the complete audited GMMP 4.2.0 locale inventory (including legacy aliases) and have coverage tests. Do not introduce controller-local translation maps.
 
 MaterialDialogs can populate input hints/buttons during or just after `show()`. Creation-dialog localization therefore performs an immediate pass plus bounded UI-thread post-show passes. GoneSmart's reused native `showNewFolderCreator` is localized through the same path, so normal Playlist folders and Smart-Playlist folders cannot diverge.
+
+
+## 2026-09-29 exact MaterialDialogs floating-label handling
+
+The tested folder-creation dialog still displayed the literal small **New Folder Name** above the input after generic TextView/EditText localization. Treat that phrase (and the parallel **New Playlist Name**) as an exact MaterialDialogs input-label variant only, never as the large dialog title. Runtime localization now checks the exact literal across rendered TextView text, EditText hints and reflective TextInputLayout hints so MaterialDialogs implementation details cannot leave the small label English while the rest of GMMP is localized. The large title/buttons remain on the existing native-first path.
+
+The label/underline focus color is not a localization fallback: it must come from GMMP's live Aesthetic `!mainColorAccent` source, matching the player's own current dynamic controls.
