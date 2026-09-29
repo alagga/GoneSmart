@@ -189,7 +189,9 @@ internal class SmartPlaylistFolderController(
         var selectionActionMode: android.view.ActionMode? = null,
         var selectionTransitionToMove: Boolean = false,
         var suppressSelectionUpPath: String? = null,
-        val originalRowForegrounds: WeakHashMap<View, Drawable?> = WeakHashMap()
+        val originalRowForegrounds: WeakHashMap<View, Drawable?> = WeakHashMap(),
+        val rowInteractionPaths: WeakHashMap<View, String> = WeakHashMap(),
+        val selectedRowVisuals: WeakHashMap<View, Boolean> = WeakHashMap()
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -205,8 +207,6 @@ internal class SmartPlaylistFolderController(
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
     private val moveMenuId = View.generateViewId()
-    private val smartInteractionTagId = View.generateViewId()
-    private val smartSelectionVisualTagId = View.generateViewId()
     private val alignedNativeTitles = WeakHashMap<TextView, Float>()
     private val alignedNativeTitleOwners =
         WeakHashMap<TextView, WeakReference<ViewGroup>>()
@@ -1484,9 +1484,9 @@ internal class SmartPlaylistFolderController(
     private fun restoreSmartRowForegrounds(browser: Browser) {
         browser.originalRowForegrounds.entries.toList().forEach { entry ->
             entry.key.foreground = entry.value
-            entry.key.setTag(smartSelectionVisualTagId, false)
         }
         browser.originalRowForegrounds.clear()
+        browser.selectedRowVisuals.clear()
     }
 
     private fun selectionAccent(browser: Browser): Int {
@@ -1520,13 +1520,13 @@ internal class SmartPlaylistFolderController(
                 native.holderModel.get(holder)
             }.getOrNull() ?: continue
             val path = modelPath(model) ?: continue
-            val previous = row.getTag(smartInteractionTagId) as? String
+            val previous = browser.rowInteractionPaths[row]
             if (previous != path) {
                 if (browser.originalRowForegrounds.containsKey(row)) {
                     row.foreground = browser.originalRowForegrounds.remove(row)
                 }
-                row.setTag(smartSelectionVisualTagId, false)
-                row.setTag(smartInteractionTagId, path)
+                browser.selectedRowVisuals.remove(row)
+                browser.rowInteractionPaths[row] = path
                 row.setOnLongClickListener {
                     beginSmartSelection(browser, path)
                 }
@@ -1564,7 +1564,7 @@ internal class SmartPlaylistFolderController(
 
             val selected = path in browser.selectedSmartPaths
             val visuallySelected =
-                row.getTag(smartSelectionVisualTagId) as? Boolean == true
+                browser.selectedRowVisuals[row] == true
             if (selected && !visuallySelected) {
                 if (!browser.originalRowForegrounds.containsKey(row)) {
                     browser.originalRowForegrounds[row] = row.foreground
@@ -1572,11 +1572,11 @@ internal class SmartPlaylistFolderController(
                 row.foreground = ColorDrawable(
                     withAlpha(selectionAccent(browser), 0x80)
                 )
-                row.setTag(smartSelectionVisualTagId, true)
+                browser.selectedRowVisuals[row] = true
             } else if (!selected && visuallySelected) {
                 row.foreground = browser.originalRowForegrounds[row]
                 browser.originalRowForegrounds.remove(row)
-                row.setTag(smartSelectionVisualTagId, false)
+                browser.selectedRowVisuals.remove(row)
             }
         }
     }
