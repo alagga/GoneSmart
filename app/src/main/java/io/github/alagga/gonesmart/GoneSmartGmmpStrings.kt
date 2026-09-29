@@ -306,12 +306,14 @@ internal object GoneSmartGmmpStrings {
             "new folder", "create new folder", "create a new folder",
             "create folder" ->
                 base.newFolder
-            "folder name", "enter folder name", "enter a folder name" ->
+            "folder name", "new folder name",
+            "enter folder name", "enter a folder name" ->
                 base.folderName
             "new playlist", "create new playlist", "create a new playlist",
             "create playlist" ->
                 base.newPlaylist
-            "playlist name", "enter playlist name", "enter a playlist name" ->
+            "playlist name", "new playlist name",
+            "enter playlist name", "enter a playlist name" ->
                 base.playlistName
             "create" -> base.create
             "cancel" -> base.cancel

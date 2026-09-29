@@ -306,3 +306,10 @@ Because `ls4.y` is AsyncListDiffer-backed, a folder navigation temporarily suspe
 ## 2026-09-29 exact Smart scroll-delta correction
 
 The snapshot-bound `vs4/ws4` holder verification introduced to reject stale rows after navigation proved too strict as the sole source of folder-header motion: during normal RecyclerView recycling it can temporarily have no verified holder, which leaves the synthetic physical-folder band at translation 0 while native Smart rows continue to scroll underneath it. Smart folder scrolling now uses the native RecyclerView's exact consumed `dy` as the primary continuous signal and clamps that accumulated distance to the physical-folder-band height. The existing holder/path calculation remains only a reconciliation fallback after layout. Breadcrumb behavior is unchanged and stays fixed. Navigation still disables coupling until the new location has been reset to adapter position 0.
+
+
+## 2026-09-29 Smart scroll authority + staged first frame
+
+Device testing after the consumed-delta patch proved that the remaining PreDraw holder/top reconciliation was still able to overwrite the correct `dy`-accumulated folder offset. Smart physical-folder vertical motion therefore now has one authority only: the native RecyclerView's consumed `onScrolled(..., dy)`, clamped to the folder-band height. PreDraw continues to synchronize native title alignment and selection interaction only; it no longer changes folder translation. Explicit directory navigation remains the only reset to offset zero.
+
+The first Smart frame is also staged without reintroducing the old racing header worker. GoneSmart hides the verified native Smart RecyclerView before its root rows can draw, preserves the original alpha, performs one directory scan on the existing Smart worker, publishes physical folders from that scan immediately, then parses the same scan's Smart files and finally reveals the native rows. The folder can therefore appear before the expensive root model parse completes, while raw root playlists can no longer flash first.

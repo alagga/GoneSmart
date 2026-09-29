@@ -146,6 +146,12 @@ internal class SmartPlaylistFolderController(
         val modelsByPath: Map<String, Any>
     )
 
+    private data class DirectoryScan(
+        val directory: File,
+        val files: List<File>,
+        val folders: List<File>
+    )
+
     private data class BreadcrumbSegment(
         val key: String,
         val label: String,
@@ -197,7 +203,8 @@ internal class SmartPlaylistFolderController(
         val rowInteractionPaths: WeakHashMap<View, String> = WeakHashMap(),
         val selectionOverlays: WeakHashMap<View, ColorDrawable> = WeakHashMap(),
         var breadcrumbAlignmentGeneration: Long = 0L,
-        var initialContentReady: Boolean = false,
+        var initialHeaderReady: Boolean = false,
+        var nativeContentReady: Boolean = false,
         var folderScrollSyncReady: Boolean = false,
         var pendingFolderScrollReset: Boolean = true
     )
@@ -212,6 +219,7 @@ internal class SmartPlaylistFolderController(
     private val refreshGeneration = AtomicLong(0L)
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
+    private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
     private val moveMenuId = View.generateViewId()
@@ -375,6 +383,8 @@ internal class SmartPlaylistFolderController(
             updateMenus()
             if (enabledChanged && !nextEnabled) {
                 pendingCreationDirectory = null
+                pendingOriginalAlphas.keys.toList()
+                    .forEach(::restorePendingNativeList)
                 browsers.values.toList().forEach(::restoreRootAndRemove)
             } else if (nextEnabled) {
                 knownLists.keys.toList().forEach { list ->
@@ -405,7 +415,16 @@ internal class SmartPlaylistFolderController(
         if (view == null || resourceName(view) != SMART_LIST_ID) return
         val list = view as? ViewGroup ?: return
         knownLists[list] = true
-        if (enabled) scheduleAttach(list, 0)
+        if (enabled && !browsers.containsKey(list)) {
+            if (!pendingOriginalAlphas.containsKey(list)) {
+                pendingOriginalAlphas[list] = list.alpha
+            }
+            // Hide the raw native root before ls4 can draw its first rows.
+            // The original alpha is restored only after the folder header
+            // and current-directory native models are both ready.
+            list.alpha = 0f
+            scheduleAttach(list, 0)
+        }
     }
 
     /**
@@ -611,6 +630,8 @@ internal class SmartPlaylistFolderController(
             ) {
                 if (attempt < MAX_ATTACH_RETRIES) {
                     scheduleAttach(list, attempt + 1)
+                } else {
+                    restorePendingNativeList(list)
                 }
                 return@postDelayed
             }
@@ -633,10 +654,12 @@ internal class SmartPlaylistFolderController(
     ) {
         if (!enabled || browsers.containsKey(list)) return
         val root = rootFile() ?: run {
+            restorePendingNativeList(list)
             Log.w(TAG, "SMART FOLDERS ATTACH STOP | native root unavailable")
             return
         }
         val host = safeOverlayHost(list) ?: run {
+            restorePendingNativeList(list)
             Log.w(TAG, "SMART FOLDERS ATTACH STOP | page host unavailable")
             return
         }
@@ -742,10 +765,9 @@ internal class SmartPlaylistFolderController(
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
-                    // Holder/path geometry is a reconciliation fallback only.
-                    // Exact consumed RecyclerView dy drives normal scrolling so
-                    // a transient/stale holder can never pin the folder band.
-                    syncFolderRowsScroll(browser)
+                    // Scroll displacement is owned exclusively by the native
+                    // RecyclerView's consumed dy. PreDraw only synchronizes
+                    // native-row-dependent visuals/interactions.
                     alignVisibleNativeTitles(browser)
                     syncVisibleSmartRowInteractions(browser)
                 }
@@ -757,6 +779,7 @@ internal class SmartPlaylistFolderController(
                 if (browsers[list] === browser) removeBrowser(browser)
             }
         }
+        val originalAlpha = pendingOriginalAlphas.remove(list) ?: list.alpha
         browser = Browser(
             list = list,
             nativeAdapter = adapter,
@@ -765,7 +788,7 @@ internal class SmartPlaylistFolderController(
             rows = rows,
             folderBand = folderBand,
             breadcrumb = breadcrumb,
-            originalAlpha = list.alpha,
+            originalAlpha = originalAlpha,
             originalPaddingLeft = list.paddingLeft,
             originalPaddingTop = list.paddingTop,
             originalPaddingRight = list.paddingRight,
@@ -847,7 +870,7 @@ internal class SmartPlaylistFolderController(
         val weakList = WeakReference(list)
         main.postDelayed({
             val current = weakList.get()?.let { browsers[it] }
-            if (current === browser && !browser.initialContentReady &&
+            if (current === browser && !browser.nativeContentReady &&
                 list.isAttachedToWindow
             ) {
                 Log.w(TAG, "SMART FOLDERS INITIAL WAIT | fail-open native list")
@@ -905,8 +928,38 @@ internal class SmartPlaylistFolderController(
         val directory = browser.current
         val otherLocations = browser.otherLocations
         worker.execute {
+            val scan = runCatching {
+                scanDirectory(directory)
+            }.onFailure {
+                Log.e(TAG, "SMART FOLDERS SCAN FAILED | " + safePath(directory), it)
+            }.getOrNull() ?: return@execute
+
+            // First-frame folder chrome comes from the SAME generation and
+            // SAME directory scan as the full snapshot. There is no second
+            // racing loader and no native-model submission in this stage.
+            main.post {
+                if (!enabled || browsers[browser.list] !== browser ||
+                    browser.generation != generation ||
+                    !sameFile(browser.current, scan.directory) ||
+                    browser.otherLocations != otherLocations
+                ) return@post
+                browser.style = sampleNativeStyle(browser.list) ?: browser.style
+                render(
+                    browser,
+                    Snapshot(
+                        directory = scan.directory,
+                        folders = scan.folders,
+                        models = emptyList(),
+                        modelsByPath = emptyMap()
+                    ),
+                    -1
+                )
+                revealInitialHeader(browser)
+                positionOverlay(browser)
+            }
+
             val snapshot = runCatching {
-                loadSnapshot(directory)
+                loadSnapshot(scan)
             }.onFailure {
                 Log.e(TAG, "SMART FOLDERS LOAD FAILED | " + safePath(directory), it)
             }.getOrNull() ?: return@execute
@@ -944,9 +997,11 @@ internal class SmartPlaylistFolderController(
         }
     }
 
-    private fun loadFolders(directory: File, root: File): List<File> {
-        val files = directory.listFiles()?.toList().orEmpty()
-        return files.asSequence()
+    private fun scanDirectory(directory: File): DirectoryScan {
+        val canonical = directory.canonicalFile
+        val files = canonical.listFiles()?.toList().orEmpty()
+        val root = rootFile() ?: canonical
+        val folders = files.asSequence()
             .filter { it.isDirectory }
             .mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
             .filter {
@@ -954,15 +1009,16 @@ internal class SmartPlaylistFolderController(
             }
             .sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
             .toList()
+        return DirectoryScan(canonical, files, folders)
     }
 
-    private fun loadSnapshot(directory: File): Snapshot {
-        val native = bindings ?: error("Smart-folder bindings missing")
-        val files = directory.listFiles()?.toList().orEmpty()
-        val folders = loadFolders(directory, rootFile() ?: directory)
+    private fun loadSnapshot(directory: File): Snapshot =
+        loadSnapshot(scanDirectory(directory))
 
+    private fun loadSnapshot(scan: DirectoryScan): Snapshot {
+        val native = bindings ?: error("Smart-folder bindings missing")
         val models = ArrayList<Any>()
-        for (file in files.filter {
+        for (file in scan.files.filter {
             it.isFile && it.extension.equals("spl", ignoreCase = true)
         }) {
             val model = runCatching {
@@ -987,8 +1043,8 @@ internal class SmartPlaylistFolderController(
             modelPath(model)?.let { byPath[it] = model }
         }
         return Snapshot(
-            directory = directory.canonicalFile,
-            folders = folders,
+            directory = scan.directory,
+            folders = scan.folders,
             models = sorted,
             modelsByPath = byPath
         )
@@ -1117,7 +1173,6 @@ internal class SmartPlaylistFolderController(
             browser.overlay.post {
                 if (browsers[browser.list] === browser) {
                     updateNativeInset(browser)
-                    syncFolderRowsScroll(browser)
                     syncVisibleSmartRowInteractions(browser)
                     if (moving) positionMoveFab(browser)
                 }
@@ -1161,18 +1216,22 @@ internal class SmartPlaylistFolderController(
         browser.overlay.post {
             if (browsers[browser.list] === browser) {
                 updateNativeInset(browser)
-                syncFolderRowsScroll(browser)
                 if (moving) positionMoveFab(browser)
             }
         }
 
         Log.i(
             TAG,
-            "SMART FOLDERS RENDER | current=" + safePath(browser.current) +
+            (if (visibleSmartCount < 0) {
+                "SMART FOLDERS HEADER"
+            } else {
+                "SMART FOLDERS RENDER"
+            }) + " | current=" + safePath(browser.current) +
                 " | virtualOther=" + browser.otherLocations +
                 " | folders=" + (folders.size + if (showOtherLocations) 1 else 0) +
                 " | smart=" + visibleSmartCount +
-                " | nativeRows=true | move=" + moving
+                " | nativeRows=" + (visibleSmartCount >= 0) +
+                " | move=" + moving
         )
     }
 
@@ -2352,6 +2411,11 @@ internal class SmartPlaylistFolderController(
         }
     }
 
+    private fun restorePendingNativeList(list: ViewGroup) {
+        val alpha = pendingOriginalAlphas.remove(list) ?: return
+        list.alpha = alpha
+    }
+
     private fun restoreRootAndRemove(browser: Browser) {
         browser.observer?.stopWatching()
         worker.execute {
@@ -2447,69 +2511,6 @@ internal class SmartPlaylistFolderController(
         browser.folderBand.translationY = -offset.toFloat()
     }
 
-    private fun syncFolderRowsScroll(browser: Browser) {
-        val list = browser.list
-        if (!list.isAttachedToWindow || browsers[list] !== browser ||
-            !browser.folderScrollSyncReady
-        ) return
-        val native = bindings ?: return
-        val getHolder = runCatching {
-            list.javaClass.getMethod("getChildViewHolder", View::class.java)
-        }.getOrNull() ?: return
-        val folderHeight = browser.folderBand.height.coerceAtLeast(0)
-        if (folderHeight == 0) {
-            if (browser.lastFolderScrollOffset != 0) {
-                browser.folderBand.translationY = 0f
-                browser.lastFolderScrollOffset = 0
-            }
-            return
-        }
-        var firstPosition = Int.MAX_VALUE
-        var firstTop: Int? = null
-        var firstHeight = 0
-        for (index in 0 until list.childCount) {
-            val child = list.getChildAt(index) ?: continue
-            val position =
-                NativeRecyclerBridge.childAdapterPosition(list, child)
-            if (position < 0 || position >= firstPosition) continue
-            val holder = runCatching {
-                getHolder.invoke(list, child)
-            }.getOrNull() ?: continue
-            if (!native.holderClass.isInstance(holder)) continue
-            val model = runCatching {
-                native.holderModel.get(holder)
-            }.getOrNull() ?: continue
-            val actualPath = modelPath(model)
-            val expectedPath = browser.nativeOrder.getOrNull(position)
-            if (!SmartFolderHeaderScrollPolicy.rowMatchesSnapshot(
-                    expectedPath, actualPath
-                )
-            ) continue
-            firstPosition = position
-            firstTop = child.top
-            firstHeight = child.height
-        }
-        if (firstPosition == Int.MAX_VALUE || firstTop == null) {
-            // Keep the last exact value during a transient no-child layout
-            // frame instead of snapping the synthetic header back to zero.
-            return
-        }
-        val rowHeight = browser.style?.rowHeight
-            ?.takeIf { it > 0 }
-            ?: firstHeight.takeIf { it > 0 }
-            ?: return
-        val offset = SmartFolderHeaderScrollPolicy.folderScrollOffset(
-            folderHeight = folderHeight,
-            listPaddingTop = list.paddingTop,
-            firstChildTop = firstTop,
-            firstAdapterPosition = firstPosition,
-            nativeRowHeight = rowHeight
-        )
-        if (browser.lastFolderScrollOffset == offset) return
-        browser.lastFolderScrollOffset = offset
-        browser.folderBand.translationY = -offset.toFloat()
-    }
-
     private fun prepareFolderScrollForNavigation(browser: Browser) {
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
@@ -2550,7 +2551,6 @@ internal class SmartPlaylistFolderController(
                 browser.lastFolderScrollOffset = 0
                 revealInitialContent(browser)
                 positionOverlay(browser)
-                syncFolderRowsScroll(browser)
             }
         }
     }
@@ -2586,7 +2586,7 @@ internal class SmartPlaylistFolderController(
             list.getGlobalVisibleRect(rect) &&
             rect.width() > dp(list, 30) &&
             rect.height() > dp(list, 30)
-        val nextVisibility = if (!browser.initialContentReady) {
+        val nextVisibility = if (!browser.initialHeaderReady) {
             View.INVISIBLE
         } else if (visible) {
             View.VISIBLE
@@ -2603,7 +2603,6 @@ internal class SmartPlaylistFolderController(
         browser.overlay.post {
             if (browsers[list] === browser) {
                 updateNativeInset(browser)
-                syncFolderRowsScroll(browser)
                 alignVisibleNativeTitles(browser)
                 syncVisibleSmartRowInteractions(browser)
                 if (browser.moveSources != null) {
@@ -2613,15 +2612,24 @@ internal class SmartPlaylistFolderController(
         }
     }
 
-    private fun revealInitialContent(browser: Browser) {
-        if (browser.initialContentReady || browsers[browser.list] !== browser) {
+    private fun revealInitialHeader(browser: Browser) {
+        if (browser.initialHeaderReady || browsers[browser.list] !== browser) {
             return
         }
-        browser.initialContentReady = true
+        browser.initialHeaderReady = true
         browser.overlay.visibility = View.VISIBLE
         updateNativeInset(browser)
+    }
+
+    private fun revealInitialContent(browser: Browser) {
+        if (browser.nativeContentReady || browsers[browser.list] !== browser) {
+            return
+        }
+        if (!browser.initialHeaderReady) {
+            revealInitialHeader(browser)
+        }
+        browser.nativeContentReady = true
         browser.list.alpha = browser.originalAlpha
-        syncFolderRowsScroll(browser)
         alignVisibleNativeTitles(browser)
         syncVisibleSmartRowInteractions(browser)
     }
