@@ -203,8 +203,14 @@ class GoneSmartGmmpStringsTest {
             )
         )
         assertEquals(
-            "Ordnername",
+            null,
             GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "New Folder Name"
+            )
+        )
+        assertEquals(
+            "Ordnername",
+            GoneSmartGmmpStrings.creationInputLabel(
                 Locale.GERMANY, "New Folder Name"
             )
         )
@@ -221,8 +227,14 @@ class GoneSmartGmmpStringsTest {
             )
         )
         assertEquals(
-            "Playlistname",
+            null,
             GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "New Playlist Name"
+            )
+        )
+        assertEquals(
+            "Playlistname",
+            GoneSmartGmmpStrings.creationInputLabel(
                 Locale.GERMANY, "New Playlist Name"
             )
         )

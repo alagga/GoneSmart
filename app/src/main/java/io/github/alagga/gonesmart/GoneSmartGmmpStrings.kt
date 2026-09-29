@@ -306,18 +306,34 @@ internal object GoneSmartGmmpStrings {
             "new folder", "create new folder", "create a new folder",
             "create folder" ->
                 base.newFolder
-            "folder name", "new folder name",
-            "enter folder name", "enter a folder name" ->
+            "folder name", "enter folder name", "enter a folder name" ->
                 base.folderName
             "new playlist", "create new playlist", "create a new playlist",
             "create playlist" ->
                 base.newPlaylist
-            "playlist name", "new playlist name",
-            "enter playlist name", "enter a playlist name" ->
+            "playlist name", "enter playlist name", "enter a playlist name" ->
                 base.playlistName
             "create" -> base.create
             "cancel" -> base.cancel
             "name" -> base.name
+            else -> null
+        }
+    }
+
+    /**
+     * MaterialDialogs' floating input label is separate from the already
+     * localized dialog title/buttons. Handle only these exact library-owned
+     * input-label literals here so generic dialog text is not rewritten.
+     */
+    fun creationInputLabel(locale: Locale, sourceEnglish: String): String? {
+        val key = sourceEnglish.trim()
+            .replace('…', '.')
+            .trimEnd('.', ':')
+            .lowercase(Locale.ROOT)
+            .replace(Regex("\\s+"), " ")
+        return when (key) {
+            "new folder name" -> creationDialog(locale, "Folder name")
+            "new playlist name" -> creationDialog(locale, "Playlist name")
             else -> null
         }
     }

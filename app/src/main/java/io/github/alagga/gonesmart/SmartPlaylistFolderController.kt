@@ -168,6 +168,7 @@ internal class SmartPlaylistFolderController(
         val folderBand: FrameLayout,
         val breadcrumb: RecyclerView,
         val originalAlpha: Float,
+        val originalNestedScrollingEnabled: Boolean,
         val originalPaddingLeft: Int,
         val originalPaddingTop: Int,
         val originalPaddingRight: Int,
@@ -206,7 +207,8 @@ internal class SmartPlaylistFolderController(
         var initialHeaderReady: Boolean = false,
         var nativeContentReady: Boolean = false,
         var folderScrollSyncReady: Boolean = false,
-        var pendingFolderScrollReset: Boolean = true
+        var pendingFolderScrollReset: Boolean = true,
+        var scrollDeltaReported: Boolean = false
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -715,8 +717,21 @@ internal class SmartPlaylistFolderController(
                 )
             )
         }
+        val folderViewport = FrameLayout(list.context).apply {
+            clipChildren = true
+            clipToPadding = true
+            background = ColorDrawable(Color.TRANSPARENT)
+            addView(
+                folderBand,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
         val column = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = true
             addView(
                 breadcrumb,
                 LinearLayout.LayoutParams(
@@ -725,7 +740,7 @@ internal class SmartPlaylistFolderController(
                 )
             )
             addView(
-                folderBand,
+                folderViewport,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -765,6 +780,11 @@ internal class SmartPlaylistFolderController(
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
+                    (list as? RecyclerView)?.let { recycler ->
+                        if (recycler.isNestedScrollingEnabled) {
+                            recycler.isNestedScrollingEnabled = false
+                        }
+                    }
                     // Scroll displacement is owned exclusively by the native
                     // RecyclerView's consumed dy. PreDraw only synchronizes
                     // native-row-dependent visuals/interactions.
@@ -780,6 +800,14 @@ internal class SmartPlaylistFolderController(
             }
         }
         val originalAlpha = pendingOriginalAlphas.remove(list) ?: list.alpha
+        val nativeRecycler = list as? RecyclerView
+        val originalNestedScrollingEnabled =
+            nativeRecycler?.isNestedScrollingEnabled ?: false
+        // GMMP's Coordinator/AppBar consumes Smart-list nested scroll first,
+        // which collapses the "Smart Playlists" toolbar and leaves the
+        // synthetic folder outside the movement. Make the native RecyclerView
+        // the sole vertical scroll owner while this folder surface is active.
+        nativeRecycler?.isNestedScrollingEnabled = false
         browser = Browser(
             list = list,
             nativeAdapter = adapter,
@@ -789,6 +817,7 @@ internal class SmartPlaylistFolderController(
             folderBand = folderBand,
             breadcrumb = breadcrumb,
             originalAlpha = originalAlpha,
+            originalNestedScrollingEnabled = originalNestedScrollingEnabled,
             originalPaddingLeft = list.paddingLeft,
             originalPaddingTop = list.paddingTop,
             originalPaddingRight = list.paddingRight,
@@ -842,7 +871,7 @@ internal class SmartPlaylistFolderController(
         browsers[list] = browser
         list.addOnAttachStateChangeListener(detachListener)
         list.addOnLayoutChangeListener(layoutListener)
-        (list as? RecyclerView)?.addOnScrollListener(nativeScrollListener)
+        nativeRecycler?.addOnScrollListener(nativeScrollListener)
         if (list.viewTreeObserver.isAlive) {
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
@@ -883,7 +912,8 @@ internal class SmartPlaylistFolderController(
             "SMART FOLDERS READY | root=" + safePath(root) +
                 " | restored=" + safePath(remembered) +
                 " | otherLocations=" + restoreOtherLocations +
-                " | nativeAdapter=ls4"
+                " | nativeAdapter=ls4" +
+                " | nestedScroll=" + originalNestedScrollingEnabled + "->false"
         )
     }
 
@@ -2447,8 +2477,11 @@ internal class SmartPlaylistFolderController(
         restoreAlignedNativeTitles(browser)
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
-        (browser.list as? RecyclerView)
-            ?.removeOnScrollListener(browser.nativeScrollListener)
+        (browser.list as? RecyclerView)?.let { recycler ->
+            recycler.removeOnScrollListener(browser.nativeScrollListener)
+            recycler.isNestedScrollingEnabled =
+                browser.originalNestedScrollingEnabled
+        }
         if (browser.list.viewTreeObserver.isAlive) {
             browser.list.viewTreeObserver.removeOnPreDrawListener(
                 browser.scrollDrawListener
@@ -2506,6 +2539,15 @@ internal class SmartPlaylistFolderController(
             currentOffset = browser.lastFolderScrollOffset,
             dy = dy
         )
+        if (!browser.scrollDeltaReported) {
+            browser.scrollDeltaReported = true
+            Log.i(
+                TAG,
+                "SMART FOLDERS SCROLL | firstConsumedDy=" + dy +
+                    " | folderHeight=" + folderHeight +
+                    " | nestedScroll=false"
+            )
+        }
         if (browser.lastFolderScrollOffset == offset) return
         browser.lastFolderScrollOffset = offset
         browser.folderBand.translationY = -offset.toFloat()
@@ -2516,6 +2558,7 @@ internal class SmartPlaylistFolderController(
         browser.pendingFolderScrollReset = true
         browser.folderBand.translationY = 0f
         browser.lastFolderScrollOffset = 0
+        browser.scrollDeltaReported = false
     }
 
     private fun settleFolderScrollAfterRefresh(
@@ -2530,6 +2573,7 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.folderBand.translationY = 0f
         browser.lastFolderScrollOffset = 0
+        browser.scrollDeltaReported = false
         browser.list.postOnAnimation {
             if (browsers[browser.list] !== browser ||
                 browser.generation != generation ||
@@ -2549,6 +2593,7 @@ internal class SmartPlaylistFolderController(
                 browser.folderScrollSyncReady = true
                 browser.folderBand.translationY = 0f
                 browser.lastFolderScrollOffset = 0
+                browser.scrollDeltaReported = false
                 revealInitialContent(browser)
                 positionOverlay(browser)
             }

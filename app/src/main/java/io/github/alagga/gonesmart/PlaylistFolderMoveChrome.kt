@@ -29,8 +29,7 @@ internal class PlaylistFolderMoveChrome(
         var fabColor: Int? = null
         var lastColor: Int? = null
         var barTintApplied: Boolean = false
-        var themeObserver: Any? = null
-        val themeDisposables: MutableList<Any> = arrayListOf()
+        var accentSubscription: NativeGmmpAccent.Subscription? = null
         var lastBottomOcclusion: Int = -1
     }
 
@@ -149,13 +148,8 @@ internal class PlaylistFolderMoveChrome(
         state.lastColor = null
         state.barTintApplied = false
         state.lastBottomOcclusion = -1
-        state.themeDisposables.forEach { disposable ->
-            runCatching {
-                disposable.javaClass.getMethod("b").invoke(disposable)
-            }
-        }
-        state.themeDisposables.clear()
-        state.themeObserver = null
+        state.accentSubscription?.dispose()
+        state.accentSubscription = null
         val fab = state.fab
         state.fab = null
         if (fab != null) {
@@ -237,76 +231,29 @@ internal class PlaylistFolderMoveChrome(
         list: View,
         isActive: () -> Boolean
     ) {
-        if (state.themeObserver != null || state.fab == null) return
-        runCatching {
-            val loader = list.javaClass.classLoader
-                ?: error("GMMP classloader missing")
-            val theme = runCatching {
-                loader.loadClass("com.afollestad.aesthetic.a\$a")
-                    .getDeclaredMethod("c")
-                    .apply { isAccessible = true }
-                    .invoke(null)
-            }.getOrElse {
-                loader.loadClass("com.afollestad.aesthetic.Aesthetic")
-                    .getDeclaredMethod("get")
-                    .apply { isAccessible = true }
-                    .invoke(null)
-            } ?: error("GMMP Aesthetic not initialized")
-            val attr = list.resources.getIdentifier(
-                "colorAccent", "attr", list.context.packageName
-            )
-            require(attr != 0)
-            val fallback = theme.javaClass.getDeclaredMethod(
-                "b", Int::class.javaPrimitiveType
-            ).apply { isAccessible = true }
-                .invoke(theme, attr)
-                ?: error("GMMP accent observable missing")
-            val utility = loader.loadClass("oy0")
-            val method = utility.declaredMethods.first {
-                it.name == "h" && it.parameterCount == 3 &&
-                    it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
-                    it.parameterTypes[1] == String::class.java
-            }.apply { isAccessible = true }
-            val observable = method.invoke(
-                null, theme, "!mainColorAccent", fallback
-            ) ?: error("GMMP native FAB observable unavailable")
-            val observerType = loader.loadClass("nf3")
-            val listener = java.lang.reflect.Proxy.newProxyInstance(
-                observerType.classLoader, arrayOf(observerType)
-            ) { _, callback, args ->
-                when (callback.name) {
-                    "a" -> (args?.firstOrNull() as? Number)?.let { value ->
-                        list.post {
-                            if (isActive()) {
-                                state.fabColor = value.toInt()
-                                syncPalette(state, list)
-                            }
-                        }
-                    }
-                    "c" -> args?.firstOrNull()?.let {
-                        state.themeDisposables.add(it)
-                    }
-                    "onError" -> Log.w(
-                        tag,
-                        "$surface MOVE UI | GMMP FAB palette observer error",
-                        args?.firstOrNull() as? Throwable
-                    )
+        if (state.accentSubscription != null || state.fab == null) return
+        val subscription = NativeGmmpAccent.observe(
+            list,
+            onColor = { value ->
+                if (isActive()) {
+                    state.fabColor = value
+                    syncPalette(state, list)
                 }
-                null
+            },
+            onError = {
+                Log.w(
+                    tag,
+                    "$surface MOVE UI | native FAB observer unavailable; " +
+                        "using original AestheticFab live background",
+                    it
+                )
             }
-            state.themeObserver = listener
-            observable.javaClass.getMethod("b", observerType)
-                .invoke(observable, listener)
+        )
+        state.accentSubscription = subscription
+        if (subscription != null) {
             Log.i(
                 tag,
                 "$surface MOVE UI | native !mainColorAccent observer active"
-            )
-        }.onFailure {
-            Log.w(
-                tag,
-                "$surface MOVE UI | native FAB observer unavailable; " +
-                    "using original AestheticFab live background",
-                it
             )
         }
     }
