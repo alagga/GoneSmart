@@ -2783,6 +2783,7 @@ internal class PlaylistFolderPreviewController(
                             longClick = false
                         )
                     }
+                    val selectionRow = this
                     setOnLongClickListener {
                         if (browser.moveSources != null) return@setOnLongClickListener false
                         activeBrowser = WeakReference(list)
@@ -2799,10 +2800,10 @@ internal class PlaylistFolderPreviewController(
                             )
                         }
                         if (handled) {
-                            clearPressedState(item)
-                            item.postOnAnimation {
-                                if (item.isAttachedToWindow) {
-                                    clearPressedState(item)
+                            clearPressedState(selectionRow)
+                            selectionRow.postOnAnimation {
+                                if (selectionRow.isAttachedToWindow) {
+                                    clearPressedState(selectionRow)
                                 }
                             }
                         }
