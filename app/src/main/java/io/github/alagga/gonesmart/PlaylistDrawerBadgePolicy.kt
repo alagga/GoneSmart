@@ -28,6 +28,6 @@ internal object PlaylistDrawerBadgePolicy {
         val id = nativeMenuEntryName.lowercase()
         return localizedNativeNames.any {
             it.equals(actualNativeTitle.trim(), ignoreCase = true)
-        } || (id.contains("smart") && id.contains("playlist"))
+        } || id.contains("smart")
     }
 }

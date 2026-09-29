@@ -135,7 +135,8 @@ internal class SmartPlaylistFolderController(
         val lineSpacingMultiplier: Float,
         val maxLines: Int,
         val ellipsize: android.text.TextUtils.TruncateAt?,
-        val rowBackground: Drawable.ConstantState?
+        val rowBackground: Drawable.ConstantState?,
+        val accentColor: Int
     )
 
     private data class Snapshot(
@@ -170,7 +171,7 @@ internal class SmartPlaylistFolderController(
         var current: File,
         var otherLocations: Boolean,
         var style: NativeStyle?,
-        val layoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener,
+        val layoutListener: View.OnLayoutChangeListener,
         val scrollDrawListener: android.view.ViewTreeObserver.OnPreDrawListener,
         val detachListener: View.OnAttachStateChangeListener,
         var observer: FileObserver? = null,
@@ -708,10 +709,16 @@ internal class SmartPlaylistFolderController(
         )
 
         lateinit var browser: Browser
-        val layoutListener =
-            android.view.ViewTreeObserver.OnGlobalLayoutListener {
-                if (browsers[list] === browser) positionOverlay(browser)
+        val layoutListener = View.OnLayoutChangeListener {
+                _, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom ->
+            if (browsers[list] === browser &&
+                (left != oldLeft || top != oldTop ||
+                    right != oldRight || bottom != oldBottom)
+            ) {
+                positionOverlay(browser)
             }
+        }
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
@@ -787,8 +794,8 @@ internal class SmartPlaylistFolderController(
         )
         browsers[list] = browser
         list.addOnAttachStateChangeListener(detachListener)
+        list.addOnLayoutChangeListener(layoutListener)
         if (list.viewTreeObserver.isAlive) {
-            list.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
 
@@ -1244,7 +1251,8 @@ internal class SmartPlaylistFolderController(
             maxLines = it.maxLines,
             ellipsize = it.ellipsize,
             rowBackground = it.rowBackground,
-            titleInset = playlistTitleInset(host)
+            titleInset = playlistTitleInset(host),
+            accentColor = it.accentColor
         )
     }
 
@@ -1404,10 +1412,30 @@ internal class SmartPlaylistFolderController(
                 lineSpacingMultiplier = title.lineSpacingMultiplier,
                 maxLines = title.maxLines,
                 ellipsize = title.ellipsize,
-                rowBackground = row.background?.constantState
+                rowBackground = row.background?.constantState,
+                accentColor = resolveColor(
+                    list,
+                    android.R.attr.colorAccent,
+                    0xFFA39AFF.toInt()
+                )
             )
         }
         return null
+    }
+
+    private fun smartSelectionOverlayColor(browser: Browser): Int {
+        val accent = browser.style?.accentColor
+            ?: resolveColor(
+                browser.list,
+                android.R.attr.colorAccent,
+                0xFFA39AFF.toInt()
+            )
+        return Color.argb(
+            0x80,
+            Color.red(accent),
+            Color.green(accent),
+            Color.blue(accent)
+        )
     }
 
     private fun selectionTitle(
@@ -1468,7 +1496,7 @@ internal class SmartPlaylistFolderController(
             it.title = selectionTitle(browser, browser.selectedSmartPaths.size)
             if (browser.selectionOverlayColor == null) {
                 browser.selectionOverlayColor =
-                    multiSelect.standaloneSelectionOverlayColor(browser.list)
+                    smartSelectionOverlayColor(browser)
             }
             return
         }
@@ -1530,7 +1558,7 @@ internal class SmartPlaylistFolderController(
             browser.selectionOverlayColor = null
         } else if (browser.selectionOverlayColor == null) {
             browser.selectionOverlayColor =
-                multiSelect.standaloneSelectionOverlayColor(browser.list)
+                smartSelectionOverlayColor(browser)
         }
     }
 
@@ -1620,7 +1648,7 @@ internal class SmartPlaylistFolderController(
             val selected = path in browser.selectedSmartPaths
             if (selected) {
                 val color = browser.selectionOverlayColor
-                    ?: multiSelect.standaloneSelectionOverlayColor(list)
+                    ?: smartSelectionOverlayColor(browser)
                         .also { browser.selectionOverlayColor = it }
                 var overlay = browser.selectionOverlays[row]
                 if (overlay == null) {
@@ -2304,10 +2332,8 @@ internal class SmartPlaylistFolderController(
         browser.list.clipToPadding = browser.originalClipToPadding
         restoreAlignedNativeTitles(browser)
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
+        browser.list.removeOnLayoutChangeListener(browser.layoutListener)
         if (browser.list.viewTreeObserver.isAlive) {
-            browser.list.viewTreeObserver.removeOnGlobalLayoutListener(
-                browser.layoutListener
-            )
             browser.list.viewTreeObserver.removeOnPreDrawListener(
                 browser.scrollDrawListener
             )
@@ -2363,6 +2389,7 @@ internal class SmartPlaylistFolderController(
         }
         var firstPosition = Int.MAX_VALUE
         var firstTop: Int? = null
+        var firstHeight = 0
         for (index in 0 until list.childCount) {
             val child = list.getChildAt(index) ?: continue
             val position =
@@ -2370,14 +2397,24 @@ internal class SmartPlaylistFolderController(
             if (position >= 0 && position < firstPosition) {
                 firstPosition = position
                 firstTop = child.top
+                firstHeight = child.height
             }
         }
+        if (firstPosition == Int.MAX_VALUE || firstTop == null) {
+            // Keep the last exact value during a transient no-child layout
+            // frame instead of snapping the synthetic header back to zero.
+            return
+        }
+        val rowHeight = browser.style?.rowHeight
+            ?.takeIf { it > 0 }
+            ?: firstHeight.takeIf { it > 0 }
+            ?: return
         val offset = SmartFolderHeaderScrollPolicy.folderScrollOffset(
             folderHeight = folderHeight,
             listPaddingTop = list.paddingTop,
             firstChildTop = firstTop,
-            firstAdapterPosition =
-                if (firstPosition == Int.MAX_VALUE) -1 else firstPosition
+            firstAdapterPosition = firstPosition,
+            nativeRowHeight = rowHeight
         )
         if (browser.lastFolderScrollOffset == offset) return
         browser.lastFolderScrollOffset = offset
@@ -2393,8 +2430,14 @@ internal class SmartPlaylistFolderController(
         val hostLocation = IntArray(2)
         list.getLocationOnScreen(listLocation)
         browser.host.getLocationOnScreen(hostLocation)
-        browser.overlay.x = (listLocation[0] - hostLocation[0]).toFloat()
-        browser.overlay.y = (listLocation[1] - hostLocation[1]).toFloat()
+        val targetX = (listLocation[0] - hostLocation[0]).toFloat()
+        val targetY = (listLocation[1] - hostLocation[1]).toFloat()
+        if (kotlin.math.abs(browser.overlay.x - targetX) >= 0.5f) {
+            browser.overlay.x = targetX
+        }
+        if (kotlin.math.abs(browser.overlay.y - targetY) >= 0.5f) {
+            browser.overlay.y = targetY
+        }
         val params = browser.overlay.layoutParams
         if (params.width != list.width ||
             params.height != ViewGroup.LayoutParams.WRAP_CONTENT
@@ -2409,7 +2452,10 @@ internal class SmartPlaylistFolderController(
             list.getGlobalVisibleRect(rect) &&
             rect.width() > dp(list, 30) &&
             rect.height() > dp(list, 30)
-        browser.overlay.visibility = if (visible) View.VISIBLE else View.GONE
+        val nextVisibility = if (visible) View.VISIBLE else View.GONE
+        if (browser.overlay.visibility != nextVisibility) {
+            browser.overlay.visibility = nextVisibility
+        }
         if (visible) {
             val nextStyle = sampleNativeStyle(list)
             if (nextStyle != null) browser.style = nextStyle

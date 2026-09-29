@@ -161,6 +161,10 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbAdapter: NativeFolderBreadcrumbAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
             NativeMainPlaylistSelectionMirror(),
+        val mainRenderedPlaylistRows: MutableMap<String, View> =
+            linkedMapOf(),
+        val mainOriginalRowForegrounds: WeakHashMap<View, Drawable?> =
+            WeakHashMap(),
         var folderFab: View? = null,
         var playlistFab: View? = null,
         var pickerAddExpanded: Boolean = false,
@@ -1508,7 +1512,7 @@ internal class PlaylistFolderPreviewController(
                 browser.mainSelection.clear()
                 if (browser.list.isAttachedToWindow &&
                     browsers[browser.list] === browser
-                ) safeRender(browser)
+                ) syncMainSelectionVisuals(browser)
                 Log.i(TAG, "FOLDER MAIN SELECT | original ActionMode destroyed; cleared")
             }
         }
@@ -2657,6 +2661,8 @@ internal class PlaylistFolderPreviewController(
             positionMoveFab(browser)
         }
         browser.rows.removeAllViews()
+        browser.mainRenderedPlaylistRows.clear()
+        browser.mainOriginalRowForegrounds.clear()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
         val renderedRows = arrayListOf<View>()
@@ -2717,7 +2723,7 @@ internal class PlaylistFolderPreviewController(
                     list,
                     playlist.name,
                     folder = false,
-                    selected = selected,
+                    selected = if (isPicker(list)) selected else false,
                     nativeMenuButton = if (browser.moveSources == null) {
                         nativeMenu
                     } else null,
@@ -2772,6 +2778,11 @@ internal class PlaylistFolderPreviewController(
                         handled
                     }
                 }
+            if (!isPicker(list)) {
+                browser.mainRenderedPlaylistRows[playlist.path] = item
+                browser.mainOriginalRowForegrounds[item] = item.foreground
+                applyMainSelectionVisual(browser, playlist.path, item)
+            }
             browser.rows.addView(item)
             renderedRows.add(item)
         }
@@ -2967,6 +2978,34 @@ internal class PlaylistFolderPreviewController(
         )
     }
 
+    private fun mainSelectionAccent(browser: Browser): Int =
+        styles[browser.list]?.accentColor ?: resolveAccent(browser.list)
+
+    private fun applyMainSelectionVisual(
+        browser: Browser,
+        path: String,
+        row: View
+    ) {
+        if (!browser.mainOriginalRowForegrounds.containsKey(row)) {
+            browser.mainOriginalRowForegrounds[row] = row.foreground
+        }
+        row.foreground = if (browser.mainSelection.isSelected(path)) {
+            ColorDrawable(
+                withAlpha(mainSelectionAccent(browser), 0x80)
+            )
+        } else {
+            browser.mainOriginalRowForegrounds[row]
+        }
+    }
+
+    private fun syncMainSelectionVisuals(browser: Browser) {
+        browser.mainRenderedPlaylistRows.forEach { (path, row) ->
+            if (row.parent === browser.rows) {
+                applyMainSelectionVisual(browser, path, row)
+            }
+        }
+    }
+
     private fun row(
         view: View,
         text: String,
@@ -3145,7 +3184,7 @@ internal class PlaylistFolderPreviewController(
                             if (browsers[list] === current &&
                                 list.isAttachedToWindow &&
                                 !current.nativeNavigationInProgress
-                            ) safeRender(current)
+                            ) syncMainSelectionVisuals(current)
                         }
                         Log.i(TAG, "FOLDER MAIN SELECT | selected=" +
                             current.mainSelection.selectedCount)

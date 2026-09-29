@@ -54,4 +54,13 @@ class PlaylistDrawerBadgePolicyTest {
             )
         )
     }
+
+    @Test fun matchesNativeSmartDrawerIdEvenWhenItDoesNotRepeatPlaylist() {
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
+                listOf("Smarte Wiedergabelisten"),
+                "menuSmart", "Smarte Wiedergabelisten"
+            )
+        )
+    }
 }

@@ -3,22 +3,29 @@ package io.github.alagga.gonesmart
 /**
  * Smart folder rows are rendered above GMMP's native ls4 RecyclerView.
  *
- * RecyclerView.computeVerticalScrollOffset() is intentionally NOT used here:
- * for variable/recycled rows it is an estimate and can jump when holders are
- * rebound. While adapter position 0 is visible, use its real pixel top.
- * Once position 0 is gone, the finite folder band is already fully offscreen.
+ * Use the real adapter position plus the real child top. Native Smart rows are
+ * fixed-height on GMMP 4.2.0, so this remains continuous when RecyclerView
+ * recycles position 0 into position 1. Do not use computeVerticalScrollOffset:
+ * it is a scrollbar estimate and can jump as holders are rebound.
  */
 internal object SmartFolderHeaderScrollPolicy {
     fun folderScrollOffset(
         folderHeight: Int,
         listPaddingTop: Int,
-        firstChildTop: Int?,
-        firstAdapterPosition: Int
+        firstChildTop: Int,
+        firstAdapterPosition: Int,
+        nativeRowHeight: Int
     ): Int {
-        if (folderHeight <= 0) return 0
-        if (firstAdapterPosition > 0) return folderHeight
-        if (firstAdapterPosition < 0 || firstChildTop == null) return 0
-        return (listPaddingTop - firstChildTop)
-            .coerceIn(0, folderHeight)
+        if (folderHeight <= 0 ||
+            firstAdapterPosition < 0 ||
+            nativeRowHeight <= 0
+        ) return 0
+        val rowDistance = firstAdapterPosition.toLong() *
+            nativeRowHeight.toLong()
+        val pixelDistance = listPaddingTop.toLong() -
+            firstChildTop.toLong()
+        return (rowDistance + pixelDistance)
+            .coerceIn(0L, folderHeight.toLong())
+            .toInt()
     }
 }
