@@ -115,6 +115,9 @@ internal class PlaylistMultiSelectController {
         return true
     }
 
+    fun nativeContextBarColor(list: ViewGroup): Int? =
+        (findContextBar(list.rootView)?.background as? ColorDrawable)?.color
+
     fun confirmFolderSelection(list: ViewGroup): Boolean {
         val session = active ?: return false
         if (!enabled || session.list !== list ||

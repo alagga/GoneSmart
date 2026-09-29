@@ -24,9 +24,11 @@ import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -176,6 +178,7 @@ internal class SmartPlaylistFolderController(
         var nativeSignature: List<String> = emptyList(),
         var nativeSubmitted: Boolean = false,
         var renderedLocationKey: String? = null,
+        var renderedHeaderSignature: String? = null,
         var moveSources: List<String>? = null,
         var movePreviousDirectory: String? = null,
         var movePreviousOtherLocations: Boolean = false,
@@ -186,7 +189,12 @@ internal class SmartPlaylistFolderController(
         var moveBarTintApplied: Boolean = false,
         var moveThemeObserver: Any? = null,
         val moveThemeDisposables: ArrayList<Any> = arrayListOf(),
-        var lastFolderScrollOffset: Int = Int.MIN_VALUE
+        var lastFolderScrollOffset: Int = Int.MIN_VALUE,
+        val selectedSmartPaths: LinkedHashSet<String> = linkedSetOf(),
+        var selectionActionMode: android.view.ActionMode? = null,
+        var selectionTransitionToMove: Boolean = false,
+        var suppressSelectionUpPath: String? = null,
+        val originalRowForegrounds: WeakHashMap<View, Drawable?> = WeakHashMap()
     )
 
     private inner class BreadcrumbAdapter(
@@ -314,6 +322,8 @@ internal class SmartPlaylistFolderController(
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
     private val moveMenuId = View.generateViewId()
+    private val smartInteractionTagId = View.generateViewId()
+    private val smartSelectionVisualTagId = View.generateViewId()
     private val alignedNativeTitles = WeakHashMap<TextView, Float>()
     private val alignedNativeTitleOwners =
         WeakHashMap<TextView, WeakReference<ViewGroup>>()
@@ -467,6 +477,9 @@ internal class SmartPlaylistFolderController(
                         browser.current = browser.root
                     }
                 }
+            }
+            if (multiChanged && !nextMultiSelect) {
+                browsers.values.toList().forEach(::clearSmartSelection)
             }
             updateMenus()
             if (enabledChanged && !nextEnabled) {
@@ -816,9 +829,7 @@ internal class SmartPlaylistFolderController(
                 if (browsers[list] === browser) {
                     syncFolderRowsScroll(browser)
                     alignVisibleNativeTitles(browser)
-                    if (browser.moveSources != null) {
-                        syncMoveChromePalette(browser)
-                    }
+                    syncVisibleSmartRowInteractions(browser)
                 }
                 true
             }
@@ -1083,10 +1094,20 @@ internal class SmartPlaylistFolderController(
         snapshot: Snapshot,
         visibleSmartCount: Int
     ) {
-        browser.rows.removeAllViews()
+        val moving = browser.moveSources != null
+        val folders = if (browser.otherLocations) {
+            emptyList()
+        } else {
+            snapshot.folders
+        }
+        val showOtherLocations =
+            !moving &&
+                groupRootPlaylists &&
+                !browser.otherLocations &&
+                sameFile(browser.current, browser.root)
         val locationKey = canonicalPath(snapshot.directory.path) +
             "|other=" + browser.otherLocations +
-            "|move=" + (browser.moveSources != null)
+            "|move=" + moving
         val locationChanged = browser.renderedLocationKey != locationKey
         browser.renderedLocationKey = locationKey
         if (locationChanged) {
@@ -1098,14 +1119,44 @@ internal class SmartPlaylistFolderController(
                 ).invoke(browser.list, 0)
             }
         }
+
+        val headerSignature = buildString {
+            append(locationKey)
+            append("|folders=")
+            folders.forEach {
+                append(canonicalPath(it.path))
+                append(';')
+            }
+            append("|otherNode=")
+            append(showOtherLocations)
+            append("|style=")
+            browser.style?.let {
+                append(it.rowLayoutId)
+                append(':')
+                append(it.titleViewId)
+                append(':')
+                append(it.rowHeight)
+                append(':')
+                append(it.textColor)
+                append(':')
+                append(it.textSizePx)
+            }
+        }
+        if (browser.renderedHeaderSignature == headerSignature) {
+            browser.overlay.post {
+                if (browsers[browser.list] === browser) {
+                    updateNativeInset(browser)
+                    syncFolderRowsScroll(browser)
+                    syncVisibleSmartRowInteractions(browser)
+                    if (moving) positionMoveFab(browser)
+                }
+            }
+            return
+        }
+        browser.renderedHeaderSignature = headerSignature
+        browser.rows.removeAllViews()
         renderBreadcrumb(browser)
 
-        val moving = browser.moveSources != null
-        val folders = if (browser.otherLocations) {
-            emptyList()
-        } else {
-            snapshot.folders
-        }
         val nativeMenuButton = firstNativeContextMenu(browser.list)
         folders.forEach { folder ->
             val row = createRow(
@@ -1121,11 +1172,6 @@ internal class SmartPlaylistFolderController(
             browser.rows.addView(row)
         }
 
-        val showOtherLocations =
-            !moving &&
-                groupRootPlaylists &&
-                !browser.otherLocations &&
-                sameFile(browser.current, browser.root)
         if (showOtherLocations) {
             val otherLabel = NativeGmmpUiText.otherLocations(browser.list.context)
             val row = createRow(
@@ -1251,10 +1297,9 @@ internal class SmartPlaylistFolderController(
             )
             template.minimumHeight = style.rowHeight
             hideOtherText(template, title)
-            configureContextMenu(
+            val contextConfigured = configureContextMenu(
                 template,
                 browser.list,
-                folder,
                 contextMenuSource,
                 onContext
             )
@@ -1263,11 +1308,16 @@ internal class SmartPlaylistFolderController(
                 ?.mutate()?.let { template.background = it }
             template.isClickable = true
             template.isFocusable = true
-            return template
+            return if (onContext != null && !contextConfigured) {
+                wrapContextMenuFallback(
+                    template, browser.list, style.rowHeight,
+                    contextMenuSource, onContext
+                )
+            } else template
         }
 
         // Defensive fallback when a live row template is not available.
-        return TextView(browser.list.context).apply {
+        val fallback = TextView(browser.list.context).apply {
             this.text = text
             gravity = Gravity.CENTER_VERTICAL
             val textColor = style?.textColor ?: resolveColor(
@@ -1297,6 +1347,15 @@ internal class SmartPlaylistFolderController(
                 compoundDrawablePadding = dp(browser.list, 12)
             }
         }
+        return if (onContext != null) {
+            wrapContextMenuFallback(
+                fallback,
+                browser.list,
+                style?.rowHeight ?: dp(browser.list, 54),
+                contextMenuSource,
+                onContext
+            )
+        } else fallback
     }
 
     private fun addNativeFolderIcon(
@@ -1341,22 +1400,31 @@ internal class SmartPlaylistFolderController(
     private fun configureContextMenu(
         root: View,
         host: View,
-        folder: Boolean,
         source: ImageView?,
         onContext: ((View) -> Unit)?
-    ) {
+    ): Boolean {
         val id = host.resources.getIdentifier(
             "rvContextMenu",
             "id",
             host.context.packageName
         )
-        if (id == 0) return
-        val button = root.findViewById<ImageView>(id) ?: return
+        if (id == 0) return false
+        val button = root.findViewById<ImageView>(id) ?: return false
         if (onContext == null) {
             button.visibility = View.GONE
             button.setOnClickListener(null)
-            return
+            return true
         }
+        styleContextMenuButton(button, host, source, onContext)
+        return true
+    }
+
+    private fun styleContextMenuButton(
+        button: ImageView,
+        host: View,
+        source: ImageView?,
+        onContext: (View) -> Unit
+    ) {
         val clone = source?.drawable?.constantState
             ?.newDrawable(host.resources)?.mutate()
         if (clone != null) {
@@ -1369,10 +1437,62 @@ internal class SmartPlaylistFolderController(
             )
             if (icon != 0) button.setImageResource(icon)
         }
-        source?.imageTintList?.let { button.imageTintList = it }
+        button.imageTintList = source?.imageTintList
+            ?: android.content.res.ColorStateList.valueOf(
+                resolveColor(
+                    host,
+                    android.R.attr.textColorPrimary,
+                    Color.WHITE
+                )
+            )
+        button.contentDescription = source?.contentDescription
+            ?: NativeGmmpUiText.string(host.context, "menu")
         button.visibility = View.VISIBLE
+        button.isEnabled = true
         button.isClickable = true
+        button.isFocusable = true
         button.setOnClickListener { onContext(button) }
+    }
+
+    private fun wrapContextMenuFallback(
+        content: View,
+        host: View,
+        rowHeight: Int,
+        source: ImageView?,
+        onContext: (View) -> Unit
+    ): View {
+        val wrapper = FrameLayout(host.context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                rowHeight
+            )
+            minimumHeight = rowHeight
+        }
+        wrapper.addView(
+            content,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                rowHeight
+            )
+        )
+        val buttonId = host.resources.getIdentifier(
+            "rvContextMenu", "id", host.context.packageName
+        )
+        val width = source?.width?.takeIf { it > 0 } ?: dp(host, 48)
+        val button = ImageButton(host.context).apply {
+            if (buttonId != 0) id = buttonId
+            background = selectableBackground(host)
+        }
+        styleContextMenuButton(button, host, source, onContext)
+        wrapper.addView(
+            button,
+            FrameLayout.LayoutParams(
+                width,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.END or Gravity.CENTER_VERTICAL
+            )
+        )
+        return wrapper
     }
 
     private fun dispatchNativeAction(
@@ -1514,6 +1634,242 @@ internal class SmartPlaylistFolderController(
             )
         }
         return null
+    }
+
+    private fun selectionTitle(
+        browser: Browser,
+        count: Int
+    ): String {
+        val context = browser.list.context
+        val id = context.resources.getIdentifier(
+            "num_selected", "string", context.packageName
+        )
+        if (id != 0) {
+            runCatching { context.getString(id, count) }
+                .getOrNull()
+                ?.takeUnless(String::isBlank)
+                ?.let { return it }
+        }
+        return count.toString()
+    }
+
+    private fun beginSmartSelection(
+        browser: Browser,
+        path: String
+    ): Boolean {
+        if (!multiSelectEnabled || browser.moveSources != null) return false
+        val canonical = canonicalPath(path)
+        if (canonical !in browser.nativeOrder) return false
+        browser.selectedSmartPaths.add(canonical)
+        browser.suppressSelectionUpPath = canonical
+        ensureSmartSelectionActionMode(browser)
+        syncVisibleSmartRowInteractions(browser)
+        Log.i(
+            TAG,
+            "SMART MULTI SELECT | started | count=" +
+                browser.selectedSmartPaths.size
+        )
+        return true
+    }
+
+    private fun toggleSmartSelection(
+        browser: Browser,
+        path: String
+    ) {
+        val canonical = canonicalPath(path)
+        if (!browser.selectedSmartPaths.remove(canonical)) {
+            browser.selectedSmartPaths.add(canonical)
+        }
+        if (browser.selectedSmartPaths.isEmpty()) {
+            browser.selectionActionMode?.finish()
+            if (browser.selectionActionMode == null) {
+                clearSmartSelection(browser)
+            }
+        } else {
+            ensureSmartSelectionActionMode(browser)
+            browser.selectionActionMode?.title =
+                selectionTitle(browser, browser.selectedSmartPaths.size)
+            syncVisibleSmartRowInteractions(browser)
+        }
+        Log.i(
+            TAG,
+            "SMART MULTI SELECT | toggled | count=" +
+                browser.selectedSmartPaths.size
+        )
+    }
+
+    private fun ensureSmartSelectionActionMode(browser: Browser) {
+        if (browser.selectedSmartPaths.isEmpty()) return
+        browser.selectionActionMode?.let {
+            it.title = selectionTitle(browser, browser.selectedSmartPaths.size)
+            return
+        }
+        val callback = object : android.view.ActionMode.Callback {
+            override fun onCreateActionMode(
+                mode: android.view.ActionMode,
+                menu: Menu
+            ): Boolean {
+                mode.title = selectionTitle(
+                    browser, browser.selectedSmartPaths.size
+                )
+                installMoveMenu(menu, browser.list.context)
+                return true
+            }
+
+            override fun onPrepareActionMode(
+                mode: android.view.ActionMode,
+                menu: Menu
+            ): Boolean = false
+
+            override fun onActionItemClicked(
+                mode: android.view.ActionMode,
+                item: MenuItem
+            ): Boolean {
+                if (item.itemId != moveMenuId) return false
+                val selected = browser.selectedSmartPaths.toList()
+                if (selected.isEmpty()) return true
+                browser.selectionTransitionToMove = true
+                browser.selectedSmartPaths.clear()
+                syncVisibleSmartRowInteractions(browser)
+                mode.finish()
+                beginMove(browser, selected, null)
+                return true
+            }
+
+            override fun onDestroyActionMode(mode: android.view.ActionMode) {
+                if (browser.selectionActionMode !== mode) return
+                browser.selectionActionMode = null
+                if (browser.selectionTransitionToMove) {
+                    browser.selectionTransitionToMove = false
+                    browser.suppressSelectionUpPath = null
+                    syncVisibleSmartRowInteractions(browser)
+                } else {
+                    clearSmartSelection(browser)
+                }
+            }
+        }
+        browser.selectionActionMode = runCatching {
+            browser.list.startActionMode(
+                callback,
+                android.view.ActionMode.TYPE_PRIMARY
+            )
+        }.onFailure {
+            Log.w(TAG, "SMART MULTI SELECT | ActionMode unavailable", it)
+        }.getOrNull()
+        if (browser.selectionActionMode == null) {
+            browser.selectedSmartPaths.clear()
+            browser.suppressSelectionUpPath = null
+        }
+    }
+
+    private fun clearSmartSelection(browser: Browser) {
+        val mode = browser.selectionActionMode
+        browser.selectionActionMode = null
+        browser.selectionTransitionToMove = false
+        browser.suppressSelectionUpPath = null
+        browser.selectedSmartPaths.clear()
+        restoreSmartRowForegrounds(browser)
+        mode?.finish()
+    }
+
+    private fun restoreSmartRowForegrounds(browser: Browser) {
+        browser.originalRowForegrounds.entries.toList().forEach { entry ->
+            entry.key.foreground = entry.value
+            entry.key.setTag(smartSelectionVisualTagId, false)
+        }
+        browser.originalRowForegrounds.clear()
+    }
+
+    private fun selectionAccent(browser: Browser): Int {
+        val liveBar = multiSelect.nativeContextBarColor(browser.list)
+        if (liveBar != null && Color.alpha(liveBar) >= 200) return liveBar
+        return browser.style?.textColor
+            ?: resolveColor(
+                browser.list,
+                android.R.attr.textColorPrimary,
+                Color.WHITE
+            )
+    }
+
+    private fun syncVisibleSmartRowInteractions(browser: Browser) {
+        val native = bindings ?: return
+        val list = browser.list
+        if (!list.isAttachedToWindow || browsers[list] !== browser) return
+        val holderGetter = runCatching {
+            list.javaClass.getMethod(
+                "getChildViewHolder", View::class.java
+            )
+        }.getOrNull() ?: return
+
+        for (index in 0 until list.childCount) {
+            val row = list.getChildAt(index) ?: continue
+            val holder = runCatching {
+                holderGetter.invoke(list, row)
+            }.getOrNull() ?: continue
+            if (!native.holderClass.isInstance(holder)) continue
+            val model = runCatching {
+                native.holderModel.get(holder)
+            }.getOrNull() ?: continue
+            val path = modelPath(model) ?: continue
+            val previous = row.getTag(smartInteractionTagId) as? String
+            if (previous != path) {
+                if (browser.originalRowForegrounds.containsKey(row)) {
+                    row.foreground = browser.originalRowForegrounds.remove(row)
+                }
+                row.setTag(smartSelectionVisualTagId, false)
+                row.setTag(smartInteractionTagId, path)
+                row.setOnLongClickListener {
+                    beginSmartSelection(browser, path)
+                }
+                row.setOnTouchListener { view, event ->
+                    if (browser.selectedSmartPaths.isEmpty() ||
+                        browser.moveSources != null
+                    ) {
+                        return@setOnTouchListener false
+                    }
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            view.isPressed = true
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            view.isPressed = false
+                            if (browser.suppressSelectionUpPath == path) {
+                                browser.suppressSelectionUpPath = null
+                            } else {
+                                toggleSmartSelection(browser, path)
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            view.isPressed = false
+                            if (browser.suppressSelectionUpPath == path) {
+                                browser.suppressSelectionUpPath = null
+                            }
+                            true
+                        }
+                        else -> true
+                    }
+                }
+            }
+
+            val selected = path in browser.selectedSmartPaths
+            val visuallySelected =
+                row.getTag(smartSelectionVisualTagId) as? Boolean == true
+            if (selected && !visuallySelected) {
+                if (!browser.originalRowForegrounds.containsKey(row)) {
+                    browser.originalRowForegrounds[row] = row.foreground
+                }
+                row.foreground = ColorDrawable(
+                    withAlpha(selectionAccent(browser), 0x80)
+                )
+                row.setTag(smartSelectionVisualTagId, true)
+            } else if (!selected && visuallySelected) {
+                row.foreground = browser.originalRowForegrounds[row]
+                browser.originalRowForegrounds.remove(row)
+                row.setTag(smartSelectionVisualTagId, false)
+            }
+        }
     }
 
     private fun playlistTitleInset(list: View): Int {
@@ -2116,6 +2472,7 @@ internal class SmartPlaylistFolderController(
             ?: nativeMovePaletteFallback(browser)
             ?: return
         val changed = browser.moveLastColor != color
+        val previousBarTint = browser.moveBarTintApplied
         browser.moveLastColor = color
         if (changed) {
             fab.backgroundTintList =
@@ -2123,7 +2480,7 @@ internal class SmartPlaylistFolderController(
         }
         browser.moveBarTintApplied =
             multiSelect.tintNativeContextBar(browser.list, color)
-        if (changed || browser.moveBarTintApplied) {
+        if (changed || (!previousBarTint && browser.moveBarTintApplied)) {
             Log.i(
                 TAG,
                 "SMART MOVE UI | native picker FAB color=#" +
@@ -2490,6 +2847,7 @@ internal class SmartPlaylistFolderController(
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
         browser.observer?.stopWatching()
+        clearSmartSelection(browser)
         endMoveChrome(browser)
         browser.list.alpha = browser.originalAlpha
         browser.list.setPadding(
@@ -2558,25 +2916,17 @@ internal class SmartPlaylistFolderController(
             }
             return
         }
-        var firstPosition = Int.MAX_VALUE
-        var firstTop: Int? = null
-        for (index in 0 until list.childCount) {
-            val child = list.getChildAt(index) ?: continue
-            val position = NativeRecyclerBridge.childAdapterPosition(list, child)
-            if (position >= 0 && position < firstPosition) {
-                firstPosition = position
-                firstTop = child.top
-            }
-        }
-        val offset = if (firstTop == null) {
-            if (list.canScrollVertically(-1)) folderHeight else 0
-        } else {
+        val nativeOffset = runCatching {
+            (list.javaClass.getMethod("computeVerticalScrollOffset")
+                .invoke(list) as? Number)?.toInt()
+        }.getOrNull()
+        val offset = if (nativeOffset != null) {
             SmartFolderHeaderScrollPolicy.folderScrollOffset(
                 folderHeight = folderHeight,
-                listPaddingTop = list.paddingTop,
-                firstChildTop = firstTop,
-                firstAdapterPosition = firstPosition
+                nativeScrollOffset = nativeOffset
             )
+        } else {
+            if (list.canScrollVertically(-1)) folderHeight else 0
         }
         if (browser.lastFolderScrollOffset == offset) return
         browser.lastFolderScrollOffset = offset
@@ -2618,8 +2968,8 @@ internal class SmartPlaylistFolderController(
                 updateNativeInset(browser)
                 syncFolderRowsScroll(browser)
                 alignVisibleNativeTitles(browser)
+                syncVisibleSmartRowInteractions(browser)
                 if (browser.moveSources != null) {
-                    syncMoveChromePalette(browser)
                     positionMoveFab(browser)
                 }
             }
@@ -2887,6 +3237,9 @@ internal class SmartPlaylistFolderController(
         PlaylistBridgeDiagnosticPolicy.safePath(
             runCatching { file.canonicalPath }.getOrDefault(file.path)
         )
+
+    private fun withAlpha(color: Int, alpha: Int): Int =
+        (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
 
     private fun dp(view: View, value: Int): Int =
         (view.resources.displayMetrics.density * value + 0.5f).toInt()
