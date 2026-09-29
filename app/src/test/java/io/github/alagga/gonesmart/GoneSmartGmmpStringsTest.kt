@@ -188,4 +188,32 @@ class GoneSmartGmmpStringsTest {
             GoneSmartGmmpStrings.creationDialog(Locale.GERMANY, "Delete")
         )
     }
+
+    @Test fun creationDialogRecognizesMaterialDialogsPhraseVariants() {
+        assertEquals(
+            "Neuer Ordner",
+            GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "Create a new folder"
+            )
+        )
+        assertEquals(
+            "Ordnername",
+            GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "Enter a folder name"
+            )
+        )
+        assertEquals(
+            "Neue Playlist",
+            GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "Create a new playlist"
+            )
+        )
+        assertEquals(
+            "Playlistname",
+            GoneSmartGmmpStrings.creationDialog(
+                Locale.GERMANY, "Enter a playlist name"
+            )
+        )
+    }
+
 }

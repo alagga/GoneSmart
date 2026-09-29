@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.TextView
 import java.lang.reflect.Modifier
 import java.util.Locale
@@ -29,6 +30,18 @@ internal object NativeGmmpCreationDialogLocalizer {
     private const val TAG = "GoneSmartPlaylist"
     private val nativeMaps = ConcurrentHashMap<String, Map<String, String>>()
 
+    fun localizeWhenReady(dialog: Dialog) {
+        // MaterialDialogs can bind input/button text during or immediately
+        // after show(). Run one immediate pass plus bounded UI-thread passes
+        // so native playlist creation and the reused folder creator cannot
+        // leave library-default English labels behind.
+        localize(dialog)
+        val decor = dialog.window?.decorView ?: return
+        decor.post { localize(dialog) }
+        decor.postDelayed({ localize(dialog) }, 60L)
+        decor.postDelayed({ localize(dialog) }, 180L)
+    }
+
     fun localize(dialog: Dialog): Boolean {
         val context = dialog.context
         val locale = context.resources.configuration.locales[0]
@@ -44,19 +57,15 @@ internal object NativeGmmpCreationDialogLocalizer {
                 view.hint?.toString()?.takeUnless(String::isBlank)?.let(::add)
             }
         }
+        val hasEditableField = views.any { it is EditText }
         val creationCue = visibleStrings.any {
             val key = key(it)
-            key == "new folder" ||
-                key == "create new folder" ||
-                key == "create folder" ||
-                key == "folder name" ||
-                key == "enter folder name" ||
-                key == "new playlist" ||
-                key == "create new playlist" ||
-                key == "create playlist" ||
-                key == "playlist name" ||
-                key == "enter playlist name"
-        }
+            key.contains("folder") || key.contains("playlist")
+        } || (
+            hasEditableField && visibleStrings.any {
+                GoneSmartGmmpStrings.creationDialog(locale, it) != null
+            }
+        )
         if (!creationCue) return false
 
         val native = nativeExactTranslations(context, locale)

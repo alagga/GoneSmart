@@ -822,3 +822,13 @@ Smart selected rows now deliberately use the same visual source as accepted norm
 Normal Playlist main multi-selection no longer rebuilds the complete synthetic folder browser after every selection change. The existing row views are retained and only their selected foreground is updated. Real navigation/model insertions keep the native-style render/animation path; selection alone must never trigger that large insertion/move animation.
 
 The drawer matcher now recognizes the already-existing native Smart item from either the installed localized Smart title or a native menu resource entry containing `smart`. The ordinary Playlist matcher still excludes Smart IDs; no synthetic navigation entry is created.
+
+## 29 September 2026 — first-frame Smart parity, long-press ripple and creation i18n
+
+Device feedback confirmed Smart folder scrolling is now stable. Remaining first-frame behavior differed from the accepted normal Playlist folder browser: the native Smart list became visible before the physical-folder snapshot finished, so real Smart rows appeared first and the folder header arrived later. The Smart surface now keeps the raw native list/header invisible only during this bounded initial preparation and reveals both together after the full current-folder native model submission plus folder header are ready; a 2.5-second fail-open restores native content if preparation cannot complete.
+
+The Smart root overflow also defensively reinstalls the verified folder-Add item if GMMP clears/rebuilds the same native Menu object after inflation. It remains the same host-localized Add wording and native folder icon; no duplicate action is created.
+
+Normal Playlist main-selection no longer treats its synthetic native-row foreground ripple as part of selection feedback. The real hidden GMMP row still owns the original long-press/ActionMode behavior, while the visible synthetic row suppresses its inherited full-row borderless ripple/state animator and uses only the established static accent selection overlay. This targets the device-reported page-scale long-press animation without changing selection semantics.
+
+Playlist/folder creation dialogs are GMMP-referential UI: native localized GMMP resources are preferred, and only missing phrases fall back to the complete centralized `GoneSmartGmmpStrings.kt` locale table. MaterialDialogs are localized with bounded post-show passes because button/input labels can bind after `show()`.

@@ -34,3 +34,14 @@ The same audit found old hardcoded **German** in the Add-picker confirm accessib
 When native `track` or `auto_dj` is missing in GMMP, **Track Auto-DJ now omits its injected menu action** rather than inventing mixed-language labels. Its successful result uses the host-native `started` phrase if present; otherwise it shows the fully native composed action plus `✓`. Flip Queue and Play Flipped require the installed native `queue` / `play` title instead of hardcoded English fallbacks, and display native generic errors. The Add-picker aggregate result still composes GMMP's original `add_to_playlist_toast` with the native singular/plural `playlist(s)` terms; exact natural grammar in all languages, especially complex plural rules and RTL display, is **not** independently verified.
 
 The Move action is still the only custom **verb** inside GMMP. Other Locations is a GoneSmart-owned **virtual node name**, not a second translated native command. Both exceptions live in the existing central source instead of scattering copied strings throughout the injected UI. Source and unit test coverage do not substitute for testing GMMP's own app-specific language override on a device.
+
+## 2026-09-29 creation dialogs and pure GoneSmart notices
+
+The language boundary is now explicit:
+
+- Pure GoneSmart-owned recommendation/cache/provider notices stay useful **English prose**, because the GoneSmart product surface is English. Do not convert these notices to symbol-only pseudo-localization.
+- GMMP-referential injected UI — especially Playlist/Smart-Playlist/folder creation, Add/Delete/Move/selection and related dialogs — follows the current **GMMP app locale**.
+- Runtime localization is native-first: reuse an installed GMMP `R.string` whenever an exact semantic equivalent exists. Only a genuinely missing phrase is read from the single centralized `GoneSmartGmmpStrings.kt` table.
+- That table must cover the complete audited GMMP 4.2.0 locale inventory (including legacy aliases) and have coverage tests. Do not introduce controller-local translation maps.
+
+MaterialDialogs can populate input hints/buttons during or just after `show()`. Creation-dialog localization therefore performs an immediate pass plus bounded UI-thread post-show passes. GoneSmart's reused native `showNewFolderCreator` is localized through the same path, so normal Playlist folders and Smart-Playlist folders cannot diverge.

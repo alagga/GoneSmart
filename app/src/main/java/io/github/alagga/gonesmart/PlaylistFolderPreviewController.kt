@@ -745,7 +745,7 @@ internal class PlaylistFolderPreviewController(
 
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
-        if (resourceName(list) == "design_navigation_view") {
+        if (isDrawerRecycler(list)) {
             observeDrawerPlaylistBadge(list)
             return
         }
@@ -837,6 +837,17 @@ internal class PlaylistFolderPreviewController(
             )
         }
         if (settings.enabled) scheduleAttach(list, 0)
+    }
+
+    private fun isDrawerRecycler(list: ViewGroup): Boolean {
+        if (resourceName(list) == "design_navigation_view") return true
+        var parent = list.parent as? View
+        repeat(8) {
+            val current = parent ?: return false
+            if (resourceName(current) == "mainNavigationView") return true
+            parent = current.parent as? View
+        }
+        return false
     }
 
     /**
@@ -2812,8 +2823,14 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             if (!isPicker(list)) {
+                // The inflated native row can carry a borderless foreground
+                // ripple whose hotspot expands against our full overlay host.
+                // Native GMMP owns the real ActionMode; the synthetic mirror
+                // must not play that page-sized ripple on long press.
+                item.foreground = null
+                item.stateListAnimator = null
                 browser.mainRenderedPlaylistRows[playlist.path] = item
-                browser.mainOriginalRowForegrounds[item] = item.foreground
+                browser.mainOriginalRowForegrounds[item] = null
                 applyMainSelectionVisual(browser, playlist.path, item)
             }
             browser.rows.addView(item)

@@ -303,13 +303,15 @@ internal object GoneSmartGmmpStrings {
             .lowercase(Locale.ROOT)
             .replace(Regex("\\s+"), " ")
         return when (key) {
-            "new folder", "create new folder", "create folder" ->
+            "new folder", "create new folder", "create a new folder",
+            "create folder" ->
                 base.newFolder
-            "folder name", "enter folder name" ->
+            "folder name", "enter folder name", "enter a folder name" ->
                 base.folderName
-            "new playlist", "create new playlist", "create playlist" ->
+            "new playlist", "create new playlist", "create a new playlist",
+            "create playlist" ->
                 base.newPlaylist
-            "playlist name", "enter playlist name" ->
+            "playlist name", "enter playlist name", "enter a playlist name" ->
                 base.playlistName
             "create" -> base.create
             "cancel" -> base.cancel

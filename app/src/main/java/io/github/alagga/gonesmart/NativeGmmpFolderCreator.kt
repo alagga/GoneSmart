@@ -62,6 +62,9 @@ internal class NativeGmmpFolderCreator(
             callbackType
         ).apply { isAccessible = true }
         creator.invoke(null, parentDialog, directory, null, callback)
+        (parentDialog as? android.app.Dialog)?.let {
+            NativeGmmpCreationDialogLocalizer.localizeWhenReady(it)
+        }
         true
     }.onFailure {
         Log.e(

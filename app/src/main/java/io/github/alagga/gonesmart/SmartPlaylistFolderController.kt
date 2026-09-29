@@ -195,7 +195,8 @@ internal class SmartPlaylistFolderController(
         var selectionOverlayColor: Int? = null,
         val rowInteractionPaths: WeakHashMap<View, String> = WeakHashMap(),
         val selectionOverlays: WeakHashMap<View, ColorDrawable> = WeakHashMap(),
-        var breadcrumbAlignmentGeneration: Long = 0L
+        var breadcrumbAlignmentGeneration: Long = 0L,
+        var initialContentReady: Boolean = false
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -659,6 +660,7 @@ internal class SmartPlaylistFolderController(
             isClickable = false
             isFocusable = false
             clipChildren = true
+            visibility = View.INVISIBLE
             background = ColorDrawable(Color.TRANSPARENT)
         }
         val breadcrumb = RecyclerView(list.context).apply {
@@ -802,9 +804,10 @@ internal class SmartPlaylistFolderController(
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
 
-        // Keep GMMP's real Smart-Playlist RecyclerView visible. The
-        // GoneSmart overlay is header-only and never replaces native rows.
-        list.alpha = browser.originalAlpha
+        // Match the accepted normal Playlist-folder first frame: keep the
+        // raw native Smart root hidden until GoneSmart has both the native
+        // filtered snapshot and the physical-folder header ready.
+        list.alpha = 0f
         val contentChild = directChildInHost(list, host)
         val insertAt = if (contentChild == null) host.childCount else {
             (host.indexOfChild(contentChild) + 1).coerceAtMost(host.childCount)
@@ -821,6 +824,17 @@ internal class SmartPlaylistFolderController(
         startObserver(browser)
         refresh(browser)
         updateMenus()
+        val weakList = WeakReference(list)
+        main.postDelayed({
+            val current = weakList.get()?.let { browsers[it] }
+            if (current === browser && !browser.initialContentReady &&
+                list.isAttachedToWindow
+            ) {
+                Log.w(TAG, "SMART FOLDERS INITIAL WAIT | fail-open native list")
+                revealInitialContent(browser)
+                positionOverlay(browser)
+            }
+        }, 2500L)
         Log.i(
             TAG,
             "SMART FOLDERS READY | root=" + safePath(root) +
@@ -903,6 +917,7 @@ internal class SmartPlaylistFolderController(
                 }
                 browser.style = sampleNativeStyle(browser.list) ?: browser.style
                 render(browser, snapshot, models.size)
+                revealInitialContent(browser)
                 positionOverlay(browser)
             }
         }
@@ -2340,6 +2355,15 @@ internal class SmartPlaylistFolderController(
         val browser = currentBrowser()
         menuRefs.forEach { reference ->
             val menu = reference.get() ?: return@forEach
+            val context = currentBrowser()?.list?.context
+                ?: menuContext(menu, null)
+            if (enabled && menu.findItem(newFolderMenuId) == null &&
+                context != null
+            ) {
+                // GMMP may rebuild/clear the same Menu after inflation.
+                // Reinstall the verified Add-folder action before first root use.
+                installNewFolderMenu(menu, context)
+            }
             menu.findItem(newFolderMenuId)?.let { item ->
                 val visible =
                     enabled &&
@@ -2503,7 +2527,13 @@ internal class SmartPlaylistFolderController(
             list.getGlobalVisibleRect(rect) &&
             rect.width() > dp(list, 30) &&
             rect.height() > dp(list, 30)
-        val nextVisibility = if (visible) View.VISIBLE else View.GONE
+        val nextVisibility = if (!browser.initialContentReady) {
+            View.INVISIBLE
+        } else if (visible) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
         if (browser.overlay.visibility != nextVisibility) {
             browser.overlay.visibility = nextVisibility
         }
@@ -2522,6 +2552,19 @@ internal class SmartPlaylistFolderController(
                 }
             }
         }
+    }
+
+    private fun revealInitialContent(browser: Browser) {
+        if (browser.initialContentReady || browsers[browser.list] !== browser) {
+            return
+        }
+        browser.initialContentReady = true
+        browser.overlay.visibility = View.VISIBLE
+        updateNativeInset(browser)
+        browser.list.alpha = browser.originalAlpha
+        syncFolderRowsScroll(browser)
+        alignVisibleNativeTitles(browser)
+        syncVisibleSmartRowInteractions(browser)
     }
 
     private fun isFrontFragmentView(list: ViewGroup): Boolean {
