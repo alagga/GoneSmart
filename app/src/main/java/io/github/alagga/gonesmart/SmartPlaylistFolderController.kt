@@ -28,6 +28,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.EdgeEffect
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -66,6 +67,87 @@ import java.util.concurrent.atomic.AtomicLong
  *   the breadcrumb stays fixed like the accepted normal Playlist-folder view.
  *   GoneSmart never hides or redraws real Smart-Playlist rows.
  */
+/**
+ * Full-height synthetic Smart-folder viewport using Android's own EdgeEffect
+ * renderer. Real Smart rows remain in GMMP's original RecyclerView.
+ */
+private class SmartFolderStretchViewport(
+    context: android.content.Context
+) : FrameLayout(context) {
+    private val topEffect = EdgeEffect(context)
+    private val bottomEffect = EdgeEffect(context)
+    private var mirroredWidth = 0
+    private var mirroredHeight = 0
+    private var topTarget = 0f
+    private var bottomTarget = 0f
+
+    fun mirrorNativeEdges(
+        top: Float,
+        bottom: Float,
+        viewportWidth: Int,
+        viewportHeight: Int
+    ) {
+        if (android.os.Build.VERSION.SDK_INT < 31) return
+        val width = viewportWidth.coerceAtLeast(1)
+        val height = viewportHeight.coerceAtLeast(1)
+        if (mirroredWidth != width || mirroredHeight != height) {
+            mirroredWidth = width
+            mirroredHeight = height
+            topEffect.setSize(width, height)
+            bottomEffect.setSize(width, height)
+        }
+
+        val nextTop = top.coerceIn(0f, 1f)
+        val nextBottom = bottom.coerceIn(0f, 1f)
+        val changed =
+            kotlin.math.abs(topTarget - nextTop) > 0.00001f ||
+                kotlin.math.abs(bottomTarget - nextBottom) > 0.00001f
+        topTarget = nextTop
+        bottomTarget = nextBottom
+        syncDistance(topEffect, nextTop)
+        syncDistance(bottomEffect, nextBottom)
+        if (changed || nextTop > 0f || nextBottom > 0f) {
+            postInvalidateOnAnimation()
+        }
+    }
+
+    private fun syncDistance(effect: EdgeEffect, target: Float) {
+        val current = effect.distance
+        if (target <= 0f) {
+            if (current > 0f || !effect.isFinished) effect.finish()
+            return
+        }
+        val delta = target - current
+        if (kotlin.math.abs(delta) > 0.00001f) {
+            effect.onPullDistance(delta, 0.5f)
+        }
+    }
+
+    override fun draw(canvas: Canvas) {
+        super.draw(canvas)
+        if (android.os.Build.VERSION.SDK_INT < 31 ||
+            mirroredWidth <= 0 || mirroredHeight <= 0
+        ) return
+        var invalidate = false
+        if (topTarget > 0f) {
+            val save = canvas.save()
+            invalidate = topEffect.draw(canvas)
+            canvas.restoreToCount(save)
+        }
+        if (bottomTarget > 0f) {
+            val save = canvas.save()
+            canvas.rotate(180f)
+            canvas.translate(
+                -mirroredWidth.toFloat(),
+                -mirroredHeight.toFloat()
+            )
+            invalidate = bottomEffect.draw(canvas) || invalidate
+            canvas.restoreToCount(save)
+        }
+        if (invalidate) postInvalidateOnAnimation()
+    }
+}
+
 internal class SmartPlaylistFolderController(
     private val multiSelect: PlaylistMultiSelectController
 ) {
@@ -167,7 +249,7 @@ internal class SmartPlaylistFolderController(
         val overlay: FrameLayout,
         val rows: LinearLayout,
         val folderBand: FrameLayout,
-        val folderViewport: FrameLayout,
+        val folderViewport: SmartFolderStretchViewport,
         val breadcrumb: RecyclerView,
         val originalAlpha: Float,
         val originalPaddingLeft: Int,
@@ -198,8 +280,8 @@ internal class SmartPlaylistFolderController(
             PlaylistFolderMoveChrome.State(),
         var nativeScrollDistancePx: Int = 0,
         var folderGestureDownY: Float = 0f,
-        var folderGestureLastY: Float = 0f,
         var folderGestureDragging: Boolean = false,
+        var folderGestureDownEvent: MotionEvent? = null,
         var folderGestureReported: Boolean = false,
         val selectedSmartPaths: LinkedHashSet<String> = linkedSetOf(),
         var selectionActionMode: android.view.ActionMode? = null,
@@ -770,7 +852,7 @@ internal class SmartPlaylistFolderController(
                 )
             )
         }
-        val folderViewport = FrameLayout(list.context).apply {
+        val folderViewport = SmartFolderStretchViewport(list.context).apply {
             clipChildren = true
             clipToPadding = true
             background = ColorDrawable(Color.TRANSPARENT)
@@ -796,7 +878,8 @@ internal class SmartPlaylistFolderController(
                 folderViewport,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
+                    0,
+                    1f
                 )
             )
         }
@@ -804,7 +887,7 @@ internal class SmartPlaylistFolderController(
             column,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
 
@@ -930,7 +1013,7 @@ internal class SmartPlaylistFolderController(
             insertAt,
             ViewGroup.LayoutParams(
                 list.width,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                list.height
             )
         )
         positionOverlay(browser)
@@ -1480,72 +1563,81 @@ internal class SmartPlaylistFolderController(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     browser.folderGestureDownY = event.rawY
-                    browser.folderGestureLastY = event.rawY
                     browser.folderGestureDragging = false
-                    touched.parent?.requestDisallowInterceptTouchEvent(true)
+                    browser.folderGestureDownEvent?.recycle()
+                    browser.folderGestureDownEvent = MotionEvent.obtain(event)
                     false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val total = kotlin.math.abs(
                         event.rawY - browser.folderGestureDownY
                     )
-                    if (!browser.folderGestureDragging &&
-                        total > touchSlop
-                    ) {
+                    if (!browser.folderGestureDragging && total > touchSlop) {
                         browser.folderGestureDragging = true
+                        touched.isPressed = false
+                        browser.folderGestureDownEvent?.let { down ->
+                            relayFolderMotionToNative(browser, down)
+                        }
+                        touched.parent?.requestDisallowInterceptTouchEvent(true)
                     }
                     if (!browser.folderGestureDragging) {
                         false
                     } else {
-                        val dy = (browser.folderGestureLastY - event.rawY)
-                            .toInt()
-                        browser.folderGestureLastY = event.rawY
-                        if (dy != 0) {
-                            nativeScrollBy(browser.list, dy)
-                            if (!browser.folderGestureReported) {
-                                browser.folderGestureReported = true
-                                Log.i(
-                                    TAG,
-                                    "SMART FOLDERS FOLDER DRAG | relayed=true" +
-                                        " | canDown=" +
-                                        nativeCanScrollVertically(
-                                            browser.list, 1
-                                        ) +
-                                        " | canUp=" +
-                                        nativeCanScrollVertically(
-                                            browser.list, -1
-                                        ) +
-                                        " | nativeRows=" +
-                                        browser.nativeOrder.size
-                                )
-                            }
+                        relayFolderMotionToNative(browser, event)
+                        if (!browser.folderGestureReported) {
+                            browser.folderGestureReported = true
+                            Log.i(
+                                TAG,
+                                "SMART FOLDERS FOLDER DRAG | nativeTouch=true" +
+                                    " | canDown=" +
+                                    nativeCanScrollVertically(browser.list, 1) +
+                                    " | canUp=" +
+                                    nativeCanScrollVertically(browser.list, -1) +
+                                    " | nativeRows=" + browser.nativeOrder.size
+                            )
                         }
                         true
                     }
                 }
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_CANCEL -> {
-                    touched.parent?.requestDisallowInterceptTouchEvent(false)
                     val consumed = browser.folderGestureDragging
+                    if (consumed) relayFolderMotionToNative(browser, event)
+                    browser.folderGestureDownEvent?.recycle()
+                    browser.folderGestureDownEvent = null
+                    touched.parent?.requestDisallowInterceptTouchEvent(false)
                     browser.folderGestureDragging = false
                     consumed
                 }
-                else -> false
+                else -> {
+                    if (browser.folderGestureDragging) {
+                        relayFolderMotionToNative(browser, event)
+                        true
+                    } else false
+                }
             }
         }
     }
 
-    private fun nativeScrollBy(list: ViewGroup, dy: Int): Boolean =
-        runCatching {
-            list.javaClass.getMethod(
-                "scrollBy",
-                Integer.TYPE,
-                Integer.TYPE
-            ).invoke(list, 0, dy)
-            true
-        }.onFailure {
-            Log.w(TAG, "SMART FOLDERS FOLDER DRAG | native scrollBy unavailable", it)
-        }.getOrDefault(false)
+    private fun relayFolderMotionToNative(
+        browser: Browser,
+        source: MotionEvent
+    ): Boolean {
+        val list = browser.list
+        if (!list.isAttachedToWindow) return false
+        val screen = IntArray(2)
+        list.getLocationOnScreen(screen)
+        val forwarded = MotionEvent.obtain(source)
+        forwarded.setLocation(
+            source.rawX - screen[0],
+            source.rawY - screen[1]
+        )
+        return try {
+            list.dispatchTouchEvent(forwarded)
+        } finally {
+            forwarded.recycle()
+        }
+    }
 
     private fun nativeCanScrollVertically(
         list: ViewGroup,
@@ -2643,6 +2735,8 @@ internal class SmartPlaylistFolderController(
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
         browser.observer?.stopWatching()
+        browser.folderGestureDownEvent?.recycle()
+        browser.folderGestureDownEvent = null
         browser.selectionAccentSubscription?.dispose()
         browser.selectionAccentSubscription = null
         clearSmartSelection(browser)
@@ -2659,8 +2753,7 @@ internal class SmartPlaylistFolderController(
         browser.list.removeOnAttachStateChangeListener(browser.detachListener)
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
         browser.list.parent?.requestDisallowInterceptTouchEvent(false)
-        browser.folderViewport.scaleY = 1f
-        browser.folderViewport.pivotY = 0f
+        resetFolderOverscroll(browser)
         browser.originalNativeNestedScrollingEnabled?.let {
             setNativeNestedScrollingEnabled(browser.list, it)
         }
@@ -2737,69 +2830,53 @@ internal class SmartPlaylistFolderController(
             resetFolderOverscroll(browser)
             return
         }
-
         val list = browser.list
         val atTop = nativeCanScrollVertically(list, -1) != true
         val atBottom = nativeCanScrollVertically(list, 1) != true
-        if (!atTop && !atBottom) {
-            resetFolderOverscroll(browser)
-            return
-        }
-
         val topDistance = if (atTop) {
             nativeEdgeDistance(list, "mTopGlow")
         } else 0f
         val bottomDistance = if (atBottom) {
             nativeEdgeDistance(list, "mBottomGlow")
         } else 0f
+
+        browser.folderViewport.mirrorNativeEdges(
+            top = topDistance,
+            bottom = bottomDistance,
+            viewportWidth = list.width,
+            viewportHeight = browser.folderViewport.height
+        )
+
         val edge = when {
             bottomDistance > topDistance && bottomDistance > 0f -> "bottom"
             topDistance > 0f -> "top"
             else -> null
         }
         if (edge == null) {
-            resetFolderOverscroll(browser)
+            browser.overscrollReported = false
             return
-        }
-
-        val distance = if (edge == "bottom") {
-            bottomDistance
-        } else {
-            topDistance
-        }.coerceIn(0f, 1f)
-        val scale = SmartFolderHeaderScrollPolicy.edgeStretchScale(distance)
-
-        // The native RecyclerView stretches around its own lower edge, but
-        // our synthetic folderViewport is only as tall as the folder band.
-        // Using the host list's ~screen-height bottom as this small view's
-        // pivot amplified a 0.1-1% scale into a large translation. Anchor
-        // bottom stretch to the synthetic viewport's ACTUAL lower edge so
-        // top and bottom deformation remain visually symmetric/subtle.
-        browser.folderViewport.pivotY = if (edge == "bottom") {
-            browser.folderViewport.height.coerceAtLeast(0).toFloat()
-        } else {
-            0f
-        }
-        if (kotlin.math.abs(browser.folderViewport.scaleY - scale) > 0.0005f) {
-            browser.folderViewport.scaleY = scale
         }
         if (!browser.overscrollReported) {
             browser.overscrollReported = true
             Log.i(
                 TAG,
                 "SMART FOLDERS OVERSCROLL | edge=" + edge +
-                    " | nativeDistance=" + distance +
-                    " | folderScaleY=" + scale +
-                    " | pivotY=" + browser.folderViewport.pivotY
+                    " | nativeDistance=" +
+                    (if (edge == "bottom") bottomDistance else topDistance) +
+                    " | renderer=android.widget.EdgeEffect" +
+                    " | viewport=" + list.width + "x" +
+                    browser.folderViewport.height
             )
         }
     }
 
     private fun resetFolderOverscroll(browser: Browser) {
-        if (browser.folderViewport.scaleY != 1f) {
-            browser.folderViewport.scaleY = 1f
-        }
-        browser.folderViewport.pivotY = 0f
+        browser.folderViewport.mirrorNativeEdges(
+            top = 0f,
+            bottom = 0f,
+            viewportWidth = browser.list.width,
+            viewportHeight = browser.folderViewport.height
+        )
         browser.overscrollReported = false
     }
 
@@ -2875,8 +2952,7 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
         browser.folderBand.translationY = 0f
-        browser.folderViewport.scaleY = 1f
-        browser.folderViewport.pivotY = 0f
+        resetFolderOverscroll(browser)
         browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
         browser.overscrollReported = false
@@ -2893,8 +2969,7 @@ internal class SmartPlaylistFolderController(
         }
         browser.folderScrollSyncReady = false
         browser.folderBand.translationY = 0f
-        browser.folderViewport.scaleY = 1f
-        browser.folderViewport.pivotY = 0f
+        resetFolderOverscroll(browser)
         browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
         browser.overscrollReported = false
@@ -2916,8 +2991,7 @@ internal class SmartPlaylistFolderController(
                 browser.pendingFolderScrollReset = false
                 browser.folderScrollSyncReady = true
                 browser.folderBand.translationY = 0f
-                browser.folderViewport.scaleY = 1f
-                browser.folderViewport.pivotY = 0f
+                resetFolderOverscroll(browser)
                 browser.nativeScrollDistancePx = 0
                 browser.scrollDeltaReported = false
                 browser.overscrollReported = false
@@ -2946,10 +3020,10 @@ internal class SmartPlaylistFolderController(
         }
         val params = browser.overlay.layoutParams
         if (params.width != list.width ||
-            params.height != ViewGroup.LayoutParams.WRAP_CONTENT
+            params.height != list.height
         ) {
             params.width = list.width
-            params.height = ViewGroup.LayoutParams.WRAP_CONTENT
+            params.height = list.height
             browser.overlay.layoutParams = params
         }
         val rect = Rect()

@@ -33,6 +33,8 @@ internal object NativeGmmpCreationDialogLocalizer {
     private val inputDiagnostics = WeakHashMap<Dialog, Boolean>()
     private val pendingRevealAlpha = WeakHashMap<Dialog, Float>()
     private val pendingWindowAlpha = WeakHashMap<Dialog, Float>()
+    private val postShowRevealGuards =
+        WeakHashMap<Dialog, android.view.ViewTreeObserver.OnPreDrawListener>()
 
     /**
      * Called from the intercepted native MaterialDialog.show() BEFORE GMMP
@@ -46,27 +48,72 @@ internal object NativeGmmpCreationDialogLocalizer {
         val originalWindowAlpha = window.attributes.alpha
         pendingWindowAlpha[dialog] = originalWindowAlpha
         setWindowAlpha(dialog, 0f)
-
         ensureInputAccent(dialog)
         localize(dialog)
-
-        // A synchronous Aesthetic emission may already have supplied the
-        // correct color. In that case reveal before native show(); otherwise
-        // keep the whole dialog surface transparent until the observer fires.
-        if (accentColors.containsKey(dialog)) {
-            pendingWindowAlpha.remove(dialog)?.let {
-                setWindowAlpha(dialog, it)
-            }
-        }
         Log.i(
             TAG,
             "CREATION DIALOG PRE-SHOW | prepared=true" +
-                " | accentReady=" + accentColors.containsKey(dialog)
+                " | accentReady=" + accentColors.containsKey(dialog) +
+                " | holdWindow=true"
         )
         return true
     }
 
-    fun localizeWhenReady(dialog: Dialog) {
+    fun finishAfterShow(dialog: Dialog) {
+        val originalAlpha = pendingWindowAlpha[dialog] ?: return
+        val decor = dialog.window?.decorView ?: return
+        setWindowAlpha(dialog, 0f)
+        postShowRevealGuards.remove(dialog)?.let { old ->
+            if (decor.viewTreeObserver.isAlive) {
+                decor.viewTreeObserver.removeOnPreDrawListener(old)
+            }
+        }
+        var pass = 0
+        val guard = object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (!dialog.isShowing) {
+                    postShowRevealGuards.remove(dialog)
+                    pendingWindowAlpha.remove(dialog)
+                    if (decor.viewTreeObserver.isAlive) {
+                        decor.viewTreeObserver.removeOnPreDrawListener(this)
+                    }
+                    return true
+                }
+                accentColors[dialog]?.let {
+                    applyInputAccent(decor, it)
+                } ?: applyPendingInputAccent(decor)
+                localize(dialog)
+                pass++
+                if (pass < 2) {
+                    decor.postInvalidateOnAnimation()
+                    return false
+                }
+                if (decor.viewTreeObserver.isAlive) {
+                    decor.viewTreeObserver.removeOnPreDrawListener(this)
+                }
+                postShowRevealGuards.remove(dialog)
+                pendingWindowAlpha.remove(dialog)
+                setWindowAlpha(dialog, originalAlpha)
+                Log.i(
+                    TAG,
+                    "CREATION DIALOG REVEAL | postShowPasses=" + pass +
+                        " | accentReady=" + accentColors.containsKey(dialog)
+                )
+                return true
+            }
+        }
+        postShowRevealGuards[dialog] = guard
+        if (decor.viewTreeObserver.isAlive) {
+            decor.viewTreeObserver.addOnPreDrawListener(guard)
+            decor.postInvalidateOnAnimation()
+        } else {
+            postShowRevealGuards.remove(dialog)
+            pendingWindowAlpha.remove(dialog)
+            setWindowAlpha(dialog, originalAlpha)
+        }
+    }
+
+    fun localizeWhenReady(dialog: Dialog)    fun localizeWhenReady(dialog: Dialog) {
         ensureInputAccent(dialog)
         localize(dialog)
         val decor = dialog.window?.decorView ?: return
@@ -240,7 +287,6 @@ internal object NativeGmmpCreationDialogLocalizer {
     private fun ensureInputAccent(dialog: Dialog) {
         if (accentSubscriptions.containsKey(dialog)) return
         val decor = dialog.window?.decorView ?: return
-
         val initial = NativeGmmpAccent.lastObserved()
         if (initial != null) {
             accentColors[dialog] = initial
@@ -251,12 +297,6 @@ internal object NativeGmmpCreationDialogLocalizer {
                     Integer.toHexString(initial)
             )
         } else {
-            // The Aesthetic attr getter is intentionally NOT used here.
-            // Device logs proved it can still be the unrelated static red
-            // while !mainColorAccent already points at GMMP's real palette.
-            // Keep the input and the whole dialog surface hidden until the
-            // live stream emits. If it never does, fail open with the focused
-            // chrome suppressed rather than flashing the red fallback.
             pendingRevealAlpha[dialog] = decor.alpha
             decor.alpha = 0f
             decor.postDelayed({
@@ -265,16 +305,9 @@ internal object NativeGmmpCreationDialogLocalizer {
                     pendingRevealAlpha.remove(dialog)?.let { alpha ->
                         if (dialog.isShowing) decor.alpha = alpha
                     }
-                    pendingWindowAlpha.remove(dialog)?.let { alpha ->
-                        setWindowAlpha(dialog, alpha)
-                    }
                 }
             }, 180L)
         }
-
-        // AestheticTextInputLayout may re-apply its focused state after
-        // attachment. Re-assert the resolved native color at the last
-        // possible point before the first visible frame.
         if (decor.viewTreeObserver.isAlive) {
             val firstDrawGuard =
                 object : android.view.ViewTreeObserver.OnPreDrawListener {
@@ -284,13 +317,12 @@ internal object NativeGmmpCreationDialogLocalizer {
                         }
                         accentColors[dialog]?.let {
                             applyInputAccent(decor, it)
-                        }
+                        } ?: applyPendingInputAccent(decor)
                         return true
                     }
                 }
             decor.viewTreeObserver.addOnPreDrawListener(firstDrawGuard)
         }
-
         val subscription = NativeGmmpAccent.observe(
             decor,
             onColor = { color ->
@@ -298,9 +330,6 @@ internal object NativeGmmpCreationDialogLocalizer {
                 applyInputAccent(decor, color)
                 pendingRevealAlpha.remove(dialog)?.let { alpha ->
                     decor.alpha = alpha
-                }
-                pendingWindowAlpha.remove(dialog)?.let { alpha ->
-                    setWindowAlpha(dialog, alpha)
                 }
                 if (previous != color) {
                     Log.i(
@@ -314,9 +343,6 @@ internal object NativeGmmpCreationDialogLocalizer {
                 pendingRevealAlpha.remove(dialog)?.let { alpha ->
                     decor.alpha = alpha
                 }
-                pendingWindowAlpha.remove(dialog)?.let { alpha ->
-                    setWindowAlpha(dialog, alpha)
-                }
                 Log.w(
                     TAG,
                     "CREATION DIALOG ACCENT | live GMMP accent unavailable",
@@ -326,9 +352,6 @@ internal object NativeGmmpCreationDialogLocalizer {
         ) ?: run {
             pendingRevealAlpha.remove(dialog)?.let { alpha ->
                 decor.alpha = alpha
-            }
-            pendingWindowAlpha.remove(dialog)?.let { alpha ->
-                setWindowAlpha(dialog, alpha)
             }
             return
         }
@@ -341,13 +364,18 @@ internal object NativeGmmpCreationDialogLocalizer {
                     accentColors.remove(dialog)
                     pendingRevealAlpha.remove(dialog)
                     pendingWindowAlpha.remove(dialog)
+                    postShowRevealGuards.remove(dialog)?.let { guard ->
+                        if (v.viewTreeObserver.isAlive) {
+                            v.viewTreeObserver.removeOnPreDrawListener(guard)
+                        }
+                    }
                     v.removeOnAttachStateChangeListener(this)
                 }
             }
         )
     }
 
-    private fun applyInputAccent(root: View, accent: Int) {
+    private fun applyInputAccent(root: View, accent: Int)    private fun applyInputAccent(root: View, accent: Int) {
         val inputs = arrayListOf<View>()
         collectInputViews(root, inputs)
         inputs.forEach { view ->

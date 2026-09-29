@@ -653,7 +653,10 @@ class GoneSmartModule : XposedModule() {
                                 }
                                 val result = chain.proceed()
                                 originalDialog?.let {
-                                    NativeGmmpCreationDialogLocalizer.localizeWhenReady(it)
+                                    NativeGmmpCreationDialogLocalizer
+                                        .finishAfterShow(it)
+                                    NativeGmmpCreationDialogLocalizer
+                                        .localizeWhenReady(it)
                                     playlistFolderPreview
                                         .onOriginalFolderDeleteDialogShown(it)
                                     smartPlaylistFolderController
