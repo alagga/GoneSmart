@@ -68,8 +68,17 @@ internal object NativeGmmpCreationDialogLocalizer {
                 decor.viewTreeObserver.removeOnPreDrawListener(old)
             }
         }
-        var pass = 0
-        val guard = object : android.view.ViewTreeObserver.OnPreDrawListener {
+
+        // Device evidence shows the EditText can already report focus while
+        // the dialog window itself still has windowFocus=false. Aesthetic
+        // performs one more focus-state tint update when window focus arrives.
+        // Keep the whole window hidden until that transition has happened,
+        // then require one additional focused traversal before revealing.
+        var focusedPasses = 0
+        var postRevealPasses = 0
+        var revealed = false
+        lateinit var guard: android.view.ViewTreeObserver.OnPreDrawListener
+        guard = object : android.view.ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {
                 if (!dialog.isShowing) {
                     postShowRevealGuards.remove(dialog)
@@ -79,33 +88,93 @@ internal object NativeGmmpCreationDialogLocalizer {
                     }
                     return true
                 }
+
                 accentColors[dialog]?.let {
                     applyInputAccent(decor, it)
                 } ?: applyPendingInputAccent(decor)
                 localize(dialog)
-                pass++
-                if (pass < 2) {
+
+                if (!revealed) {
+                    if (decor.hasWindowFocus()) {
+                        focusedPasses++
+                    } else {
+                        focusedPasses = 0
+                    }
+
+                    if (focusedPasses < 2) {
+                        // Allow hidden frames to commit. Blocking pre-draw can
+                        // itself delay the window-focus handoff we are waiting
+                        // for.
+                        decor.postInvalidateOnAnimation()
+                        return true
+                    }
+
+                    revealed = true
+                    pendingWindowAlpha.remove(dialog)
+                    setWindowAlpha(dialog, originalAlpha)
+                    Log.i(
+                        TAG,
+                        "CREATION DIALOG REVEAL | windowFocus=true" +
+                            " | focusedPasses=" + focusedPasses +
+                            " | accentReady=" +
+                            accentColors.containsKey(dialog) +
+                            " | " + inputAccentState(decor)
+                    )
+                    // Keep correcting a handful of visible traversals too:
+                    // IME/window-focus callbacks can still trigger a late
+                    // Aesthetic state write immediately after reveal.
                     decor.postInvalidateOnAnimation()
-                    return false
+                    return true
                 }
+
+                postRevealPasses++
+                if (postRevealPasses < 6) {
+                    decor.postInvalidateOnAnimation()
+                    return true
+                }
+
                 if (decor.viewTreeObserver.isAlive) {
                     decor.viewTreeObserver.removeOnPreDrawListener(this)
                 }
                 postShowRevealGuards.remove(dialog)
-                pendingWindowAlpha.remove(dialog)
-                setWindowAlpha(dialog, originalAlpha)
                 Log.i(
                     TAG,
-                    "CREATION DIALOG REVEAL | postShowPasses=" + pass +
-                        " | accentReady=" + accentColors.containsKey(dialog)
+                    "CREATION DIALOG ACCENT LOCK | released" +
+                        " | passes=" + postRevealPasses +
+                        " | " + inputAccentState(decor)
                 )
                 return true
             }
         }
+
         postShowRevealGuards[dialog] = guard
         if (decor.viewTreeObserver.isAlive) {
             decor.viewTreeObserver.addOnPreDrawListener(guard)
             decor.postInvalidateOnAnimation()
+
+            // Accessibility/multi-window edge-case fail-open: creation dialogs
+            // should normally gain window focus quickly, but never leave one
+            // permanently invisible if the platform withholds it.
+            decor.postDelayed({
+                if (postShowRevealGuards[dialog] === guard &&
+                    !revealed &&
+                    dialog.isShowing
+                ) {
+                    accentColors[dialog]?.let {
+                        applyInputAccent(decor, it)
+                    } ?: applyPendingInputAccent(decor)
+                    revealed = true
+                    pendingWindowAlpha.remove(dialog)
+                    setWindowAlpha(dialog, originalAlpha)
+                    Log.w(
+                        TAG,
+                        "CREATION DIALOG REVEAL | focus timeout fail-open" +
+                            " | windowFocus=" + decor.hasWindowFocus() +
+                            " | " + inputAccentState(decor)
+                    )
+                    decor.postInvalidateOnAnimation()
+                }
+            }, 750L)
         } else {
             postShowRevealGuards.remove(dialog)
             pendingWindowAlpha.remove(dialog)
@@ -380,22 +449,13 @@ internal object NativeGmmpCreationDialogLocalizer {
         collectInputViews(root, inputs)
         inputs.forEach { view ->
             if (view is EditText) {
-                val normal = view.backgroundTintList?.defaultColor
-                    ?: resolveThemeColor(
-                        view.context,
-                        android.R.attr.textColorSecondary,
-                        accent
-                    )
+                val normal = inputNormalColor(view.context, accent)
                 view.backgroundTintList = focusedColors(accent, normal)
                 tintCursor(view, accent)
                 return@forEach
             }
             if (!isTextInputLayout(view)) return@forEach
-            val normal = resolveThemeColor(
-                view.context,
-                android.R.attr.textColorSecondary,
-                accent
-            )
+            val normal = inputNormalColor(view.context, accent)
             invokeColorStateList(
                 view,
                 "setHintTextColor",
@@ -418,12 +478,10 @@ internal object NativeGmmpCreationDialogLocalizer {
         collectInputViews(root, inputs)
         inputs.forEach { view ->
             if (view is EditText) {
-                val normal = view.backgroundTintList?.defaultColor
-                    ?: resolveThemeColor(
-                        view.context,
-                        android.R.attr.textColorSecondary,
-                        android.graphics.Color.TRANSPARENT
-                    )
+                val normal = inputNormalColor(
+                    view.context,
+                    android.graphics.Color.TRANSPARENT
+                )
                 view.backgroundTintList = focusedColors(
                     android.graphics.Color.TRANSPARENT,
                     normal
@@ -432,9 +490,8 @@ internal object NativeGmmpCreationDialogLocalizer {
                 return@forEach
             }
             if (!isTextInputLayout(view)) return@forEach
-            val normal = resolveThemeColor(
+            val normal = inputNormalColor(
                 view.context,
-                android.R.attr.textColorSecondary,
                 android.graphics.Color.TRANSPARENT
             )
             invokeInt(
@@ -461,6 +518,33 @@ internal object NativeGmmpCreationDialogLocalizer {
             ),
             intArrayOf(accent, normal)
         )
+
+    private fun inputNormalColor(context: Context, fallback: Int): Int =
+        resolveThemeColor(
+            context,
+            android.R.attr.colorControlNormal,
+            resolveThemeColor(
+                context,
+                android.R.attr.textColorSecondary,
+                fallback
+            )
+        )
+
+    private fun inputAccentState(root: View): String {
+        val inputs = arrayListOf<View>()
+        collectInputViews(root, inputs)
+        val field = inputs.filterIsInstance<EditText>().firstOrNull()
+            ?: return "field=none"
+        val tint = field.backgroundTintList
+        val active = tint?.getColorForState(
+            field.drawableState,
+            tint.defaultColor
+        )
+        return "fieldFocused=" + field.isFocused +
+            " | windowFocused=" + field.hasWindowFocus() +
+            " | tint=" +
+            (active?.let { "#" + Integer.toHexString(it) } ?: "none")
+    }
 
     private fun resolveThemeColor(
         context: Context,
