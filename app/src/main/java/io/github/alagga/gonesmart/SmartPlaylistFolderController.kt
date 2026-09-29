@@ -1213,6 +1213,8 @@ internal class SmartPlaylistFolderController(
         if (locationChanged) {
             browser.folderBand.translationY = 0f
             browser.nativeScrollDistancePx = 0
+            browser.folderGestureDragging = false
+            browser.folderGestureReported = false
             browser.folderScrollSyncReady = false
             browser.pendingFolderScrollReset = true
         }
