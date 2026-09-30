@@ -57,7 +57,7 @@ The compatibility files contain one native predicate:
 
 GoneSmart chooses true/false according to the surrounding native AND/OR tree so removing the Link contribution is boolean-neutral to the nearest surviving expression. The live editor objects are restored immediately after the original writer returns.
 
-The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Link rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Bridge evaluation. The new live companion switch deliberately uses this same native fallback path; its toggle transition should receive one targeted device smoke test before v0.4 release.
+The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Link rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Playlist Link evaluation. On 30 September the maintainer also confirmed that the independent Playlist Link feature now works exactly as intended, including the newly exposed companion setting, so this live-switch flow is accepted on the tested setup.
 
 ## Native UI and localization
 
