@@ -121,6 +121,10 @@ class GoneSmartModule : XposedModule() {
                         next.groupExternalPlaylists,
                         next.groupRootPlaylists
                     )
+                    playlistNavigationBadgeController.setOptions(
+                        next.playlistFoldersEnabled,
+                        next.smartPlaylistFoldersEnabled
+                    )
                 }
             }
             if (
@@ -136,6 +140,10 @@ class GoneSmartModule : XposedModule() {
                         next.smartMultiPlaylistEnabled
                     )
                     playlistFolderPreview.setSmartFolderBadgeEnabled(
+                        next.smartPlaylistFoldersEnabled
+                    )
+                    playlistNavigationBadgeController.setOptions(
+                        next.playlistFoldersEnabled,
                         next.smartPlaylistFoldersEnabled
                     )
                 }
@@ -371,6 +379,9 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistFolderPreview =
         PlaylistFolderPreviewController(playlistController)
+
+    private val playlistNavigationBadgeController =
+        PlaylistNavigationBadgeController()
 
     private val smartPlaylistFolderController =
         SmartPlaylistFolderController(playlistController)
@@ -621,6 +632,11 @@ class GoneSmartModule : XposedModule() {
                     playlistFolderPreview.setSmartFolderBadgeEnabled(
                         options.smartPlaylistFoldersEnabled
                     )
+                    playlistNavigationBadgeController.setOptions(
+                        options.playlistFoldersEnabled,
+                        options.smartPlaylistFoldersEnabled
+                    )
+                    installPlaylistNavigationBadgeHook(param)
                     installSmartPlaylistFolderFeatureHooks(param)
                     installSmartPlaylistSaveHook(param)
 
@@ -2507,6 +2523,32 @@ class GoneSmartModule : XposedModule() {
                 throwable
             )
         }
+    }
+
+    private fun installPlaylistNavigationBadgeHook(
+        param: PackageReadyParam
+    ) {
+        val activityClass =
+            param.classLoader.loadClass(
+                "gonemad.gmmp.ui.main.MainActivity"
+            )
+        val resumeMethod =
+            findNoArgMethod(
+                type = activityClass,
+                name = "onResume"
+            ).apply { isAccessible = true }
+
+        hook(resumeMethod).intercept { chain ->
+            val result = chain.proceed()
+            (chain.getThisObject() as? Activity)?.let {
+                playlistNavigationBadgeController.attach(it)
+            }
+            result
+        }
+        Log.i(
+            "GoneSmartPlaylist",
+            "FOLDER NAV BADGE | MainActivity observer ready"
+        )
     }
 
     private fun installPlayerBadgeHook(
