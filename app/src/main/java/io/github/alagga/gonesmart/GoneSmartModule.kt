@@ -156,7 +156,7 @@ class GoneSmartModule : XposedModule() {
                         (previous.smartPlaylistFoldersEnabled to
                             options.smartPlaylistFoldersEnabled)
                 GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE ->
-                    "Playlist Bridge" to
+                    "Playlist Link" to
                         (previous.playlistBridgeEnabled to options.playlistBridgeEnabled)
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ->
                     "Smart-Playlist multi-selection" to
@@ -1875,7 +1875,7 @@ class GoneSmartModule : XposedModule() {
         if (bindingsReady && playlistBridgeController.isEnabled()) {
             runtimeReporter.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_SYSTEM,
-                "Playlist Bridge is available in the Smart-Playlist editor."
+                "Playlist Link is available in the Smart-Playlist editor."
             )
         }
     }
