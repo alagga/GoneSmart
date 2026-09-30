@@ -64,6 +64,27 @@ class PlaylistDrawerBadgePolicyTest {
         )
     }
 
+    @Test fun exactNavigationTitleMatcherRejectsOtherSmartFeatures() {
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+                listOf("Smarte Playlists", "Smart-Playlist"),
+                "Smarte Playlists"
+            )
+        )
+        assertTrue(
+            PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+                listOf("Smart Playlists"),
+                "Smart-Playlists"
+            )
+        )
+        assertFalse(
+            PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+                listOf("Smart Playlists", "Smart-Playlist"),
+                "Smart DJ"
+            )
+        )
+    }
+
     @Test fun smartTitleMatchingToleratesHostPunctuationAndProtectsPlaylist() {
         assertTrue(
             PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
