@@ -108,6 +108,9 @@ Folders themselves are not movable.
 
 ## Drawer badge and first frame
 
+The Smart-folder surface must publish a **single atomic visible frame**. GMMP may refresh its root `List<ws4>` while the user is inside a nested physical folder (notably when returning from a Smart-Playlist detail). GoneSmart masks that transient native root submit before it can draw, rebuilds the remembered folder snapshot, and reveals the synthetic folder chrome plus native `ls4/vs4` rows only after the native AsyncListDiffer reports the expected projection. Initial tab opening likewise builds one complete folder + Smart-row snapshot instead of exposing a header-only intermediate frame. A bounded fail-open remains only to avoid trapping the player on an invisible list if an unknown GMMP runtime never commits the expected adapter state.
+
+
 The sparkle is attached only to GMMP's existing native **Smart-Playlists** drawer item while Smart folders are enabled. Matching explicitly excludes the normal Playlists entry.
 
 For first-frame stability, GoneSmart stages one current-directory scan/generation: physical folder chrome can appear before expensive Smart model parsing finishes, but raw root Smart rows must not flash before the current-folder snapshot is ready. There is no second competing “fast header” loader.
