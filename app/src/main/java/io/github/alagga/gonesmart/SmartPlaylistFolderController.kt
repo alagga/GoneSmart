@@ -568,10 +568,46 @@ internal class SmartPlaylistFolderController(
     }
 
     /**
-     * GMMP's os4.j2(List<ws4>) always submits its native Smart-root result.
-     * Mask it before that submit whenever GoneSmart is displaying a nested
-     * or virtual projection, so the root dataset cannot flash for one frame
-     * while returning from a Smart-Playlist detail screen.
+     * If a complete GoneSmart folder projection is already visible, the
+     * native os4.j2 root submit is only an intermediate refresh and would
+     * force an unnecessary hide/reveal cycle. Preserve the current projection
+     * and refresh its directory directly instead.
+     */
+    fun shouldSuppressNativeSmartRootSubmission(): Boolean {
+        if (!enabled) return false
+        return browsers.values.toList()
+            .filter { it.list.isAttachedToWindow }
+            .any { browser ->
+                SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                    projectionPrepared = browser.projectionPrepared,
+                    nativeContentReady = browser.nativeContentReady,
+                    currentIsRoot = sameFile(browser.current, browser.root),
+                    otherLocations = browser.otherLocations,
+                    groupRootPlaylists = groupRootPlaylists
+                )
+            }
+    }
+
+    fun onNativeSmartRootSubmissionSuppressed() {
+        if (!enabled) return
+        val refreshAttached = {
+            browsers.values.toList()
+                .filter { it.list.isAttachedToWindow }
+                .forEach { browser ->
+                    refresh(browser)
+                }
+        }
+        if (Looper.myLooper() === Looper.getMainLooper()) {
+            refreshAttached()
+        } else {
+            main.post { refreshAttached() }
+        }
+    }
+
+    /**
+     * Fallback for first construction / an unprepared projection: mask the
+     * native root submit before it can draw, then let the normal post-submit
+     * path rebuild the current folder.
      */
     fun onNativeSmartListSubmitting() {
         if (!enabled) return
