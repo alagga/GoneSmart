@@ -25,6 +25,27 @@ internal object SmartNativeSubmissionPolicy {
         !currentIsRoot || otherLocations || groupRootPlaylists
 
     /**
+     * Once the desired GoneSmart projection is already committed and visible,
+     * do not let GMMP replace it with its transient physical-root submit just
+     * to hide/rebuild the same folder view again. The controller refreshes the
+     * current folder directly instead.
+     */
+    fun shouldSuppressNativeRootRefresh(
+        projectionPrepared: Boolean,
+        nativeContentReady: Boolean,
+        currentIsRoot: Boolean,
+        otherLocations: Boolean,
+        groupRootPlaylists: Boolean
+    ): Boolean =
+        projectionPrepared &&
+            nativeContentReady &&
+            shouldMaskNativeRootRefresh(
+                currentIsRoot,
+                otherLocations,
+                groupRootPlaylists
+            )
+
+    /**
      * The native RecyclerView may be revealed only after AsyncListDiffer has
      * committed the expected item count and no currently bound native holder
      * belongs to a stale dataset.
