@@ -128,14 +128,14 @@ The maintainer's tests across 28–30 September 2026 accepted the final architec
 - folder Delete;
 - Smart drawer badge;
 - selection tint/action mode;
-- the previously accepted first-frame staging baseline (the new atomic tab-open/detail-return correction below still needs its targeted retest);
+- first-frame staging and the atomic detail-return correction, including no transient root-list flash or black hide/reveal frame;
 - folder-row and native-row scrolling;
 - native top/bottom stretch behavior;
 - native creation-shell/fallback dialog appearance, focus, keyboard and Cancel behavior.
 
 Historical black-row, `ws4 -> t23`, keyed-tag, popup relayout and scroll-authority failures are no longer the current contract and should not be reintroduced.
 
-**Targeted retest after the 30 September atomic-frame correction:** (1) first opening the Smart-Playlists tab must not visibly assemble/reposition the folder header and native rows in separate stages; (2) opening a Smart-Playlist inside a physical folder and returning must preserve the already-correct folder frame continuously — no unfiltered root list and no brief black/hide-reveal flash. No other accepted Smart-folder flow needs to be repeated unless one of those checks exposes a broader regression.
+The maintainer confirmed on 30 September 2026 that the atomic first-frame/detail-return correction is acceptable: opening the Smart-Playlists surface and returning from a Smart-Playlist inside a physical folder no longer shows the earlier root-list or black hide/reveal regression. Any further testing should target only a newly changed navigation host (currently Top Tabs), not repeat the accepted baseline folder lifecycle.
 
 ## Compatibility boundaries
 
