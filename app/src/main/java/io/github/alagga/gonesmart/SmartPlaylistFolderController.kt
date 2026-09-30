@@ -995,6 +995,7 @@ internal class SmartPlaylistFolderController(
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
+                    syncPagerOverlayVisibility(browser)
                     // If the current folder projection completed while a
                     // Smart-Playlist detail was covering this fragment,
                     // reveal it only in this first real front-surface pre-draw.
@@ -3181,6 +3182,41 @@ internal class SmartPlaylistFolderController(
                 modelPath(model)?.let(::add)
             }
         }
+    }
+
+    /**
+     * A ViewPager decor overlay is fixed to the pager rather than to one page.
+     * Toggle only its visibility/coordinates on tab changes; never rebuild or
+     * reload the Smart snapshot from this per-frame check.
+     */
+    private fun syncPagerOverlayVisibility(browser: Browser) {
+        if (!PlaylistNavigationSurfaceHost.isPagerHost(browser.host)) return
+        val list = browser.list
+        if (!list.isAttachedToWindow) return
+
+        val rect = Rect()
+        val visible = browser.initialHeaderReady &&
+            browser.nativeContentReady &&
+            isFrontFragmentView(list) &&
+            list.isShown &&
+            list.getGlobalVisibleRect(rect) &&
+            rect.width() > dp(list, 30) &&
+            rect.height() > dp(list, 30)
+        val next = if (visible) View.VISIBLE else View.GONE
+        if (browser.overlay.visibility == next) return
+
+        if (visible) {
+            val listLocation = IntArray(2)
+            val hostLocation = IntArray(2)
+            list.getLocationOnScreen(listLocation)
+            browser.host.getLocationOnScreen(hostLocation)
+            browser.overlay.x =
+                (listLocation[0] - hostLocation[0]).toFloat()
+            browser.overlay.y =
+                (listLocation[1] - hostLocation[1]).toFloat()
+        }
+        browser.overlay.visibility = next
+        updateMenus()
     }
 
     private fun positionOverlay(browser: Browser) {
