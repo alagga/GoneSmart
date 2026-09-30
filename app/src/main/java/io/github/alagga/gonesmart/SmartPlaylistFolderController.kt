@@ -508,8 +508,24 @@ internal class SmartPlaylistFolderController(
     }
 
     fun onNativeRecyclerObserved(view: View?) {
-        if (view == null || resourceName(view) != SMART_LIST_ID) return
         val list = view as? ViewGroup ?: return
+        val adapter = nativeAdapter(list)
+        val native = bindings
+        val nativeSmartSurface =
+            resourceName(list) == SMART_LIST_ID ||
+                (adapter != null &&
+                    native?.adapterClass?.isInstance(adapter) == true)
+        if (!nativeSmartSurface) return
+        if (adapter != null &&
+            native?.adapterClass?.isInstance(adapter) != true
+        ) return
+        if (BuildConfig.DEBUG && resourceName(list) != SMART_LIST_ID) {
+            Log.i(
+                TAG,
+                "SMART NAV COMPAT | adapter=ls4 | viewId=" +
+                    resourceName(list).ifBlank { "<none>" }
+            )
+        }
         knownLists[list] = true
         if (enabled && !browsers.containsKey(list)) {
             if (!pendingOriginalAlphas.containsKey(list)) {
@@ -530,18 +546,14 @@ internal class SmartPlaylistFolderController(
      * cross the boundary as framework View/MotionEvent values only.
      */
     fun onNativeRecyclerScrolled(view: View?, dy: Int) {
-        if (dy == 0 || view == null || resourceName(view) != SMART_LIST_ID) {
-            return
-        }
+        if (dy == 0) return
         val list = view as? ViewGroup ?: return
         val browser = browsers[list] ?: return
         syncFolderRowsScrollByDelta(browser, dy)
     }
 
     fun onNativeRecyclerTouch(view: View?, event: MotionEvent?) {
-        if (view == null || event == null ||
-            resourceName(view) != SMART_LIST_ID
-        ) return
+        if (event == null) return
         val list = view as? ViewGroup ?: return
         val browser = browsers[list] ?: return
         when (event.actionMasked) {
