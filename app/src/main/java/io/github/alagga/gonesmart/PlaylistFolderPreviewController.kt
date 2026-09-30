@@ -1070,7 +1070,25 @@ internal class PlaylistFolderPreviewController(
             context.resources,
             resourceId
         ) ?: return
-        if (name == "menu_gm_playlist_list") {
+        val hasNativeAdd = (0 until menu.size()).any { index ->
+            resourceEntryName(
+                context.resources,
+                menu.getItem(index).itemId
+            ) == "menuAdd"
+        }
+        val playlistListMenu =
+            name == "menu_gm_playlist_list" ||
+                (name.contains("playlist", ignoreCase = true) &&
+                    name.contains("list", ignoreCase = true) &&
+                    !name.contains("smart", ignoreCase = true) &&
+                    hasNativeAdd)
+        if (playlistListMenu) {
+            if (BuildConfig.DEBUG && name != "menu_gm_playlist_list") {
+                Log.i(
+                    TAG,
+                    "FOLDER NAV COMPAT | alternate playlist menu=$name"
+                )
+            }
             playlistTabMenu = WeakReference(menu)
             installNativeNewFolderMenu(menu, context)
             updatePlaylistMenu()
