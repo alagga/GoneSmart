@@ -569,6 +569,13 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("SMART-PLAYLISTS"))
         container.addView(settingGroup(listOf(
             SettingSpec(
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                "↔",
+                "Playlist Bridge",
+                "Use ordinary Playlists as live rules inside Smart-Playlists.",
+                COLOR_ACCENT
+            ),
+            SettingSpec(
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
                 "✓",
                 "Multi-selection",
@@ -849,14 +856,15 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What is Playlist Bridge?",
-            body = "Playlist Bridge extends GMMP's existing Link action in the " +
-                "Smart-Playlist editor. Choose Playlist to link an ordinary GMMP " +
-                "playlist as a live membership rule instead of copying its current " +
-                "tracks. Changes to that source playlist are picked up when the " +
-                "Smart-Playlist is evaluated again. On the tested GMMP 4.2.0 setup, " +
-                "saved Bridge rules degrade to neutral native placeholder rules when " +
-                "GoneSmart is disabled, so the remaining native Smart-Playlist rules " +
-                "continue to work."
+            body = "Enable UI → Smart-Playlists → Playlist Bridge to extend GMMP's " +
+                "existing Link action in the Smart-Playlist editor. Choose Playlist " +
+                "to link an ordinary GMMP playlist as a live membership rule instead " +
+                "of copying its current tracks. Changes to that source playlist are " +
+                "picked up when the Smart-Playlist is evaluated again. If Playlist " +
+                "Bridge or GoneSmart itself is disabled later, saved Bridge rules stay " +
+                "visible but become neutral: GMMP can still open and use the " +
+                "Smart-Playlist, while those Bridge rules no longer filter its results. " +
+                "Re-enable Playlist Bridge to restore their live membership behavior."
         ))
 
         container.addView(verticalGap(12))
@@ -1129,6 +1137,10 @@ class MainActivity : AppCompatActivity() {
         setSwitch(
             GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
             options.smartMultiPlaylistEnabled
+        )
+        setSwitch(
+            GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+            options.playlistBridgeEnabled
         )
         setSwitch(
             GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
