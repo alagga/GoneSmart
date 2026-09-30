@@ -1,7 +1,7 @@
 # Flip Queue / Play Flipped — validation and compatibility
 
 Status: **implemented and verified on-device with GMMP 4.2.0** on the
-`feature/multi-playlist-add` development branch. Feature remains optional
+`feature/playlist-bridge` v0.4 development branch. Feature remains optional
 and **off by default**; it is not a claim that a signed public release
 has already shipped.
 
