@@ -1971,6 +1971,9 @@ internal class PlaylistFolderPreviewController(
         // triggering a new layout. Probe the actual native row on redraw,
         // throttled so scrolling and cover animations remain lightweight.
         val themeListener = android.view.ViewTreeObserver.OnPreDrawListener {
+            weakList.get()?.let { current ->
+                browsers[current]?.let(::syncPagerOverlayVisibility)
+            }
             val now = android.os.SystemClock.uptimeMillis()
             if (now - lastThemeProbe >= 400L) {
                 lastThemeProbe = now
@@ -2201,6 +2204,40 @@ internal class PlaylistFolderPreviewController(
             return
         }
         scheduleAttach(list, attempt + 1)
+    }
+
+    /**
+     * ViewPager decor children do not automatically travel with one page.
+     * Keep only the selected page's already-built overlay visible. This is
+     * intentionally geometry-only: no native model parsing, index rebuild or
+     * style sampling occurs on this per-frame pager check.
+     */
+    private fun syncPagerOverlayVisibility(browser: Browser) {
+        if (!PlaylistNavigationSurfaceHost.isPagerHost(browser.parent)) return
+        val list = browser.list
+        if (!list.isAttachedToWindow) return
+
+        val visibleBounds = Rect()
+        val visible = isFrontFragmentView(list) &&
+            list.isShown &&
+            list.getGlobalVisibleRect(visibleBounds) &&
+            visibleBounds.width() > dp(list, 30) &&
+            visibleBounds.height() > dp(list, 30)
+        val next = if (visible) View.VISIBLE else View.GONE
+        if (browser.overlay.visibility == next) return
+
+        if (visible) {
+            val listLocation = IntArray(2)
+            val hostLocation = IntArray(2)
+            list.getLocationOnScreen(listLocation)
+            browser.parent.getLocationOnScreen(hostLocation)
+            browser.overlay.x =
+                (listLocation[0] - hostLocation[0]).toFloat()
+            browser.overlay.y =
+                (listLocation[1] - hostLocation[1]).toFloat()
+        }
+        browser.overlay.visibility = next
+        if (visible) updatePlaylistMenu()
     }
 
     private fun positionOverlay(browser: Browser) {
