@@ -316,7 +316,6 @@ internal class PlaylistFolderPreviewController(
     private val observedMenus = linkedSetOf<String>()
     private val observedNativeFileMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
-    var onNativeMoveDiscovery: ((android.content.Context) -> Unit)? = null
     private val newFolderMenuId = View.generateViewId()
     private val movePlaylistMenuId = View.generateViewId()
     private val nativeContextPlaylist = ThreadLocal<String?>()
@@ -1057,7 +1056,6 @@ internal class PlaylistFolderPreviewController(
                     ?.invoke(originalInflater) as? android.content.Context
             }.getOrNull() ?: return
         // Passive, bounded discovery only. No native move method is called.
-        onNativeMoveDiscovery?.invoke(context)
         val name = resourceEntryName(
             context.resources,
             resourceId

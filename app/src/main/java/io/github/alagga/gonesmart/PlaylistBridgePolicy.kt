@@ -4,11 +4,11 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Pure privacy / classification policy for the first Playlist Bridge
- * diagnostic build. Logs must prove native behavior without leaking the
- * maintainer's full playlist paths, playlist names, or track contents.
+ * Privacy and classification helpers shared by Playlist Bridge and
+ * Smart-Playlist move safety. Paths are reduced to extension/hash/length
+ * before they reach diagnostic Logcat output.
  */
-internal object PlaylistBridgeDiagnosticPolicy {
+internal object PlaylistBridgePolicy {
     fun isNativeSmartPlaylistReference(value: String?): Boolean {
         if (PlaylistBridgeReference.isBridgeValue(value)) return false
         if (value.isNullOrBlank()) return false

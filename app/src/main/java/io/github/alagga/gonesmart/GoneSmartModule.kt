@@ -141,6 +141,39 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
+            val uiToggle = when (key) {
+                GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ->
+                    "Playlist folders" to
+                        (previous.playlistFoldersEnabled to options.playlistFoldersEnabled)
+                GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS ->
+                    "Group external playlists" to
+                        (previous.groupExternalPlaylists to options.groupExternalPlaylists)
+                GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS ->
+                    "Group root playlists" to
+                        (previous.groupRootPlaylists to options.groupRootPlaylists)
+                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS ->
+                    "Smart-Playlist folders" to
+                        (previous.smartPlaylistFoldersEnabled to
+                            options.smartPlaylistFoldersEnabled)
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ->
+                    "Smart-Playlist multi-selection" to
+                        (previous.smartMultiPlaylistEnabled to
+                            options.smartMultiPlaylistEnabled)
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS ->
+                    "Group root Smart-Playlists" to
+                        (previous.smartGroupRootPlaylists to
+                            options.smartGroupRootPlaylists)
+                else -> null
+            }
+            uiToggle?.let { (label, state) ->
+                if (state.first != state.second) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "$label ${if (state.second) "enabled." else "disabled."}"
+                    )
+                }
+            }
+
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
                 if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
@@ -337,21 +370,14 @@ class GoneSmartModule : XposedModule() {
     private val smartPlaylistSaveRedirectDepth =
         ThreadLocal.withInitial { 0 }
 
-    private var nativeMoveDiscovery: NativeGmmpMoveDiscovery? = null
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 
     private val playlistBridgeController =
         PlaylistBridgeController()
 
-    private val playlistBridgeEvaluationDepth =
-        ThreadLocal.withInitial { 0 }
-
     private val playlistBridgeSmartChooserTitleDepth =
         ThreadLocal.withInitial { 0 }
-
-    private val playlistBridgeTraceCounts =
-        java.util.concurrent.ConcurrentHashMap<String, AtomicLong>()
 
     private val queueFlipController =
         QueueFlipController()
@@ -525,59 +551,39 @@ class GoneSmartModule : XposedModule() {
             // Native playlist UI is opt-in through the companion app and
             // remains independent of the Smart Auto-DJ recommendation mode.
             // Hook registration is available in release builds too.
-            if (true) {
-                try {
-                    playlistController.setEnabled(options.multiPlaylistEnabled)
-                    installPlaylistMultiSelectHooks(param)
-                    // fo3's create callback also operates without Playlist
-                    // folders; install its version-checked hook alongside
-                    // Multi-playlist selection in release and debug builds.
-                    installNativePlaylistCreationProbeHooks(param)
-                    if (options.multiPlaylistEnabled) {
-                        runtimeReporter.reportEvent(
-                            GoneSmartRuntimeContract.CATEGORY_SYSTEM,
-                            "Multi-playlist selection is available."
-                        )
-                    }
-                } catch (playlistHookError: Throwable) {
-                    Log.w(
-                        TAG,
-                        "Experimental playlist hooks unavailable; native picker unaffected",
-                        playlistHookError
+            try {
+                playlistController.setEnabled(options.multiPlaylistEnabled)
+                installPlaylistMultiSelectHooks(param)
+                // fo3's create callback also operates without Playlist
+                // folders; install its version-checked hook alongside
+                // Multi-selection in release and debug builds.
+                installNativePlaylistCreationHooks(param)
+                if (options.multiPlaylistEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                        "Playlist multi-selection is available."
                     )
                 }
+            } catch (playlistHookError: Throwable) {
+                Log.w(
+                    TAG,
+                    "Playlist UI hooks unavailable; native picker unaffected",
+                    playlistHookError
+                )
             }
 
-            // This user test also identifies the EXACT native existing-
-            // playlist save/update call path. These debug-only observers
-            // capture symbol-only call stacks; they neither invoke a save
-            // nor change any original writer, scanner or DB transaction.
-            if (BuildConfig.DEBUG) {
-                runCatching {
-                    installNativePlaylistSaveDiagnostics(param)
-                }.onFailure {
-                    Log.w(
-                        "GoneSmartPlaylist",
-                        "NATIVE SAVE DISCOVERY | passive hooks unavailable",
-                        it
-                    )
-                }
-
-                // Playlist Bridge is still a DEBUG-only proof of concept.
-                // The previous read-only device trace proved native dynamic
-                // Smart-link evaluation and the original ordinary-playlist
-                // parser. This build adds one fail-closed end-to-end bridge
-                // path for disposable Smart Playlists only.
-                runCatching {
-                    installPlaylistBridgeDiagnostics(param)
-                }.onFailure {
-                    Log.w(
-                        PLAYLIST_BRIDGE_TAG,
-                        "DIAG INSTALL FAILED | native GMMP behavior unchanged",
-                        it
-                    )
-                }
-
+            // Playlist Bridge passed the dedicated GMMP 4.2.0 device flow,
+            // including save/reopen, dynamic source updates and disabled-
+            // module compatibility. Install only the functional hooks in
+            // both build variants; old reverse-engineering probes are gone.
+            runCatching {
+                installPlaylistBridgeHooks(param)
+            }.onFailure {
+                Log.w(
+                    PLAYLIST_BRIDGE_TAG,
+                    "BRIDGE HOOKS UNAVAILABLE | native GMMP behavior unchanged",
+                    it
+                )
             }
 
             // Accepted folder functionality is available in debug AND
@@ -608,13 +614,6 @@ class GoneSmartModule : XposedModule() {
                     installSmartPlaylistFolderFeatureHooks(param)
                     installSmartPlaylistSaveHook(param)
 
-                    if (BuildConfig.DEBUG) {
-                        nativeMoveDiscovery =
-                            NativeGmmpMoveDiscovery(param.classLoader)
-                        playlistFolderPreview.onNativeMoveDiscovery = { context ->
-                            nativeMoveDiscovery?.reportOnce(context)
-                        }
-                    }
                     // py0.b() shows its native MaterialDialog synchronously.
                     // Observe the ORIGINAL show() after it returns; alter
                     // only the already-rendered path label for this thread's
@@ -702,7 +701,7 @@ class GoneSmartModule : XposedModule() {
                             it
                         )
                     }
-                    installPlaylistSurfaceDiscoveryHooks(param)
+                    installPlaylistSurfaceHooks(param)
                 }
             } catch (folderDiscoveryError: Throwable) {
                 Log.w(
@@ -835,20 +834,18 @@ class GoneSmartModule : XposedModule() {
                     } catch (error: Throwable) {
                         Log.e(TAG, "Track Mix menu insertion failed", error)
                     }
-                    if (BuildConfig.DEBUG) {
-                        runCatching {
-                            playlistBridgeController.onMenuInflated(
-                                chain.getArg(0) as? Int ?: 0,
-                                chain.getArg(1) as? android.view.Menu,
-                                chain.getThisObject()
-                            )
-                        }.onFailure {
-                            Log.w(
-                                PLAYLIST_BRIDGE_TAG,
-                                "POC MENU FAILED | native menu untouched",
-                                it
-                            )
-                        }
+                    runCatching {
+                        playlistBridgeController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    }.onFailure {
+                        Log.w(
+                            PLAYLIST_BRIDGE_TAG,
+                            "BRIDGE MENU FAILED | native menu untouched",
+                            it
+                        )
                     }
                     runCatching {
                             playlistFolderPreview.onMenuInflated(
@@ -1067,11 +1064,11 @@ class GoneSmartModule : XposedModule() {
      */
 
     /**
-     * Observe RecyclerView adapter installation and attachment without
-     * assuming the normal Playlists tab shares the picker's zn3 adapter.
-     * This is instrumentation only; the original native methods still run.
+     * Observe the host RecyclerView lifecycle used by both folder surfaces.
+     * The original native methods always run; GoneSmart only attaches its
+     * already-verified folder chrome to the matching visible surface.
      */
-    private fun installPlaylistSurfaceDiscoveryHooks(
+    private fun installPlaylistSurfaceHooks(
         param: PackageReadyParam
     ) {
         val recycler = param.classLoader.loadClass(
@@ -1085,14 +1082,10 @@ class GoneSmartModule : XposedModule() {
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
-                playlistController.onNativeRecyclerAdapterSet(
-                    list,
-                    chain.getArg(0)
-                )
                 playlistFolderPreview.onNativeRecyclerObserved(list)
                 smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
-                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter probe failed", it)
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter observation failed", it)
             }
             result
         }
@@ -1105,11 +1098,10 @@ class GoneSmartModule : XposedModule() {
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
-                playlistController.onNativeRecyclerAttached(list)
                 playlistFolderPreview.onNativeRecyclerObserved(list)
                 smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
-                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach probe failed", it)
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach observation failed", it)
             }
             result
         }
@@ -1418,7 +1410,7 @@ class GoneSmartModule : XposedModule() {
      * redirect either destination before both native transactions are known.
      * No user-entered name, path or playlist contents are logged.
      */
-    private fun installNativePlaylistCreationProbeHooks(
+    private fun installNativePlaylistCreationHooks(
         param: PackageReadyParam
     ) {
         runCatching {
@@ -1506,7 +1498,7 @@ class GoneSmartModule : XposedModule() {
                 hook(invoke).intercept { chain ->
                     Log.i(
                         "GoneSmartPlaylist",
-                        "NATIVE CREATE PROBE | surface=$surface | entered"
+                        "NATIVE CREATE | surface=$surface | entered"
                     )
                     try {
                         if (surface == "main" &&
@@ -1520,7 +1512,7 @@ class GoneSmartModule : XposedModule() {
                         ) {
                             Log.i(
                                 "GoneSmartPlaylist",
-                                "NATIVE CREATE PROBE | surface=main | " +
+                                "NATIVE CREATE | surface=main | " +
                                     "consumed by folder shell"
                             )
                             return@intercept kotlinUnit
@@ -1617,13 +1609,13 @@ class GoneSmartModule : XposedModule() {
                         }
                         Log.i(
                             "GoneSmartPlaylist",
-                            "NATIVE CREATE PROBE | surface=$surface | returned"
+                            "NATIVE CREATE | surface=$surface | returned"
                         )
                         result
                     } catch (error: Throwable) {
                         Log.w(
                             "GoneSmartPlaylist",
-                            "NATIVE CREATE PROBE | surface=$surface | native exception",
+                            "NATIVE CREATE | surface=$surface | native exception",
                             error
                         )
                         throw error
@@ -1632,12 +1624,12 @@ class GoneSmartModule : XposedModule() {
                 installedSurfaces.add(surface)
                 Log.i(
                     "GoneSmartPlaylist",
-                    "NATIVE CREATE PROBE | surface=$surface | hook installed"
+                    "NATIVE CREATE | surface=$surface | hook installed"
                 )
             }.onFailure { error ->
                 Log.w(
                     "GoneSmartPlaylist",
-                    "NATIVE CREATE PROBE | surface=$surface | unavailable",
+                    "NATIVE CREATE | surface=$surface | unavailable",
                     error
                 )
             }
@@ -1645,307 +1637,6 @@ class GoneSmartModule : XposedModule() {
         playlistFolderPreview.setNativeCreateRedirectReady(
             main = getterReady && "main" in installedSurfaces,
             picker = getterReady && "picker" in installedSurfaces
-        )
-    }
-
-    private val nativeSaveTraceCounts = HashMap<String, Int>()
-
-    private fun nativeSaveShouldReport(method: String, origin: String): Boolean {
-        val key = method + "/" + origin
-        synchronized(nativeSaveTraceCounts) {
-            val seen = nativeSaveTraceCounts[key] ?: 0
-            // A normal startup can scan hundreds of playlists. We need
-            // only enough call stacks to distinguish native create, edit,
-            // context add, and GoneSmart move/rescan.
-            val limit = when (method) {
-                "hp3.d" -> 12
-                "t6.f" -> 8
-                else -> 6
-            }
-            if (seen >= limit) return false
-            nativeSaveTraceCounts[key] = seen + 1
-            return true
-        }
-    }
-
-    /**
-     * Passive original GMMP 4.2.0 playlist-write exploration. hp3.d()
-     * has already been identified in the maintainer's exact original DEX
-     * as a playlist file writer. What remains unproved is the EXISTING
-     * playlist model -> writer -> indexing call chain, including whether
-     * native edit/add invokes hp3.d or x6.b. Observe the original methods
-     * on the one disposable-playlist device test; do not edit any M3U,
-     * invoke these candidates, change return values or expose path data.
-     */
-    private fun installNativePlaylistSaveDiagnostics(
-        param: PackageReadyParam
-    ) {
-        if (!BuildConfig.DEBUG) return
-        val loader = param.classLoader
-        val candidates = listOf(
-            Triple("hp3", "d", emptyList<String>()),
-            Triple("x6", "b", listOf("Context", "File")),
-            Triple("t6", "f", listOf("Context", "String[]")),
-            Triple("zp3", "M", listOf("Context", "wp3")),
-            Triple("io3", "r", listOf("Context", "ie0"))
-        )
-        var installed = 0
-        candidates.forEach { (owner, name, argTypes) ->
-            runCatching {
-                // Resolve EACH candidate independently: a missing optional
-                // obfuscated model must not disable the confirmed hp3 writer
-                // observer or the original native t6.f scanner observer.
-                val params: Array<Class<*>> = argTypes.map { typeName ->
-                    when (typeName) {
-                        "Context" -> android.content.Context::class.java
-                        "File" -> File::class.java
-                        "String[]" -> Array<String>::class.java
-                        else -> loader.loadClass(typeName)
-                    }
-                }.toTypedArray()
-                val target = loader.loadClass(owner)
-                    .getDeclaredMethod(name, *params)
-                    .apply { isAccessible = true }
-                // Never hook an unexpected overloaded method or a newer
-                // GMMP version by guessing from names alone.
-                require(target.parameterTypes.contentEquals(params))
-                if (owner == "hp3") {
-                    require(target.returnType == java.lang.Boolean.TYPE)
-                }
-                val label = "$owner.$name"
-                hook(target).intercept { chain ->
-                    val stack = Thread.currentThread().stackTrace
-                    var didReturn = false
-                    var booleanResult: Boolean? = null
-                    try {
-                        val result = chain.proceed()
-                        didReturn = true
-                        booleanResult = result as? Boolean
-                        result
-                    } finally {
-                        runCatching {
-                            val origin = NativePlaylistSaveTracePolicy.origin(stack)
-                            val scanSource = if (
-                                label == "t6.f" &&
-                                NativePlaylistSaveTracePolicy.isGoneSmartScanner(
-                                    stack
-                                )
-                            ) "GONESMART_MOVE" else origin.name
-                            if (nativeSaveShouldReport(label, scanSource)) {
-                                val fields = if (label == "hp3.d") {
-                                    chain.getThisObject()
-                                        ?.javaClass?.declaredFields
-                                        ?.take(32)
-                                        ?.joinToString(",") {
-                                            it.name + ":" + it.type.simpleName
-                                        }
-                                        ?: "unavailable"
-                                } else "-"
-                                Log.i(
-                                    "GoneSmartPlaylist",
-                                    "NATIVE SAVE DISCOVERY | method=$label" +
-                                        " | origin=$scanSource" +
-                                        " | result=" + when {
-                                            !didReturn -> "threw"
-                                            booleanResult == null -> "returned"
-                                            else -> booleanResult.toString()
-                                        } +
-                                        " | nativeReceiverFields=$fields" +
-                                        " | callerSymbols=" +
-                                        NativePlaylistSaveTracePolicy.visibleFrames(
-                                            stack
-                                        ).joinToString(" > ")
-                                )
-                            }
-                        }.onFailure {
-                            Log.w(
-                                "GoneSmartPlaylist",
-                                "NATIVE SAVE DISCOVERY | read-only sample failed",
-                                it
-                            )
-                        }
-                    }
-                }
-                installed++
-                Log.i(
-                    "GoneSmartPlaylist",
-                    "NATIVE SAVE DISCOVERY | observer installed | method=$label"
-                )
-            }.onFailure {
-                // A missing candidate never interferes with native GMMP.
-                Log.w(
-                    "GoneSmartPlaylist",
-                    "NATIVE SAVE DISCOVERY | observer unavailable" +
-                        " | method=$owner.$name",
-                    it
-                )
-            }
-        }
-        Log.i(
-            "GoneSmartPlaylist",
-            "NATIVE SAVE DISCOVERY | installed=$installed/5" +
-                " | original methods untouched"
-        )
-    }
-
-    private fun installSmartPlaylistFolderDiagnostics(
-        param: PackageReadyParam
-    ) {
-        if (!BuildConfig.DEBUG) return
-        val loader = param.classLoader
-        val tag = "GoneSmartSmartFolders"
-        var installed = 0
-
-        runCatching {
-            val presenter = loader.loadClass("ss4")
-            val view = loader.loadClass("fo2")
-            val method = presenter
-                .getDeclaredMethod("P1", view)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                Log.i(tag, "SMART FOLDERS LOAD REQUEST | ss4.P1")
-                chain.proceed()
-            }
-            installed++
-            Log.i(tag, "HOOK READY | ss4.P1(fo2)")
-        }.onFailure {
-            Log.w(tag, "HOOK MISSING | ss4.P1(fo2)", it)
-        }
-
-        runCatching {
-            val presenter = loader.loadClass("ss4")
-            val lambda = loader.loadClass("jz")
-            val modeField = findField(lambda, "o").apply { isAccessible = true }
-            val ownerField = findField(lambda, "p").apply { isAccessible = true }
-            val method = lambda
-                .getDeclaredMethod("apply", Any::class.java)
-                .apply { isAccessible = true }
-
-            hook(method).intercept { chain ->
-                val owner = runCatching {
-                    ownerField.get(chain.getThisObject())
-                }.getOrNull()
-                val mode = runCatching {
-                    modeField.getInt(chain.getThisObject())
-                }.getOrDefault(-1)
-                val root = chain.getArg(0) as? File
-
-                if (mode != 5 || owner == null ||
-                    !presenter.isInstance(owner) || root == null
-                ) {
-                    return@intercept chain.proceed()
-                }
-
-                val direct = runCatching {
-                    root.listFiles()?.toList().orEmpty()
-                }.getOrDefault(emptyList())
-                val directDirectories = direct.count { it.isDirectory }
-                val directSpl = direct.count {
-                    it.isFile && it.extension.equals("spl", ignoreCase = true)
-                }
-
-                val started = SystemClock.elapsedRealtimeNanos()
-                val result = chain.proceed()
-                val loaded = (result as? Collection<*>)?.size ?: -1
-                Log.i(
-                    tag,
-                    "SMART FOLDERS ROOT LOAD | " +
-                        PlaylistBridgeDiagnosticPolicy.safePath(
-                            root.absolutePath
-                        ) +
-                        " | directDirs=$directDirectories" +
-                        " | directSpl=$directSpl" +
-                        " | nativeLoaded=$loaded" +
-                        " | elapsedMs=" +
-                        ((SystemClock.elapsedRealtimeNanos() - started) /
-                            1_000_000L)
-                )
-                result
-            }
-            installed++
-            Log.i(tag, "HOOK READY | jz.apply(Object) mode=5 Smart loader")
-        }.onFailure {
-            Log.w(tag, "HOOK MISSING | jz.apply(Object)", it)
-        }
-
-        runCatching {
-            val fragment = loader.loadClass("os4")
-            val method = fragment
-                .getDeclaredMethod(
-                    "B2",
-                    Integer.TYPE,
-                    java.util.List::class.java
-                )
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val items = chain.getArg(1) as? List<*>
-                Log.i(
-                    tag,
-                    "SMART FOLDERS FRAGMENT BIND | mode=" + chain.getArg(0) +
-                        " | items=" + (items?.size ?: -1)
-                )
-                chain.proceed()
-            }
-            installed++
-            Log.i(tag, "HOOK READY | os4.B2(int,List)")
-        }.onFailure {
-            Log.w(tag, "HOOK MISSING | os4.B2(int,List)", it)
-        }
-
-        runCatching {
-            val adapter = loader.loadClass("ls4")
-            val method = adapter
-                .getDeclaredMethod("U", java.util.List::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val items = chain.getArg(0) as? List<*>
-                val result = chain.proceed()
-                Log.i(
-                    tag,
-                    "SMART FOLDERS ADAPTER UPDATE | items=" +
-                        (items?.size ?: -1)
-                )
-                result
-            }
-            installed++
-            Log.i(tag, "HOOK READY | ls4.U(List)")
-        }.onFailure {
-            Log.w(tag, "HOOK MISSING | ls4.U(List)", it)
-        }
-
-        runCatching {
-            val observer = loader.loadClass("qs4")
-            val method = observer
-                .getDeclaredMethod(
-                    "onEvent",
-                    Integer.TYPE,
-                    String::class.java
-                )
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val event = chain.getArg(0) as? Int ?: -1
-                val path = chain.getArg(1) as? String
-                Log.i(
-                    tag,
-                    "SMART FOLDERS OBSERVER | event=0x" +
-                        event.toString(16) +
-                        " | ext=" +
-                        path?.substringAfterLast('.', "")
-                            ?.lowercase(java.util.Locale.ROOT)
-                            .orEmpty()
-                )
-                chain.proceed()
-            }
-            installed++
-            Log.i(tag, "HOOK READY | qs4.onEvent(int,String)")
-        }.onFailure {
-            Log.w(tag, "HOOK MISSING | qs4.onEvent(int,String)", it)
-        }
-
-        Log.i(
-            tag,
-            "DIAG READY | hooks=$installed | readOnly=true | " +
-                "no Smart-Playlist folder behavior changed"
         )
     }
 
@@ -2164,32 +1855,27 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun installPlaylistBridgeDiagnostics(
+    private fun installPlaylistBridgeHooks(
         param: PackageReadyParam
     ) {
-        if (!BuildConfig.DEBUG) return
-
         val loader = param.classLoader
-        val pocReady = playlistBridgeController.configure(loader)
-        playlistBridgeInfo(
-            "POC V1 START | build=playlist-bridge-poc-v1" +
-                " | writableDisposableSmartOnly=true" +
-                " | bindings=" + pocReady
-        )
-
+        val bindingsReady = playlistBridgeController.configure(loader)
         var installed = 0
-        installed += installPlaylistBridgeEditorDiagnostics(loader)
-        installed += installPlaylistBridgeEvaluationDiagnostics(loader)
-        installed += installPlaylistBridgeReaderDiagnostics(loader)
+        installed += installPlaylistBridgeEditorHooks(loader)
+        installed += installPlaylistBridgeEvaluationHook(loader)
 
         playlistBridgeInfo(
-            "POC V1 READY | hooks=" + installed +
-                " | bridgeBindings=" + pocReady +
-                " | native non-Bridge rules unchanged"
+            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady"
         )
+        if (bindingsReady) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Playlist Bridge is available in the Smart-Playlist editor."
+            )
+        }
     }
 
-    private fun installPlaylistBridgeEditorDiagnostics(
+    private fun installPlaylistBridgeEditorHooks(
         loader: ClassLoader
     ): Int {
         var installed = 0
@@ -2212,9 +1898,8 @@ class GoneSmartModule : XposedModule() {
                 result
             }
             installed++
-            playlistBridgeInfo("HOOK READY | ds4(Context,Bundle)")
         }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ds4(Context,Bundle)", it)
+            playlistBridgeWarn("Smart editor presenter hook unavailable", it)
         }
 
         runCatching {
@@ -2224,105 +1909,22 @@ class GoneSmartModule : XposedModule() {
                 .apply { isAccessible = true }
             hook(method).intercept { chain ->
                 val edit = chain.getArg(0) as? Boolean == true
-                if (playlistBridgeShouldReport("chooser-v2", 12)) {
-                    playlistBridgeInfo(
-                        "EDITOR CHOOSER | method=ds4.g2 | edit=" + edit
-                    )
-                }
                 if (
                     playlistBridgeController.interceptNativeLinkedEditor(
                         chain.getThisObject(),
                         edit
                     )
                 ) {
-                    return@intercept null
+                    null
+                } else {
+                    chain.proceed()
                 }
-                chain.proceed()
             }
             installed++
-            playlistBridgeInfo("HOOK READY | ds4.g2(boolean)")
         }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ds4.g2(boolean)", it)
+            playlistBridgeWarn("Smart link chooser hook unavailable", it)
         }
 
-        runCatching {
-            val presenterClass = loader.loadClass("ds4")
-            val baseRuleClass = loader.loadClass("gt4")
-            val method = presenterClass
-                .getDeclaredMethod("P1", baseRuleClass)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val rule = chain.getArg(0)
-                if (playlistBridgeShouldReport("add-rule-v2", 24)) {
-                    val snapshot = playlistBridgeRuleSnapshot(rule)
-                    playlistBridgeInfo(
-                        "EDITOR ADD RULE | class=" +
-                            (rule?.javaClass?.name ?: "null") +
-                            if (snapshot == null) {
-                                ""
-                            } else {
-                                " | " + playlistBridgeRuleSummary(snapshot)
-                            }
-                    )
-                }
-                chain.proceed()
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ds4.P1(gt4)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ds4.P1(gt4)", it)
-        }
-
-        runCatching {
-            val smartRuleClass = loader.loadClass("ft4")
-            val method = smartRuleClass
-                .getDeclaredMethod("c", org.w3c.dom.Node::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val result = chain.proceed()
-                if (playlistBridgeShouldReport("parse-v2", 32)) {
-                    playlistBridgeRuleSnapshot(chain.getThisObject())?.let {
-                        playlistBridgeInfo(
-                            "RULE PARSE | " + playlistBridgeRuleSummary(it)
-                        )
-                    }
-                }
-                result
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ft4.c(Node)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ft4.c(Node)", it)
-        }
-
-        runCatching {
-            val smartRuleClass = loader.loadClass("ft4")
-            val method = smartRuleClass
-                .getDeclaredMethod(
-                    "t",
-                    org.xmlpull.v1.XmlSerializer::class.java
-                )
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                if (playlistBridgeShouldReport("serialize-v2", 32)) {
-                    playlistBridgeRuleSnapshot(chain.getThisObject())?.let {
-                        playlistBridgeInfo(
-                            "RULE SERIALIZE | " + playlistBridgeRuleSummary(it)
-                        )
-                    }
-                }
-                chain.proceed()
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ft4.t(XmlSerializer)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ft4.t(XmlSerializer)", it)
-        }
-
-        // Native ds4.g2 ultimately creates its list dialog inside ds4$g.accept.
-        // Scope only that original call so bx.K0(link_playlist) can use the
-        // more precise "Link Smart Playlist" title without renaming any
-        // ordinary playlist chooser elsewhere in GMMP.
         runCatching {
             val consumerClass = loader.loadClass("ds4\$g")
             val method = consumerClass
@@ -2338,9 +1940,8 @@ class GoneSmartModule : XposedModule() {
                 }
             }
             installed++
-            playlistBridgeInfo("HOOK READY | ds4\$g.accept(Object) title scope")
         }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ds4\$g.accept(Object)", it)
+            playlistBridgeWarn("Smart chooser title scope unavailable", it)
         }
 
         runCatching {
@@ -2368,16 +1969,10 @@ class GoneSmartModule : XposedModule() {
                 chain.proceed()
             }
             installed++
-            playlistBridgeInfo("HOOK READY | bx.K0(int) Smart title override")
         }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | bx.K0(int)", it)
+            playlistBridgeWarn("Smart chooser title hook unavailable", it)
         }
 
-        // SmartEditorAdapter renders rule summaries through os2.U(gt4).
-        // Native linked .spl rules currently reuse the generic "Playlist:"
-        // prefix. Change ONLY those original linked-Smart rules to
-        // "Smart Playlist:". Playlist Bridge rules deliberately keep the
-        // original localized "Playlist:" prefix.
         runCatching {
             val metadataTextClass = loader.loadClass("os2")
             val baseRuleClass = loader.loadClass("gt4")
@@ -2392,20 +1987,17 @@ class GoneSmartModule : XposedModule() {
                 )
             }
             installed++
-            playlistBridgeInfo("HOOK READY | os2.U(gt4) Smart rule label")
         }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | os2.U(gt4)", it)
+            playlistBridgeWarn("Smart rule label hook unavailable", it)
         }
 
         return installed
     }
 
-    private fun installPlaylistBridgeEvaluationDiagnostics(
+    private fun installPlaylistBridgeEvaluationHook(
         loader: ClassLoader
     ): Int {
-        var installed = 0
-
-        runCatching {
+        return runCatching {
             val smartRuleClass = loader.loadClass("ft4")
             val whereClass = loader.loadClass("ww3")
             val method = smartRuleClass
@@ -2421,297 +2013,40 @@ class GoneSmartModule : XposedModule() {
 
             hook(method).intercept { chain ->
                 val rule = chain.getThisObject()
-                val snapshot = playlistBridgeRuleSnapshot(rule)
-                val isBridge = playlistBridgeController.isBridgeRule(rule)
-                if (isBridge) {
-                    val started = SystemClock.elapsedRealtimeNanos()
-                    val result = runCatching {
-                        playlistBridgeController.compile(rule)
-                    }.onFailure {
-                        playlistBridgeWarn(
-                            "POC COMPILE EXCEPTION | forcing false predicate",
-                            it
-                        )
-                    }.getOrNull()
-                        ?: playlistBridgeController.failClosedPredicate()
-                    if (result != null) {
-                        val args = runCatching {
-                            result.javaClass.getMethod("a")
-                                .invoke(result) as? List<*>
-                        }.getOrNull()
-                        playlistBridgeInfo(
-                            "POC RULE COMPILE END | result=" +
-                                result.javaClass.name +
-                                " | queryArgs=" + (args?.size ?: -1) +
-                                " | elapsedMs=" +
-                                ((SystemClock.elapsedRealtimeNanos() - started) /
-                                    1_000_000L)
-                        )
-                        return@intercept result
-                    }
-                    throw IllegalStateException(
+                if (!playlistBridgeController.isBridgeRule(rule)) {
+                    return@intercept chain.proceed()
+                }
+
+                val started = SystemClock.elapsedRealtimeNanos()
+                val result = runCatching {
+                    playlistBridgeController.compile(rule)
+                }.onFailure {
+                    playlistBridgeWarn(
+                        "Bridge rule compilation failed; using false predicate",
+                        it
+                    )
+                }.getOrNull()
+                    ?: playlistBridgeController.failClosedPredicate()
+                    ?: throw IllegalStateException(
                         "Playlist Bridge fail-closed predicate unavailable"
                     )
-                }
 
-                val isNativeLink = snapshot != null &&
-                    PlaylistBridgeDiagnosticPolicy
-                        .isNativeSmartPlaylistReference(snapshot.value)
-
-                val previousDepth = playlistBridgeEvaluationDepth.get()
-                if (isNativeLink) {
-                    playlistBridgeEvaluationDepth.set(previousDepth + 1)
-                }
-
-                val report = playlistBridgeShouldReport("compile-v2", 48)
-                val started = SystemClock.elapsedRealtimeNanos()
-                if (report) {
-                    playlistBridgeInfo(
-                        "RULE COMPILE START | nativeSmartLink=" + isNativeLink +
-                            " | depth=" +
-                            (if (isNativeLink) previousDepth + 1
-                            else previousDepth) +
-                            if (snapshot == null) "" else
-                                " | " + playlistBridgeRuleSummary(snapshot)
-                    )
-                }
-
-                try {
-                    val result = chain.proceed()
-                    if (report) {
-                        val args = runCatching {
-                            result?.javaClass
-                                ?.getMethod("a")
-                                ?.invoke(result) as? List<*>
-                        }.getOrNull()
-                        playlistBridgeInfo(
-                            "RULE COMPILE END | nativeSmartLink=" + isNativeLink +
-                                " | result=" + (result?.javaClass?.name ?: "null") +
-                                " | queryArgs=" + (args?.size ?: -1) +
-                                " | elapsedMs=" +
-                                ((SystemClock.elapsedRealtimeNanos() - started) /
-                                    1_000_000L)
-                        )
-                    }
-                    result
-                } finally {
-                    if (isNativeLink) {
-                        playlistBridgeEvaluationDepth.set(previousDepth)
-                    }
-                }
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ft4.z(LinkedHashSet,Integer)")
-        }.onFailure {
-            playlistBridgeWarn(
-                "HOOK MISSING | ft4.z(LinkedHashSet,Integer)",
-                it
-            )
-        }
-
-        runCatching {
-            val smartPlaylistFileClass = loader.loadClass("ws4")
-            val method = smartPlaylistFileClass
-                .getDeclaredMethod("r", File::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val depth = playlistBridgeEvaluationDepth.get()
-                if (
-                    playlistBridgeShouldReport("smart-file-load-v2", 48)
-                ) {
-                    playlistBridgeInfo(
-                        "SMART FILE LOAD | bridgeDepth=" + depth + " | " +
-                            PlaylistBridgeDiagnosticPolicy.safePath(
-                                (chain.getArg(0) as? File)?.absolutePath
-                            )
-                    )
-                }
-                chain.proceed()
-            }
-            installed++
-            playlistBridgeInfo("HOOK READY | ws4.r(File)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ws4.r(File)", it)
-        }
-
-        runCatching {
-            val queryFieldClass = loader.loadClass("qw3")
-            val queryClauseClass = loader.loadClass("xw3")
-            val searchHelperClass = loader.loadClass("ot0")
-            val method = searchHelperClass
-                .getDeclaredMethod(
-                    "t",
-                    queryFieldClass,
-                    java.util.List::class.java
-                )
-                .apply { isAccessible = true }
-            require(method.returnType == queryClauseClass) {
-                "Unexpected ot0.t return type " + method.returnType.name
-            }
-            val getFieldName = queryFieldClass
-                .getDeclaredMethod("getFname")
-                .apply { isAccessible = true }
-
-            hook(method).intercept { chain ->
-                if (
-                    playlistBridgeShouldReport("native-in-v2", 32)
-                ) {
-                    val fieldName = runCatching {
-                        getFieldName.invoke(chain.getArg(0))?.toString()
-                    }.getOrNull()
-                    val values = chain.getArg(1) as? List<*>
-                    playlistBridgeInfo(
-                        "NATIVE IN | bridgeDepth=" +
-                            playlistBridgeEvaluationDepth.get() +
-                            " | field=" + (fieldName ?: "unknown") +
-                            " | values=" + (values?.size ?: -1)
-                    )
-                }
-                chain.proceed()
-            }
-
-            val trackFieldClass = loader.loadClass("z75")
-            listOf("ID", "URI").forEach { fieldName ->
-                val value = trackFieldClass
-                    .getDeclaredField(fieldName)
-                    .apply { isAccessible = true }
-                    .get(null)
                 playlistBridgeInfo(
-                    "QUERY FIELD | z75." + fieldName + "=" +
-                        runCatching {
-                            getFieldName.invoke(value)?.toString()
-                        }.getOrNull()
+                    "RULE COMPILED | result=" + result.javaClass.name +
+                        " | elapsedMs=" +
+                        ((SystemClock.elapsedRealtimeNanos() - started) /
+                            1_000_000L)
                 )
-            }
-
-            installed++
-            playlistBridgeInfo("HOOK READY | ot0.t(qw3,List)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ot0.t(qw3,List)", it)
-        }
-
-        return installed
-    }
-
-    private fun installPlaylistBridgeReaderDiagnostics(
-        loader: ClassLoader
-    ): Int {
-        var installed = 0
-
-        runCatching {
-            val playlistStateClass = loader.loadClass("kp3")
-            val playlistDataSourceClass = loader.loadClass("ip3")
-            val constructor = playlistDataSourceClass
-                .getDeclaredConstructor(
-                    android.content.Context::class.java,
-                    playlistStateClass,
-                    Integer.TYPE,
-                    java.lang.Boolean.TYPE
-                )
-                .apply { isAccessible = true }
-
-            hook(constructor).intercept { chain ->
-                val snapshot = playlistBridgeReaderSnapshot(chain.getArg(1))
-                if (
-                    playlistBridgeShouldReport("reader-init-v2", 32)
-                ) {
-                    playlistBridgeInfo(
-                        "READER INIT | " +
-                            PlaylistBridgeDiagnosticPolicy.safePath(
-                                snapshot.file?.absolutePath
-                            ) +
-                            " | mode=" + chain.getArg(2) +
-                            " | flag=" + chain.getArg(3) +
-                            " | parsed=" + (snapshot.parsedEntries ?: -1) +
-                            " | cache=" + (snapshot.cachedEntries ?: -1)
-                    )
-                }
-                chain.proceed()
-            }
-
-            installed++
-            playlistBridgeInfo("HOOK READY | ip3(Context,kp3,int,boolean)")
-        }.onFailure {
-            playlistBridgeWarn(
-                "HOOK MISSING | ip3(Context,kp3,int,boolean)",
-                it
-            )
-        }
-
-        runCatching {
-            val playlistDataSourceClass = loader.loadClass("ip3")
-            val method = playlistDataSourceClass
-                .getDeclaredMethod("F", Integer.TYPE, Integer.TYPE)
-                .apply { isAccessible = true }
-            require(method.returnType == ArrayList::class.java) {
-                "Unexpected ip3.F return type " + method.returnType.name
-            }
-
-            hook(method).intercept { chain ->
-                val before = playlistBridgeReaderSnapshotFromDataSource(
-                    chain.getThisObject()
-                )
-                val result = chain.proceed()
-                if (
-                    playlistBridgeShouldReport("reader-page-v2", 48)
-                ) {
-                    val after = playlistBridgeReaderSnapshotFromDataSource(
-                        chain.getThisObject()
-                    )
-                    playlistBridgeInfo(
-                        "READER PAGE | " +
-                            PlaylistBridgeDiagnosticPolicy.safePath(
-                                after.file?.absolutePath ?:
-                                    before.file?.absolutePath
-                            ) +
-                            " | from=" + chain.getArg(0) +
-                            " | count=" + chain.getArg(1) +
-                            " | returned=" +
-                            ((result as? Collection<*>)?.size ?: -1) +
-                            " | parsed=" + (after.parsedEntries ?: -1) +
-                            " | cache=" + (after.cachedEntries ?: -1) +
-                            " | " + playlistBridgeResultSchema(result)
-                    )
-                }
                 result
             }
-
-            installed++
-            playlistBridgeInfo("HOOK READY | ip3.F(int,int)")
-        }.onFailure {
-            playlistBridgeWarn("HOOK MISSING | ip3.F(int,int)", it)
-        }
-
-        return installed
-    }
-
-    private fun playlistBridgeResultSchema(result: Any?): String {
-        val first = (result as? Collection<*>)
-            ?.firstOrNull()
-            ?: return "item=none"
-
-        return runCatching {
-            val fields = first.javaClass.declaredFields
-                .take(24)
-                .joinToString(",") {
-                    it.name + ":" + it.type.simpleName
-                }
-            val noArgMethods = first.javaClass.declaredMethods
-                .filter { it.parameterCount == 0 }
-                .take(24)
-                .joinToString(",") {
-                    it.name + ":" + it.returnType.simpleName
-                }
-            "itemClass=" + first.javaClass.name +
-                " | itemFields=" + fields +
-                " | itemNoArg=" + noArgMethods
+            1
         }.getOrElse {
-            "itemClass=" + first.javaClass.name + " | schema=unavailable"
+            playlistBridgeWarn("Bridge evaluation hook unavailable", it)
+            0
         }
     }
 
     private fun playlistBridgeInfo(message: String) {
-        Log.i("GoneSmartPlaylist", "BRIDGE | " + message)
         Log.i(PLAYLIST_BRIDGE_TAG, message)
     }
 
@@ -2719,96 +2054,7 @@ class GoneSmartModule : XposedModule() {
         message: String,
         error: Throwable
     ) {
-        Log.w("GoneSmartPlaylist", "BRIDGE | " + message, error)
         Log.w(PLAYLIST_BRIDGE_TAG, message, error)
-    }
-
-    private fun playlistBridgeShouldReport(key: String, limit: Long): Boolean {
-        val counter = playlistBridgeTraceCounts.computeIfAbsent(key) {
-            AtomicLong(0L)
-        }
-        return counter.incrementAndGet() <= limit
-    }
-
-    private fun playlistBridgeRuleSnapshot(rule: Any?): PlaylistBridgeRuleSnapshot? {
-        if (rule == null || rule.javaClass.name != "ft4") return null
-        return runCatching {
-            PlaylistBridgeRuleSnapshot(
-                rawO = findField(rule.javaClass, "o").apply {
-                    isAccessible = true
-                }.getInt(rule),
-                rawP = findField(rule.javaClass, "p").apply {
-                    isAccessible = true
-                }.getInt(rule),
-                value = findField(rule.javaClass, "q").apply {
-                    isAccessible = true
-                }.get(rule) as? String,
-                rawR = findField(rule.javaClass, "r").apply {
-                    isAccessible = true
-                }.getInt(rule),
-                ruleId = findField(rule.javaClass, "s").apply {
-                    isAccessible = true
-                }.getLong(rule)
-            )
-        }.getOrNull()
-    }
-
-    private fun playlistBridgeRuleSummary(
-        snapshot: PlaylistBridgeRuleSnapshot
-    ): String =
-        "o=" + snapshot.rawO +
-            " | p=" + snapshot.rawP +
-            " | r=" + snapshot.rawR +
-            " | ruleId=" + snapshot.ruleId +
-            " | ref=" +
-            PlaylistBridgeDiagnosticPolicy.safeReference(snapshot.value)
-
-    private fun playlistBridgeReaderSnapshotFromDataSource(
-        dataSource: Any?
-    ): PlaylistBridgeReaderSnapshot {
-        if (dataSource == null) return PlaylistBridgeReaderSnapshot()
-        val state = runCatching {
-            findField(dataSource.javaClass, "r").apply {
-                isAccessible = true
-            }.get(dataSource)
-        }.getOrNull()
-        return playlistBridgeReaderSnapshot(state)
-    }
-
-    private fun playlistBridgeReaderSnapshot(
-        state: Any?
-    ): PlaylistBridgeReaderSnapshot {
-        if (state == null) return PlaylistBridgeReaderSnapshot()
-        return runCatching {
-            val playlistFile = findField(state.javaClass, "a").apply {
-                isAccessible = true
-            }.get(state)
-            val cached = findField(state.javaClass, "b").apply {
-                isAccessible = true
-            }.get(state) as? Collection<*>
-            if (playlistFile == null) {
-                PlaylistBridgeReaderSnapshot(cachedEntries = cached?.size)
-            } else {
-                val model = findField(playlistFile.javaClass, "o").apply {
-                    isAccessible = true
-                }.get(playlistFile)
-                val parsed = findField(playlistFile.javaClass, "r").apply {
-                    isAccessible = true
-                }.get(playlistFile) as? Collection<*>
-                val file = model?.let {
-                    findField(it.javaClass, "a").apply {
-                        isAccessible = true
-                    }.get(it) as? File
-                }
-                PlaylistBridgeReaderSnapshot(
-                    file = file,
-                    parsedEntries = parsed?.size,
-                    cachedEntries = cached?.size
-                )
-            }
-        }.getOrElse {
-            PlaylistBridgeReaderSnapshot()
-        }
     }
 
     private fun installPlaylistMultiSelectHooks(
@@ -3082,21 +2328,6 @@ class GoneSmartModule : XposedModule() {
                     val result = chain.proceed()
                     val args = (0 until method.parameterCount)
                         .map { index -> chain.getArg(index) }
-                    runCatching {
-                        if (BuildConfig.DEBUG && !options.playlistFoldersEnabled) {
-                            playlistController.onNativeRowBindObserved(
-                                method.toGenericString(),
-                                args,
-                                result
-                            )
-                        }
-                    }.onFailure {
-                        Log.w(
-                            "GoneSmartPlaylist",
-                            "FOLDER N0 CALL | probe failed",
-                            it
-                        )
-                    }
                     val holder = args.firstOrNull {
                         it?.javaClass?.name == "jo3"
                     }
@@ -6440,20 +5671,6 @@ class GoneSmartModule : XposedModule() {
             "${type.name}.$name"
         )
     }
-
-    private data class PlaylistBridgeRuleSnapshot(
-        val rawO: Int,
-        val rawP: Int,
-        val value: String?,
-        val rawR: Int,
-        val ruleId: Long
-    )
-
-    private data class PlaylistBridgeReaderSnapshot(
-        val file: File? = null,
-        val parsedEntries: Int? = null,
-        val cachedEntries: Int? = null
-    )
 
     private data class SelectionWindowContext(
         val sessionId: Long,

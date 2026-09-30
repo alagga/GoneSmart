@@ -1,6 +1,8 @@
-# Playlist folders — accepted feature on tested GMMP 4.2.0 setup (2026-09-28)
+# Playlist folders — accepted feature on tested GMMP 4.2.0 setup (updated 2026-09-30)
 
-**Current status: FEATURE-COMPLETE ON MAINTAINER'S TESTED DEVICE.** The maintainer confirmed on 28 September 2026 that the final nested picker Back, native-list first-frame transition and Move FAB above the mini-player now work, along with the previously tested folder/navigation/creation/move flows. The chronological diagnostic notes below are historical; their old “not implemented”, “out of scope” and “pending test” statements do **not** describe the present branch. Moving one or multiple playlists is included in the implemented feature. Compatibility with other GMMP versions, alternate skins and native-speaker verification of all custom Move translations remains release-hardening work, not a claim of broader device testing.
+**Current status: FEATURE-COMPLETE ON MAINTAINER'S TESTED DEVICE.** The accepted flow includes nested navigation, native create behavior, deletion, one/many playlist Move, picker/root lifecycle, first-frame behavior, shared folder chrome, native stretch/animation behavior and the 30 September native creation-dialog focus/keyboard corrections. The chronological development notes below are historical; old “debug-only”, “not implemented”, “out of scope” and “pending test” statements do **not** describe the present branch. The actual feature hooks/settings are available in both debug and release build variants. Compatibility with other GMMP versions, alternative skins, custom normal-playlist roots and complete native-speaker review remain release-hardening work.
+
+For the equivalent Smart-Playlist feature, see [SMART_PLAYLIST_FOLDERS.md](SMART_PLAYLIST_FOLDERS.md).
 
 ## Navigation and two independent Other Locations choices
 
@@ -8,8 +10,8 @@ The real physical playlist folders in GMMP's main playlist directory
 appear first in **both** the Playlists tab and the Add to Playlist picker.
 Folders can contain more folders, without an artificial maximum depth.
 
-GoneSmart's future English-only **Playlist folders** settings have an
-independent feature switch plus two independent options:
+Under **UI → PLAYLISTS**, **Folders** is the independent feature switch,
+with two independent grouping options:
 
 - **Group external playlists:** whether playlist files outside the main
   GMMP playlist root (including external URIs) belong in **Other Locations**.

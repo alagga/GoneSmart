@@ -2403,7 +2403,7 @@ internal class SmartPlaylistFolderController(
             native.leafRuleValue.get(rule) as? String
         }.getOrNull() ?: return false
         if (PlaylistBridgeReference.isBridgeValue(value) ||
-            !PlaylistBridgeDiagnosticPolicy
+            !PlaylistBridgePolicy
                 .isNativeSmartPlaylistReference(value)
         ) return false
         val path = value.substringBefore('|', "").takeUnless(String::isBlank)
@@ -3321,7 +3321,7 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun safePath(file: File): String =
-        PlaylistBridgeDiagnosticPolicy.safePath(
+        PlaylistBridgePolicy.safePath(
             runCatching { file.canonicalPath }.getOrDefault(file.path)
         )
 

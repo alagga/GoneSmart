@@ -70,13 +70,13 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 
 ## How do I add several tracks to several playlists?
 
-Enable **Multi-playlist selection** under GoneSmart's **UI** tab. In GMMP's Add to Playlist dialog, long-press the first destination and tap further destinations. The confirmation checkmark adds all original source files to each selected playlist using GMMP's own playlist writer. The confirmation appears once, with the number of files and successfully updated destinations. Press Back to cancel selection without dismissing the picker.
+Enable **UI → Playlists → Multi-selection**. In GMMP's Add to Playlist dialog, long-press the first destination and tap further destinations. The confirmation checkmark adds all original source files to each selected playlist using GMMP's own playlist writer. The confirmation appears once, with the number of files and successfully updated destinations. Press Back to cancel selection without dismissing the picker.
 
 The selected rows and action bar follow GMMP's dynamic colors. GoneSmart reuses GMMP's own localized strings for this feature; another GMMP language does not require a separate GoneSmart translation. Normal taps and GMMP's create-playlist plus button remain unchanged.
 
 ## Can I use the UI feature without Smart DJ?
 
-Yes. Multi-playlist selection has its own switch and works when Smart DJ is turned off, provided the module is enabled for GMMP.
+Yes. Playlist/Smart-Playlist folders, both multi-selection options, Playlist Bridge, Flip and Track Auto-DJ are UI extensions that do not require Smart DJ to be enabled unless the feature itself explicitly starts Smart DJ (Track Auto-DJ).
 
 ## How does Track Auto-DJ work, and can I turn it off?
 
@@ -95,7 +95,7 @@ The companion app checks the latest published stable GitHub Release at launch an
 
 ## How do Playlist folders work?
 
-Enable **UI → Playlist folders**. GMMP's original Playlists navigation entry gains a lilac GoneSmart sparkle. Both the main Playlists tab and Add to Playlist picker show real nested physical folders before loose playlists. **Group external playlists** and **Group root playlists** independently determine which entries appear in the virtual **Other Locations** folder; a real physical directory of the same name is independent. The main tab remembers its folder, while every newly opened Add picker starts in root. Android Back and the picker's top-left Back button navigate up one folder at a time before closing the picker from root.
+Enable **UI → Playlists → Folders**. GMMP's original Playlists navigation entry gains a lilac GoneSmart sparkle. Both the main Playlists tab and Add to Playlist picker show real nested physical folders before loose playlists. **Group external playlists** and **Group root playlists** independently determine which entries appear in the virtual **Other Locations** folder; a real physical directory of the same name is independent. The main tab remembers its folder, while every newly opened Add picker starts in root. Android Back and the picker's top-left Back button navigate up one folder at a time before closing the picker from root.
 
 ## Where are new playlists and folders created?
 
@@ -104,6 +104,28 @@ GoneSmart reuses GMMP's original creation and native playlist-writing functional
 ## Can I move several playlists between folders?
 
 Yes. In the main Playlists tab, long-press the first playlist and select additional playlists, choose **Move**, navigate to an eligible destination and tap the white checkmark. The destination FAB follows GMMP's native theme and stays above the mini-player. GoneSmart stages originals privately, uses GMMP's original playlist deletion and library-scan operations, verifies the native playlist index and can recover from a partially completed operation. It does not perform a blind file rename or direct database manipulation. Successful moves update the native list without an extra Toast; genuine errors remain visible. Use disposable playlists when testing a new GMMP version.
+
+## How do Smart-Playlist folders work?
+
+Enable **UI → Smart-Playlists → Folders**. GMMP's original Smart-Playlist rows remain native; GoneSmart adds the physical-folder header, breadcrumb and folder actions. **Group root Smart-Playlists** optionally places root `.spl` files in virtual **Other Locations**.
+
+Enable **Multi-selection** in the same section to long-press one native Smart-Playlist row, select more rows and move them together. This selection mode is provided by GoneSmart on the tested GMMP 4.2.0 runtime because native Smart-row long press does not actually start GMMP's generic selection ActionMode there.
+
+## Can I move Smart-Playlists between folders?
+
+Yes. Use **Move** from an individual Smart-Playlist menu or select several Smart-Playlists with **UI → Smart-Playlists → Multi-selection**. GoneSmart restricts moves to verified `.spl` files inside the configured Smart root, never overwrites an existing destination and rolls earlier files back if a later multi-move fails.
+
+Before moving, GoneSmart checks native linked-Smart rules across the Smart root. If another native Smart-Playlist references a selected source by absolute path, the move is blocked instead of silently breaking that link.
+
+## What is Playlist Bridge?
+
+Playlist Bridge extends the Smart-Playlist editor's existing Link action. Choose **Playlist** to use the current membership of an ordinary GMMP playlist as a Smart-rule source. GoneSmart reads that source through GMMP's native playlist parser and compiles it through GMMP's native Smart query predicates, so changing the ordinary playlist changes later Smart-Playlist results without copying a snapshot.
+
+On the tested GMMP 4.2.0 setup, saved Bridge rules also remain safe when GoneSmart is disabled: they degrade to boolean-neutral native linked-`.spl` placeholder rules so the remaining native Smart rules continue to work. With GoneSmart active, a missing, empty or unreadable source fails closed and matches nothing.
+
+## Does Playlist Bridge survive moving or renaming its source playlist?
+
+Playlist Bridge identifies the ordinary source by its stored path. If that source is moved or renamed outside a Bridge-aware migration, GoneSmart does not guess a replacement from the display name; the source is treated as unavailable and the Bridge rule fails closed. Edit the Bridge rule and choose the intended source again.
 
 ## Why does Move have a separate translation table?
 

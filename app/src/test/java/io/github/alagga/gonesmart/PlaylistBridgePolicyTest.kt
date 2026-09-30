@@ -4,31 +4,31 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class PlaylistBridgeDiagnosticPolicyTest {
+class PlaylistBridgePolicyTest {
     @Test
     fun recognizesOnlyNativeSmartPlaylistReferences() {
         assertTrue(
-            PlaylistBridgeDiagnosticPolicy.isNativeSmartPlaylistReference(
+            PlaylistBridgePolicy.isNativeSmartPlaylistReference(
                 "/storage/emulated/0/gmmp/smart/Source.spl|Source"
             )
         )
         assertFalse(
-            PlaylistBridgeDiagnosticPolicy.isNativeSmartPlaylistReference(
+            PlaylistBridgePolicy.isNativeSmartPlaylistReference(
                 "/storage/emulated/0/gmmp/playlists/Source.m3u|Source"
             )
         )
         assertFalse(
-            PlaylistBridgeDiagnosticPolicy.isNativeSmartPlaylistReference(
+            PlaylistBridgePolicy.isNativeSmartPlaylistReference(
                 "/storage/emulated/0/gmmp/smart/Source.spl"
             )
         )
     }
 
     @Test
-    fun diagnosticTextDoesNotLeakPathOrDisplayName() {
+    fun logTextDoesNotLeakPathOrDisplayName() {
         val raw =
             "/storage/emulated/0/gmmp/smart/Very Private Source.spl|Private Mix"
-        val safe = PlaylistBridgeDiagnosticPolicy.safeReference(raw)
+        val safe = PlaylistBridgePolicy.safeReference(raw)
 
         assertTrue(safe.contains("ext=spl"))
         assertTrue(safe.contains("pathHash="))
@@ -40,7 +40,7 @@ class PlaylistBridgeDiagnosticPolicyTest {
 
     @Test
     fun normalPlaylistPathIsRedactedToo() {
-        val safe = PlaylistBridgeDiagnosticPolicy.safePath(
+        val safe = PlaylistBridgePolicy.safePath(
             "/storage/emulated/0/gmmp/playlists/Test Folder/Bridge.m3u"
         )
         assertTrue(safe.contains("ext=m3u"))

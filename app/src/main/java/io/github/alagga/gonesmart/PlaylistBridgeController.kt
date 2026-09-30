@@ -109,11 +109,11 @@ internal class PlaylistBridgeController {
     fun configure(loader: ClassLoader): Boolean {
         val loaded = runCatching { createBindings(loader) }
             .onFailure {
-                Log.e(TAG, "POC BINDINGS FAILED | native GMMP untouched", it)
+                Log.e(TAG, "BRIDGE BINDINGS FAILED | native GMMP untouched", it)
             }
             .getOrNull()
         bindings = loaded
-        Log.i(TAG, "POC BINDINGS | ready=${loaded != null}")
+        Log.i(TAG, "BRIDGE BINDINGS | ready=${loaded != null}")
         return loaded != null
     }
 
@@ -122,7 +122,7 @@ internal class PlaylistBridgeController {
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
         context?.let { contextRef = WeakReference(it) }
-        Log.i(TAG, "POC PRESENTER | captured=${presenter.javaClass.name}")
+        Log.i(TAG, "BRIDGE PRESENTER | captured=${presenter.javaClass.name}")
     }
 
     fun onMenuInflated(menuResId: Int, menu: Menu?, inflater: Any?) {
@@ -140,7 +140,7 @@ internal class PlaylistBridgeController {
         )
         val original = if (nativeLinkId != 0) menu.findItem(nativeLinkId) else null
         if (original == null) {
-            Log.w(TAG, "POC MENU SKIP | original menuLink missing")
+            Log.w(TAG, "BRIDGE MENU SKIP | original menuLink missing")
             return
         }
 
@@ -151,7 +151,7 @@ internal class PlaylistBridgeController {
             if (!showLinkTypeMenu(context, nativeLinkId)) {
                 Log.w(
                     TAG,
-                    "POC TYPE MENU FALLBACK | anchor/popup unavailable; " +
+                    "BRIDGE TYPE MENU FALLBACK | anchor/popup unavailable; " +
                         "opening original Smart Playlist linker"
                 )
                 openNativeSmartPlaylistChooser()
@@ -160,7 +160,7 @@ internal class PlaylistBridgeController {
         }
         Log.i(
             TAG,
-            "POC MENU | original menuLink reused as Smart Playlist / Playlist chooser"
+            "BRIDGE MENU | original menuLink reused as Smart Playlist / Playlist chooser"
         )
     }
 
@@ -184,7 +184,7 @@ internal class PlaylistBridgeController {
         }.getOrNull()
         if (PlaylistBridgeReference.isBridgeValue(value)) return original
         if (
-            !PlaylistBridgeDiagnosticPolicy
+            !PlaylistBridgePolicy
                 .isNativeSmartPlaylistReference(value)
         ) {
             return original
@@ -253,24 +253,24 @@ internal class PlaylistBridgeController {
             native.popupMenuShow.invoke(popup)
             Log.i(
                 TAG,
-                "POC TYPE MENU | host PopupMenu shown | options=smart,playlist"
+                "BRIDGE TYPE MENU | host PopupMenu shown | options=smart,playlist"
             )
             true
         }.onFailure {
-            Log.e(TAG, "POC TYPE MENU FAILED", it)
+            Log.e(TAG, "BRIDGE TYPE MENU FAILED", it)
         }.getOrDefault(false)
     }
 
     private fun openNativeSmartPlaylistChooser() {
         val native = bindings ?: return
         val presenter = presenterRef?.get() ?: run {
-            Log.w(TAG, "POC SMART CHOOSER | no active SmartEditorPresenter")
+            Log.w(TAG, "BRIDGE SMART CHOOSER | no active SmartEditorPresenter")
             return
         }
         runCatching {
             native.presenterLinkSmartPlaylist.invoke(presenter, false)
         }.onFailure {
-            Log.e(TAG, "POC SMART CHOOSER | original ds4.g2(false) failed", it)
+            Log.e(TAG, "BRIDGE SMART CHOOSER | original ds4.g2(false) failed", it)
         }
     }
 
@@ -310,7 +310,7 @@ internal class PlaylistBridgeController {
         val rule = selectedRule(presenter) ?: return false
         if (!isBridgeRule(rule)) return false
         presenterRef = WeakReference(presenter)
-        Log.i(TAG, "POC EDIT | intercepted native linked-playlist editor")
+        Log.i(TAG, "BRIDGE EDIT | intercepted native linked-playlist editor")
         openChooser(edit = true, explicitPresenter = presenter)
         return true
     }
@@ -341,8 +341,8 @@ internal class PlaylistBridgeController {
             .onFailure {
                 Log.e(
                     TAG,
-                    "POC COMPILE FAILED | " +
-                        PlaylistBridgeDiagnosticPolicy.safePath(reference.path),
+                    "BRIDGE COMPILE FAILED | " +
+                        PlaylistBridgePolicy.safePath(reference.path),
                     it
                 )
             }
@@ -352,8 +352,8 @@ internal class PlaylistBridgeController {
         if (membership.paths.isEmpty()) {
             Log.i(
                 TAG,
-                "POC COMPILE | empty source -> false predicate | " +
-                    PlaylistBridgeDiagnosticPolicy.safePath(reference.path)
+                "BRIDGE COMPILE | empty source -> false predicate | " +
+                    PlaylistBridgePolicy.safePath(reference.path)
             )
             return falsePredicate(native)
         }
@@ -369,10 +369,10 @@ internal class PlaylistBridgeController {
         }
         Log.i(
             TAG,
-            "POC COMPILE | entries=${membership.paths.size}" +
+            "BRIDGE COMPILE | entries=${membership.paths.size}" +
                 " | chunks=${clauses.size}" +
                 " | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}" +
-                " | " + PlaylistBridgeDiagnosticPolicy.safePath(reference.path)
+                " | " + PlaylistBridgePolicy.safePath(reference.path)
         )
         return result
     }
@@ -417,7 +417,7 @@ internal class PlaylistBridgeController {
                 TAG,
                 "PORTABLE SAVE PREPARED | bridgeRules=${originals.size}" +
                     " | rootMatchAll=$matchAll | target=" +
-                    PlaylistBridgeDiagnosticPolicy.safePath(destinationKey)
+                    PlaylistBridgePolicy.safePath(destinationKey)
             )
         }
         return PortableSaveToken(originals)
@@ -672,7 +672,7 @@ internal class PlaylistBridgeController {
         Log.i(
             TAG,
             "PORTABLE COMPATIBILITY WRITTEN | match=$shouldMatch | " +
-                PlaylistBridgeDiagnosticPolicy.safePath(
+                PlaylistBridgePolicy.safePath(
                     canonicalPath(file)
                 )
         )
@@ -684,7 +684,7 @@ internal class PlaylistBridgeController {
     ) {
         val native = bindings ?: return
         val presenter = explicitPresenter ?: presenterRef?.get() ?: run {
-            Log.w(TAG, "POC CHOOSER | no active SmartEditorPresenter")
+            Log.w(TAG, "BRIDGE CHOOSER | no active SmartEditorPresenter")
             return
         }
         if (!native.presenterClass.isInstance(presenter)) return
@@ -694,7 +694,7 @@ internal class PlaylistBridgeController {
         worker.execute {
             val choices = runCatching { loadPlaylistChoices(native) }
                 .onFailure {
-                    Log.e(TAG, "POC CHOOSER | PlaylistDao load failed", it)
+                    Log.e(TAG, "BRIDGE CHOOSER | PlaylistDao load failed", it)
                 }
                 .getOrNull()
             main.post {
@@ -703,7 +703,7 @@ internal class PlaylistBridgeController {
                     return@post
                 }
                 if (presenterRef?.get() !== presenter && explicitPresenter == null) {
-                    Log.w(TAG, "POC CHOOSER | presenter changed before dialog")
+                    Log.w(TAG, "BRIDGE CHOOSER | presenter changed before dialog")
                     return@post
                 }
                 publishNativeChooser(
@@ -762,7 +762,7 @@ internal class PlaylistBridgeController {
         native.eventBusPost.invoke(bus, event)
         Log.i(
             TAG,
-            "POC CHOOSER | native zn4 dialog posted | " +
+            "BRIDGE CHOOSER | native zn4 dialog posted | " +
                 "count=${choices.size} | edit=$edit"
         )
     }
@@ -780,7 +780,7 @@ internal class PlaylistBridgeController {
             if (validation.isFailure) {
                 Log.e(
                     TAG,
-                    "POC SELECT | native playlist parse failed",
+                    "BRIDGE SELECT | native playlist parse failed",
                     validation.exceptionOrNull()
                 )
                 main.post { showError(context, title) }
@@ -794,7 +794,7 @@ internal class PlaylistBridgeController {
                         addRule(native, presenter, choice)
                     }
                 }.onFailure {
-                    Log.e(TAG, "POC SELECT | editor update failed", it)
+                    Log.e(TAG, "BRIDGE SELECT | editor update failed", it)
                     showError(context, title)
                 }
             }
@@ -818,8 +818,8 @@ internal class PlaylistBridgeController {
         native.presenterAddRule.invoke(presenter, rule)
         Log.i(
             TAG,
-            "POC ADD | persisted native ft4 bridge rule | " +
-                PlaylistBridgeDiagnosticPolicy.safePath(choice.path)
+            "BRIDGE ADD | persisted native ft4 bridge rule | " +
+                PlaylistBridgePolicy.safePath(choice.path)
         )
     }
 
@@ -860,8 +860,8 @@ internal class PlaylistBridgeController {
         }
         Log.i(
             TAG,
-            "POC EDIT | replaced native ft4 bridge rule | index=$index | " +
-                PlaylistBridgeDiagnosticPolicy.safePath(choice.path)
+            "BRIDGE EDIT | replaced native ft4 bridge rule | index=$index | " +
+                PlaylistBridgePolicy.safePath(choice.path)
         )
     }
 
@@ -939,7 +939,7 @@ internal class PlaylistBridgeController {
         if (raw.startsWith("content://", ignoreCase = true)) {
             Log.w(
                 TAG,
-                "POC DAO | content URI skipped; native file parser requires File"
+                "BRIDGE DAO | content URI skipped; native file parser requires File"
             )
             return null
         }
@@ -969,8 +969,8 @@ internal class PlaylistBridgeController {
             ) {
                 Log.i(
                     TAG,
-                    "POC SOURCE | cache hit | entries=${cached.paths.size} | " +
-                        PlaylistBridgeDiagnosticPolicy.safePath(canonical)
+                    "BRIDGE SOURCE | cache hit | entries=${cached.paths.size} | " +
+                        PlaylistBridgePolicy.safePath(canonical)
                 )
                 return cached
             }
@@ -994,8 +994,8 @@ internal class PlaylistBridgeController {
         cache[canonical] = loaded
         Log.i(
             TAG,
-            "POC SOURCE | native hp3 parsed | entries=${paths.size} | " +
-                PlaylistBridgeDiagnosticPolicy.safePath(canonical)
+            "BRIDGE SOURCE | native hp3 parsed | entries=${paths.size} | " +
+                PlaylistBridgePolicy.safePath(canonical)
         )
         return loaded
     }

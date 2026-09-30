@@ -23,7 +23,9 @@ class GoneSmartLogSummaryTest {
                 playlists = 1,
                 flip = 2,
                 trackMix = 1,
-                other = 3
+                ui = 1,
+                system = 1,
+                other = 1
             ),
             GoneSmartLogSummary.fromText(log)
         )
@@ -31,7 +33,7 @@ class GoneSmartLogSummaryTest {
 
     @Test fun emptyLogProducesZeroCounters() {
         assertEquals(
-            GoneSmartLogSummary.Summary(0, 0, 0, 0, 0, 0),
+            GoneSmartLogSummary.Summary(0, 0, 0, 0, 0, 0, 0, 0),
             GoneSmartLogSummary.fromText("  \n\n")
         )
     }
@@ -45,7 +47,7 @@ class GoneSmartLogSummaryTest {
             "09:00:05  [Smart DJ] Recommendations resumed."
         ).joinToString("\n")
         assertEquals(
-            GoneSmartLogSummary.Summary(5, 2, 1, 2, 0, 0),
+            GoneSmartLogSummary.Summary(5, 2, 1, 2, 0, 0, 0, 0),
             GoneSmartLogSummary.fromText(log)
         )
     }

@@ -394,8 +394,8 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "UI tweaks",
-            body = "Optional enhancements to GMMP's interface, independent of Smart DJ. For example, select several playlists at once in Add to Playlist. Enable and configure available tweaks in the UI tab."
+            title = "UI extensions",
+            body = "Optional GMMP extensions independent of Smart DJ: playlist and Smart-Playlist folders, multi-selection, Playlist Bridge, Flip and Track Auto-DJ. Configure them in the UI tab."
         ))
 
         container.addView(verticalGap(24))
@@ -530,9 +530,9 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
                 "✓",
-                "Multi-playlist selection",
-                "Long-press a playlist when adding songs, select more " +
-                    "playlists and tap the checkmark to add your songs to all of them.",
+                "Multi-selection",
+                "Long-press a playlist in Add to Playlist, select more " +
+                    "playlists and tap the checkmark to add the current songs to all of them.",
                 COLOR_ACCENT
             )
         )))
@@ -543,9 +543,9 @@ class MainActivity : AppCompatActivity() {
                 SettingSpec(
                     GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
                     "▣",
-                    "Playlist folders",
-                    "Group GMMP playlists into navigable folders directly " +
-                        "inside both native playlist views.",
+                    "Folders",
+                    "Browse physical folders directly in GMMP's Playlists tab " +
+                        "and Add to Playlist picker.",
                     COLOR_ACCENT
                 ),
                 SettingSpec(
@@ -560,7 +560,7 @@ class MainActivity : AppCompatActivity() {
                     GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS,
                     "⌂",
                     "Group root playlists",
-                    "Show main-root playlists inside Other Locations. " +
+                    "Show root playlists inside the virtual Other Locations folder. " +
                         "Keeps the virtual folder available even when empty.",
                     COLOR_ACCENT
                 )
@@ -571,17 +571,16 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
                 "✓",
-                "Multi-Smart-Playlist selection",
-                "Add GoneSmart's Move command to GMMP's native " +
-                    "Smart-Playlist multi-selection.",
+                "Multi-selection",
+                "Long-press a Smart-Playlist, select more Smart-Playlists " +
+                    "and use Move to move them together.",
                 COLOR_ACCENT
             ),
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 "▤",
-                "Smart-Playlist folders",
-                "Browse physical folders directly inside GMMP's " +
-                    "Smart-Playlists tab.",
+                "Folders",
+                "Browse physical folders directly in GMMP's Smart-Playlists tab.",
                 COLOR_ACCENT
             ),
             SettingSpec(
@@ -596,10 +595,9 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Playlist & Smart-Playlist folders",
-            body = "Browse physical folders in both GMMP playlist views; " +
-                "create and delete folders, move one or several entries, " +
-                "and keep GMMP's original lists, dialogs and actions. " +
-                "Virtual Other Locations grouping is configured separately."
+            body = "Both folder views reuse GMMP's native rows and actions. " +
+                "Create or delete physical folders, move one or several entries, " +
+                "and configure the virtual Other Locations grouping separately."
         ))
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
@@ -838,13 +836,26 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do Smart-Playlist folders work?",
-            body = "Enable Smart-Playlist folders to browse physical .spl " +
-                "folders in GMMP's Smart-Playlists tab. Group root " +
-                "Smart-Playlists optionally places root .spl files in the " +
-                "virtual Other Locations folder. Use Move from a Smart-Playlist " +
-                "three-dot menu or native multi-selection to choose a physical " +
-                "destination. A move is blocked if another native Smart-Playlist " +
-                "links to the selected file by its absolute path."
+            body = "Enable UI → Smart-Playlists → Folders to browse physical .spl " +
+                "folders in GMMP's Smart-Playlists tab. Group root Smart-Playlists " +
+                "optionally places root .spl files in the virtual Other Locations " +
+                "folder. Use Move from a Smart-Playlist three-dot menu, or enable " +
+                "Multi-selection and long-press native Smart-Playlist rows to move " +
+                "several together. A move is blocked if another native Smart-Playlist " +
+                "links to a selected file by its absolute path."
+        ))
+
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "What is Playlist Bridge?",
+            body = "Playlist Bridge extends GMMP's existing Link action in the " +
+                "Smart-Playlist editor. Choose Playlist to link an ordinary GMMP " +
+                "playlist as a live membership rule instead of copying its current " +
+                "tracks. Changes to that source playlist are picked up when the " +
+                "Smart-Playlist is evaluated again. On the tested GMMP 4.2.0 setup, " +
+                "saved Bridge rules degrade to neutral native placeholder rules when " +
+                "GoneSmart is disabled, so the remaining native Smart-Playlist rules " +
+                "continue to work."
         ))
 
         container.addView(verticalGap(12))
@@ -877,7 +888,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
             title = "Settings apply live",
-            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI tweaks, including multi-playlist selection, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
+            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI extensions, including both folder views and their multi-selection options, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
         ))
 
         container.addView(verticalGap(22))
@@ -1339,7 +1350,8 @@ class MainActivity : AppCompatActivity() {
         logCountText.text =
             "${summary.total} events • Smart DJ ${summary.smartDj} • " +
                 "Playlists ${summary.playlists} • Flip ${summary.flip} • " +
-                "${companionTrackAutoDjLabel()} ${summary.trackMix}" +
+                "${companionTrackAutoDjLabel()} ${summary.trackMix} • " +
+                "UI ${summary.ui} • System ${summary.system}" +
                 if (summary.other > 0) " • Other ${summary.other}" else ""
         logTextView.text = if (lines.isEmpty()) {
             "No events yet. Activity will appear here as you use GoneSmart."

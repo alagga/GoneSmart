@@ -31,7 +31,7 @@
 
 GoneSmart is a modern libxposed module and companion app that extends [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/) with **smart and quality-of-life features**. The current main focus — and the first major feature — is **Smart Auto-DJ**: GMMP stays in charge of playback, queue management and Auto-DJ timing, while GoneSmart replaces the actual track-selection step with session-aware recommendations.
 
-The project is intentionally broader than Auto-DJ. GoneSmart now also includes optional GMMP quality-of-life extensions such as multi-playlist selection, while keeping the same core idea: keep GMMP as the player and add focused features around it.
+The project is intentionally broader than Auto-DJ. GoneSmart now also includes optional GMMP quality-of-life extensions for playlist and Smart-Playlist folders, multi-selection, Playlist Bridge, queue reversal and per-track Auto-DJ, while keeping the same core idea: keep GMMP as the player and add focused features around it.
 
 For Smart Auto-DJ, GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
 
@@ -102,12 +102,14 @@ The matching pipeline is currently **especially tuned for electronic-music libra
 
 | Feature | What it does |
 |---|---|
-| Multi-playlist selection | Long-press a destination in GMMP's Add to Playlist dialog, select multiple playlists, then confirm once |
-| Native playlist writes | Reuses GMMP's own playlist-add operation rather than editing playlist files directly |
-| Native look & language | Selection colors follow GMMP's dynamic theme and user-facing selection/result strings reuse GMMP's localized resources |
-| Safe scrolling | Selection is keyed to the real playlist path so RecyclerView row reuse does not move highlights to other playlists |
-| One completion message | Multiple native result messages are combined into one “X files / Y playlists” summary |
-| Independent UI toggle | The feature has its own switch in GoneSmart's **UI** tab and does not require Smart DJ to be enabled |
+| Playlist multi-selection | Long-press destinations in GMMP's Add to Playlist dialog and add the current songs to several playlists with one confirmation |
+| Playlist folders | Browse/create/delete nested physical folders in both the Playlists tab and Add to Playlist picker; move one or several playlists with verified native index updates |
+| Smart-Playlist folders | Browse/create/delete physical Smart-Playlist folders while GMMP's original `ls4/vs4/ws4` rows remain authoritative; move one or several Smart-Playlists with native-link safety checks |
+| Playlist Bridge | GMMP's Smart-Playlist editor can link an ordinary playlist as a live membership rule; source changes are picked up on later evaluation |
+| Flip queue / Play flipped | Reverse the existing queue or play ordinary/Smart playlists from last track to first while preserving GMMP playback ownership |
+| Track Auto-DJ | Start a fresh Auto-DJ session from any individual song and let GoneSmart fill GMMP's native queue |
+| Native look & language | Injected GMMP UI reuses native resources, widgets and live theme colors; genuinely new host phrases are centralized |
+| Independent controls | UI extensions are configured separately from Smart DJ and normal setting changes apply live |
 
 </details>
 
@@ -309,9 +311,25 @@ acceptance is **not** a newly published release. See
 [GMMP localization](docs/GONESMART_GMMP_I18N.md) and the
 [complete native-function / translation audit](docs/NATIVE_GMMP_AUDIT.md).
 
+## Smart-Playlist folders (GMMP 4.2.0 — feature-complete on tested setup)
+
+Enable **UI → Smart-Playlists → Folders** to browse physical nested folders in GMMP's Smart-Playlists tab. Real Smart-Playlist entries remain GMMP's original native rows and adapter models; GoneSmart adds only the physical-folder header, breadcrumb and folder actions. **Group root Smart-Playlists** can place root `.spl` files inside the virtual **Other Locations** node.
+
+Enable **Multi-selection** in the same section to long-press one native Smart-Playlist row, select more rows and move them together. The same physical destination browser and themed Move chrome used by ordinary Playlist folders is shared here. A Smart-Playlist move is blocked if another native Smart-Playlist links to a selected `.spl` file by absolute path, avoiding silent broken links. Folder Delete reuses GMMP's native Smart delete wording and original delete worker.
+
+The maintainer accepted the current Smart-folder navigation, scrolling/overscroll, creation, deletion, single/multi Move, drawer badge and native-dialog behavior on the tested GMMP 4.2.0 setup by 30 September 2026. Other GMMP versions and untested skins remain compatibility work. See [Smart-Playlist folders](docs/SMART_PLAYLIST_FOLDERS.md).
+
+## Playlist Bridge
+
+**Playlist Bridge** extends GMMP's existing Smart-Playlist editor Link action. The original link button opens a native-styled choice between **Smart-Playlist** and ordinary **Playlist**. Choosing Playlist stores a live reference to the normal playlist; when the Smart-Playlist is evaluated, GoneSmart reads current membership through GMMP's original playlist parser and compiles that membership through GMMP's native query predicates. It does not copy a static track snapshot and does not create a duplicate visible Smart-Playlist.
+
+Bridge rules have been device-tested on GMMP 4.2.0 for add/save/reopen/edit, normal Smart-Playlist display/playback and dynamic source membership changes. A portable V2 representation also keeps saved Smart-Playlists usable when GoneSmart is disabled: on the tested setup the Bridge leaf becomes a boolean-neutral native linked-`.spl` placeholder so remaining native rules continue to work. Missing or unreadable sources fail closed while GoneSmart is active.
+
+Playlist Bridge is now installed in both debug and release build variants on the v0.4 development branch; the old reverse-engineering reader/query probes are not part of the shipping path. See [Playlist Bridge](docs/SMART_PLAYLIST_LINKS.md).
+
 ## Companion UI and player indicator
 
-The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI tweaks, plus module, update and shared live-settings status. **Smart DJ** uses a compact headphones icon and controls music recommendations; **UI** independently controls extensions such as multi-playlist selection, Flip Queue and Track Auto-DJ. **Home → Settings** explains that both types of settings apply live without restarting GMMP (a restart is still recommended after module updates).
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI extensions, plus module, update and shared live-settings status. **Smart DJ** controls music recommendations; **UI** groups independent **Playlists**, **Smart-Playlists**, and **Playback & Queue** controls. Both playlist sections use the same concise **Multi-selection** and **Folders** labels, with descriptions tailored to the actual action on that surface. **Home → Settings** explains that normal settings apply live without restarting GMMP (a restart is still recommended after module updates).
 
 **Logs** collects recent, high-level activity across **Smart DJ**,
 **multi-playlist selection**, **Flip Queue / Play Flipped**,
@@ -319,7 +337,8 @@ The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs*
 failures and recovery attempts have their own entries. These additional
 events do **not** replace the separate Auto-DJ readiness/fallback status
 on Home. For developer diagnostics, filter Android Logcat by `GoneSmart`,
-`GoneSmartPlaylist`, or `GoneSmartFlip`.
+`GoneSmartPlaylist`, `GoneSmartSmartFolders`, `GoneSmartPlaylistBridge`,
+`GoneSmartFlip`, or `GoneSmartTrackMix`.
 
 When GMMP is in Auto-DJ mode, GoneSmart adds a small sparkle to the headphones/playback-mode icon:
 

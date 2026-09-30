@@ -129,3 +129,18 @@ On supported GMMP 4.2.0 the primary folder action now invokes the live observed 
 The 01:33 device trace after `fe39266` shows `tp3` starting and refreshing the Playlist list, but no GoneSmart `FOLDER CREATE SHELL` marker around folder creation. The primary native-shell path therefore did not acquire the presenter. The same trace shows two Material-dialog objects immediately before the visible folder input, confirming that `showNewFolderCreator(parent,...)` creates/shows another child dialog instead of simply showing the supplied parent.
 
 Correction: hook all declared `tp3` constructors and retain the live instance after original construction; keep `y2` only as a secondary observer. Wrap compatibility `showNewFolderCreator` in a thread-local scope so the global MaterialDialog show hook classifies the actual visible child and restores the accepted translation, floating-caption suppression and accent correction. The primary native Playlist shell also explicitly hides a separate playlist-name floating caption and never receives the legacy color/window-alpha workaround.
+
+
+## 2026-09-30 release-prep audit consolidation
+
+The completed Playlist/Smart-Playlist feature set was re-audited against the current branch after the final Smart-folder and creation-dialog device passes.
+
+- **Playlist Bridge:** the end-to-end and disabled-module compatibility paths are accepted on GMMP 4.2.0. The obsolete debug-PoC gate has been removed. Only the functional Smart-editor/link/evaluation hooks are installed in release builds; generic reader/query/save reverse-engineering probes were removed.
+- **Playlist folders:** accepted runtime hooks remain release-enabled. The old native-save trace and move-discovery probes were removed because the current staged native-delete/native-rescan move contract is already established. The known custom-root limitation remains documented rather than guessed around.
+- **Smart-Playlist folders:** real `ls4/vs4/ws4` rows remain native; the shared folder UI kit/move chrome remain the required presentation path. The current extension-owned multi-selection, guarded Smart Move and native stretch/MotionEvent scroll contract are the accepted runtime behavior.
+- **Companion UI:** the two playlist sections now intentionally expose the same primary labels (**Multi-selection**, **Folders**) and surface-specific explanatory text. This is companion-only English copy and does not affect GMMP locale handling.
+- **Logs:** folder/grouping/multi-selection option changes now emit concise `[UI]` events. The companion summary separates `UI` and `System` instead of folding both into Other. Playlist Bridge publishes only high-level System readiness to the companion; detailed Bridge data stays in privacy-safe Logcat.
+- **Exploratory logging:** temporary playlist-surface discovery, Smart-loader discovery and native playlist-save/read/query probes are not shipping requirements and were removed. Bounded diagnostics that still protect a live compatibility boundary may remain, but must not become a permanent second behavior path.
+- **No broader validation implied:** this cleanup does not add a new GMMP version, skin, locale or signed-release device test. The maintainer's accepted GMMP 4.2.0 results remain the evidence base.
+
+See the current authoritative feature documents: [Playlist folders](PLAYLIST_FOLDERS.md), [Smart-Playlist folders](SMART_PLAYLIST_FOLDERS.md), [Playlist Bridge](SMART_PLAYLIST_LINKS.md), [logging](LOGGING.md), and [persistent rules](../AGENTS.md).
