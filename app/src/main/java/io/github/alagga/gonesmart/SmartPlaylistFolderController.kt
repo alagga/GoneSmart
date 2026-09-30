@@ -3009,6 +3009,79 @@ internal class SmartPlaylistFolderController(
         }
     }
 
+    private fun awaitNativeProjectionAndReveal(
+        browser: Browser,
+        generation: Long,
+        attempt: Int = 0
+    ) {
+        browser.list.postOnAnimation {
+            if (browsers[browser.list] !== browser ||
+                browser.generation != generation ||
+                !browser.list.isAttachedToWindow
+            ) return@postOnAnimation
+
+            val ready = nativeProjectionReady(browser)
+            if (!ready && attempt < MAX_PROJECTION_REVEAL_RETRIES) {
+                awaitNativeProjectionAndReveal(
+                    browser,
+                    generation,
+                    attempt + 1
+                )
+                return@postOnAnimation
+            }
+            if (!ready) {
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS PROJECTION WAIT | fail-open after " +
+                        MAX_PROJECTION_REVEAL_RETRIES + " frames" +
+                        " | expected=" + browser.nativeOrder.size +
+                        " | actual=" + (nativeAdapterItemCount(browser) ?: -1)
+                )
+            }
+            revealInitialContent(browser)
+            positionOverlay(browser)
+        }
+    }
+
+    private fun nativeProjectionReady(browser: Browser): Boolean {
+        val expected = browser.nativeOrder.toSet()
+        return SmartNativeSubmissionPolicy.projectionReady(
+            expectedCount = browser.nativeOrder.size,
+            adapterCount = nativeAdapterItemCount(browser),
+            visiblePaths = visibleNativeModelPaths(browser),
+            expectedPaths = expected
+        )
+    }
+
+    private fun nativeAdapterItemCount(browser: Browser): Int? = runCatching {
+        browser.nativeAdapter.javaClass
+            .getMethod("getItemCount")
+            .invoke(browser.nativeAdapter) as? Int
+    }.getOrNull()
+
+    private fun visibleNativeModelPaths(browser: Browser): List<String> {
+        val native = bindings ?: return emptyList()
+        val holderGetter = runCatching {
+            browser.list.javaClass.getMethod(
+                "getChildViewHolder",
+                View::class.java
+            )
+        }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (index in 0 until browser.list.childCount) {
+                val row = browser.list.getChildAt(index) ?: continue
+                val holder = runCatching {
+                    holderGetter.invoke(browser.list, row)
+                }.getOrNull() ?: continue
+                if (!native.holderClass.isInstance(holder)) continue
+                val model = runCatching {
+                    native.holderModel.get(holder)
+                }.getOrNull() ?: continue
+                modelPath(model)?.let(::add)
+            }
+        }
+    }
+
     private fun positionOverlay(browser: Browser) {
         val list = browser.list
         if (!list.isAttachedToWindow || list.width <= 0 || list.height <= 0) {
@@ -3040,7 +3113,9 @@ internal class SmartPlaylistFolderController(
             list.getGlobalVisibleRect(rect) &&
             rect.width() > dp(list, 30) &&
             rect.height() > dp(list, 30)
-        val nextVisibility = if (!browser.initialHeaderReady) {
+        val nextVisibility = if (!browser.initialHeaderReady ||
+            !browser.nativeContentReady
+        ) {
             View.INVISIBLE
         } else if (visible) {
             View.VISIBLE
