@@ -88,7 +88,7 @@ Rules:
 - a multi-move rolls back earlier completed items if a later item fails;
 - before moving, GoneSmart parses every Smart-Playlist under the root and recursively checks native linked-Smart rules;
 - if another native Smart-Playlist references any selected source by absolute `.spl` path, the move is blocked;
-- Playlist Bridge sentinel rules are excluded from that native-link test.
+- Playlist Link sentinel rules are excluded from that native-link test.
 
 After verified success, GoneSmart uses GMMP's complete localized `playlist_saved` phrase; if unusable, the fallback is a neutral checkmark. Failures use native error wording/neutral fallback.
 
@@ -140,4 +140,4 @@ Historical black-row, `ws4 -> t23`, keyed-tag, popup relayout and scroll-authori
 - Custom/changed Smart root behavior must continue to be resolved through the verified GMMP path rather than guessed.
 - CI verifies source/build behavior; real injected UI still requires device testing after relevant changes.
 
-See [Playlist folders](PLAYLIST_FOLDERS.md), [Playlist Bridge](SMART_PLAYLIST_LINKS.md), [native audit](NATIVE_GMMP_AUDIT.md), [design system](DESIGN_SYSTEM.md), and [AGENTS.md](../AGENTS.md).
+See [Playlist folders](PLAYLIST_FOLDERS.md), [Playlist Link](SMART_PLAYLIST_LINKS.md), [native audit](NATIVE_GMMP_AUDIT.md), [design system](DESIGN_SYSTEM.md), and [AGENTS.md](../AGENTS.md).
