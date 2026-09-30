@@ -527,13 +527,6 @@ internal class PlaylistMultiSelectController {
         if (session.list === group) return
 
         session.list = group
-        observeVisiblePlaylistRows(group)
-        diagnoseNativeRecycler(group, "picker-list-found")
-        group.post {
-            if (active === session) {
-                diagnoseNativeRecycler(group, "picker-list-rendered")
-            }
-        }
         group.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) = Unit
@@ -547,15 +540,9 @@ internal class PlaylistMultiSelectController {
             }
         )
 
-        var populatedLogged = false
         val observer = group.viewTreeObserver
         if (observer.isAlive) {
             observer.addOnGlobalLayoutListener {
-                if (active === session && !populatedLogged && group.childCount > 0) {
-                    populatedLogged = true
-                    diagnoseNativeRecycler(group, "picker-populated")
-                    sampleVisiblePlaylistRows(group)
-                }
                 if (active === session && session.selectedPaths.isNotEmpty()) {
                     refreshVisibleRows(session)
                     pinFab(session)
