@@ -1681,11 +1681,22 @@ class GoneSmartModule : XposedModule() {
                 "j2",
                 java.util.List::class.java
             ).apply { isAccessible = true }
+            val canSuppressRootSubmit =
+                method.returnType == java.lang.Void.TYPE
             hook(method).intercept { chain ->
-                smartPlaylistFolderController.onNativeSmartListSubmitting()
-                val result = chain.proceed()
-                smartPlaylistFolderController.onNativeSmartListSubmitted()
-                result
+                if (canSuppressRootSubmit &&
+                    smartPlaylistFolderController
+                        .shouldSuppressNativeSmartRootSubmission()
+                ) {
+                    smartPlaylistFolderController
+                        .onNativeSmartRootSubmissionSuppressed()
+                    null
+                } else {
+                    smartPlaylistFolderController.onNativeSmartListSubmitting()
+                    val result = chain.proceed()
+                    smartPlaylistFolderController.onNativeSmartListSubmitted()
+                    result
+                }
             }
             Log.i(
                 "GoneSmartSmartFolders",
