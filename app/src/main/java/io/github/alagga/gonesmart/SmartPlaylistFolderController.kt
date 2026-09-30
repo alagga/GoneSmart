@@ -296,6 +296,7 @@ internal class SmartPlaylistFolderController(
         var breadcrumbAlignmentGeneration: Long = 0L,
         var initialHeaderReady: Boolean = false,
         var nativeContentReady: Boolean = false,
+        var projectionFailOpenAllowed: Boolean = false,
         var folderScrollSyncReady: Boolean = false,
         var pendingFolderScrollReset: Boolean = true,
         var scrollDeltaReported: Boolean = false,
@@ -583,6 +584,7 @@ internal class SmartPlaylistFolderController(
                 )
                 if (mask) {
                     browser.nativeContentReady = false
+                    browser.projectionFailOpenAllowed = false
                     browser.list.alpha = 0f
                 }
             }
@@ -938,10 +940,16 @@ internal class SmartPlaylistFolderController(
                     // reveal it only in this first real front-surface pre-draw.
                     // Header/inset are committed before native alpha returns.
                     if (!browser.nativeContentReady &&
-                        isFrontFragmentView(list) &&
-                        nativeProjectionReady(browser)
+                        isFrontFragmentView(list)
                     ) {
-                        revealInitialContent(browser)
+                        val ready = nativeProjectionReady(browser)
+                        if (ready || browser.projectionFailOpenAllowed) {
+                            revealInitialContent(
+                                browser,
+                                allowProjectionMismatch =
+                                    browser.projectionFailOpenAllowed
+                            )
+                        }
                     }
                     // Normal scrolling stays driven only by native consumed
                     // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
@@ -1065,8 +1073,11 @@ internal class SmartPlaylistFolderController(
                 list.isAttachedToWindow
             ) {
                 Log.w(TAG, "SMART FOLDERS INITIAL WAIT | fail-open native list")
-                revealInitialContent(browser)
-                positionOverlay(browser)
+                browser.projectionFailOpenAllowed = true
+                revealInitialContent(
+                    browser,
+                    allowProjectionMismatch = true
+                )
             }
         }, 2500L)
         Log.i(
@@ -2969,6 +2980,7 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
         browser.nativeContentReady = false
+        browser.projectionFailOpenAllowed = false
         browser.list.alpha = 0f
         browser.folderBand.translationY = 0f
         resetFolderOverscroll(browser)
@@ -3040,6 +3052,7 @@ internal class SmartPlaylistFolderController(
                 return@postOnAnimation
             }
             if (!ready) {
+                browser.projectionFailOpenAllowed = true
                 Log.w(
                     TAG,
                     "SMART FOLDERS PROJECTION WAIT | fail-open after " +
@@ -3177,6 +3190,7 @@ internal class SmartPlaylistFolderController(
         // padding followed by a visible vertical shift.
         browser.initialHeaderReady = true
         browser.nativeContentReady = true
+        browser.projectionFailOpenAllowed = false
         positionOverlay(browser)
         updateNativeInset(browser)
         browser.list.alpha = browser.originalAlpha
