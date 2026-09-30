@@ -113,7 +113,7 @@ The Smart-folder surface must publish a **single atomic visible frame**. GMMP ma
 
 The sparkle is attached only to GMMP's existing native **Smart-Playlists** drawer item while Smart folders are enabled. Matching explicitly excludes the normal Playlists entry.
 
-For first-frame stability, GoneSmart stages one current-directory scan/generation: physical folder chrome can appear before expensive Smart model parsing finishes, but raw root Smart rows must not flash before the current-folder snapshot is ready. There is no second competing “fast header” loader.
+For first-frame stability, GoneSmart now stages one **complete** current-directory generation. Folder chrome is built offscreen together with the current-directory Smart snapshot; neither the transient native root rows nor a header-only intermediate state should be exposed. There is no second competing “fast header” loader.
 
 ## Device acceptance
 
@@ -128,12 +128,14 @@ The maintainer's tests across 28–30 September 2026 accepted the final architec
 - folder Delete;
 - Smart drawer badge;
 - selection tint/action mode;
-- first-frame staging;
+- the previously accepted first-frame staging baseline (the new atomic tab-open/detail-return correction below still needs its targeted retest);
 - folder-row and native-row scrolling;
 - native top/bottom stretch behavior;
 - native creation-shell/fallback dialog appearance, focus, keyboard and Cancel behavior.
 
 Historical black-row, `ws4 -> t23`, keyed-tag, popup relayout and scroll-authority failures are no longer the current contract and should not be reintroduced.
+
+**Targeted retest after the 30 September atomic-frame correction:** (1) first opening the Smart-Playlists tab must not visibly assemble/reposition the folder header and native rows in separate stages; (2) opening a Smart-Playlist inside a physical folder and returning must not flash GMMP's unfiltered root Smart list. No other accepted Smart-folder flow needs to be repeated unless one of those checks exposes a broader regression.
 
 ## Compatibility boundaries
 
