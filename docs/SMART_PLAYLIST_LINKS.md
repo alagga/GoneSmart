@@ -2,7 +2,7 @@
 
 **Current status (30 September 2026): feature-complete on the maintainer's tested GMMP 4.2.0 setup and enabled in both debug and release build variants of the v0.4 development branch.** This is branch acceptance, not a published v0.4 release or a compatibility claim for other GMMP versions.
 
-Playlist Bridge lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
+Playlist Bridge lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Bridge**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
 
 ## User flow
 
@@ -38,7 +38,11 @@ While GoneSmart is active, an empty, inaccessible, missing, unsupported or parse
 
 Supported ordinary playlist file types on the tested native parser path are M3U/M3U8, PLS and WPL.
 
-## Disabled-module compatibility
+## Disabled setting and disabled-module compatibility
+
+Turning **UI → Smart-Playlists → Playlist Bridge** off does not remove or rewrite saved Bridge rules. The Bridge UI/evaluation hooks remain registered only so the setting can change live, but when disabled they fall through to GMMP's original behavior. Persisted V2 Bridge leaves therefore use their native compatibility `.spl` and become boolean-neutral. They remain visible in the Smart-Playlist while no longer filtering its results. Re-enabling Playlist Bridge makes GoneSmart recognize those same leaves and resumes live ordinary-playlist membership.
+
+The same persisted representation is what protects Smart-Playlists when the entire GoneSmart module is unavailable:
 
 The accepted V2 persisted representation is still a valid native linked-Smart-Playlist rule:
 
@@ -53,7 +57,7 @@ The compatibility files contain one native predicate:
 
 GoneSmart chooses true/false according to the surrounding native AND/OR tree so removing the Bridge contribution is boolean-neutral to the nearest surviving expression. The live editor objects are restored immediately after the original writer returns.
 
-The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Bridge rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Bridge evaluation.
+The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Bridge rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Bridge evaluation. The new live companion switch deliberately uses this same native fallback path; its toggle transition should receive one targeted device smoke test before v0.4 release.
 
 ## Native UI and localization
 
