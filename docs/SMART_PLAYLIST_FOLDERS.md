@@ -108,7 +108,7 @@ Folders themselves are not movable.
 
 ## Drawer badge and first frame
 
-The Smart-folder surface must publish a **single atomic visible frame**. GMMP may refresh its root `List<ws4>` while the user is inside a nested physical folder (notably when returning from a Smart-Playlist detail). GoneSmart masks that transient native root submit before it can draw, rebuilds the remembered folder snapshot, and reveals the synthetic folder chrome plus native `ls4/vs4` rows only after the native AsyncListDiffer reports the expected projection. Initial tab opening likewise builds one complete folder + Smart-row snapshot instead of exposing a header-only intermediate frame. A bounded fail-open remains only to avoid trapping the player on an invisible list if an unknown GMMP runtime never commits the expected adapter state.
+The Smart-folder surface must publish a **single atomic visible frame**. GMMP may refresh its root `List<ws4>` while the user is inside a nested physical folder (notably when returning from a Smart-Playlist detail). If the correct GoneSmart folder projection is already prepared and visible, that transient root-only `os4.j2` submission is now skipped entirely and the current directory is refreshed directly, preserving the already-correct frame without an alpha-to-zero blackout. During first construction or another unprepared state, GoneSmart still masks the transient native root submit, rebuilds the remembered folder snapshot, and reveals the synthetic folder chrome plus native `ls4/vs4` rows only after the native AsyncListDiffer reports the expected projection. Initial tab opening likewise builds one complete folder + Smart-row snapshot instead of exposing a header-only intermediate frame. A bounded fail-open remains only to avoid trapping the player on an invisible list if an unknown GMMP runtime never commits the expected adapter state.
 
 
 The sparkle is attached only to GMMP's existing native **Smart-Playlists** drawer item while Smart folders are enabled. Matching explicitly excludes the normal Playlists entry.
@@ -135,7 +135,7 @@ The maintainer's tests across 28–30 September 2026 accepted the final architec
 
 Historical black-row, `ws4 -> t23`, keyed-tag, popup relayout and scroll-authority failures are no longer the current contract and should not be reintroduced.
 
-**Targeted retest after the 30 September atomic-frame correction:** (1) first opening the Smart-Playlists tab must not visibly assemble/reposition the folder header and native rows in separate stages; (2) opening a Smart-Playlist inside a physical folder and returning must not flash GMMP's unfiltered root Smart list. No other accepted Smart-folder flow needs to be repeated unless one of those checks exposes a broader regression.
+**Targeted retest after the 30 September atomic-frame correction:** (1) first opening the Smart-Playlists tab must not visibly assemble/reposition the folder header and native rows in separate stages; (2) opening a Smart-Playlist inside a physical folder and returning must preserve the already-correct folder frame continuously — no unfiltered root list and no brief black/hide-reveal flash. No other accepted Smart-folder flow needs to be repeated unless one of those checks exposes a broader regression.
 
 ## Compatibility boundaries
 
