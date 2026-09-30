@@ -531,8 +531,8 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
                 "✓",
                 "Multi-selection",
-                "Long-press a playlist in Add to Playlist, select more " +
-                    "playlists and tap the checkmark to add the current songs to all of them.",
+                "Long-press a playlist in Add to Playlist, select more playlists, " +
+                    "then confirm once to add the current songs to all selected playlists.",
                 COLOR_ACCENT
             )
         )))
@@ -572,15 +572,16 @@ class MainActivity : AppCompatActivity() {
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
                 "✓",
                 "Multi-selection",
-                "Long-press a Smart-Playlist, select more Smart-Playlists " +
-                    "and use Move to move them together.",
+                "Long-press a Smart-Playlist in the Smart-Playlists tab, select more " +
+                    "Smart-Playlists, then choose Move to move all selected Smart-Playlists.",
                 COLOR_ACCENT
             ),
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
                 "▤",
                 "Folders",
-                "Browse physical folders directly in GMMP's Smart-Playlists tab.",
+                "Browse physical folders directly in GMMP's Smart-Playlists tab " +
+                    "and move Smart-Playlists between them.",
                 COLOR_ACCENT
             ),
             SettingSpec(
