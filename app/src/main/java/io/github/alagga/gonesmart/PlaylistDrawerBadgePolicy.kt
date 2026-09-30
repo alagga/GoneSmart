@@ -13,6 +13,17 @@ internal object PlaylistDrawerBadgePolicy {
             .lowercase(Locale.ROOT)
             .filter { it.isLetterOrDigit() }
 
+    fun matchesExactLocalizedTitle(
+        localizedNativeNames: List<String>,
+        actualNativeTitle: String
+    ): Boolean {
+        val normalizedTitle = normalized(actualNativeTitle)
+        return normalizedTitle.isNotEmpty() &&
+            localizedNativeNames.any {
+                normalized(it) == normalizedTitle
+            }
+    }
+
     fun matchesNativePlaylist(
         localizedNativeNames: List<String>,
         nativeMenuEntryName: String,
