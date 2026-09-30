@@ -131,6 +131,14 @@ The 01:33 device trace after `fe39266` shows `tp3` starting and refreshing the P
 Correction: hook all declared `tp3` constructors and retain the live instance after original construction; keep `y2` only as a secondary observer. Wrap compatibility `showNewFolderCreator` in a thread-local scope so the global MaterialDialog show hook classifies the actual visible child and restores the accepted translation, floating-caption suppression and accent correction. The primary native Playlist shell also explicitly hides a separate playlist-name floating caption and never receives the legacy color/window-alpha workaround.
 
 
+## 2026-09-30 navigation-layout compatibility pass
+
+The maintainer confirmed that GoneSmart's live color/theme adaptation already looks correct across the tested GMMP designs. A separate compatibility pass now targets GMMP's three navigation layouts: bar/drawer, top tabs, and bottom navigation with the Library chooser.
+
+The previously accepted folder code keyed the main ordinary and Smart surfaces too strongly to `playlistListRecyclerView` / `smartListRecyclerView`. The compatibility path now treats GMMP's native adapters as the authoritative surface identity (`zn3` ordinary Playlist list, `ls4` Smart-Playlist list), retaining the known IDs only as fallback. Normal Playlists also use the active Add-to-Playlist session as picker identity instead of assuming every direct CoordinatorLayout child is a picker.
+
+Classic drawer sparkle behavior remains MenuItem-based. A separate navigation-label observer covers top-tab and Library destinations using the installed player's exact localized Playlist / Smart-Playlist titles, excludes native `zn3/ls4` content rows, and leaves native click/ripple/layout ownership untouched. This pass is **implemented but not yet device-accepted** for Tabs/Bottom; bounded debug logs report only detected navigation surface kind/count, not library data.
+
 ## 2026-09-30 release-prep audit consolidation
 
 The completed Playlist/Smart-Playlist feature set was re-audited against the current branch after the final Smart-folder and creation-dialog device passes.
