@@ -157,7 +157,7 @@ internal class SmartPlaylistFolderController(
         private const val SMART_LIST_MENU = "menu_gm_smart_list"
         private const val SMART_CONTEXT_MENU = "menu_gm_context_smart"
         private const val MAX_ATTACH_RETRIES = 24
-        private const val MAX_PROJECTION_REVEAL_RETRIES = 24
+        private const val MAX_PROJECTION_REVEAL_RETRIES = 120
         private const val ATTACH_RETRY_MS = 120L
         private const val QUICK_NAV_METRICS_PREFS =
             "gonesmart_gmmp_quicknav_metrics"
@@ -606,7 +606,7 @@ internal class SmartPlaylistFolderController(
         if (Looper.myLooper() === Looper.getMainLooper()) {
             refreshAttached()
         } else {
-            main.post(refreshAttached)
+            main.post { refreshAttached() }
         }
     }
 
