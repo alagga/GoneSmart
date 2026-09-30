@@ -1,15 +1,15 @@
-# Playlist Bridge
+# Playlist Link
 
 **Current status (30 September 2026): feature-complete on the maintainer's tested GMMP 4.2.0 setup and enabled in both debug and release build variants of the v0.4 development branch.** This is branch acceptance, not a published v0.4 release or a compatibility claim for other GMMP versions.
 
-Playlist Bridge lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Bridge**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
+Playlist Link lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Link**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
 
 ## User flow
 
 In GMMP's Smart-Playlist editor, the existing Link button opens a host-styled choice:
 
 - **Smart-Playlist** — dispatches GMMP's original linked-Smart-Playlist flow.
-- **Playlist** — opens GoneSmart's Playlist Bridge chooser using GMMP's ordinary playlist data and native list-dialog infrastructure.
+- **Playlist** — opens GoneSmart's Playlist Link chooser using GMMP's ordinary playlist data and native list-dialog infrastructure.
 
 A saved Bridge rule appears as a normal playlist-style rule in the editor. Editing that Bridge rule reopens the ordinary-playlist chooser. Native linked Smart-Playlist rules remain native and unchanged.
 
@@ -24,7 +24,7 @@ The implementation intentionally reuses GMMP's original 4.2.0 internals rather t
 5. Current source membership is turned into GMMP's native URI `IN` query predicate. Large lists are chunked at the verified safe size and combined with GMMP's native OR predicate.
 6. GMMP's original group/AND/OR/order/limit pipeline continues to evaluate the surrounding Smart-Playlist.
 
-No GMMP playlist database schema is modified. No ordinary playlist is rewritten by Playlist Bridge.
+No GMMP playlist database schema is modified. No ordinary playlist is rewritten by Playlist Link.
 
 ## Dynamic source updates
 
@@ -40,7 +40,7 @@ Supported ordinary playlist file types on the tested native parser path are M3U/
 
 ## Disabled setting and disabled-module compatibility
 
-Turning **UI → Smart-Playlists → Playlist Bridge** off does not remove or rewrite saved Bridge rules. The Bridge UI/evaluation hooks remain registered only so the setting can change live, but when disabled they fall through to GMMP's original behavior. Persisted V2 Bridge leaves therefore use their native compatibility `.spl` and become boolean-neutral. They remain visible in the Smart-Playlist while no longer filtering its results. Re-enabling Playlist Bridge makes GoneSmart recognize those same leaves and resumes live ordinary-playlist membership.
+Turning **UI → Smart-Playlists → Playlist Link** off does not remove or rewrite saved Bridge rules. The Bridge UI/evaluation hooks remain registered only so the setting can change live, but when disabled they fall through to GMMP's original behavior. Persisted V2 Bridge leaves therefore use their native compatibility `.spl` and become boolean-neutral. They remain visible in the Smart-Playlist while no longer filtering its results. Re-enabling Playlist Link makes GoneSmart recognize those same leaves and resumes live ordinary-playlist membership.
 
 The same persisted representation is what protects Smart-Playlists when the entire GoneSmart module is unavailable:
 
