@@ -314,14 +314,12 @@ internal class PlaylistFolderPreviewController(
     private var lastNativePlaylistTitlePx: Float? = null
     private var sampledQuickNavRatio: Float? = null
     private val observedMenus = linkedSetOf<String>()
-    private val observedNativeFileMenus = linkedSetOf<String>()
     private var playlistTabMenu: WeakReference<android.view.Menu>? = null
     private val newFolderMenuId = View.generateViewId()
     private val movePlaylistMenuId = View.generateViewId()
     private val nativeContextPlaylist = ThreadLocal<String?>()
     private var activeNativePlaylistMode: WeakReference<Any>? = null
     private var nativePlaylistMover: NativeGmmpPlaylistMover? = null
-    private var lastMoveLabelDiagnostic: String? = null
     private var lastSelectLabelDiagnostic: String? = null
     // One badge per ORIGINAL navigation MenuItem, not an added clickable
     // drawer row and not an overlay that interferes with its native ripple.
@@ -1060,34 +1058,6 @@ internal class PlaylistFolderPreviewController(
             context.resources,
             resourceId
         ) ?: return
-        val items = (0 until menu.size()).map { position ->
-            val item = menu.getItem(position)
-            val idName = resourceEntryName(
-                context.resources,
-                item.itemId
-            ) ?: item.itemId.toString()
-            idName + "=" + item.title?.toString().orEmpty() +
-                ":visible=" + item.isVisible
-        }
-        val playlistRelated =
-            name.contains("playlist", ignoreCase = true) ||
-                items.any {
-                    it.contains("playlist", ignoreCase = true) ||
-                        it.contains("wiedergabeliste", ignoreCase = true)
-                }
-        // Native Files-tab menu inventory for discovering the ORIGINAL
-        // move/rename UI. Read-only: do not invoke any unverified actions.
-        if (name.startsWith("menu_gm_") &&
-            name.contains("file", ignoreCase = true) &&
-            observedNativeFileMenus.size < 8 &&
-            observedNativeFileMenus.add(name)
-        ) {
-            Log.i(
-                TAG,
-                "FOLDER MOVE DISCOVERY | native Files menu=" + name +
-                    " | items=" + items.joinToString(";")
-            )
-        }
         if (name == "menu_gm_playlist_list") {
             playlistTabMenu = WeakReference(menu)
             installNativeNewFolderMenu(menu, context)
@@ -1111,14 +1081,6 @@ internal class PlaylistFolderPreviewController(
                 }
             }
         }
-        if (!playlistRelated || !observedMenus.add(name) ||
-            observedMenus.size > 18
-        ) return
-        Log.i(
-            TAG,
-            "FOLDER NATIVE MENU | menu=" + name +
-                " | items=" + items.joinToString(";")
-        )
     }
 
 
@@ -1128,15 +1090,7 @@ internal class PlaylistFolderPreviewController(
      */
     private fun nativeMoveLabel(context: android.content.Context): String {
         val locale = context.resources.configuration.locales[0]
-        val label = GoneSmartGmmpStrings.move(locale)
-        val source = if (GoneSmartGmmpStrings.hasMoveTranslation(locale)) {
-            "GoneSmart i18n/" + locale.toLanguageTag()
-        } else "GoneSmart i18n/en fallback/" + locale.toLanguageTag()
-        if (lastMoveLabelDiagnostic != source) {
-            lastMoveLabelDiagnostic = source
-            Log.i(TAG, "NATIVE MOVE LABEL | source=$source")
-        }
-        return label
+        return GoneSmartGmmpStrings.move(locale)
     }
 
     private fun nativeMoveSuccessLabel(context: android.content.Context): String? {
