@@ -395,7 +395,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "UI extensions",
-            body = "Optional GMMP extensions independent of Smart DJ: playlist and Smart-Playlist folders, multi-selection, Playlist Bridge, Flip and Track Auto-DJ. Configure them in the UI tab."
+            body = "Optional GMMP extensions independent of Smart DJ: playlist and Smart-Playlist folders, multi-selection, Playlist Link, Flip and Track Auto-DJ. Configure them in the UI tab."
         ))
 
         container.addView(verticalGap(24))
@@ -571,7 +571,7 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(
                 GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
                 "↔",
-                "Playlist Bridge",
+                "Playlist Link",
                 "Use ordinary Playlists as live rules inside Smart-Playlists.",
                 COLOR_ACCENT
             ),
@@ -855,8 +855,8 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(12))
         container.addView(infoCard(
-            title = "What is Playlist Bridge?",
-            body = "Enable UI → Smart-Playlists → Playlist Bridge to extend GMMP's " +
+            title = "What is Playlist Link?",
+            body = "Enable UI → Smart-Playlists → Playlist Link to extend GMMP's " +
                 "existing Link action in the Smart-Playlist editor. Choose Playlist " +
                 "to link an ordinary GMMP playlist as a live membership rule instead " +
                 "of copying its current tracks. Changes to that source playlist are " +
@@ -864,7 +864,7 @@ class MainActivity : AppCompatActivity() {
                 "Bridge or GoneSmart itself is disabled later, saved Bridge rules stay " +
                 "visible but become neutral: GMMP can still open and use the " +
                 "Smart-Playlist, while those Bridge rules no longer filter its results. " +
-                "Re-enable Playlist Bridge to restore their live membership behavior."
+                "Re-enable Playlist Link to restore their live membership behavior."
         ))
 
         container.addView(verticalGap(12))
@@ -897,7 +897,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
             title = "Settings apply live",
-            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI extensions, including Playlist Bridge, both folder views and their multi-selection options, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
+            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI extensions, including Playlist Link, both folder views and their multi-selection options, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
         ))
 
         container.addView(verticalGap(22))
