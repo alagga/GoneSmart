@@ -22,6 +22,73 @@ class SmartNativeSubmissionPolicyTest {
         )
     }
 
+    @Test fun masksTransientNativeRootWhenProjectionDiffers() {
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
+                currentIsRoot = true,
+                otherLocations = true,
+                groupRootPlaylists = true
+            )
+        )
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
+                currentIsRoot = true,
+                otherLocations = false,
+                groupRootPlaylists = true
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
+                currentIsRoot = true,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+    }
+
+    @Test fun waitsForCommittedNativeProjectionBeforeReveal() {
+        val expected = setOf("/folder/a.spl", "/folder/b.spl")
+        assertFalse(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2,
+                adapterCount = 4,
+                visiblePaths = listOf("/root/a.spl"),
+                expectedPaths = expected
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2,
+                adapterCount = 2,
+                visiblePaths = listOf("/root/a.spl"),
+                expectedPaths = expected
+            )
+        )
+        assertTrue(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2,
+                adapterCount = 2,
+                visiblePaths = listOf("/folder/a.spl"),
+                expectedPaths = expected
+            )
+        )
+        assertTrue(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 0,
+                adapterCount = 0,
+                visiblePaths = emptyList(),
+                expectedPaths = emptySet()
+            )
+        )
+    }
+
     @Test fun changedOrderOrFileStateIsSubmitted() {
         assertTrue(
             SmartNativeSubmissionPolicy.shouldSubmit(
