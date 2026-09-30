@@ -1682,6 +1682,7 @@ class GoneSmartModule : XposedModule() {
                 java.util.List::class.java
             ).apply { isAccessible = true }
             hook(method).intercept { chain ->
+                smartPlaylistFolderController.onNativeSmartListSubmitting()
                 val result = chain.proceed()
                 smartPlaylistFolderController.onNativeSmartListSubmitted()
                 result
