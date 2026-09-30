@@ -107,11 +107,11 @@ The companion app provides:
 - live settings updates
 - high-level GoneSmart runtime logs
 - FAQ/help
-- independently enabled UI-tab extensions, including Playlist Bridge under Smart-Playlists
+- independently enabled UI-tab extensions, including Playlist Link under Smart-Playlists
 - GitHub Releases update status and Obtainium deep link
 - GMMP restart shortcut
 
-Settings are shared with the module through libxposed remote preferences so normal preference changes do not require restarting GMMP. Playlist Bridge follows the same live-settings model: its hooks stay safely registered, while the controller either performs Bridge UI/evaluation work or falls through to GMMP's persisted native compatibility rule according to the current switch.
+Settings are shared with the module through libxposed remote preferences so normal preference changes do not require restarting GMMP. Playlist Link follows the same live-settings model: its hooks stay safely registered, while the controller either performs Bridge UI/evaluation work or falls through to GMMP's persisted native compatibility rule according to the current switch.
 
 ## Player indicator
 
@@ -143,7 +143,7 @@ Smart Move is extension-owned because GMMP 4.2.0 has no verified physical `.spl`
 
 Both folder surfaces share `PlaylistFolderUiKit` and `PlaylistFolderMoveChrome`; visual behavior should not be reimplemented independently.
 
-### Playlist Bridge
+### Playlist Link
 
 `PlaylistBridgeController` extends the original Smart-Playlist editor Link action. It obtains ordinary playlists from GMMP's native Playlist DAO, parses membership through GMMP's original playlist reader and intercepts only verified Bridge leaf compilation to return GMMP-native URI-IN predicates. Surrounding native Smart groups/order/limits remain owned by GMMP.
 
