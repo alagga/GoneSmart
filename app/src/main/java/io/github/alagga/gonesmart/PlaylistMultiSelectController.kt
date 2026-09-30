@@ -102,6 +102,9 @@ internal class PlaylistMultiSelectController {
     fun folderNativeFab(list: ViewGroup): View? =
         active?.takeIf { enabled && it.list === list }?.fab
 
+    fun isPickerList(list: ViewGroup): Boolean =
+        active?.list === list
+
     /**
      * Share the EXACT existing native contextual-bar discovery and coloring
      * with the independent normal-Playlists move destination ActionMode.
