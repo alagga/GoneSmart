@@ -157,6 +157,7 @@ internal class SmartPlaylistFolderController(
         private const val SMART_LIST_MENU = "menu_gm_smart_list"
         private const val SMART_CONTEXT_MENU = "menu_gm_context_smart"
         private const val MAX_ATTACH_RETRIES = 24
+        private const val MAX_PROJECTION_REVEAL_RETRIES = 24
         private const val ATTACH_RETRY_MS = 120L
         private const val QUICK_NAV_METRICS_PREFS =
             "gonesmart_gmmp_quicknav_metrics"
@@ -565,20 +566,47 @@ internal class SmartPlaylistFolderController(
     }
 
     /**
+     * GMMP's os4.j2(List<ws4>) always submits its native Smart-root result.
+     * Mask it before that submit whenever GoneSmart is displaying a nested
+     * or virtual projection, so the root dataset cannot flash for one frame
+     * while returning from a Smart-Playlist detail screen.
+     */
+    fun onNativeSmartListSubmitting() {
+        if (!enabled) return
+        browsers.values.toList()
+            .filter { it.list.isAttachedToWindow }
+            .forEach { browser ->
+                val mask = SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
+                    currentIsRoot = sameFile(browser.current, browser.root),
+                    otherLocations = browser.otherLocations,
+                    groupRootPlaylists = groupRootPlaylists
+                )
+                if (mask) {
+                    browser.nativeContentReady = false
+                    browser.list.alpha = 0f
+                }
+            }
+    }
+
+    /**
      * Native os4.j2(List<ws4>) has just submitted a Smart-Playlist list.
-     * If a GoneSmart nested folder is open, re-apply that folder after the
-     * original root refresh. Our own submit goes straight to ls4.y and
-     * therefore cannot recurse through this callback.
+     * Re-apply GoneSmart's current folder projection through ls4.y. Our own
+     * differ submit does not recurse through os4.j2.
      */
     fun onNativeSmartListSubmitted() {
         if (!enabled) return
-        main.post {
+        val refreshAttached = {
             browsers.values.toList()
                 .filter { it.list.isAttachedToWindow }
                 .forEach { browser ->
                     browser.nativeSubmitted = false
                     refresh(browser)
                 }
+        }
+        if (Looper.myLooper() === Looper.getMainLooper()) {
+            refreshAttached()
+        } else {
+            main.post(refreshAttached)
         }
     }
 
@@ -1094,30 +1122,9 @@ internal class SmartPlaylistFolderController(
                 Log.e(TAG, "SMART FOLDERS SCAN FAILED | " + safePath(directory), it)
             }.getOrNull() ?: return@execute
 
-            // First-frame folder chrome comes from the SAME generation and
-            // SAME directory scan as the full snapshot. There is no second
-            // racing loader and no native-model submission in this stage.
-            main.post {
-                if (!enabled || browsers[browser.list] !== browser ||
-                    browser.generation != generation ||
-                    !sameFile(browser.current, scan.directory) ||
-                    browser.otherLocations != otherLocations
-                ) return@post
-                browser.style = sampleNativeStyle(browser.list) ?: browser.style
-                render(
-                    browser,
-                    Snapshot(
-                        directory = scan.directory,
-                        folders = scan.folders,
-                        models = emptyList(),
-                        modelsByPath = emptyMap()
-                    ),
-                    -1
-                )
-                revealInitialHeader(browser)
-                positionOverlay(browser)
-            }
-
+            // Build one complete snapshot before changing the visible frame.
+            // The earlier header-first stage could expose a partially laid-out
+            // surface and then visibly shift when native Smart rows arrived.
             val snapshot = runCatching {
                 loadSnapshot(scan)
             }.onFailure {
@@ -2951,6 +2958,8 @@ internal class SmartPlaylistFolderController(
     private fun prepareFolderScrollForNavigation(browser: Browser) {
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
+        browser.nativeContentReady = false
+        browser.list.alpha = 0f
         browser.folderBand.translationY = 0f
         resetFolderOverscroll(browser)
         browser.nativeScrollDistancePx = 0
@@ -2964,7 +2973,7 @@ internal class SmartPlaylistFolderController(
     ) {
         if (!browser.pendingFolderScrollReset) {
             browser.folderScrollSyncReady = true
-            revealInitialContent(browser)
+            awaitNativeProjectionAndReveal(browser, generation)
             return
         }
         browser.folderScrollSyncReady = false
@@ -2995,8 +3004,7 @@ internal class SmartPlaylistFolderController(
                 browser.nativeScrollDistancePx = 0
                 browser.scrollDeltaReported = false
                 browser.overscrollReported = false
-                revealInitialContent(browser)
-                positionOverlay(browser)
+                awaitNativeProjectionAndReveal(browser, generation)
             }
         }
     }
