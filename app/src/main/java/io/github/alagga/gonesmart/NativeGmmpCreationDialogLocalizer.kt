@@ -70,12 +70,14 @@ internal object NativeGmmpCreationDialogLocalizer {
             }
         }
 
-        // Device evidence shows the EditText can already report focus while
-        // the dialog window itself still has windowFocus=false. Aesthetic
-        // performs one more focus-state tint update when window focus arrives.
-        // Keep the whole window hidden until that transition has happened,
-        // then require one additional focused traversal before revealing.
-        var focusedPasses = 0
+        // The native Material input asks for the IME immediately, before the
+        // dialog window owns focus. Android can reject that first request.
+        // Do not hold the window invisible waiting for focus: alpha=0 itself
+        // delays the focus handoff on the tested Samsung runtime. Instead,
+        // reveal on the first corrected post-show frame and retry the IME once
+        // the dialog actually owns window focus.
+        requestImeOnFirstWindowFocus(dialog, decor)
+
         var revealed = false
         lateinit var guard: android.view.ViewTreeObserver.OnPreDrawListener
         guard = object : android.view.ViewTreeObserver.OnPreDrawListener {
@@ -90,36 +92,22 @@ internal object NativeGmmpCreationDialogLocalizer {
                 }
 
                 // AestheticTextInputEditText may rewrite its focused tint on
-                // ANY later focus/drawable-state transition, not only during
-                // initial show. Re-assert GMMP's live accent immediately
-                // before every visible frame for the whole dialog lifetime.
+                // ANY later focus/drawable-state transition. Re-assert GMMP's
+                // live accent immediately before every visible frame for the
+                // whole dialog lifetime.
                 accentColors[dialog]?.let {
                     applyInputAccent(decor, it)
                 } ?: applyPendingInputAccent(decor)
 
                 if (!revealed) {
                     localize(dialog)
-                    if (decor.hasWindowFocus()) {
-                        focusedPasses++
-                    } else {
-                        focusedPasses = 0
-                    }
-
-                    if (focusedPasses < 2) {
-                        // Allow hidden frames to commit. Blocking pre-draw can
-                        // itself delay the window-focus handoff we are waiting
-                        // for.
-                        decor.postInvalidateOnAnimation()
-                        return true
-                    }
-
                     revealed = true
                     pendingWindowAlpha.remove(dialog)
                     setWindowAlpha(dialog, originalAlpha)
                     Log.i(
                         TAG,
-                        "CREATION DIALOG REVEAL | windowFocus=true" +
-                            " | focusedPasses=" + focusedPasses +
+                        "CREATION DIALOG REVEAL | firstPostShowDraw=true" +
+                            " | windowFocus=" + decor.hasWindowFocus() +
                             " | accentReady=" +
                             accentColors.containsKey(dialog) +
                             " | lifetimeAccentGuard=true" +
@@ -135,9 +123,8 @@ internal object NativeGmmpCreationDialogLocalizer {
             decor.viewTreeObserver.addOnPreDrawListener(guard)
             decor.postInvalidateOnAnimation()
 
-            // Accessibility/multi-window edge-case fail-open: creation dialogs
-            // should normally gain window focus quickly, but never leave one
-            // permanently invisible if the platform withholds it.
+            // Pure fail-open for unusual runtimes where no pre-draw arrives.
+            // Normal tested flow reveals on the very first post-show frame.
             decor.postDelayed({
                 if (postShowRevealGuards[dialog] === guard &&
                     !revealed &&
@@ -151,17 +138,91 @@ internal object NativeGmmpCreationDialogLocalizer {
                     setWindowAlpha(dialog, originalAlpha)
                     Log.w(
                         TAG,
-                        "CREATION DIALOG REVEAL | focus timeout fail-open" +
+                        "CREATION DIALOG REVEAL | preDraw timeout fail-open" +
                             " | windowFocus=" + decor.hasWindowFocus() +
                             " | " + inputAccentState(decor)
                     )
                     decor.postInvalidateOnAnimation()
                 }
-            }, 750L)
+            }, 250L)
         } else {
             postShowRevealGuards.remove(dialog)
             pendingWindowAlpha.remove(dialog)
             setWindowAlpha(dialog, originalAlpha)
+        }
+    }
+
+    private fun requestImeOnFirstWindowFocus(
+        dialog: Dialog,
+        decor: View
+    ) {
+        val inputs = arrayListOf<View>()
+        collectInputViews(decor, inputs)
+        val field = inputs.filterIsInstance<EditText>().firstOrNull()
+            ?: return
+        field.requestFocus()
+
+        var fired = false
+        lateinit var listener:
+            android.view.ViewTreeObserver.OnWindowFocusChangeListener
+        listener =
+            android.view.ViewTreeObserver.OnWindowFocusChangeListener {
+                hasFocus ->
+                if (!hasFocus || fired || !dialog.isShowing) {
+                    return@OnWindowFocusChangeListener
+                }
+                fired = true
+                if (decor.viewTreeObserver.isAlive) {
+                    decor.viewTreeObserver
+                        .removeOnWindowFocusChangeListener(listener)
+                }
+                field.requestFocus()
+                decor.post {
+                    if (!dialog.isShowing || !field.hasWindowFocus()) {
+                        return@post
+                    }
+                    val imm = field.context.getSystemService(
+                        Context.INPUT_METHOD_SERVICE
+                    ) as? android.view.inputmethod.InputMethodManager
+                    val shown = imm?.showSoftInput(
+                        field,
+                        android.view.inputmethod.InputMethodManager
+                            .SHOW_IMPLICIT
+                    ) == true
+                    Log.i(
+                        TAG,
+                        "CREATION DIALOG IME RETRY | windowFocus=true" +
+                            " | fieldFocused=" + field.isFocused +
+                            " | accepted=" + shown
+                    )
+                    if (!shown) {
+                        decor.postDelayed({
+                            if (dialog.isShowing &&
+                                field.hasWindowFocus() &&
+                                field.isFocused
+                            ) {
+                                val retry = imm?.showSoftInput(
+                                    field,
+                                    android.view.inputmethod.InputMethodManager
+                                        .SHOW_IMPLICIT
+                                ) == true
+                                Log.i(
+                                    TAG,
+                                    "CREATION DIALOG IME RETRY | second=true" +
+                                        " | accepted=" + retry
+                                )
+                            }
+                        }, 48L)
+                    }
+                }
+            }
+
+        if (decor.viewTreeObserver.isAlive) {
+            decor.viewTreeObserver
+                .addOnWindowFocusChangeListener(listener)
+            if (decor.hasWindowFocus()) {
+                listener.onWindowFocusChanged(true)
+            }
         }
     }
 
