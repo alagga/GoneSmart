@@ -39,6 +39,10 @@ class GoneSmartSettingsRepository(
                 local.smartMultiPlaylistEnabled
             )
             .putBoolean(
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                local.playlistBridgeEnabled
+            )
+            .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
                 local.smartGroupRootPlaylists
             )
@@ -165,6 +169,10 @@ class GoneSmartSettingsRepository(
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
                 options.smartMultiPlaylistEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                options.playlistBridgeEnabled
             )
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
