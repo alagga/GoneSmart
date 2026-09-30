@@ -138,7 +138,7 @@ Read docs/PLAYLIST_FOLDERS.md for all four grouping cases, native class evidence
 - Development branch: **feature/playlist-bridge**. Always read its live HEAD before editing and verify the exact pushed commit in GitHub Actions.
 - Tested player target remains **GoneMAD Music Player 4.2.0**. Do not turn source/CI success into a compatibility claim for other GMMP versions, skins or language combinations.
 - The maintainer pulls Git commits in Android Studio and uses **Run App**. Do not routinely build or deliver APK files unless explicitly requested.
-- The following feature flows are accepted on the maintainer's tested 4.2.0 device and must not be re-tested merely because documentation or unrelated code changed: normal Playlist folders, Smart-Playlist folders, Playlist Link, Multi-playlist add, Flip, and Track Auto-DJ. Re-test only the native boundary actually touched by a relevant code change/regression.
+- The following feature flows are accepted on the maintainer's tested 4.2.0 device and must not be re-tested merely because documentation or unrelated code changed: normal Playlist folders, Smart-Playlist folders, Playlist Link, Multi-playlist add, Flip, and Track Auto-DJ. Re-test only the native boundary actually touched by a relevant code change/regression. The maintainer has already confirmed palette/theme adaptation across GMMP UI styles; the remaining navigation-layout compatibility boundary is GMMP's three UI → Navigation modes (bar/drawer, tabs, bottom/library).
 
 ### Current companion UI contract
 
@@ -159,6 +159,14 @@ Read docs/PLAYLIST_FOLDERS.md for all four grouping cases, native class evidence
 - **Flip queue / Play flipped**
 
 The two playlist sections intentionally use the same concise **Multi-selection** and **Folders** labels and parallel sentence structure. Their descriptions must remain truthful about the different action on each surface. Folder suboptions stay disabled/dimmed when their master Folders option is off. Smart multi-selection is also unavailable while Smart folders are off because it needs the physical destination browser.
+
+### Navigation-layout compatibility — targeted test in progress (2026-09-30)
+
+- GMMP exposes three UI → Navigation layouts: the already accepted bar/drawer layout, top tabs, and bottom navigation with a Library destination chooser.
+- Do not key Playlist/Smart-Playlist folder ownership only to one layout-specific RecyclerView ID. Prefer the verified native adapter identities: `zn3` for ordinary Playlist lists and `ls4` for Smart-Playlist lists; fixed IDs remain a compatibility fallback.
+- Add-to-Playlist remains a separate verified picker session. Do not infer “picker” merely because a RecyclerView happens to sit directly under a CoordinatorLayout; tabs/library layouts may use the same container class.
+- The classic drawer sparkle stays attached to the original native MenuItem. Alternative navigation layouts may decorate only GMMP's exact localized Playlist/Smart-Playlist navigation labels, must exclude real `zn3/ls4` content rows, and must preserve native click/ripple/layout behavior.
+- Current targeted retest: top Tabs must show both sparkles, apply both folder browsers/grouping, and expose Playlist folder creation; Bottom/Library must show sparkles on its Playlist and Smart-Playlist destinations. Add-to-Playlist and the Now Playing Auto-DJ badge were already reported working in all three layouts and are outside this retest.
 
 ### Playlist folders — accepted architecture
 
