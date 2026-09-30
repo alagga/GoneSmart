@@ -121,15 +121,15 @@ Before moving, GoneSmart checks native linked-Smart rules across the Smart root.
 
 Enable **UI → Smart-Playlists → Playlist Link**. Playlist Link extends the Smart-Playlist editor's existing Link action. Choose **Playlist** to use the current membership of an ordinary GMMP playlist as a Smart-rule source. GoneSmart reads that source through GMMP's native playlist parser and compiles it through GMMP's native Smart query predicates, so changing the ordinary playlist changes later Smart-Playlist results without copying a snapshot.
 
-## What happens to existing Bridge rules if Playlist Link or GoneSmart is disabled?
+## What happens to existing Playlist Link rules if Playlist Link or GoneSmart is disabled?
 
-Saved Bridge rules are not deleted. They remain visible inside the Smart-Playlist, and GMMP can still open and use that Smart-Playlist. The persisted V2 Bridge representation contains a native boolean-neutral linked-`.spl` compatibility rule, so while **UI → Smart-Playlists → Playlist Link** is off — or when GoneSmart itself is unavailable — the Bridge leaves stop contributing membership instead of breaking the Smart-Playlist. The remaining native rules continue to work. Re-enabling Playlist Link restores live membership from the ordinary playlists.
+Saved Playlist Link rules are not deleted. They remain visible inside the Smart-Playlist, and GMMP can still open and use that Smart-Playlist. The persisted V2 Playlist Link representation contains a native boolean-neutral linked-`.spl` compatibility rule, so while **UI → Smart-Playlists → Playlist Link** is off — or when GoneSmart itself is unavailable — the Link leaves stop contributing membership instead of breaking the Smart-Playlist. The remaining native rules continue to work. Re-enabling Playlist Link restores live membership from the ordinary playlists.
 
 This disabled-GoneSmart compatibility has been device-verified on GMMP 4.2.0. The separate live Playlist Link switch uses the same persisted native fallback path and should be included in the next targeted device smoke test. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
 
 ## Does Playlist Link survive moving or renaming its source playlist?
 
-Playlist Link identifies the ordinary source by its stored path. If that source is moved or renamed outside a Bridge-aware migration, GoneSmart does not guess a replacement from the display name; the source is treated as unavailable and the Bridge rule fails closed. Edit the Bridge rule and choose the intended source again.
+Playlist Link identifies the ordinary source by its stored path. If that source is moved or renamed outside a Playlist-Link-aware migration, GoneSmart does not guess a replacement from the display name; the source is treated as unavailable and the Link rule fails closed. Edit the Link rule and choose the intended source again.
 
 ## Why does Move have a separate translation table?
 
