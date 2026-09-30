@@ -933,6 +933,16 @@ internal class SmartPlaylistFolderController(
         val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
+                    // If the current folder projection completed while a
+                    // Smart-Playlist detail was covering this fragment,
+                    // reveal it only in this first real front-surface pre-draw.
+                    // Header/inset are committed before native alpha returns.
+                    if (!browser.nativeContentReady &&
+                        isFrontFragmentView(list) &&
+                        nativeProjectionReady(browser)
+                    ) {
+                        revealInitialContent(browser)
+                    }
                     // Normal scrolling stays driven only by native consumed
                     // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
                     // so synthetic physical folders deform with native rows.
@@ -3037,9 +3047,16 @@ internal class SmartPlaylistFolderController(
                         " | expected=" + browser.nativeOrder.size +
                         " | actual=" + (nativeAdapterItemCount(browser) ?: -1)
                 )
+                revealInitialContent(browser, allowProjectionMismatch = true)
+                return@postOnAnimation
             }
-            revealInitialContent(browser)
-            positionOverlay(browser)
+            // A completed projection may belong to the list fragment behind
+            // an open Smart-Playlist detail. Keep it masked there; the
+            // pre-draw listener above reveals it atomically when it becomes
+            // the front fragment again.
+            if (isFrontFragmentView(browser.list)) {
+                revealInitialContent(browser)
+            }
         }
     }
 
@@ -3141,23 +3158,27 @@ internal class SmartPlaylistFolderController(
         }
     }
 
-    private fun revealInitialHeader(browser: Browser) {
-        if (browser.initialHeaderReady || browsers[browser.list] !== browser) {
-            return
-        }
-        browser.initialHeaderReady = true
-        browser.overlay.visibility = View.VISIBLE
-        updateNativeInset(browser)
-    }
-
-    private fun revealInitialContent(browser: Browser) {
+    private fun revealInitialContent(
+        browser: Browser,
+        allowProjectionMismatch: Boolean = false
+    ) {
         if (browser.nativeContentReady || browsers[browser.list] !== browser) {
             return
         }
-        if (!browser.initialHeaderReady) {
-            revealInitialHeader(browser)
+        if (!allowProjectionMismatch && !nativeProjectionReady(browser)) {
+            return
         }
+        if (!isFrontFragmentView(browser.list)) {
+            return
+        }
+
+        // Commit the complete visible geometry before restoring the native
+        // RecyclerView alpha. This prevents one frame with root/no-header
+        // padding followed by a visible vertical shift.
+        browser.initialHeaderReady = true
         browser.nativeContentReady = true
+        positionOverlay(browser)
+        updateNativeInset(browser)
         browser.list.alpha = browser.originalAlpha
         alignVisibleNativeTitles(browser)
         syncVisibleSmartRowInteractions(browser)
