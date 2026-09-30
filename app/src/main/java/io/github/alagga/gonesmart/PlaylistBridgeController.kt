@@ -132,7 +132,9 @@ internal class PlaylistBridgeController {
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
         context?.let { contextRef = WeakReference(it) }
-        Log.i(TAG, "BRIDGE PRESENTER | captured=${presenter.javaClass.name}")
+        if (enabled) {
+            Log.i(TAG, "BRIDGE PRESENTER | captured=${presenter.javaClass.name}")
+        }
     }
 
     fun onMenuInflated(menuResId: Int, menu: Menu?, inflater: Any?) {
@@ -171,10 +173,12 @@ internal class PlaylistBridgeController {
             }
             true
         }
-        Log.i(
-            TAG,
-            "BRIDGE MENU | original menuLink reused as Smart Playlist / Playlist chooser"
-        )
+        if (enabled) {
+            Log.i(
+                TAG,
+                "BRIDGE MENU | original menuLink reused as Smart Playlist / Playlist chooser"
+            )
+        }
     }
 
     fun currentContext(): Context? = contextRef?.get()
@@ -253,6 +257,12 @@ internal class PlaylistBridgeController {
                 when (method.name) {
                     "onMenuItemClick" -> {
                         val selected = args?.getOrNull(0) as? MenuItem
+                        if (!enabled) {
+                            if (selected?.order == 0) {
+                                openNativeSmartPlaylistChooser()
+                            }
+                            return@newProxyInstance true
+                        }
                         when (selected?.order) {
                             0 -> openNativeSmartPlaylistChooser()
                             1 -> openChooser(edit = false)
@@ -698,6 +708,7 @@ internal class PlaylistBridgeController {
         edit: Boolean,
         explicitPresenter: Any? = null
     ) {
+        if (!enabled) return
         val native = bindings ?: return
         val presenter = explicitPresenter ?: presenterRef?.get() ?: run {
             Log.w(TAG, "BRIDGE CHOOSER | no active SmartEditorPresenter")
@@ -714,6 +725,7 @@ internal class PlaylistBridgeController {
                 }
                 .getOrNull()
             main.post {
+                if (!enabled) return@post
                 if (choices.isNullOrEmpty()) {
                     showError(context, title)
                     return@post
@@ -791,6 +803,7 @@ internal class PlaylistBridgeController {
         edit: Boolean,
         title: String
     ) {
+        if (!enabled) return
         worker.execute {
             val validation = runCatching { membership(choice.path, native) }
             if (validation.isFailure) {
@@ -803,6 +816,7 @@ internal class PlaylistBridgeController {
                 return@execute
             }
             main.post {
+                if (!enabled) return@post
                 runCatching {
                     if (edit) {
                         replaceRule(native, presenter, choice)
