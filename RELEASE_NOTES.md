@@ -27,9 +27,9 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 - Folder Delete reuses GMMP's native Smart delete label/icon and original delete workflow.
 - Accepted on the maintainer's GMMP 4.2.0 device through 30 September 2026, including scrolling/stretch, first-frame staging, drawer badge, folder creation and single/multi Move.
 
-## Playlist Bridge
+## Playlist Link
 
-- New independent **UI → Smart-Playlists → Playlist Bridge** switch, enabled by default to preserve the behavior of existing development installs.
+- New independent **UI → Smart-Playlists → Playlist Link** switch, enabled by default to preserve the behavior of existing development installs.
 - GMMP's original Smart-Playlist editor Link action offers **Smart-Playlist** or ordinary **Playlist** while the option is enabled.
 - Choosing Playlist creates a live membership rule backed by the selected ordinary playlist. Membership is read through GMMP's original playlist parser and compiled into GMMP's native Smart query predicates; no static track snapshot is stored.
 - Add/save/reopen/edit, normal Smart display/playback and dynamic source changes were verified on-device.
@@ -65,14 +65,14 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 - UI settings are grouped into **PLAYLISTS**, **SMART-PLAYLISTS**, and **PLAYBACK & QUEUE**.
 - Both playlist groups now use the same concise **Multi-selection** and **Folders** labels, with truthful descriptions of the different actions.
-- Folder/grouping/multi-selection and Playlist Bridge setting changes generate high-level `[UI]` log events.
+- Folder/grouping/multi-selection and Playlist Link setting changes generate high-level `[UI]` log events.
 - The Logs summary counts **Smart DJ**, **Playlists**, **Flip**, **Track Auto-DJ**, **UI**, and **System** separately; only legacy/unknown entries remain under **Other**.
-- Playlist Bridge readiness is recorded as a high-level System event without exposing playlist names or paths.
+- Playlist Link readiness is recorded as a high-level System event without exposing playlist names or paths.
 - Internal Logcat keeps feature-specific tags; exploratory native-save/reader/surface probes that were only needed during reverse engineering have been removed.
 
 ## Release hardening completed in this branch
 
-- Playlist Bridge moved out of its obsolete debug-PoC gate and now has a normal functional hook path.
+- Playlist Link moved out of its obsolete debug-PoC gate and now has a normal functional hook path.
 - Obsolete native playlist-save traces, Smart-folder loader diagnostics, move-discovery probes and playlist-surface discovery logging were removed.
 - Bridge path logging remains privacy-safe; file paths are reduced to extension/hash/length where diagnostic output is still needed.
 - Companion Help, README, architecture, logging and feature docs were synchronized with the accepted current behavior.
