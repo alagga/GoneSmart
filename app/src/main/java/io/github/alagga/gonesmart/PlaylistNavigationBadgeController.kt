@@ -26,7 +26,7 @@ import java.util.WeakHashMap
 internal class PlaylistNavigationBadgeController {
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        private const val RESCAN_DEBOUNCE_MS = 120L
+        private const val RESCAN_DEBOUNCE_MS = 350L
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -106,9 +106,11 @@ internal class PlaylistNavigationBadgeController {
             NativeGmmpUiText.string(activity, "playlist")
         ).map(String::trim)
         val smartNames = listOfNotNull(
+            NativeGmmpUiText.string(activity, "smart"),
+            NativeGmmpUiText.string(activity, "smart_playlist"),
             NativeGmmpUiText.string(activity, "smart_playlists"),
             NativeGmmpUiText.smartPlaylist(activity)
-        ).map(String::trim)
+        ).map(String::trim).distinct()
 
         val playlistCandidates = linkedSetOf<TextView>()
         val smartCandidates = linkedSetOf<TextView>()
@@ -118,7 +120,6 @@ internal class PlaylistNavigationBadgeController {
         texts.forEach { text ->
             if (!isVisible(text) ||
                 insideClassicDrawer(text) ||
-                insideNativePlaylistContent(text) ||
                 !hasClickableAncestor(text)
             ) return@forEach
 
@@ -267,6 +268,16 @@ internal class PlaylistNavigationBadgeController {
         if (depth > 18) return
         if (view is TextView) result += view
         if (view is ViewGroup) {
+            // Navigation labels never live inside the actual Playlist/Smart
+            // content adapters. Prune those subtrees once instead of doing
+            // reflective getAdapter() walks for every bound row TextView.
+            val adapterName = runCatching {
+                view.javaClass.methods.firstOrNull {
+                    it.name == "getAdapter" && it.parameterCount == 0
+                }?.invoke(view)?.javaClass?.name
+            }.getOrNull()
+            if (adapterName == "zn3" || adapterName == "ls4") return
+
             for (index in 0 until view.childCount) {
                 collectTextViews(view.getChildAt(index), result, depth + 1)
             }
@@ -313,24 +324,6 @@ internal class PlaylistNavigationBadgeController {
                 idName == "design_navigation_view"
             ) return true
             current = candidate.parent as? View
-        }
-        return false
-    }
-
-    private fun insideNativePlaylistContent(view: View): Boolean {
-        var current: View? = view
-        repeat(10) {
-            val group = current as? ViewGroup
-            if (group != null) {
-                val adapter = runCatching {
-                    group.javaClass.methods.firstOrNull {
-                        it.name == "getAdapter" && it.parameterCount == 0
-                    }?.invoke(group)
-                }.getOrNull()
-                val adapterName = adapter?.javaClass?.name
-                if (adapterName == "zn3" || adapterName == "ls4") return true
-            }
-            current = current?.parent as? View
         }
         return false
     }
