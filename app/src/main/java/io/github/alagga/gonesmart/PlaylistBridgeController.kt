@@ -99,12 +99,22 @@ internal class PlaylistBridgeController {
     private val cache = ConcurrentHashMap<String, Membership>()
 
     @Volatile private var bindings: Bindings? = null
+    @Volatile private var enabled: Boolean = true
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var contextRef: WeakReference<Context>? = null
 
     internal data class PortableSaveToken(
         val originals: List<Pair<Any, String?>>
     )
+
+    fun setEnabled(value: Boolean) {
+        if (enabled == value) return
+        enabled = value
+        if (!value) cache.clear()
+        Log.i(TAG, "BRIDGE SETTINGS | enabled=$value")
+    }
+
+    fun isEnabled(): Boolean = enabled
 
     fun configure(loader: ClassLoader): Boolean {
         val loaded = runCatching { createBindings(loader) }
@@ -148,6 +158,9 @@ internal class PlaylistBridgeController {
         // the host AppCompat popup menu below that exact action item and
         // dispatches either back into ds4.g2(false) or Playlist Bridge.
         original.setOnMenuItemClickListener {
+            if (!enabled) {
+                return@setOnMenuItemClickListener false
+            }
             if (!showLinkTypeMenu(context, nativeLinkId)) {
                 Log.w(
                     TAG,
@@ -166,13 +179,16 @@ internal class PlaylistBridgeController {
 
     fun currentContext(): Context? = contextRef?.get()
 
-    fun nativeSmartPlaylistLinkTitle(): String? =
-        contextRef?.get()?.let(NativeGmmpUiText::linkSmartPlaylist)
+    fun nativeSmartPlaylistLinkTitle(): String? {
+        if (!enabled) return null
+        return contextRef?.get()?.let(NativeGmmpUiText::linkSmartPlaylist)
+    }
 
     fun rewriteNativeSmartPlaylistRuleLabel(
         rule: Any?,
         original: String?
     ): String? {
+        if (!enabled) return original
         val native = bindings ?: return original
         if (rule == null || !native.smartRuleClass.isInstance(rule)) {
             return original
@@ -306,7 +322,7 @@ internal class PlaylistBridgeController {
     }
 
     fun interceptNativeLinkedEditor(presenter: Any?, edit: Boolean): Boolean {
-        if (!edit || presenter == null) return false
+        if (!enabled || !edit || presenter == null) return false
         val rule = selectedRule(presenter) ?: return false
         if (!isBridgeRule(rule)) return false
         presenterRef = WeakReference(presenter)
