@@ -6,7 +6,14 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 ## Playlist and Smart-Playlist organization
 
-### Playlist folders
+### Navigation layout compatibility
+
+- Playlist and Smart-Playlist folder surfaces now identify GMMP's native list adapters (`zn3` / `ls4`) instead of depending only on the navigation-layout-specific RecyclerView IDs.
+- Add-to-Playlist picker identity now comes from its verified native picker session rather than a generic CoordinatorLayout-parent heuristic.
+- GoneSmart's Playlist/Smart-Playlist sparkle can follow GMMP's alternative top-tab and Bottom → Library navigation labels while excluding real Playlist/Smart-Playlist content rows.
+- The existing bar/drawer layout remains the accepted baseline. Tabs and Bottom/Library are the next targeted on-device compatibility checks; theme/color adaptation, Add-to-Playlist and the Now Playing Auto-DJ badge were already reported working across the layouts.
+
+## Playlist folders
 
 - Optional **UI → Playlists → Folders** view for nested physical playlist folders in both GMMP's Playlists tab and Add to Playlist picker.
 - Folder creation reuses GMMP's native playlist-creation shell on the verified 4.2.0 path, with only the folder-specific text/action redirected; a guarded native folder-creator fallback remains for unsupported mappings.
