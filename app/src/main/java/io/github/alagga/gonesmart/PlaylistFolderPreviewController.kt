@@ -294,6 +294,7 @@ internal class PlaylistFolderPreviewController(
     private val observedPickerOwners = WeakHashMap<ViewGroup, Boolean>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
+    private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val moveChromeUi = PlaylistFolderMoveChrome(
         multiSelect, mainHandler, TAG, "PLAYLIST"
@@ -816,6 +817,7 @@ internal class PlaylistFolderPreviewController(
                     }
                     if (settings.enabled && browsers[current] == null &&
                         !suspendedNativeLists.containsKey(current) &&
+                        !failedOverlayHosts.containsKey(current) &&
                         pendingRetries[current] == null &&
                         current.isAttachedToWindow
                     ) {
@@ -839,6 +841,7 @@ internal class PlaylistFolderPreviewController(
                             }
                         }
                         pendingRetries.remove(original)
+                        failedOverlayHosts.remove(original)
                         // Retain the original alpha while the SAME
                         // RecyclerView can be reused after navigation.
                         suspendedNativeLists.remove(original)
@@ -1761,6 +1764,7 @@ internal class PlaylistFolderPreviewController(
     private fun scheduleAttach(list: ViewGroup, attempt: Int) {
         if (!settings.enabled || browsers.containsKey(list) ||
             suspendedNativeLists.containsKey(list) ||
+            failedOverlayHosts.containsKey(list) ||
             !list.isAttachedToWindow
         ) return
         val previous = pendingRetries[list]
@@ -1791,6 +1795,24 @@ internal class PlaylistFolderPreviewController(
             retry(list, attempt)
             return
         }
+
+        // Resolve the page host BEFORE walking every native playlist model.
+        // In tabs mode a missing host used to make every later layout repeat
+        // the full 256-row reflection/index pass on the main thread.
+        val parent = safeOverlayHost(list) ?: run {
+            failedOverlayHosts[list] = true
+            nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
+            Log.w(
+                TAG,
+                "FOLDER INLINE STOP | no scoped page overlay host" +
+                    if (BuildConfig.DEBUG) {
+                        " | chain=" +
+                            PlaylistNavigationSurfaceHost.parentChain(list)
+                    } else ""
+            )
+            return
+        }
+
         val itemCount = runCatching {
             adapter.javaClass.getMethod("getItemCount").invoke(adapter) as Int
         }.getOrDefault(0)
@@ -1859,12 +1881,9 @@ internal class PlaylistFolderPreviewController(
             retry(list, attempt)
             return
         }
-        // Keep the browser INSIDE GMMP's page/dialog content. Decorating
-        // the whole window previously covered the drawer, FAB and mini player.
-        val parent = safeOverlayHost(list) ?: run {
-            Log.w(TAG, "FOLDER INLINE STOP | no scoped page overlay host")
-            return
-        }
+        // Keep the browser inside the current native page. In tabs mode the
+        // resolved host can be ViewPager itself; the shared helper installs
+        // the overlay as a decor child so it is not counted as another page.
         val overlay = FrameLayout(list.context).apply {
             isClickable = true
             isFocusable = true
@@ -2105,17 +2124,34 @@ internal class PlaylistFolderPreviewController(
         }
 
         list.alpha = 0f
-        // Insert after the fragment content, but BELOW later siblings
-        // such as the native creation/confirm FAB.
-        val contentChild = directChildInHost(list, parent)
-        val insertAt = if (contentChild == null) parent.childCount else {
-            (parent.indexOfChild(contentChild) + 1).coerceAtMost(parent.childCount)
+        if (!PlaylistNavigationSurfaceHost.addOverlay(
+                host = parent,
+                list = list,
+                overlay = overlay,
+                width = list.width,
+                height = list.height
+            )
+        ) {
+            failedOverlayHosts[list] = true
+            browsers.remove(list)
+            styles.remove(list)
+            list.alpha = browser.originalAlpha
+            nativeOriginalAlphas.remove(list)
+            list.removeOnAttachStateChangeListener(detachListener)
+            list.removeOnLayoutChangeListener(layoutListener)
+            if (list.viewTreeObserver.isAlive) {
+                list.viewTreeObserver.removeOnPreDrawListener(themeListener)
+            }
+            Log.w(
+                TAG,
+                "FOLDER INLINE STOP | scoped overlay insertion failed" +
+                    if (BuildConfig.DEBUG) {
+                        " | chain=" +
+                            PlaylistNavigationSurfaceHost.parentChain(list)
+                    } else ""
+            )
+            return
         }
-        parent.addView(
-            overlay,
-            insertAt,
-            ViewGroup.LayoutParams(list.width, list.height)
-        )
         positionOverlay(browser)
         safeRender(browser)
         activeBrowser = WeakReference(list)
@@ -3770,6 +3806,9 @@ internal class PlaylistFolderPreviewController(
      */
     private fun isFrontFragmentView(list: ViewGroup): Boolean {
         if (isPicker(list)) return true
+        PlaylistNavigationSurfaceHost.isPagerPageFront(list)?.let {
+            return it
+        }
         var cursor: View? = list
         var slot: ViewGroup? = null
         while (cursor != null) {
@@ -3797,23 +3836,18 @@ internal class PlaylistFolderPreviewController(
 
     /** Find the nearest GMMP page/dialog host, NEVER the DecorView. */
     private fun safeOverlayHost(list: ViewGroup): ViewGroup? {
-        var parent = list.parent as? ViewGroup
-        while (parent != null && parent !== list.rootView) {
-            if (parent.javaClass.simpleName.contains(
-                    "CoordinatorLayout", ignoreCase = true
-                )
-            ) {
-                Log.i(
-                    TAG,
-                    "FOLDER INLINE HOST | surface=" + surface(list) +
-                        " | class=" + parent.javaClass.name +
-                        " | id=" + resourceName(parent)
-                )
-                return parent
-            }
-            parent = parent.parent as? ViewGroup
+        val host = PlaylistNavigationSurfaceHost.resolve(list)
+        if (host != null) {
+            Log.i(
+                TAG,
+                "FOLDER INLINE HOST | surface=" + surface(list) +
+                    " | class=" + host.javaClass.name +
+                    " | id=" + resourceName(host) +
+                    " | pagerDecor=" +
+                    PlaylistNavigationSurfaceHost.isPagerHost(host)
+            )
         }
-        return null
+        return host
     }
 
     private fun directChildInHost(
