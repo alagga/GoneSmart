@@ -29,10 +29,11 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 ## Playlist Bridge
 
-- GMMP's original Smart-Playlist editor Link action now offers **Smart-Playlist** or ordinary **Playlist**.
+- New independent **UI → Smart-Playlists → Playlist Bridge** switch, enabled by default to preserve the behavior of existing development installs.
+- GMMP's original Smart-Playlist editor Link action offers **Smart-Playlist** or ordinary **Playlist** while the option is enabled.
 - Choosing Playlist creates a live membership rule backed by the selected ordinary playlist. Membership is read through GMMP's original playlist parser and compiled into GMMP's native Smart query predicates; no static track snapshot is stored.
 - Add/save/reopen/edit, normal Smart display/playback and dynamic source changes were verified on-device.
-- The V2 persisted representation keeps saved Smart-Playlists usable when GoneSmart is disabled on the tested setup: Bridge leaves become boolean-neutral native linked-`.spl` placeholders so remaining native rules keep their meaning.
+- The V2 persisted representation keeps saved Smart-Playlists usable when GoneSmart is disabled on the tested setup. The new Bridge switch uses the same native fallback path: saved Bridge leaves remain visible but become boolean-neutral while the option is off, and resume live membership after re-enabling it.
 - Missing, empty or unreadable Bridge sources fail closed while GoneSmart is active.
 - The feature now installs its functional hooks in both debug and release build variants. Old reader/query/save exploration probes were removed from the shipping path.
 
@@ -64,7 +65,7 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 - UI settings are grouped into **PLAYLISTS**, **SMART-PLAYLISTS**, and **PLAYBACK & QUEUE**.
 - Both playlist groups now use the same concise **Multi-selection** and **Folders** labels, with truthful descriptions of the different actions.
-- Folder/grouping/multi-selection setting changes now generate high-level `[UI]` log events.
+- Folder/grouping/multi-selection and Playlist Bridge setting changes generate high-level `[UI]` log events.
 - The Logs summary counts **Smart DJ**, **Playlists**, **Flip**, **Track Auto-DJ**, **UI**, and **System** separately; only legacy/unknown entries remain under **Other**.
 - Playlist Bridge readiness is recorded as a high-level System event without exposing playlist names or paths.
 - Internal Logcat keeps feature-specific tags; exploratory native-save/reader/surface probes that were only needed during reverse engineering have been removed.
