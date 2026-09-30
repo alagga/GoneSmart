@@ -11,7 +11,9 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 - Playlist and Smart-Playlist folder surfaces now identify GMMP's native list adapters (`zn3` / `ls4`) instead of depending only on the navigation-layout-specific RecyclerView IDs.
 - Add-to-Playlist picker identity now comes from its verified native picker session rather than a generic CoordinatorLayout-parent heuristic.
 - GoneSmart's Playlist/Smart-Playlist sparkle can follow GMMP's alternative top-tab and Bottom → Library navigation labels while excluding real Playlist/Smart-Playlist content rows.
-- The existing bar/drawer layout remains the accepted baseline. Tabs and Bottom/Library are the next targeted on-device compatibility checks; theme/color adaptation, Add-to-Playlist and the Now Playing Auto-DJ badge were already reported working across the layouts.
+- Bottom → Library is now device-accepted for both Playlist and Smart-Playlist sparkles on the maintainer's GMMP 4.2.0 setup. Top Tabs remains the only targeted navigation-layout check.
+- A Tabs-only host mismatch previously caused the ordinary Playlist folder attach path to repeat an expensive native-model/index pass after every failed overlay-host attempt, producing severe main-thread stalls. Host resolution now happens before model walking, unsupported attached surfaces fail-stop instead of retrying on every layout, and the tab pager can host folder chrome only as a ViewPager decor child rather than another page.
+- Theme/color adaptation, Add-to-Playlist and the Now Playing Auto-DJ badge were already reported working across the navigation layouts and are not part of the remaining Tabs retest.
 
 ## Playlist folders
 
