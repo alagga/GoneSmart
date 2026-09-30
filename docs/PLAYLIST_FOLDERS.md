@@ -779,7 +779,7 @@ The post-acceptance source review is documented in [NATIVE_GMMP_AUDIT.md](NATIVE
 
 ### 2026-09-28 debug-only gate retired after feature acceptance
 
-The completed folder feature's **actual runtime hooks, native playlist-create destination getter, original Add-menu integration, native-adapter refresh and UI settings are now enabled in both debug and unsigned release build variants**. The previous debug-only BuildConfig gate would have made the otherwise documented feature unavailable in a release APK, so it has been retired on this feature branch. Only read-only native writer/save discovery probes, experimental qg1 geometry parity logging and optional diagnostic traces remain debug-only. This does not publish a signed release, validate a release APK on a device, or broaden the tested GMMP 4.2.0 skin/language claim; normal release process still applies.
+The completed folder feature's **actual runtime hooks, native playlist-create destination getter, original Add-menu integration, native-adapter refresh and UI settings are now enabled in both debug and unsigned release build variants**. The previous debug-only BuildConfig gate would have made the otherwise documented feature unavailable in a release APK, so it has been retired on this feature branch. Obsolete native writer/save discovery and menu-inventory probes have been removed. Narrow geometry/parity diagnostics may remain debug-only where they still protect a version-specific native boundary. This does not publish a signed release, validate a release APK on a device, or broaden the tested GMMP 4.2.0 skin/language claim; normal release process still applies.
 
 
 ### Native custom playlist-directory preference — compatibility gap (2026-09-28 audit)
