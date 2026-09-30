@@ -148,6 +148,7 @@ Read docs/PLAYLIST_FOLDERS.md for all four grouping cases, native class evidence
 - Group root playlists.
 
 **UI → SMART-PLAYLISTS**
+- **Playlist Bridge** — use ordinary Playlists as live Smart-Playlist membership rules; defaults ON for upgrade continuity and is independent from Smart folders.
 - **Multi-selection** — GoneSmart selection over verified native Smart rows for multi-Move.
 - **Folders** — physical Smart-Playlist folder navigation.
 - Group root Smart-Playlists.
@@ -186,11 +187,11 @@ The two playlist sections intentionally use the same concise **Multi-selection**
 
 ### Playlist Bridge — accepted architecture
 
-- **Playlist Bridge is no longer a debug PoC.** Its functional Smart-editor/evaluation hooks are installed in both debug and release build variants on this branch.
+- **Playlist Bridge is no longer a debug PoC.** Its functional Smart-editor/evaluation hooks are installed in both debug and release build variants on this branch. The independent **UI → Smart-Playlists → Playlist Bridge** switch defaults ON and changes behavior live without requiring a GMMP restart.
 - Reuse GMMP's single original Link toolbar action. The host popup offers **Smart-Playlist** (original GMMP path) and ordinary **Playlist** (Bridge path). Do not add a second permanent Link toolbar button.
 - Ordinary sources come from GMMP's native Playlist DAO and are parsed through the original playlist parser. Intercept only verified Bridge leaf compilation and return native URI-IN predicates; surrounding native AND/OR/order/limit behavior remains GMMP-owned.
 - Persist through the shared original `ws4.t(File)` save hook. V2 compatibility temporarily substitutes deterministic boolean-neutral private native linked-`.spl` rules during serialization, then restores live editor values in `finally`.
-- Disabled-GoneSmart compatibility for top-level and nested Bridge leaves is device-verified on GMMP 4.2.0. Native rules continue to work while Bridge contribution is neutral.
+- Disabled-GoneSmart compatibility for top-level and nested Bridge leaves is device-verified on GMMP 4.2.0. Turning only Playlist Bridge off must use the same persisted V2 native fallback: saved Bridge leaves stay visible, contribute neutrally, and resume live membership after re-enabling. The new live toggle itself needs one targeted device smoke test before v0.4 release.
 - Missing/empty/unreadable Bridge sources fail closed while GoneSmart is active; never silently match the whole library.
 - Do not guess a moved/renamed Bridge source from display name. A missing path stays unavailable until the user edits the Bridge rule.
 - Detailed internal Bridge logging uses `GoneSmartPlaylistBridge`; never expose full playlist paths/names/track contents in companion logs or public diagnostics. `PlaylistBridgePolicy` owns safe classification/redaction.
