@@ -48,6 +48,7 @@ internal object NativeGmmpCreationDialogLocalizer {
         val originalWindowAlpha = window.attributes.alpha
         pendingWindowAlpha[dialog] = originalWindowAlpha
         setWindowAlpha(dialog, 0f)
+        ensureCancelAction(dialog)
         ensureInputAccent(dialog)
         localize(dialog)
         Log.i(
@@ -75,7 +76,6 @@ internal object NativeGmmpCreationDialogLocalizer {
         // Keep the whole window hidden until that transition has happened,
         // then require one additional focused traversal before revealing.
         var focusedPasses = 0
-        var postRevealPasses = 0
         var revealed = false
         lateinit var guard: android.view.ViewTreeObserver.OnPreDrawListener
         guard = object : android.view.ViewTreeObserver.OnPreDrawListener {
@@ -89,12 +89,16 @@ internal object NativeGmmpCreationDialogLocalizer {
                     return true
                 }
 
+                // AestheticTextInputEditText may rewrite its focused tint on
+                // ANY later focus/drawable-state transition, not only during
+                // initial show. Re-assert GMMP's live accent immediately
+                // before every visible frame for the whole dialog lifetime.
                 accentColors[dialog]?.let {
                     applyInputAccent(decor, it)
                 } ?: applyPendingInputAccent(decor)
-                localize(dialog)
 
                 if (!revealed) {
+                    localize(dialog)
                     if (decor.hasWindowFocus()) {
                         focusedPasses++
                     } else {
@@ -118,31 +122,10 @@ internal object NativeGmmpCreationDialogLocalizer {
                             " | focusedPasses=" + focusedPasses +
                             " | accentReady=" +
                             accentColors.containsKey(dialog) +
+                            " | lifetimeAccentGuard=true" +
                             " | " + inputAccentState(decor)
                     )
-                    // Keep correcting a handful of visible traversals too:
-                    // IME/window-focus callbacks can still trigger a late
-                    // Aesthetic state write immediately after reveal.
-                    decor.postInvalidateOnAnimation()
-                    return true
                 }
-
-                postRevealPasses++
-                if (postRevealPasses < 6) {
-                    decor.postInvalidateOnAnimation()
-                    return true
-                }
-
-                if (decor.viewTreeObserver.isAlive) {
-                    decor.viewTreeObserver.removeOnPreDrawListener(this)
-                }
-                postShowRevealGuards.remove(dialog)
-                Log.i(
-                    TAG,
-                    "CREATION DIALOG ACCENT LOCK | released" +
-                        " | passes=" + postRevealPasses +
-                        " | " + inputAccentState(decor)
-                )
                 return true
             }
         }
@@ -558,6 +541,69 @@ internal object NativeGmmpCreationDialogLocalizer {
         // Floating input captions are intentionally disabled. Aesthetic's
         // TextInputLayout box APIs still receive the native accent through the
         // input-view loop above.
+        applyActionAccent(root, accent)
+    }
+
+    private fun applyActionAccent(root: View, accent: Int) {
+        val context = root.context
+        listOf("md_button_positive", "md_button_negative").forEach { name ->
+            val id = context.resources.getIdentifier(
+                name,
+                "id",
+                context.packageName
+            )
+            if (id == 0) return@forEach
+            val button = root.findViewById<View>(id) ?: return@forEach
+            val updated = runCatching {
+                button.javaClass.methods.firstOrNull {
+                    it.name == "updateTextColor" &&
+                        it.parameterCount == 1 &&
+                        it.parameterTypes[0] == Int::class.javaPrimitiveType
+                }?.let { method ->
+                    method.invoke(button, accent)
+                    true
+                } ?: false
+            }.getOrDefault(false)
+            if (!updated && button is TextView && button.isEnabled) {
+                button.setTextColor(accent)
+            }
+        }
+    }
+
+    private fun ensureCancelAction(dialog: Dialog) {
+        val cancel = NativeGmmpUiText.string(dialog.context, "cancel")
+        if (cancel.isNullOrBlank()) {
+            Log.w(
+                TAG,
+                "CREATION DIALOG CANCEL | GMMP cancel resource unavailable"
+            )
+            return
+        }
+        val root = dialog.window?.decorView ?: return
+        val id = dialog.context.resources.getIdentifier(
+            "md_button_negative",
+            "id",
+            dialog.context.packageName
+        )
+        val button = if (id != 0) root.findViewById<TextView>(id) else null
+        if (button == null) {
+            Log.w(
+                TAG,
+                "CREATION DIALOG CANCEL | native negative action unavailable"
+            )
+            return
+        }
+        if (button.text?.toString() != cancel) {
+            button.text = cancel
+        }
+        if (button.visibility != View.VISIBLE) {
+            button.visibility = View.VISIBLE
+        }
+        button.requestLayout()
+        Log.i(
+            TAG,
+            "CREATION DIALOG CANCEL | native negative action enabled"
+        )
     }
 
     private fun applyPendingInputAccent(root: View) {
