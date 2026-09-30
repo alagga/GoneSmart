@@ -752,9 +752,21 @@ internal class PlaylistFolderPreviewController(
             observeNativeBreadcrumb(list)
             return
         }
-        if (resourceName(list) != "playlistListRecyclerView") return
         val adapter = nativeAdapter(list)
+        val nativePlaylistSurface =
+            resourceName(list) == "playlistListRecyclerView" ||
+                adapter?.javaClass?.name == "zn3"
+        if (!nativePlaylistSurface) return
         if (adapter != null && adapter.javaClass.name != "zn3") return
+        if (BuildConfig.DEBUG &&
+            resourceName(list) != "playlistListRecyclerView"
+        ) {
+            Log.i(
+                TAG,
+                "FOLDER NAV COMPAT | playlist adapter=zn3 | viewId=" +
+                    resourceName(list).ifBlank { "<none>" }
+            )
+        }
         knownLists[list] = true
         if (suspendedNativeLists.containsKey(list)) return
         // Hide the native ungrouped list as soon as its verified zn3 adapter
@@ -3550,8 +3562,7 @@ internal class PlaylistFolderPreviewController(
     }.getOrNull()?.takeIf(String::isNotBlank)
 
     private fun isPicker(list: ViewGroup): Boolean =
-        (list.parent as? View)?.javaClass?.simpleName
-            ?.contains("Coordinator") == true
+        multiSelect.isPickerList(list)
 
     private fun surface(list: ViewGroup): String =
         if (isPicker(list)) "add-picker" else "playlists-tab"
