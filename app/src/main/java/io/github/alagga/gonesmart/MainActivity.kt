@@ -897,7 +897,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
             title = "Settings apply live",
-            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI extensions, including both folder views and their multi-selection options, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
+            body = "Both Smart DJ and UI settings apply to the running GMMP process without a restart. Recommendation-related changes invalidate the old pool so the next Auto-DJ refill follows the new settings without interrupting playback. UI extensions, including Playlist Bridge, both folder views and their multi-selection options, can be enabled or disabled independently. Restart GMMP only after module/framework updates or if troubleshooting requires it."
         ))
 
         container.addView(verticalGap(22))
