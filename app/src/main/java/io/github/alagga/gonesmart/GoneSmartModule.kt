@@ -179,7 +179,7 @@ class GoneSmartModule : XposedModule() {
                 if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
                     runtimeReporter.reportEvent(
                         GoneSmartRuntimeContract.CATEGORY_UI,
-                        "Multi-playlist selection " +
+                        "Playlist multi-selection " +
                             if (options.multiPlaylistEnabled) "enabled." else "disabled."
                     )
                 }
@@ -199,7 +199,7 @@ class GoneSmartModule : XposedModule() {
                 if (previous.flipQueueEnabled != options.flipQueueEnabled) {
                     runtimeReporter.reportEvent(
                         GoneSmartRuntimeContract.CATEGORY_UI,
-                        "Flip queue / reverse playlist playback " +
+                        "Flip queue / Play flipped " +
                             if (options.flipQueueEnabled) "enabled." else "disabled."
                     )
                 }
