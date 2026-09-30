@@ -125,7 +125,7 @@ Enable **UI → Smart-Playlists → Playlist Link**. Playlist Link extends the S
 
 Saved Playlist Link rules are not deleted. They remain visible inside the Smart-Playlist, and GMMP can still open and use that Smart-Playlist. The persisted V2 Playlist Link representation contains a native boolean-neutral linked-`.spl` compatibility rule, so while **UI → Smart-Playlists → Playlist Link** is off — or when GoneSmart itself is unavailable — the Link leaves stop contributing membership instead of breaking the Smart-Playlist. The remaining native rules continue to work. Re-enabling Playlist Link restores live membership from the ordinary playlists.
 
-This disabled-GoneSmart compatibility has been device-verified on GMMP 4.2.0. The separate live Playlist Link switch uses the same persisted native fallback path and should be included in the next targeted device smoke test. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
+Both the disabled-GoneSmart compatibility and the separate live Playlist Link switch have now been confirmed on the maintainer's GMMP 4.2.0 setup. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
 
 ## Does Playlist Link survive moving or renaming its source playlist?
 
