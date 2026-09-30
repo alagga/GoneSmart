@@ -94,7 +94,9 @@ internal object PlaylistNavigationSurfaceHost {
         }
 
         return runCatching {
-            val pagerClass = generateSequence(host.javaClass) { it.superclass }
+            val pagerClass = generateSequence<Class<*>>(host.javaClass) {
+                it.superclass
+            }
                 .firstOrNull { isPagerClassName(it.name) }
                 ?: error("ViewPager class unavailable")
             val layoutParamsClass = pagerClass.declaredClasses
@@ -109,7 +111,9 @@ internal object PlaylistNavigationSurfaceHost {
             params.width = width
             params.height = height
 
-            val isDecor = generateSequence(layoutParamsClass) { it.superclass }
+            val isDecor = generateSequence<Class<*>>(layoutParamsClass) {
+                it.superclass
+            }
                 .flatMap { it.declaredFields.asSequence() }
                 .firstOrNull {
                     it.name == "isDecor" &&
@@ -118,7 +122,9 @@ internal object PlaylistNavigationSurfaceHost {
             isDecor.isAccessible = true
             isDecor.setBoolean(params, true)
 
-            generateSequence(layoutParamsClass) { it.superclass }
+            generateSequence<Class<*>>(layoutParamsClass) {
+                it.superclass
+            }
                 .flatMap { it.declaredFields.asSequence() }
                 .firstOrNull {
                     it.name == "gravity" &&
