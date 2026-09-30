@@ -315,6 +315,7 @@ internal class SmartPlaylistFolderController(
     private val refreshGeneration = AtomicLong(0L)
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
+    private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
@@ -527,6 +528,7 @@ internal class SmartPlaylistFolderController(
             )
         }
         knownLists[list] = true
+        if (failedOverlayHosts.containsKey(list)) return
         if (enabled && !browsers.containsKey(list)) {
             if (!pendingOriginalAlphas.containsKey(list)) {
                 pendingOriginalAlphas[list] = list.alpha
@@ -876,8 +878,16 @@ internal class SmartPlaylistFolderController(
             return
         }
         val host = safeOverlayHost(list) ?: run {
+            failedOverlayHosts[list] = true
             restorePendingNativeList(list)
-            Log.w(TAG, "SMART FOLDERS ATTACH STOP | page host unavailable")
+            Log.w(
+                TAG,
+                "SMART FOLDERS ATTACH STOP | page host unavailable" +
+                    if (BuildConfig.DEBUG) {
+                        " | chain=" +
+                            PlaylistNavigationSurfaceHost.parentChain(list)
+                    } else ""
+            )
             return
         }
         val remembered = rememberedDirectory
@@ -1100,18 +1110,26 @@ internal class SmartPlaylistFolderController(
         // raw native Smart root hidden until GoneSmart has both the native
         // filtered snapshot and the physical-folder header ready.
         list.alpha = 0f
-        val contentChild = directChildInHost(list, host)
-        val insertAt = if (contentChild == null) host.childCount else {
-            (host.indexOfChild(contentChild) + 1).coerceAtMost(host.childCount)
-        }
-        host.addView(
-            overlay,
-            insertAt,
-            ViewGroup.LayoutParams(
-                list.width,
-                list.height
+        if (!PlaylistNavigationSurfaceHost.addOverlay(
+                host = host,
+                list = list,
+                overlay = overlay,
+                width = list.width,
+                height = list.height
             )
-        )
+        ) {
+            failedOverlayHosts[list] = true
+            removeBrowser(browser)
+            Log.w(
+                TAG,
+                "SMART FOLDERS ATTACH STOP | scoped overlay insertion failed" +
+                    if (BuildConfig.DEBUG) {
+                        " | chain=" +
+                            PlaylistNavigationSurfaceHost.parentChain(list)
+                    } else ""
+            )
+            return
+        }
         positionOverlay(browser)
         startObserver(browser)
         refresh(browser)
@@ -3252,6 +3270,9 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun isFrontFragmentView(list: ViewGroup): Boolean {
+        PlaylistNavigationSurfaceHost.isPagerPageFront(list)?.let {
+            return it
+        }
         var cursor: View? = list
         var slot: ViewGroup? = null
         while (cursor != null) {
@@ -3327,16 +3348,17 @@ internal class SmartPlaylistFolderController(
     }.getOrNull()
 
     private fun safeOverlayHost(list: ViewGroup): ViewGroup? {
-        var parent = list.parent as? ViewGroup
-        while (parent != null && parent !== list.rootView) {
-            if (parent.javaClass.simpleName.contains(
-                    "CoordinatorLayout",
-                    ignoreCase = true
-                )
-            ) return parent
-            parent = parent.parent as? ViewGroup
+        val host = PlaylistNavigationSurfaceHost.resolve(list)
+        if (host != null && BuildConfig.DEBUG) {
+            Log.i(
+                TAG,
+                "SMART FOLDERS HOST | class=" + host.javaClass.name +
+                    " | id=" + resourceName(host) +
+                    " | pagerDecor=" +
+                    PlaylistNavigationSurfaceHost.isPagerHost(host)
+            )
         }
-        return null
+        return host
     }
 
     private fun directChildInHost(list: View, host: ViewGroup): View? {
