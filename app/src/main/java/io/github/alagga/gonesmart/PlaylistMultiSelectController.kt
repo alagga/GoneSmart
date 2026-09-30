@@ -28,7 +28,7 @@ import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
 /**
- * Experimental GMMP 4.2.0 integration, enabled only in GoneSmart debug builds.
+ * Verified GMMP 4.2.0 multi-selection integration used by debug and release builds.
  *
  * Uses native jo3 view holders and xn3 models, and dispatches additions
  * through the native io3.r(Context, ie0) handler. Never writes .m3u files.
