@@ -155,6 +155,9 @@ class GoneSmartModule : XposedModule() {
                     "Smart-Playlist folders" to
                         (previous.smartPlaylistFoldersEnabled to
                             options.smartPlaylistFoldersEnabled)
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE ->
+                    "Playlist Bridge" to
+                        (previous.playlistBridgeEnabled to options.playlistBridgeEnabled)
                 GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ->
                     "Smart-Playlist multi-selection" to
                         (previous.smartMultiPlaylistEnabled to
@@ -172,6 +175,10 @@ class GoneSmartModule : XposedModule() {
                         "$label ${if (state.second) "enabled." else "disabled."}"
                     )
                 }
+            }
+
+            if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE) {
+                playlistBridgeController.setEnabled(options.playlistBridgeEnabled)
             }
 
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
@@ -211,6 +218,7 @@ class GoneSmartModule : XposedModule() {
                 key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
                 key != GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS &&
                 key != GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST &&
+                key != GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE &&
                 key != GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
                 key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
@@ -574,8 +582,10 @@ class GoneSmartModule : XposedModule() {
 
             // Playlist Bridge passed the dedicated GMMP 4.2.0 device flow,
             // including save/reopen, dynamic source updates and disabled-
-            // module compatibility. Install only the functional hooks in
-            // both build variants; old reverse-engineering probes are gone.
+            // module compatibility. Hooks stay installed so its own UI
+            // switch can take effect live; the controller becomes a no-op
+            // when disabled and native V2 compatibility rules stay neutral.
+            playlistBridgeController.setEnabled(options.playlistBridgeEnabled)
             runCatching {
                 installPlaylistBridgeHooks(param)
             }.onFailure {
@@ -1861,7 +1871,7 @@ class GoneSmartModule : XposedModule() {
         playlistBridgeInfo(
             "BRIDGE READY | hooks=$installed | bindings=$bindingsReady"
         )
-        if (bindingsReady) {
+        if (bindingsReady && playlistBridgeController.isEnabled()) {
             runtimeReporter.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_SYSTEM,
                 "Playlist Bridge is available in the Smart-Playlist editor."
@@ -2007,7 +2017,9 @@ class GoneSmartModule : XposedModule() {
 
             hook(method).intercept { chain ->
                 val rule = chain.getThisObject()
-                if (!playlistBridgeController.isBridgeRule(rule)) {
+                if (!playlistBridgeController.isBridgeRule(rule) ||
+                    !playlistBridgeController.isEnabled()
+                ) {
                     return@intercept chain.proceed()
                 }
 
