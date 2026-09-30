@@ -124,16 +124,16 @@ internal class PlaylistNavigationBadgeController {
 
             val original = originalText(text)
             val title = original.toString()
-            val isPlaylist = PlaylistDrawerBadgePolicy.matchesNativePlaylist(
-                playlistNames,
-                "",
-                title
-            )
-            val isSmart = PlaylistDrawerBadgePolicy.matchesNativeSmartPlaylist(
-                smartNames,
-                "",
-                title
-            )
+            val isPlaylist =
+                PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+                    playlistNames,
+                    title
+                )
+            val isSmart =
+                PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+                    smartNames,
+                    title
+                )
             when {
                 isSmart -> {
                     smartCandidates += text
