@@ -53,6 +53,54 @@ class SmartNativeSubmissionPolicyTest {
         )
     }
 
+    @Test fun suppressesTransientRootOnlyAfterProjectionIsVisible() {
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                projectionPrepared = true,
+                nativeContentReady = true,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                projectionPrepared = true,
+                nativeContentReady = true,
+                currentIsRoot = true,
+                otherLocations = false,
+                groupRootPlaylists = true
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                projectionPrepared = false,
+                nativeContentReady = true,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                projectionPrepared = true,
+                nativeContentReady = false,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
+                projectionPrepared = true,
+                nativeContentReady = true,
+                currentIsRoot = true,
+                otherLocations = false,
+                groupRootPlaylists = false
+            )
+        )
+    }
+
     @Test fun waitsForCommittedNativeProjectionBeforeReveal() {
         val expected = setOf("/folder/a.spl", "/folder/b.spl")
         assertFalse(
