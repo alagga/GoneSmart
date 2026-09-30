@@ -11,7 +11,7 @@ In GMMP's Smart-Playlist editor, the existing Link button opens a host-styled ch
 - **Smart-Playlist** — dispatches GMMP's original linked-Smart-Playlist flow.
 - **Playlist** — opens GoneSmart's Playlist Link chooser using GMMP's ordinary playlist data and native list-dialog infrastructure.
 
-A saved Bridge rule appears as a normal playlist-style rule in the editor. Editing that Bridge rule reopens the ordinary-playlist chooser. Native linked Smart-Playlist rules remain native and unchanged.
+A saved Playlist Link rule appears as a normal playlist-style rule in the editor. Editing that Link rule reopens the ordinary-playlist chooser. Native linked Smart-Playlist rules remain native and unchanged.
 
 ## Runtime architecture
 
@@ -28,19 +28,19 @@ No GMMP playlist database schema is modified. No ordinary playlist is rewritten 
 
 ## Dynamic source updates
 
-Bridge membership is not a persisted snapshot. Parsed membership is cached only in memory and keyed by canonical source path, `lastModified` and file length. A changed source playlist invalidates that cache automatically; a later Smart-Playlist evaluation reads its current contents again.
+Playlist Link membership is not a persisted snapshot. Parsed membership is cached only in memory and keyed by canonical source path, `lastModified` and file length. A changed source playlist invalidates that cache automatically; a later Smart-Playlist evaluation reads its current contents again.
 
-The maintainer's first end-to-end device test showed the same saved Bridge rule evaluating 16 source members and, after the ordinary playlist changed, 6 members without editing the Smart-Playlist.
+The maintainer's first end-to-end device test showed the same saved Link rule evaluating 16 source members and, after the ordinary playlist changed, 6 members without editing the Smart-Playlist.
 
 ## Empty, missing and unsupported sources
 
-While GoneSmart is active, an empty, inaccessible, missing, unsupported or parse-failed Bridge source compiles to a native impossible song-ID predicate. It therefore fails closed instead of accidentally matching the whole library or falling through to GMMP's linked-`.spl` reader.
+While GoneSmart is active, an empty, inaccessible, missing, unsupported or parse-failed Playlist Link source compiles to a native impossible song-ID predicate. It therefore fails closed instead of accidentally matching the whole library or falling through to GMMP's linked-`.spl` reader.
 
 Supported ordinary playlist file types on the tested native parser path are M3U/M3U8, PLS and WPL.
 
 ## Disabled setting and disabled-module compatibility
 
-Turning **UI → Smart-Playlists → Playlist Link** off does not remove or rewrite saved Bridge rules. The Bridge UI/evaluation hooks remain registered only so the setting can change live, but when disabled they fall through to GMMP's original behavior. Persisted V2 Bridge leaves therefore use their native compatibility `.spl` and become boolean-neutral. They remain visible in the Smart-Playlist while no longer filtering its results. Re-enabling Playlist Link makes GoneSmart recognize those same leaves and resumes live ordinary-playlist membership.
+Turning **UI → Smart-Playlists → Playlist Link** off does not remove or rewrite saved Link rules. The internal Bridge UI/evaluation hooks remain registered only so the setting can change live, but when disabled they fall through to GMMP's original behavior. Persisted V2 Link leaves therefore use their native compatibility `.spl` and become boolean-neutral. They remain visible in the Smart-Playlist while no longer filtering its results. Re-enabling Playlist Link makes GoneSmart recognize those same leaves and resumes live ordinary-playlist membership.
 
 The same persisted representation is what protects Smart-Playlists when the entire GoneSmart module is unavailable:
 
@@ -48,16 +48,16 @@ The accepted V2 persisted representation is still a valid native linked-Smart-Pl
 
 `<neutral .spl>|<visible playlist name>|gonesmart-playlist-v2:<encoded ordinary path>`
 
-Before GMMP's original `ws4.t(File)` serializer writes a Smart-Playlist, GoneSmart temporarily substitutes each Bridge reference with a deterministic private compatibility `.spl`. Each occurrence gets its own path so GMMP's native recursion detector does not confuse separate Bridge leaves.
+Before GMMP's original `ws4.t(File)` serializer writes a Smart-Playlist, GoneSmart temporarily substitutes each internal Bridge reference with a deterministic private compatibility `.spl`. Each occurrence gets its own path so GMMP's native recursion detector does not confuse separate Link leaves.
 
 The compatibility files contain one native predicate:
 
 - logical true: `track_id != Long.MIN_VALUE`
 - logical false: `track_id = Long.MIN_VALUE`
 
-GoneSmart chooses true/false according to the surrounding native AND/OR tree so removing the Bridge contribution is boolean-neutral to the nearest surviving expression. The live editor objects are restored immediately after the original writer returns.
+GoneSmart chooses true/false according to the surrounding native AND/OR tree so removing the Link contribution is boolean-neutral to the nearest surviving expression. The live editor objects are restored immediately after the original writer returns.
 
-The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Bridge rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Bridge evaluation. The new live companion switch deliberately uses this same native fallback path; its toggle transition should receive one targeted device smoke test before v0.4 release.
+The maintainer disabled GoneSmart for GMMP, restarted the player and verified on GMMP 4.2.0 that both top-level and nested Link rules remained visible but no longer filtered results; surrounding native rules continued to work. Re-enabling GoneSmart restored Bridge evaluation. The new live companion switch deliberately uses this same native fallback path; its toggle transition should receive one targeted device smoke test before v0.4 release.
 
 ## Native UI and localization
 
@@ -67,9 +67,9 @@ Inside GMMP, wording is native-resource-first. The companion app and repository 
 
 ## Move interaction
 
-A Bridge reference stores the ordinary playlist path. Moving or renaming that source outside a Bridge-aware migration changes its identity; if the source becomes unavailable, the active Bridge rule fails closed. This is deliberately safer than silently guessing a new source by display name.
+A Playlist Link reference stores the ordinary playlist path. Moving or renaming that source outside a Playlist-Link-aware migration changes its identity; if the source becomes unavailable, the active Link rule fails closed. This is deliberately safer than silently guessing a new source by display name.
 
-Smart-Playlist-folder Move separately checks **native Smart-Playlist links** to selected `.spl` files and blocks moves that would break those absolute references. Bridge sentinel leaves are excluded from that native-link check because they are not links to the moved `.spl` source.
+Smart-Playlist-folder Move separately checks **native Smart-Playlist links** to selected `.spl` files and blocks moves that would break those absolute references. Playlist Link sentinel leaves are excluded from that native-link check because they are not links to the moved `.spl` source.
 
 ## Logging and privacy
 
@@ -82,8 +82,8 @@ The old development-only hooks that traced native reader pages, generic Smart-ru
 On the maintainer's GMMP 4.2.0 device, the following have been accepted:
 
 - Link popup and ordinary playlist choice.
-- Add/save/reopen/edit of a Bridge rule.
-- Native Smart-Playlist display and normal Play with Bridge membership.
+- Add/save/reopen/edit of a Playlist Link rule.
+- Native Smart-Playlist display and normal Play with Playlist Link membership.
 - Membership update after modifying the source ordinary playlist.
 - Top-level and nested disabled-GoneSmart compatibility behavior.
 - Coexistence with Smart-Playlist folders and the shared Smart writer hook.
@@ -95,7 +95,7 @@ These accepted tests should not be repeated merely because documentation was cle
 - GMMP **4.2.0** is the tested target; obfuscated internals are version-sensitive.
 - Very large ordinary playlists rely on the current verified URI-IN chunking behavior.
 - A missing source intentionally matches nothing while GoneSmart is active.
-- Moving/renaming a Bridge source is not guessed from its display name.
+- Moving/renaming a Playlist Link source is not guessed from its display name.
 - The compatibility contract is verified on the tested GMMP runtime, not promised for unknown future Smart-rule serializers/evaluators.
 
 See also [Smart-Playlist folders](SMART_PLAYLIST_FOLDERS.md), [native GMMP audit](NATIVE_GMMP_AUDIT.md), [architecture](ARCHITECTURE.md), and [persistent coding rules](../AGENTS.md).
