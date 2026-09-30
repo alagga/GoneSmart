@@ -31,7 +31,7 @@
 
 GoneSmart is a modern libxposed module and companion app that extends [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/) with **smart and quality-of-life features**. The current main focus — and the first major feature — is **Smart Auto-DJ**: GMMP stays in charge of playback, queue management and Auto-DJ timing, while GoneSmart replaces the actual track-selection step with session-aware recommendations.
 
-The project is intentionally broader than Auto-DJ. GoneSmart now also includes optional GMMP quality-of-life extensions for playlist and Smart-Playlist folders, multi-selection, Playlist Bridge, queue reversal and per-track Auto-DJ, while keeping the same core idea: keep GMMP as the player and add focused features around it.
+The project is intentionally broader than Auto-DJ. GoneSmart now also includes optional GMMP quality-of-life extensions for playlist and Smart-Playlist folders, multi-selection, Playlist Link, queue reversal and per-track Auto-DJ, while keeping the same core idea: keep GMMP as the player and add focused features around it.
 
 For Smart Auto-DJ, GoneSmart asks [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) for similar music, merges those recommendation signals, and then matches them against **your local GMMP library**. It never turns an external recommendation into a stream: the selected file must already exist on your device and in GMMP's database.
 
@@ -105,7 +105,7 @@ The matching pipeline is currently **especially tuned for electronic-music libra
 | Playlist multi-selection | Long-press destinations in GMMP's Add to Playlist dialog and add the current songs to several playlists with one confirmation |
 | Playlist folders | Browse/create/delete nested physical folders in both the Playlists tab and Add to Playlist picker; move one or several playlists with verified native index updates |
 | Smart-Playlist folders | Browse/create/delete physical Smart-Playlist folders while GMMP's original `ls4/vs4/ws4` rows remain authoritative; move one or several Smart-Playlists with native-link safety checks |
-| Playlist Bridge | GMMP's Smart-Playlist editor can link an ordinary playlist as a live membership rule; source changes are picked up on later evaluation |
+| Playlist Link | GMMP's Smart-Playlist editor can link an ordinary playlist as a live membership rule; source changes are picked up on later evaluation |
 | Flip queue / Play flipped | Reverse the existing queue or play ordinary/Smart playlists from last track to first while preserving GMMP playback ownership |
 | Track Auto-DJ | Start a fresh Auto-DJ session from any individual song and let GoneSmart fill GMMP's native queue |
 | Native look & language | Injected GMMP UI reuses native resources, widgets and live theme colors; genuinely new host phrases are centralized |
@@ -319,17 +319,17 @@ Enable **Multi-selection** in the same section to long-press one native Smart-Pl
 
 The maintainer accepted the current Smart-folder navigation, scrolling/overscroll, creation, deletion, single/multi Move, drawer badge and native-dialog behavior on the tested GMMP 4.2.0 setup by 30 September 2026. Other GMMP versions and untested skins remain compatibility work. See [Smart-Playlist folders](docs/SMART_PLAYLIST_FOLDERS.md).
 
-## Playlist Bridge
+## Playlist Link
 
-Enable **UI → Smart-Playlists → Playlist Bridge** (enabled by default for continuity). **Playlist Bridge** extends GMMP's existing Smart-Playlist editor Link action. The original link button opens a native-styled choice between **Smart-Playlist** and ordinary **Playlist**. Choosing Playlist stores a live reference to the normal playlist; when the Smart-Playlist is evaluated, GoneSmart reads current membership through GMMP's original playlist parser and compiles that membership through GMMP's native query predicates. It does not copy a static track snapshot and does not create a duplicate visible Smart-Playlist.
+Enable **UI → Smart-Playlists → Playlist Link** (enabled by default for continuity). **Playlist Link** extends GMMP's existing Smart-Playlist editor Link action. The original link button opens a native-styled choice between **Smart-Playlist** and ordinary **Playlist**. Choosing Playlist stores a live reference to the normal playlist; when the Smart-Playlist is evaluated, GoneSmart reads current membership through GMMP's original playlist parser and compiles that membership through GMMP's native query predicates. It does not copy a static track snapshot and does not create a duplicate visible Smart-Playlist.
 
-Bridge rules have been device-tested on GMMP 4.2.0 for add/save/reopen/edit, normal Smart-Playlist display/playback and dynamic source membership changes. A portable V2 representation keeps saved Smart-Playlists usable when GoneSmart is disabled. The same fallback is used when the Playlist Bridge option itself is off: saved Bridge leaves remain visible but become boolean-neutral native linked-`.spl` rules, so GMMP can still open the Smart-Playlist and its remaining native rules continue to work. Re-enable Playlist Bridge to restore the live ordinary-playlist contribution. Missing or unreadable sources fail closed while Playlist Bridge is active.
+Bridge rules have been device-tested on GMMP 4.2.0 for add/save/reopen/edit, normal Smart-Playlist display/playback and dynamic source membership changes. A portable V2 representation keeps saved Smart-Playlists usable when GoneSmart is disabled. The same fallback is used when the Playlist Link option itself is off: saved Bridge leaves remain visible but become boolean-neutral native linked-`.spl` rules, so GMMP can still open the Smart-Playlist and its remaining native rules continue to work. Re-enable Playlist Link to restore the live ordinary-playlist contribution. Missing or unreadable sources fail closed while Playlist Link is active.
 
-Playlist Bridge is now installed in both debug and release build variants on the v0.4 development branch; the old reverse-engineering reader/query probes are not part of the shipping path. See [Playlist Bridge](docs/SMART_PLAYLIST_LINKS.md).
+Playlist Link is now installed in both debug and release build variants on the v0.4 development branch; the old reverse-engineering reader/query probes are not part of the shipping path. See [Playlist Link](docs/SMART_PLAYLIST_LINKS.md).
 
 ## Companion UI and player indicator
 
-The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI extensions, plus module, update and shared live-settings status. **Smart DJ** controls music recommendations; **UI** groups independent **Playlists**, **Smart-Playlists**, and **Playback & Queue** controls. The Smart-Playlists section also exposes **Playlist Bridge** independently. Both playlist sections use the same concise **Multi-selection** and **Folders** labels, with descriptions tailored to the actual action on that surface. **Home → Settings** explains that normal settings apply live without restarting GMMP (a restart is still recommended after module updates).
+The GoneSmart companion app has separate **Home**, **Smart DJ**, **UI**, **Logs** and **Help** tabs. **Home** gives a balanced overview of Smart DJ and UI extensions, plus module, update and shared live-settings status. **Smart DJ** controls music recommendations; **UI** groups independent **Playlists**, **Smart-Playlists**, and **Playback & Queue** controls. The Smart-Playlists section also exposes **Playlist Link** independently. Both playlist sections use the same concise **Multi-selection** and **Folders** labels, with descriptions tailored to the actual action on that surface. **Home → Settings** explains that normal settings apply live without restarting GMMP (a restart is still recommended after module updates).
 
 **Logs** collects recent, high-level activity across **Smart DJ**,
 **multi-playlist selection**, **Flip Queue / Play Flipped**,
