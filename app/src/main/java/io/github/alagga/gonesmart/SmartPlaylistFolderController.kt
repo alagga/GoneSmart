@@ -272,6 +272,7 @@ internal class SmartPlaylistFolderController(
         var nativeOrder: List<String> = emptyList(),
         var nativeSignature: List<String> = emptyList(),
         var nativeSubmitted: Boolean = false,
+        var projectionPrepared: Boolean = false,
         var renderedLocationKey: String? = null,
         var renderedHeaderSignature: String? = null,
         var moveSources: List<String>? = null,
@@ -584,6 +585,7 @@ internal class SmartPlaylistFolderController(
                 )
                 if (mask) {
                     browser.nativeContentReady = false
+                    browser.projectionPrepared = false
                     browser.projectionFailOpenAllowed = false
                     browser.list.alpha = 0f
                 }
@@ -1179,6 +1181,7 @@ internal class SmartPlaylistFolderController(
                 }
                 browser.style = sampleNativeStyle(browser.list) ?: browser.style
                 render(browser, snapshot, models.size)
+                browser.projectionPrepared = true
                 settleFolderScrollAfterRefresh(browser, generation)
                 positionOverlay(browser)
             }
@@ -2980,6 +2983,7 @@ internal class SmartPlaylistFolderController(
         browser.folderScrollSyncReady = false
         browser.pendingFolderScrollReset = true
         browser.nativeContentReady = false
+        browser.projectionPrepared = false
         browser.projectionFailOpenAllowed = false
         browser.list.alpha = 0f
         browser.folderBand.translationY = 0f
@@ -3074,6 +3078,7 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun nativeProjectionReady(browser: Browser): Boolean {
+        if (!browser.projectionPrepared) return false
         val expected = browser.nativeOrder.toSet()
         return SmartNativeSubmissionPolicy.projectionReady(
             expectedCount = browser.nativeOrder.size,
