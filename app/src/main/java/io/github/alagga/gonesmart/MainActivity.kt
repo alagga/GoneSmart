@@ -861,9 +861,9 @@ class MainActivity : AppCompatActivity() {
                 "to link an ordinary GMMP playlist as a live membership rule instead " +
                 "of copying its current tracks. Changes to that source playlist are " +
                 "picked up when the Smart-Playlist is evaluated again. If Playlist " +
-                "Bridge or GoneSmart itself is disabled later, saved Bridge rules stay " +
+                "Playlist Link or GoneSmart itself is disabled later, saved Link rules stay " +
                 "visible but become neutral: GMMP can still open and use the " +
-                "Smart-Playlist, while those Bridge rules no longer filter its results. " +
+                "Smart-Playlist, while those Link rules no longer filter its results. " +
                 "Re-enable Playlist Link to restore their live membership behavior."
         ))
 
