@@ -10,11 +10,11 @@ without confusing UI activity with Smart DJ health.
 | --- | --- | --- |
 | `[System]` | Module loaded with its real installed version; enabled feature hooks ready | Startup / readiness |
 | `[Smart DJ]` | Recommendation selection, offline/native fallback, rating fallback, stopped | Existing Auto-DJ runtime-state updates |
-| `[UI]` | Playlist/Smart-Playlist folder, grouping, multi-selection and Playlist Bridge toggles; Flip / Track Auto-DJ toggles | Actual setting changes only |
+| `[UI]` | Playlist/Smart-Playlist folder, grouping, multi-selection and Playlist Link toggles; Flip / Track Auto-DJ toggles | Actual setting changes only |
 | `[Playlists]` | Native multi-add batch completed with confirmed success count, partial completion, no confirmed success or no accepted destinations | Native result callback / terminal dispatch |
 | `[Flip]` | Existing queue fully reversed and verified; Playlist/Smart Playlist fully reversed and verified; native failure or rollback result | After verified outcome, never on speculative invocation |
 | `[Track Mix]` | Selected song started, new Auto-DJ queue verified, initial fill incomplete or native action failed | Only after playback/queue verification or an explicit failure |
-| `[System]` | Module/feature readiness such as Playlist Bridge availability | Successful hook/binding readiness, not repeated UI inflation |
+| `[System]` | Module/feature readiness such as Playlist Link availability | Successful hook/binding readiness, not repeated UI inflation |
 
 **Companion-language rule:** Internal event category `[Track Mix]` remains stable for stored records, but the English-only GoneSmart companion app displays **Track Auto-DJ** in its Logs labels and Help. GMMP context menus continue using native localized resources.
 
@@ -35,7 +35,7 @@ in Android Logcat for those details.
 
 **Summary counters:** the Logs header counts **Smart DJ**, **Playlists**, **Flip**, **Track Auto-DJ**, **UI**, and **System** separately. Only legacy/unknown categories remain under **Other**. Stored category name `[Track Mix]` remains stable for backwards compatibility; the companion renders it as **Track Auto-DJ**.
 
-**Playlist Bridge:** the user-facing log records high-level System readiness while enabled and one `[UI]` event when its companion switch changes. Detailed Bridge evaluation belongs in Logcat under `GoneSmartPlaylistBridge`; no playlist name, source path or track content is needed in Companion Logs. Internal path diagnostics use privacy-safe hash/extension/length output.
+**Playlist Link:** the user-facing log records high-level System readiness while enabled and one `[UI]` event when its companion switch changes. Detailed Bridge evaluation belongs in Logcat under `GoneSmartPlaylistBridge`; no playlist name, source path or track content is needed in Companion Logs. Internal path diagnostics use privacy-safe hash/extension/length output.
 
 **Storage:** `GoneSmartEventStore` retains the most recent 400
 timestamped lines in the companion application's existing
