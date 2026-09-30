@@ -1,10 +1,10 @@
 # Multi-playlist selection (GMMP 4.2.0)
 
-GoneSmart's optional **UI → Multi-playlist selection** feature is implemented and available in release builds. It is independent of Smart DJ; normal single-playlist taps remain native GMMP operations. The implementation uses GMMP's own playlist writer and never edits playlist files directly.
+GoneSmart's optional **UI → Playlists → Multi-selection** feature is implemented and available in release builds. It is independent of Smart DJ; normal single-playlist taps remain native GMMP operations. The implementation uses GMMP's own playlist writer and never edits playlist files directly.
 
 ## User flow
 
-1. Enable **Multi-playlist selection** in GoneSmart's **UI** tab; enable and scope the libxposed module to GMMP.
+1. Enable **UI → Playlists → Multi-selection** in GoneSmart; enable and scope the libxposed module to GMMP.
 2. In GMMP's **Add to Playlist** dialog, long-press a destination to enter multiple selection.
 3. Tap other playlists to select or deselect them. The action bar displays GMMP's own localized selection count; selected rows track GMMP's changing dynamic theme and stay correctly highlighted when scrolling.
 4. Tap the confirmation checkmark (with GoneSmart's lilac sparkle) to add all source files to every selected destination. One native-style summary Toast reports the file count and the number of successful destinations.
