@@ -107,11 +107,11 @@ The companion app provides:
 - live settings updates
 - high-level GoneSmart runtime logs
 - FAQ/help
-- independently enabled UI-tab extensions
+- independently enabled UI-tab extensions, including Playlist Bridge under Smart-Playlists
 - GitHub Releases update status and Obtainium deep link
 - GMMP restart shortcut
 
-Settings are shared with the module through libxposed remote preferences so normal preference changes do not require restarting GMMP.
+Settings are shared with the module through libxposed remote preferences so normal preference changes do not require restarting GMMP. Playlist Bridge follows the same live-settings model: its hooks stay safely registered, while the controller either performs Bridge UI/evaluation work or falls through to GMMP's persisted native compatibility rule according to the current switch.
 
 ## Player indicator
 
