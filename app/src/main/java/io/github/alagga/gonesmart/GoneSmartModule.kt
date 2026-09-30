@@ -1058,12 +1058,6 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * Debug-only experimental multi-destination playlist picker for GMMP 4.2.0.
-     * Hooks only native picker methods and the three verified UI callbacks.
-     * The native io3 handler performs all actual playlist writes.
-     */
-
-    /**
      * Observe the host RecyclerView lifecycle used by both folder surfaces.
      * The original native methods always run; GoneSmart only attaches its
      * already-verified folder chrome to the matching visible surface.
@@ -2443,7 +2437,7 @@ class GoneSmartModule : XposedModule() {
 
         Log.i(
             "GoneSmartPlaylist",
-            "MULTI READY | experimental native playlist picker (debug build)"
+            "MULTI READY | native playlist multi-selection hooks"
         )
     }
 
