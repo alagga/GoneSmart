@@ -18,6 +18,8 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 ### Smart-Playlist folders
 
+- First-frame/return staging now masks GMMP's transient root Smart-Playlist dataset until the remembered physical-folder projection has actually committed, preventing the native root list from flashing when returning from a nested Smart-Playlist and avoiding the former header-first layout shift on initial tab opening.
+
 - Separate **UI → Smart-Playlists → Folders** option; independent from normal Playlist folders.
 - Real Smart-Playlist entries remain GMMP's original `ls4/vs4/ws4` rows. GoneSmart adds only the physical-folder header, breadcrumb and folder actions.
 - Shared folder chrome is reused through `PlaylistFolderUiKit` and `PlaylistFolderMoveChrome` rather than maintaining a second visual implementation.
