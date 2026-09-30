@@ -1784,6 +1784,7 @@ internal class PlaylistFolderPreviewController(
     private fun attachIfReady(list: ViewGroup, attempt: Int) {
         if (!settings.enabled || browsers.containsKey(list) ||
             suspendedNativeLists.containsKey(list) ||
+            failedOverlayHosts.containsKey(list) ||
             !list.isAttachedToWindow
         ) return
         if (!attachSurfaceReady(list)) {
@@ -2133,15 +2134,8 @@ internal class PlaylistFolderPreviewController(
             )
         ) {
             failedOverlayHosts[list] = true
-            browsers.remove(list)
-            styles.remove(list)
-            list.alpha = browser.originalAlpha
+            removeBrowser(list)
             nativeOriginalAlphas.remove(list)
-            list.removeOnAttachStateChangeListener(detachListener)
-            list.removeOnLayoutChangeListener(layoutListener)
-            if (list.viewTreeObserver.isAlive) {
-                list.viewTreeObserver.removeOnPreDrawListener(themeListener)
-            }
             Log.w(
                 TAG,
                 "FOLDER INLINE STOP | scoped overlay insertion failed" +
