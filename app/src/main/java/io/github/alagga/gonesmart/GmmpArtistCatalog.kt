@@ -129,6 +129,9 @@ class GmmpArtistCatalog {
                 diagnoseArtistDaoAccessor(
                     database.javaClass
                 )
+                diagnoseAutoDjDatabaseFields(
+                    autoDjInstance
+                )
 
                 return
             }
@@ -328,6 +331,62 @@ class GmmpArtistCatalog {
                 t
             )
         }
+    }
+
+    private fun diagnoseAutoDjDatabaseFields(
+        autoDjInstance: Any
+    ) {
+        val fields =
+            generateSequence<Class<*>>(autoDjInstance.javaClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .distinctBy { it.name }
+                .sortedBy { it.name }
+                .toList()
+
+        val entries =
+            fields.take(32).map { field ->
+                field.isAccessible = true
+                val runtimeType =
+                    runCatching {
+                        field.get(autoDjInstance)
+                            ?.javaClass
+                            ?.name
+                    }.getOrNull()
+                        ?: "null"
+
+                val roomLike =
+                    runCatching {
+                        field.get(autoDjInstance)
+                    }.getOrNull()
+                        ?.let { value ->
+                            generateSequence<Class<*>>(
+                                value.javaClass
+                            ) { it.superclass }
+                                .any {
+                                    it.name ==
+                                        "androidx.room.RoomDatabase"
+                                }
+                        } == true
+
+                field.name + ":" +
+                    field.type.name + "->" +
+                    runtimeType +
+                    if (roomLike) "[RoomDatabase]" else ""
+            }
+
+        Log.w(
+            TAG,
+            "GMMP DATABASE FIELD MAPPING | autoDj=" +
+                autoDjInstance.javaClass.name +
+                " | fields=" +
+                entries.joinToString(",").ifBlank { "none" } +
+                " | fieldCount=" + fields.size
+        )
     }
 
     private fun diagnoseArtistDaoAccessor(
