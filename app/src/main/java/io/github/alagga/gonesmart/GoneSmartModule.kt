@@ -981,6 +981,19 @@ class GoneSmartModule : XposedModule() {
             )
         }.onFailure {
             Log.w(TAG, "Flip queue capture hooks unavailable", it)
+            runCatching {
+                val queueClass = param.classLoader.loadClass("ex3")
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP QUEUE MAPPING | noArgMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 24
+                        ) {
+                            it.parameterTypes.isEmpty()
+                        }
+                )
+            }
         }
 
         // Native playback from ordinary track lists may replace the
@@ -1031,6 +1044,29 @@ class GoneSmartModule : XposedModule() {
             )
         }.onFailure {
             Log.w(TAG, "Track Mix native queue observers unavailable", it)
+            runCatching {
+                val queueClass = param.classLoader.loadClass("ex3")
+                Log.w(
+                    "GoneSmartTrackMix",
+                    "MIX QUEUE MAPPING | intMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 24
+                        ) {
+                            it.parameterTypes.size == 1 &&
+                                it.parameterTypes[0] == Integer.TYPE
+                        } +
+                        " | listMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 24
+                        ) {
+                            it.parameterTypes.size == 1 &&
+                                java.util.List::class.java
+                                    .isAssignableFrom(it.parameterTypes[0])
+                        }
+                )
+            }
         }
 
         // Playlist and Smart Playlist both use MusicService.w1(action=0)
@@ -1093,6 +1129,21 @@ class GoneSmartModule : XposedModule() {
         }.onFailure { error ->
             queueFlipController.setNativePlaylistInterceptorReady(false)
             Log.e(TAG, "Flip native Playlist Play hook unavailable", error)
+            runCatching {
+                val serviceClass = param.classLoader.loadClass(
+                    "gonemad.gmmp.playback.service.MusicService"
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP SERVICE MAPPING | threeArgMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = serviceClass,
+                            limit = 28
+                        ) {
+                            it.parameterTypes.size == 3
+                        }
+                )
+            }
         }
 
         Log.i(
@@ -2137,7 +2188,21 @@ class GoneSmartModule : XposedModule() {
             val method = pickerClass.declaredMethods
                 .firstOrNull {
                     it.name == name && it.parameterCount == 0
-                } ?: throw NoSuchMethodException("bo3.$name()")
+                }
+                ?: run {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "PLAYLIST PICKER MAPPING | missing=bo3.$name()" +
+                            " | noArgMethods=" +
+                            GmmpReflectionDiagnostics.methods(
+                                type = pickerClass,
+                                limit = 28
+                            ) {
+                                it.parameterTypes.isEmpty()
+                            }
+                    )
+                    throw NoSuchMethodException("bo3.$name()")
+                }
 
             method.isAccessible = true
             hook(method).intercept { chain ->
