@@ -2330,10 +2330,21 @@ class GoneSmartModule : XposedModule() {
         }
 
         val kotlinUnit = runCatching {
-            param.classLoader.loadClass("uf5")
-                .getDeclaredField("a")
-                .apply { isAccessible = true }
-                .get(null)
+            val unitType = param.classLoader.loadClass("uf5")
+            val field = unitType.declaredFields.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    unitType.isAssignableFrom(it.type)
+            }.singleOrNull() ?: error(
+                "Kotlin Unit singleton field is not structurally unique"
+            )
+            field.isAccessible = true
+            field.get(null) ?: error("Kotlin Unit singleton is null")
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "NATIVE CREATE | Kotlin Unit singleton unavailable",
+                it
+            )
         }.getOrNull()
 
         val getterReady = runCatching {
