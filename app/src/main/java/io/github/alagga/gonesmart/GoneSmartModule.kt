@@ -604,7 +604,6 @@ class GoneSmartModule : XposedModule() {
             val multiPlaylistHooksReady =
                 runCatching {
                     installPlaylistMultiSelectHooks(param)
-                    true
                 }.onFailure { playlistHookError ->
                     Log.w(
                         TAG,
@@ -2201,7 +2200,7 @@ class GoneSmartModule : XposedModule() {
 
     private fun installPlaylistMultiSelectHooks(
         param: PackageReadyParam
-    ) {
+    ): Boolean {
         val pickerClass = param.classLoader.loadClass("bo3")
 
         val installedPickerMethods = mutableSetOf<String>()
@@ -2256,36 +2255,38 @@ class GoneSmartModule : XposedModule() {
         // source selection (ho3). Capture it during picker startup. Keep this
         // independent from the remapped bo3 lifecycle so one missing boundary
         // cannot hide the rest of the 4.2.1 compatibility evidence.
-        runCatching {
-            val handlerClass = param.classLoader.loadClass("io3")
-            val nativeConstructor = handlerClass.declaredConstructors
-                .firstOrNull {
-                    it.parameterTypes.size == 2 &&
-                        it.parameterTypes[0].name == "ho3" &&
-                        it.parameterTypes[1] == Boolean::class.javaPrimitiveType
-                } ?: throw NoSuchMethodException("io3(ho3, boolean)")
+        val nativeHandlerReady =
+            runCatching {
+                val handlerClass = param.classLoader.loadClass("io3")
+                val nativeConstructor = handlerClass.declaredConstructors
+                    .firstOrNull {
+                        it.parameterTypes.size == 2 &&
+                            it.parameterTypes[0].name == "ho3" &&
+                            it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+                    } ?: throw NoSuchMethodException("io3(ho3, boolean)")
 
-            nativeConstructor.isAccessible = true
-            hook(nativeConstructor).intercept { chain ->
-                val result = chain.proceed()
-                playlistController.onNativeHandler(
-                    chain.getThisObject()
+                nativeConstructor.isAccessible = true
+                hook(nativeConstructor).intercept { chain ->
+                    val result = chain.proceed()
+                    playlistController.onNativeHandler(
+                        chain.getThisObject()
+                    )
+                    result
+                }
+                true
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "PLAYLIST PICKER HANDLER MAPPING | io3(ho3,boolean) unavailable" +
+                        " | constructors=" +
+                        runCatching {
+                            GmmpReflectionDiagnostics.constructors(
+                                param.classLoader.loadClass("io3")
+                            )
+                        }.getOrDefault("class unavailable"),
+                    error
                 )
-                result
-            }
-        }.onFailure { error ->
-            Log.w(
-                "GoneSmartPlaylist",
-                "PLAYLIST PICKER HANDLER MAPPING | io3(ho3,boolean) unavailable" +
-                    " | constructors=" +
-                    runCatching {
-                        GmmpReflectionDiagnostics.constructors(
-                            param.classLoader.loadClass("io3")
-                        )
-                    }.getOrDefault("class unavailable"),
-                error
-            )
-        }
+            }.getOrDefault(false)
 
         // GMMP io3.r() builds one jd(mode=4) completion callback per
         // playlist. Each successful callback posts j83 to the activity,
@@ -2616,13 +2617,21 @@ class GoneSmartModule : XposedModule() {
             }
         }
 
+        val pickerCoreReady =
+            installedPickerMethods.containsAll(
+                listOf("I3", "k2", "D1")
+            ) && nativeHandlerReady
+
         Log.i(
             "GoneSmartPlaylist",
             "MULTI READY | native playlist multi-selection hooks" +
+                " | ready=$pickerCoreReady" +
                 " | pickerMethods=" +
                 installedPickerMethods.sorted().joinToString(",")
-                    .ifBlank { "none" }
+                    .ifBlank { "none" } +
+                " | nativeHandler=$nativeHandlerReady"
         )
+        return pickerCoreReady
     }
 
     private fun initializeRemoteSettings() {
