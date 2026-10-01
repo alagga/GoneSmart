@@ -172,6 +172,29 @@ internal object NativePlaylistSourceInspector {
                 }
             }
         }
+
+        if (expectedRows in 1..MAX_CONTAINER_ITEMS &&
+            paths.size < expectedRows &&
+            NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            val runtimeRows =
+                NativePlaylistRuntimeBinding.readAll(adapter, expectedRows)
+            if (runtimeRows != null) {
+                log("adapter.runtimeBinding(rows=" + runtimeRows.size + ")")
+                runtimeRows.forEach { row ->
+                    paths.add(row.path)
+                    if (!models.containsKey(row.path)) {
+                        models[row.path] = NativePlaylistTitleResolver.Model(
+                            row.path,
+                            linkedMapOf("title" to row.title)
+                        )
+                    }
+                    nativeObjects.putIfAbsent(row.path, row.model)
+                }
+            } else {
+                log("adapter.runtimeBinding(readAll=unresolved)")
+            }
+        }
         log("RESULT nativePaths=" + paths.size +
             " expectedAdapterRows=" + expectedRows)
         return Result(
