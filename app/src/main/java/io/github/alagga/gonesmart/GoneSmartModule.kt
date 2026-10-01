@@ -518,14 +518,13 @@ class GoneSmartModule : XposedModule() {
             "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
 
-        if (BuildConfig.DEBUG) {
-            Log.i(
-                "GoneSmartCompat",
-                "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
-                    " | moduleVersion=${BuildConfig.VERSION_NAME}"
-            )
-            logCompatibilityStaticInventory(param.classLoader)
-        }
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                " | moduleVersion=${BuildConfig.VERSION_NAME}" +
+                " | buildDebug=${BuildConfig.DEBUG}"
+        )
+        logCompatibilityStaticInventory(param.classLoader)
 
         runtimeReporter.report(
             mode = GoneSmartRuntimeContract.MODE_NONE,
@@ -840,13 +839,12 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
-            if (BuildConfig.DEBUG) {
-                Log.i(
-                    "GoneSmartCompat",
-                    "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
-                        " | hookRegistration=complete"
-                )
-            }
+            Log.i(
+                "GoneSmartCompat",
+                "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                    " | hookRegistration=complete" +
+                    " | buildDebug=${BuildConfig.DEBUG}"
+            )
 
         } catch (t: Throwable) {
 
@@ -1281,9 +1279,7 @@ class GoneSmartModule : XposedModule() {
     private fun logCompatibilityStaticInventory(
         loader: ClassLoader
     ) {
-        if (!BuildConfig.DEBUG ||
-            !compatibilityStaticProbeStarted.compareAndSet(false, true)
-        ) {
+        if (!compatibilityStaticProbeStarted.compareAndSet(false, true)) {
             return
         }
 
@@ -1332,10 +1328,6 @@ class GoneSmartModule : XposedModule() {
         type: Class<*>,
         instance: Any? = null
     ) {
-        if (!BuildConfig.DEBUG) {
-            return
-        }
-
         Log.i(
             "GoneSmartCompat",
             "$marker | requested=$requestedName" +
@@ -1416,7 +1408,7 @@ class GoneSmartModule : XposedModule() {
         adapterHint: Any?,
         source: String
     ) {
-        if (!BuildConfig.DEBUG || view == null) {
+        if (view == null) {
             return
         }
 
@@ -2544,7 +2536,7 @@ class GoneSmartModule : XposedModule() {
         val missingPickerMethods =
             listOf("I3", "k2", "D1")
                 .filterNot(installedPickerMethods::contains)
-        if (BuildConfig.DEBUG && missingPickerMethods.isNotEmpty()) {
+        if (missingPickerMethods.isNotEmpty()) {
             Log.w(
                 "GoneSmartPlaylist",
                 "PLAYLIST PICKER MAPPING SUMMARY | missing=" +
