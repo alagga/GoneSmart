@@ -168,6 +168,13 @@ class GmmpLibraryReader {
             Long =
         0L
 
+    @Volatile
+    private var deterministicMappingFailure =
+        false
+
+    fun hasDeterministicMappingFailure(): Boolean =
+        deterministicMappingFailure
+
     fun read(
         autoDjInstance: Any,
         forceRefresh: Boolean = false
@@ -302,10 +309,8 @@ class GmmpLibraryReader {
                 )
 
         val queryMethod =
-            findMethod(
-                type = trackDao.javaClass,
-                name = "g2",
-                parameterCount = 1
+            resolveLibraryQueryMethod(
+                trackDao.javaClass
             )
 
         queryMethod.isAccessible =
@@ -693,6 +698,60 @@ class GmmpLibraryReader {
 
         throw NoSuchFieldException(
             "${type.name}.$name"
+        )
+    }
+
+    private fun resolveLibraryQueryMethod(
+        type: Class<*>
+    ): Method {
+        runCatching {
+            findMethod(
+                type = type,
+                name = "g2",
+                parameterCount = 1
+            )
+        }.getOrNull()?.let {
+            return it
+        }
+
+        deterministicMappingFailure = true
+
+        val oneArgMethods =
+            generateSequence<Class<*>>(type) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter { it.parameterTypes.size == 1 }
+                .distinctBy { method ->
+                    method.name + "|" +
+                        method.parameterTypes.joinToString(",") { it.name } + "|" +
+                        method.returnType.name
+                }
+                .sortedBy { it.name }
+                .toList()
+
+        val listCandidates =
+            oneArgMethods.filter {
+                java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+
+        fun signature(method: Method): String =
+            method.name + "(" +
+                method.parameterTypes.joinToString(",") { it.name } +
+                "):" + method.returnType.name
+
+        Log.w(
+            TAG,
+            "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
+                " | listCandidates=" +
+                listCandidates.take(12).joinToString(",") { signature(it) }
+                    .ifBlank { "none" } +
+                " | oneArgMethods=" +
+                oneArgMethods.take(20).joinToString(",") { signature(it) }
+                    .ifBlank { "none" } +
+                " | oneArgMethodCount=" + oneArgMethods.size
+        )
+
+        throw NoSuchMethodException(
+            type.name + ".g2/1 is unavailable; GMMP library mapping is unverified"
         )
     }
 
