@@ -59,6 +59,46 @@ internal object GmmpReflectionDiagnostics {
             }
             .ifBlank { "none" }
 
+    fun runtimeCollectionElementTypes(
+        instance: Any,
+        limitFields: Int = 20,
+        limitTypesPerField: Int = 6
+    ): String =
+        generateSequence<Class<*>>(instance.javaClass) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter { !Modifier.isStatic(it.modifiers) }
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    val value = field.get(instance)
+                    val elements = when (value) {
+                        is Iterable<*> -> value.toList()
+                        is Array<*> -> value.toList()
+                        else -> return@runCatching null
+                    }
+                    val types = elements
+                        .asSequence()
+                        .filterNotNull()
+                        .map { it.javaClass.name }
+                        .distinct()
+                        .take(limitTypesPerField)
+                        .toList()
+                    val size = when (value) {
+                        is Collection<*> -> value.size.toString()
+                        is Array<*> -> value.size.toString()
+                        else -> "?"
+                    }
+                    field.declaringClass.name +
+                        "." + field.name +
+                        ":size=" + size +
+                        "->" +
+                        types.joinToString("|").ifBlank { "<empty>" }
+                }.getOrNull()
+            }
+            .take(limitFields)
+            .joinToString(",")
+            .ifBlank { "none" }
+
     fun fields(
         type: Class<*>,
         limit: Int = 24

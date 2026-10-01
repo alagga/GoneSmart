@@ -178,6 +178,9 @@ For an unaccepted GMMP build, prefer one clean startup log containing the follow
 - `GMMP COMPAT PROBE` — exact temporary probe revision loaded by the tested module build.
 - `GMMP COMPAT CLASS` — bounded hierarchy/constructor/field/declared-method inventory for known 4.2.0 native boundaries.
 - `GMMP RECYCLER ADAPTER` / `GMMP RECYCLER ADAPTER CLASS` — runtime RecyclerView resource/path, actual adapter class, item count and privacy-safe adapter structure/runtime field types.
+- `GMMP RECYCLER SNAPSHOT` — delayed item-count plus collection element **types only** for relevant Playlist/Smart/Queue adapters, allowing model remaps without logging titles, paths or row values.
+- `GMMP AUTO DJ RUNTIME` — delayed runtime field/collection **types only** for the live Auto-DJ object, used to identify the remapped queue-controller field without invoking guessed methods.
+- `GMMP 4.2.1 CANDIDATE` — bounded class structure for candidate names observed directly in 4.2.1 fragment/adapter runtime logs.
 - `AUTO DJ SELECTION MAPPING` — concrete int→List selection candidates.
 - `GMMP DATABASE MAPPING` — structurally resolved GMDatabase field.
 - `GMMP ARTIST QUERY MAPPING` / `GMMP ARTIST QUERY CLASS` — ArtistDao query candidates and RawQuery constructor shape.

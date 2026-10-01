@@ -43,6 +43,8 @@ internal class PlaylistFolderPreviewController(
 ) {
     companion object {
         private const val TAG = "GoneSmartPlaylist"
+        private val NATIVE_PLAYLIST_ADAPTER_NAMES =
+            setOf("zn3", "ao3")
         private const val MAX_ATTACH_RETRIES = 20
         private const val ATTACH_RETRY_MS = 150L
         // GMMP 4.2.0 native quickNav measured 58.8px on the same skin
@@ -756,21 +758,23 @@ internal class PlaylistFolderPreviewController(
         val adapter = nativeAdapter(list)
         val nativePlaylistSurface =
             resourceName(list) == "playlistListRecyclerView" ||
-                adapter?.javaClass?.name == "zn3"
+                adapter?.javaClass?.name in NATIVE_PLAYLIST_ADAPTER_NAMES
         if (!nativePlaylistSurface) return
-        if (adapter != null && adapter.javaClass.name != "zn3") return
+        if (adapter != null && adapter.javaClass.name !in NATIVE_PLAYLIST_ADAPTER_NAMES) return
         if (BuildConfig.DEBUG &&
             resourceName(list) != "playlistListRecyclerView"
         ) {
             Log.i(
                 TAG,
-                "FOLDER NAV COMPAT | playlist adapter=zn3 | viewId=" +
+                "FOLDER NAV COMPAT | playlist adapter=" +
+                    (adapter?.javaClass?.name ?: "<none>") +
+                    " | viewId=" +
                     resourceName(list).ifBlank { "<none>" }
             )
         }
         knownLists[list] = true
         if (suspendedNativeLists.containsKey(list)) return
-        // Hide the native ungrouped list as soon as its verified zn3 adapter
+        // Hide the native ungrouped list as soon as its verified native playlist adapter
         // is observed. The complete native model can take another frame (or
         // several) to load; showing that list first causes a visible flash.
         // Keep the original alpha and fail open if overlay setup stalls.
@@ -2413,7 +2417,7 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * GMMP 4.2.0's original zn3 adapter extends its own obfuscated
+     * GMMP's verified 4.2.0 zn3 / 4.2.1 ao3 playlist adapter extends its own obfuscated
      * RecyclerView$h (Adapter). The module observes the REAL adapter's
      * original notifyDataSetChanged/notifyItemRangeInserted/etc. methods.
      * These events are delivered even when an idle Playlists tab does not

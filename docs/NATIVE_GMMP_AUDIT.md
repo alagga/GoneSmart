@@ -161,6 +161,8 @@ The same run confirms that startup prewarm now stops immediately after the unres
 
 The next compatibility hardening pass also removed two avoidable failure cascades before any further remapping: the Add-to-Playlist picker now attempts its `I3` / `k2` / `D1` observers and native handler independently, and its failure no longer blocks the separately verified native playlist-creation hook family. Likewise, the missing 4.2.1 `ws4.t(File)` Smart writer is caught locally so ordinary Playlist surface hooks are still attempted. These changes do **not** declare the remapped functions compatible; they only preserve unrelated native paths and make the next clean-start diagnostic complete.
 
+A subsequent 4.2.1 runtime-surface probe established three concrete adapter identities without guessing: `playlistListRecyclerView` uses `ao3`, `smartListRecyclerView` uses `is4`, and `queueRecyclerView` uses `fx3`. The first mapping is safe to add beside the accepted 4.2.0 `zn3` playlist adapter because the resource surface and actual Adapter hierarchy were observed together. The Smart adapter is recorded as evidence but does not by itself repair the still-remapped Smart model/presenter/writer bindings. Likewise, `fx3` is explicitly only the Queue RecyclerView adapter and must **not** be substituted for the old 4.2.0 `ex3` queue controller/writer. The next bounded probe records loaded-list element types plus runtime Auto-DJ field types so those remaining semantic roles can be resolved from actual instances.
+
 ## 2026-09-30 release-prep audit consolidation
 
 The completed Playlist/Smart-Playlist feature set was re-audited against the current branch after the final Smart-folder and creation-dialog device passes.

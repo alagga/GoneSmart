@@ -33,7 +33,41 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r3"
+            "gmmp421-r4"
+
+        private val GMMP_PLAYLIST_ADAPTER_CLASS_NAMES =
+            setOf("zn3", "ao3")
+
+        private val COMPAT_RELEVANT_RECYCLER_IDS =
+            setOf(
+                "playlistListRecyclerView",
+                "smartListRecyclerView",
+                "smartRuleListRecyclerView",
+                "queueRecyclerView"
+            )
+
+        private val COMPAT_421_RUNTIME_CANDIDATES =
+            listOf(
+                "ao3",
+                "qp3",
+                "op3",
+                "tp3",
+                "eo3",
+                "co3",
+                "ho3",
+                "is4",
+                "ps4",
+                "zr4",
+                "tr4",
+                "sr4",
+                "fx3",
+                "ey3",
+                "s6",
+                "as4",
+                "qr",
+                "ex3",
+                "gonemad.gmmp.playback.service.MusicService"
+            )
 
         private const val MAX_COMPAT_RECYCLER_SURFACES =
             64
@@ -106,6 +140,19 @@ class GoneSmartModule : XposedModule() {
 
     private val compatibilityStaticProbeStarted =
         AtomicBoolean(false)
+
+    private val compatibilityRuntimeInventoryStarted =
+        AtomicBoolean(false)
+
+    private val compatibilityRecyclerSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityRuntimeInstanceSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
 
     private var remoteSettingsPreferences:
             SharedPreferences? =
@@ -1289,6 +1336,12 @@ class GoneSmartModule : XposedModule() {
             "ho3",
             "io3",
             "zn3",
+            "ao3",
+            "qp3",
+            "op3",
+            "tp3",
+            "eo3",
+            "co3",
             "ft4",
             "ds4",
             "os2",
@@ -1296,10 +1349,19 @@ class GoneSmartModule : XposedModule() {
             "ss4",
             "os4",
             "ls4",
+            "is4",
+            "ps4",
             "vs4",
             "ou4",
             "nt4",
+            "zr4",
+            "tr4",
+            "sr4",
             "ex3",
+            "fx3",
+            "ey3",
+            "s6",
+            "as4",
             "qr",
             "kr",
             "fn",
@@ -1371,6 +1433,130 @@ class GoneSmartModule : XposedModule() {
                     it.declaringClass == type
                 }
         )
+    }
+
+    private fun logCompatibility421RuntimeInventory(
+        loader: ClassLoader
+    ) {
+        if (!compatibilityRuntimeInventoryStarted.compareAndSet(false, true)) {
+            return
+        }
+        COMPAT_421_RUNTIME_CANDIDATES.forEach { requestedName ->
+            runCatching {
+                val type = loader.loadClass(requestedName)
+                logCompatibilityClassStructure(
+                    marker = "GMMP 4.2.1 CANDIDATE",
+                    requestedName = requestedName,
+                    type = type
+                )
+            }.onFailure { failure ->
+                Log.w(
+                    "GoneSmartCompat",
+                    "GMMP 4.2.1 CANDIDATE | requested=" + requestedName +
+                        " | unavailable=" + failure.javaClass.simpleName
+                )
+            }
+        }
+    }
+
+    private fun logCompatibilityRuntimeInstance(
+        marker: String,
+        instance: Any?
+    ) {
+        instance ?: return
+        val fields = GmmpReflectionDiagnostics.runtimeFieldTypes(
+            instance = instance,
+            limit = 48
+        )
+        val collections =
+            GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                instance = instance,
+                limitFields = 24,
+                limitTypesPerField = 8
+            )
+        val key = marker + "|" + instance.javaClass.name + "|" +
+            fields + "|" + collections
+        val shouldLog = synchronized(compatibilityRuntimeInstanceSnapshots) {
+            compatibilityRuntimeInstanceSnapshots.add(key)
+        }
+        if (!shouldLog) return
+
+        Log.i(
+            "GoneSmartCompat",
+            marker + " | runtime=" + instance.javaClass.name +
+                " | hierarchy=" +
+                GmmpReflectionDiagnostics.hierarchy(instance.javaClass) +
+                " | runtimeFields=" + fields +
+                " | collections=" + collections
+        )
+    }
+
+    private fun scheduleCompatibilityRuntimeInstance(
+        marker: String,
+        instance: Any?
+    ) {
+        instance ?: return
+        val weak = WeakReference(instance)
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        listOf(0L, 400L, 1_200L, 3_000L).forEach { delay ->
+            handler.postDelayed({
+                logCompatibilityRuntimeInstance(marker, weak.get())
+            }, delay)
+        }
+    }
+
+    private fun scheduleCompatibilityRecyclerSnapshots(
+        view: android.view.View,
+        expectedAdapter: Any,
+        resourceName: String
+    ) {
+        if (resourceName !in COMPAT_RELEVANT_RECYCLER_IDS) return
+        val weakView = WeakReference(view)
+        val expectedClassName = expectedAdapter.javaClass.name
+        listOf(250L, 900L, 2_000L, 4_000L).forEach { delay ->
+            view.postDelayed({
+                val current = weakView.get() ?: return@postDelayed
+                val adapter = runCatching {
+                    current.javaClass.methods
+                        .firstOrNull {
+                            it.name == "getAdapter" &&
+                                it.parameterCount == 0
+                        }
+                        ?.invoke(current)
+                }.getOrNull() ?: return@postDelayed
+                if (adapter.javaClass.name != expectedClassName) {
+                    return@postDelayed
+                }
+                val itemCount = runCatching {
+                    adapter.javaClass.methods
+                        .firstOrNull {
+                            it.name == "getItemCount" &&
+                                it.parameterCount == 0
+                        }
+                        ?.invoke(adapter)
+                }.getOrNull()?.toString() ?: "unknown"
+                val collections =
+                    GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                        instance = adapter,
+                        limitFields = 24,
+                        limitTypesPerField = 8
+                    )
+                val key = resourceName + "|" + expectedClassName + "|" +
+                    itemCount + "|" + collections
+                val shouldLog = synchronized(compatibilityRecyclerSnapshots) {
+                    compatibilityRecyclerSnapshots.add(key)
+                }
+                if (shouldLog) {
+                    Log.i(
+                        "GoneSmartCompat",
+                        "GMMP RECYCLER SNAPSHOT | resource=" + resourceName +
+                            " | adapter=" + expectedClassName +
+                            " | itemCount=" + itemCount +
+                            " | collections=" + collections
+                    )
+                }
+            }, delay)
+        }
     }
 
     private fun compatibilityResourceName(
@@ -1460,6 +1646,18 @@ class GoneSmartModule : XposedModule() {
             type = adapter.javaClass,
             instance = adapter
         )
+
+        if (resourceName in COMPAT_RELEVANT_RECYCLER_IDS) {
+            val loader = adapter.javaClass.classLoader
+            if (loader != null) {
+                logCompatibility421RuntimeInventory(loader)
+            }
+            scheduleCompatibilityRecyclerSnapshots(
+                view = view,
+                expectedAdapter = adapter,
+                resourceName = resourceName
+            )
+        }
     }
 
     /**
@@ -1660,9 +1858,14 @@ class GoneSmartModule : XposedModule() {
         val adapterBase = param.classLoader.loadClass(
             "androidx.recyclerview.widget.RecyclerView\$h"
         )
-        val nativePlaylist = param.classLoader.loadClass("zn3")
-        check(adapterBase.isAssignableFrom(nativePlaylist)) {
-            "GMMP 4.2.0 zn3 no longer extends original Adapter"
+        val nativePlaylistClasses =
+            GMMP_PLAYLIST_ADAPTER_CLASS_NAMES.mapNotNull { name ->
+                runCatching {
+                    param.classLoader.loadClass(name)
+                }.getOrNull()?.takeIf(adapterBase::isAssignableFrom)
+            }
+        check(nativePlaylistClasses.isNotEmpty()) {
+            "No verified GMMP playlist Adapter candidate is available"
         }
         var installed = 0
         for ((name, argCount) in NativePlaylistAdapterEventPolicy.nativeMethods) {
@@ -1672,10 +1875,11 @@ class GoneSmartModule : XposedModule() {
             method.isAccessible = true
             hook(method).intercept { chain ->
                 val result = chain.proceed()
-                if (nativePlaylist.isInstance(chain.getThisObject())) {
+                val instance = chain.getThisObject()
+                if (nativePlaylistClasses.any { it.isInstance(instance) }) {
                     runCatching {
                         playlistFolderPreview.onNativePlaylistAdapterEvent(
-                            chain.getThisObject(), name
+                            instance, name
                         )
                     }.onFailure {
                         Log.w(
@@ -2806,28 +3010,40 @@ class GoneSmartModule : XposedModule() {
         // tint AFTER a native bind so no selected background can leak onto
         // an unrelated playlist occupying the same RecyclerView holder.
         runCatching {
-            val adapterClass = param.classLoader.loadClass("zn3")
-            val bindMethods = adapterClass.declaredMethods.filter { method ->
-                method.name == "N0" && method.parameterCount >= 1
-            }
-            bindMethods.forEach { method ->
-                method.isAccessible = true
-                hook(method).intercept { chain ->
-                    val result = chain.proceed()
-                    val args = (0 until method.parameterCount)
-                        .map { index -> chain.getArg(index) }
-                    val holder = args.firstOrNull {
-                        it?.javaClass?.name == "jo3"
+            var bindHookCount = 0
+            val boundAdapterNames = arrayListOf<String>()
+            GMMP_PLAYLIST_ADAPTER_CLASS_NAMES.forEach { className ->
+                val adapterClass = runCatching {
+                    param.classLoader.loadClass(className)
+                }.getOrNull() ?: return@forEach
+                val bindMethods = adapterClass.declaredMethods.filter { method ->
+                    method.name == "N0" && method.parameterCount >= 1
+                }
+                bindMethods.forEach { method ->
+                    method.isAccessible = true
+                    hook(method).intercept { chain ->
+                        val result = chain.proceed()
+                        val args = (0 until method.parameterCount)
+                            .map { index -> chain.getArg(index) }
+                        val holder = args.firstOrNull {
+                            it?.javaClass?.name == "jo3"
+                        }
+                        if (holder != null) {
+                            playlistController.onRowBound(holder)
+                        }
+                        result
                     }
-                    if (holder != null) {
-                        playlistController.onRowBound(holder)
-                    }
-                    result
+                    bindHookCount++
+                }
+                if (bindMethods.isNotEmpty()) {
+                    boundAdapterNames += className
                 }
             }
             Log.i(
                 "GoneSmartPlaylist",
-                "MULTI ROW BIND | native zn3.N0 hooks=${bindMethods.size}"
+                "MULTI ROW BIND | native adapters=" +
+                    boundAdapterNames.joinToString(",") +
+                    " | N0 hooks=" + bindHookCount
             )
         }.onFailure { error ->
             Log.w(
@@ -3106,6 +3322,10 @@ class GoneSmartModule : XposedModule() {
                     trackMixController.captureNativeAutoDj(
                         autoDjInstance
                     )
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP AUTO DJ RUNTIME",
+                        instance = autoDjInstance
+                    )
                     startStartupPrewarm(
                         autoDjInstance
                     )
@@ -3348,6 +3568,10 @@ class GoneSmartModule : XposedModule() {
             if (autoDjInstance != null) {
                 trackMixAutoDj = WeakReference(autoDjInstance)
                 trackMixController.captureNativeAutoDj(autoDjInstance)
+                scheduleCompatibilityRuntimeInstance(
+                    marker = "GMMP AUTO DJ RUNTIME",
+                    instance = autoDjInstance
+                )
                 if (trackMixController.shouldSuppressNativeRefill()) {
                     // GMMP may start a refill as soon as native Play
                     // seeks to the selected queue row. That older refill
