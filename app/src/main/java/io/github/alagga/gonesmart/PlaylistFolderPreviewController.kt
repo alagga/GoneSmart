@@ -1794,11 +1794,11 @@ internal class PlaylistFolderPreviewController(
             deferAttachUntilVisible(list, attempt)
             return
         }
-        val adapter = nativeAdapter(list)
-        if (!GmmpPlaylistAdapterPolicy.isVerified(
-                adapter?.javaClass?.name
-            )
-        ) {
+        val adapter = nativeAdapter(list) ?: run {
+            retry(list, attempt)
+            return
+        }
+        if (!GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)) {
             retry(list, attempt)
             return
         }
