@@ -10,5 +10,9 @@ class GmmpPlaylistAdapterPolicyTest {
         assertTrue(GmmpPlaylistAdapterPolicy.isVerified("ao3"))
         assertFalse(GmmpPlaylistAdapterPolicy.isVerified("is4"))
         assertFalse(GmmpPlaylistAdapterPolicy.isVerified(null))
+
+        assertTrue(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource("zn3"))
+        assertFalse(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource("ao3"))
+        assertFalse(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(null))
     }
 }
