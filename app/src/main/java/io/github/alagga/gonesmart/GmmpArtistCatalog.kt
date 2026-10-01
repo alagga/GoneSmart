@@ -692,6 +692,7 @@ class GmmpArtistCatalog {
                         it.name + "(" +
                         it.parameterTypes.single().name +
                         "):" + it.returnType.name +
+                        "<" + it.genericReturnType.typeName + ">" +
                         if (
                             java.lang.reflect.Modifier
                                 .isAbstract(it.modifiers)
