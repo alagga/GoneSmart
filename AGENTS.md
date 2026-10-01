@@ -2,7 +2,7 @@
 
 **Purpose:** This is the canonical, continuously maintained entry point for any assistant, coding agent or contributor working on GoneSmart with the maintainer. Read this file **before** changing code. Follow the detailed linked documentation for individual features; do not attempt to infer the latest implementation solely from old chat summaries.
 
-**Last consolidated:** 2026-09-30. **Current development branch at consolidation:** feature/playlist-bridge. This file consolidates explicit decisions from the available current and earlier coding chats and the existing repository docs. Historical chats may contain further details that were not recoverable; do not invent missing agreements. If the maintainer clarifies a rule, update this file.
+**Last consolidated:** 2026-10-01. **Current development branch at consolidation:** feature/playlist-bridge. This file consolidates explicit decisions from the available current and earlier coding chats and the existing repository docs. Historical chats may contain further details that were not recoverable; do not invent missing agreements. If the maintainer clarifies a rule, update this file.
 
 ## 1. Authority, continuity and keeping this file current
 
