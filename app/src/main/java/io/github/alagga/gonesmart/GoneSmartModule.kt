@@ -32,6 +32,12 @@ class GoneSmartModule : XposedModule() {
         private const val PLAYLIST_BRIDGE_TAG =
             "GoneSmartPlaylistBridge"
 
+        private const val COMPAT_PROBE_REVISION =
+            "gmmp421-r3"
+
+        private const val MAX_COMPAT_RECYCLER_SURFACES =
+            64
+
         private const val MAX_RECORDING_MATCHES_TO_TRY =
             5
 
@@ -92,6 +98,14 @@ class GoneSmartModule : XposedModule() {
     @Volatile
     private var options =
         GoneSmartOptions()
+
+    private val compatibilityRecyclerProbeSurfaces =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityStaticProbeStarted =
+        AtomicBoolean(false)
 
     private var remoteSettingsPreferences:
             SharedPreferences? =
@@ -504,6 +518,15 @@ class GoneSmartModule : XposedModule() {
             "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
 
+        if (BuildConfig.DEBUG) {
+            Log.i(
+                "GoneSmartCompat",
+                "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                    " | moduleVersion=${BuildConfig.VERSION_NAME}"
+            )
+            logCompatibilityStaticInventory(param.classLoader)
+        }
+
         runtimeReporter.report(
             mode = GoneSmartRuntimeContract.MODE_NONE,
             message = "GoneSmart v${BuildConfig.VERSION_NAME} loaded in GoneMAD Music Player.",
@@ -807,12 +830,21 @@ class GoneSmartModule : XposedModule() {
             if (smartDjCoreHooksHealthy) {
                 Log.i(
                     TAG,
-                    "All GoneSmart core hooks installed successfully"
+                    "GoneSmart hook registration pass completed; " +
+                        "GMMP compatibility remains feature-scoped"
                 )
             } else {
                 Log.w(
                     TAG,
                     "GoneSmart loaded with degraded Smart DJ hooks; independent UI hooks were still attempted"
+                )
+            }
+
+            if (BuildConfig.DEBUG) {
+                Log.i(
+                    "GoneSmartCompat",
+                    "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                        " | hookRegistration=complete"
                 )
             }
 
@@ -1004,12 +1036,36 @@ class GoneSmartModule : XposedModule() {
                 val queueClass = param.classLoader.loadClass("ex3")
                 Log.w(
                     "GoneSmartFlip",
-                    "FLIP QUEUE MAPPING | noArgMethods=" +
+                    "FLIP QUEUE MAPPING | hierarchy=" +
+                        GmmpReflectionDiagnostics.hierarchy(queueClass) +
+                        " | interfaces=" +
+                        GmmpReflectionDiagnostics.interfaces(queueClass) +
+                        " | constructors=" +
+                        GmmpReflectionDiagnostics.constructors(
+                            queueClass,
+                            limit = 20
+                        ) +
+                        " | fields=" +
+                        GmmpReflectionDiagnostics.fields(
+                            queueClass,
+                            limit = 40
+                        )
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP QUEUE METHODS | noArgMethods=" +
                         GmmpReflectionDiagnostics.methods(
                             type = queueClass,
-                            limit = 24
+                            limit = 32
                         ) {
                             it.parameterTypes.isEmpty()
+                        } +
+                        " | declaredMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 64
+                        ) {
+                            it.declaringClass == queueClass
                         }
                 )
             }
@@ -1154,12 +1210,44 @@ class GoneSmartModule : XposedModule() {
                 )
                 Log.w(
                     "GoneSmartFlip",
-                    "FLIP SERVICE MAPPING | threeArgMethods=" +
+                    "FLIP SERVICE MAPPING | hierarchy=" +
+                        GmmpReflectionDiagnostics.hierarchy(serviceClass) +
+                        " | interfaces=" +
+                        GmmpReflectionDiagnostics.interfaces(serviceClass) +
+                        " | fields=" +
+                        GmmpReflectionDiagnostics.fields(
+                            serviceClass,
+                            limit = 48
+                        )
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP SERVICE CANDIDATES | intOrListMethods=" +
                         GmmpReflectionDiagnostics.methods(
                             type = serviceClass,
-                            limit = 28
+                            limit = 64
+                        ) { method ->
+                            method.declaringClass == serviceClass &&
+                                (
+                                    method.parameterTypes.any { parameter ->
+                                        parameter == Integer.TYPE ||
+                                            java.util.List::class.java
+                                                .isAssignableFrom(parameter)
+                                    } ||
+                                        method.returnType == Integer.TYPE ||
+                                        java.util.List::class.java
+                                            .isAssignableFrom(
+                                                method.returnType
+                                            )
+                                    )
+                        } +
+                        " | threeArgDeclared=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = serviceClass,
+                            limit = 64
                         ) {
-                            it.parameterTypes.size == 3
+                            it.declaringClass == serviceClass &&
+                                it.parameterTypes.size == 3
                         }
                 )
             }
@@ -1190,6 +1278,198 @@ class GoneSmartModule : XposedModule() {
         }
     }
 
+    private fun logCompatibilityStaticInventory(
+        loader: ClassLoader
+    ) {
+        if (!BuildConfig.DEBUG ||
+            !compatibilityStaticProbeStarted.compareAndSet(false, true)
+        ) {
+            return
+        }
+
+        listOf(
+            "bo3",
+            "go3",
+            "ho3",
+            "io3",
+            "zn3",
+            "ft4",
+            "ds4",
+            "os2",
+            "ws4",
+            "ss4",
+            "os4",
+            "ls4",
+            "vs4",
+            "ou4",
+            "nt4",
+            "ex3",
+            "qr",
+            "kr",
+            "fn",
+            "gonemad.gmmp.playback.service.MusicService"
+        ).forEach { requestedName ->
+            runCatching {
+                val type = loader.loadClass(requestedName)
+                logCompatibilityClassStructure(
+                    marker = "GMMP COMPAT CLASS",
+                    requestedName = requestedName,
+                    type = type
+                )
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartCompat",
+                    "GMMP COMPAT CLASS | requested=$requestedName" +
+                        " | unavailable=${error.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
+    private fun logCompatibilityClassStructure(
+        marker: String,
+        requestedName: String,
+        type: Class<*>,
+        instance: Any? = null
+    ) {
+        if (!BuildConfig.DEBUG) {
+            return
+        }
+
+        Log.i(
+            "GoneSmartCompat",
+            "$marker | requested=$requestedName" +
+                " | runtime=${type.name}" +
+                " | hierarchy=${GmmpReflectionDiagnostics.hierarchy(type)}" +
+                " | interfaces=${GmmpReflectionDiagnostics.interfaces(type)}"
+        )
+        Log.i(
+            "GoneSmartCompat",
+            "$marker CTORS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.constructors(
+                    type = type,
+                    limit = 20
+                )
+        )
+        Log.i(
+            "GoneSmartCompat",
+            "$marker FIELDS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.fields(
+                    type = type,
+                    limit = 40
+                )
+        )
+        if (instance != null) {
+            Log.i(
+                "GoneSmartCompat",
+                "$marker RUNTIME FIELDS | requested=$requestedName | " +
+                    GmmpReflectionDiagnostics.runtimeFieldTypes(
+                        instance = instance,
+                        limit = 40
+                    )
+            )
+        }
+        Log.i(
+            "GoneSmartCompat",
+            "$marker METHODS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.methods(
+                    type = type,
+                    limit = 64
+                ) {
+                    it.declaringClass == type
+                }
+        )
+    }
+
+    private fun compatibilityResourceName(
+        view: android.view.View
+    ): String {
+        if (view.id == android.view.View.NO_ID) {
+            return "none"
+        }
+        return runCatching {
+            view.resources.getResourceEntryName(view.id)
+        }.getOrElse {
+            "id:" + view.id
+        }
+    }
+
+    private fun compatibilityViewPath(
+        view: android.view.View,
+        limit: Int = 6
+    ): String {
+        val path = ArrayList<String>()
+        var current: android.view.View? = view
+        repeat(limit) {
+            val node = current ?: return@repeat
+            path.add(
+                node.javaClass.name + "#" +
+                    compatibilityResourceName(node)
+            )
+            current = node.parent as? android.view.View
+        }
+        return path.joinToString(">")
+    }
+
+    private fun logCompatibilityRecyclerAdapter(
+        view: android.view.View?,
+        adapterHint: Any?,
+        source: String
+    ) {
+        if (!BuildConfig.DEBUG || view == null) {
+            return
+        }
+
+        val adapter = adapterHint ?: runCatching {
+            view.javaClass.methods
+                .firstOrNull {
+                    it.name == "getAdapter" &&
+                        it.parameterCount == 0
+                }
+                ?.invoke(view)
+        }.getOrNull() ?: return
+
+        val resourceName = compatibilityResourceName(view)
+        val surfaceKey = adapter.javaClass.name + "|" + resourceName
+        val shouldLog = synchronized(compatibilityRecyclerProbeSurfaces) {
+            if (compatibilityRecyclerProbeSurfaces.size >=
+                MAX_COMPAT_RECYCLER_SURFACES
+            ) {
+                false
+            } else {
+                compatibilityRecyclerProbeSurfaces.add(surfaceKey)
+            }
+        }
+        if (!shouldLog) {
+            return
+        }
+
+        val itemCount = runCatching {
+            adapter.javaClass.methods
+                .firstOrNull {
+                    it.name == "getItemCount" &&
+                        it.parameterCount == 0
+                }
+                ?.invoke(adapter)
+        }.getOrNull()?.toString() ?: "unknown"
+
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP RECYCLER ADAPTER | source=$source" +
+                " | view=${view.javaClass.name}" +
+                " | resource=$resourceName" +
+                " | path=${compatibilityViewPath(view)}" +
+                " | adapter=${adapter.javaClass.name}" +
+                " | itemCount=$itemCount"
+        )
+        logCompatibilityClassStructure(
+            marker = "GMMP RECYCLER ADAPTER CLASS",
+            requestedName = adapter.javaClass.name,
+            type = adapter.javaClass,
+            instance = adapter
+        )
+    }
+
     /**
      * Observe the host RecyclerView lifecycle used by both folder surfaces.
      * The original native methods always run; GoneSmart only attaches its
@@ -1209,6 +1489,11 @@ class GoneSmartModule : XposedModule() {
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
+                logCompatibilityRecyclerAdapter(
+                    view = list,
+                    adapterHint = chain.getArg(0),
+                    source = "setAdapter"
+                )
                 playlistFolderPreview.onNativeRecyclerObserved(list)
                 smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
@@ -1225,6 +1510,11 @@ class GoneSmartModule : XposedModule() {
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
+                logCompatibilityRecyclerAdapter(
+                    view = list,
+                    adapterHint = null,
+                    source = "attach"
+                )
                 playlistFolderPreview.onNativeRecyclerObserved(list)
                 smartPlaylistFolderController.onNativeRecyclerObserved(list)
             }.onFailure {
@@ -2249,6 +2539,36 @@ class GoneSmartModule : XposedModule() {
                 result
             }
             installedPickerMethods.add(name)
+        }
+
+        val missingPickerMethods =
+            listOf("I3", "k2", "D1")
+                .filterNot(installedPickerMethods::contains)
+        if (BuildConfig.DEBUG && missingPickerMethods.isNotEmpty()) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "PLAYLIST PICKER MAPPING SUMMARY | missing=" +
+                    missingPickerMethods.joinToString(",") +
+                    " | hierarchy=" +
+                    GmmpReflectionDiagnostics.hierarchy(pickerClass) +
+                    " | constructors=" +
+                    GmmpReflectionDiagnostics.constructors(
+                        pickerClass,
+                        limit = 20
+                    ) +
+                    " | fields=" +
+                    GmmpReflectionDiagnostics.fields(
+                        pickerClass,
+                        limit = 40
+                    ) +
+                    " | declaredMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = pickerClass,
+                        limit = 64
+                    ) {
+                        it.declaringClass == pickerClass
+                    }
+            )
         }
 
         // go3.y2() constructs this native handler using the original

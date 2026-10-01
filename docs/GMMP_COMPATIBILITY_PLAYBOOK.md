@@ -175,6 +175,9 @@ This does **not** authorize synthetic substitutes where AGENTS requires native-f
 
 For an unaccepted GMMP build, prefer one clean startup log containing the following bounded markers rather than many one-off probes:
 
+- `GMMP COMPAT PROBE` — exact temporary probe revision loaded by the tested module build.
+- `GMMP COMPAT CLASS` — bounded hierarchy/constructor/field/declared-method inventory for known 4.2.0 native boundaries.
+- `GMMP RECYCLER ADAPTER` / `GMMP RECYCLER ADAPTER CLASS` — runtime RecyclerView resource/path, actual adapter class, item count and privacy-safe adapter structure/runtime field types.
 - `AUTO DJ SELECTION MAPPING` — concrete int→List selection candidates.
 - `GMMP DATABASE MAPPING` — structurally resolved GMDatabase field.
 - `GMMP ARTIST QUERY MAPPING` / `GMMP ARTIST QUERY CLASS` — ArtistDao query candidates and RawQuery constructor shape.
