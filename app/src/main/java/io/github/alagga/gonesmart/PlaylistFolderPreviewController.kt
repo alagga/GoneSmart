@@ -1479,7 +1479,11 @@ internal class PlaylistFolderPreviewController(
         val creator = nativeFolderCreator ?: return false
         val root = java.io.File(browser.rootPath).canonicalPath
         val previous = physicalDirectorySnapshot(root).toSet()
-        val opened = creator.show(browser.list.context, parent) {
+        val opened = creator.show(
+            context = browser.list.context,
+            directory = parent,
+            nativePlaylistMenu = playlistTabMenu?.get()
+        ) {
             mainHandler.post {
                 val changed = physicalDirectorySnapshot(root).toSet() - previous
                 if (changed.isEmpty()) {
@@ -2147,6 +2151,9 @@ internal class PlaylistFolderPreviewController(
         breadcrumbScroller.adapter = browser.breadcrumbAdapter
         browsers[list] = browser
         styles[list] = nativeStyle
+        if (!isPicker(list)) {
+            schedulePlaylistMenuCapture(list)
+        }
         subscribeMainSelectionAccent(browser)
         if (!isPicker(list)) {
             val weak = WeakReference(list)
@@ -4025,6 +4032,73 @@ internal class PlaylistFolderPreviewController(
             browser.rootPath,
             settings.groupRoot
         )
+
+    private fun schedulePlaylistMenuCapture(
+        list: ViewGroup,
+        attempt: Int = 0
+    ) {
+        if (isPicker(list) || !list.isAttachedToWindow) return
+        list.postDelayed({
+            if (!list.isAttachedToWindow || isPicker(list)) return@postDelayed
+            val existing = playlistTabMenu?.get()
+            if (existing != null) {
+                installNativeNewFolderMenu(existing, list.context)
+                updatePlaylistMenu()
+                return@postDelayed
+            }
+
+            var visited = 0
+            var found: android.view.Menu? = null
+            fun walk(view: View, depth: Int) {
+                if (found != null || depth > 10 || visited++ > 320) return
+                if (view.javaClass.name.contains("Toolbar")) {
+                    val menu = runCatching {
+                        view.javaClass.methods.firstOrNull {
+                            it.name == "getMenu" && it.parameterCount == 0 &&
+                                android.view.Menu::class.java
+                                    .isAssignableFrom(it.returnType)
+                        }?.invoke(view) as? android.view.Menu
+                    }.getOrNull()
+                    if (menu != null) {
+                        val hasNativeAdd = (0 until menu.size()).any { index ->
+                            resourceEntryName(
+                                list.resources,
+                                menu.getItem(index).itemId
+                            ) == "menuAdd"
+                        }
+                        if (hasNativeAdd) {
+                            found = menu
+                            return
+                        }
+                    }
+                }
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) {
+                        walk(view.getChildAt(index), depth + 1)
+                        if (found != null) return
+                    }
+                }
+            }
+            walk(list.rootView, 0)
+            val menu = found
+            if (menu != null) {
+                playlistTabMenu = WeakReference(menu)
+                installNativeNewFolderMenu(menu, list.context)
+                updatePlaylistMenu()
+                Log.i(
+                    TAG,
+                    "FOLDER CREATE MENU | captured live native toolbar menu"
+                )
+            } else if (attempt < 10) {
+                schedulePlaylistMenuCapture(list, attempt + 1)
+            } else {
+                Log.w(
+                    TAG,
+                    "FOLDER CREATE MENU | live native toolbar menu unavailable"
+                )
+            }
+        }, if (attempt == 0) 0L else 120L)
+    }
 
     private fun updatePlaylistMenu() {
         val menu = playlistTabMenu?.get() ?: return
