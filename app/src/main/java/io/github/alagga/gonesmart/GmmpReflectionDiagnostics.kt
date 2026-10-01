@@ -9,6 +9,46 @@ import java.lang.reflect.Modifier
  * Never include argument values, library rows, titles or filesystem paths.
  */
 internal object GmmpReflectionDiagnostics {
+
+    fun hierarchy(
+        type: Class<*>,
+        limit: Int = 8
+    ): String =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .take(limit)
+            .joinToString(">") { it.name }
+            .ifBlank { "none" }
+
+    fun fields(
+        type: Class<*>,
+        limit: Int = 24
+    ): String =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" + it.type.name
+            }
+            .sortedWith(
+                compareBy<java.lang.reflect.Field>(
+                    { it.name },
+                    { it.declaringClass.name }
+                )
+            )
+            .take(limit)
+            .joinToString(",") {
+                buildString {
+                    append(it.declaringClass.name)
+                    append(".")
+                    append(it.name)
+                    append(":")
+                    append(it.type.name)
+                    if (Modifier.isStatic(it.modifiers)) {
+                        append("[static]")
+                    }
+                }
+            }
+            .ifBlank { "none" }
+
     fun methods(
         type: Class<*>,
         limit: Int = 24,
