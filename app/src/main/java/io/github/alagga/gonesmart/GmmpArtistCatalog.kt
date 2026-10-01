@@ -161,44 +161,52 @@ class GmmpArtistCatalog {
             }
 
             /*
-             * tp4 =
-             *
-             * GMMP/Room SimpleSQLiteQuery.
-             *
-             * Wir erzeugen das Query-Objekt mit
-             * demselben ClassLoader wie GMMP.
+             * GMMP 4.2.0: ArtistDao.R1(tp4) where tp4 was the
+             * native Room RawQuery wrapper. 4.2.1 remapped the query type.
+             * Keep the verified native DAO method boundary first and derive
+             * the query class from its real parameter instead of hard-coding
+             * the obfuscated wrapper name.
              */
-            val classLoader =
-                database.javaClass.classLoader
+            val queryMethod =
+                findSingleArgMethodByName(
+                    startClass =
+                        artistDao.javaClass,
 
-            if (
-                classLoader == null
-            ) {
-
-                Log.w(
-                    TAG,
-                    "GMMP artist catalog: " +
-                            "GMMP ClassLoader unavailable"
+                    methodName =
+                        "R1"
                 )
+                    ?: run {
+                        diagnoseArtistQueryMethod(
+                            artistDao.javaClass
+                        )
+                        return
+                    }
 
-                return
-            }
+            queryMethod.isAccessible =
+                true
 
             val queryClass =
-                classLoader.loadClass(
-                    "tp4"
-                )
+                queryMethod.parameterTypes
+                    .single()
 
             val objectArrayClass =
                 emptyArray<Any?>()
                     .javaClass
 
             val queryConstructor =
-                queryClass
-                    .getDeclaredConstructor(
-                        String::class.java,
-                        objectArrayClass
-                    )
+                runCatching {
+                    queryClass
+                        .getDeclaredConstructor(
+                            String::class.java,
+                            objectArrayClass
+                        )
+                }.getOrNull()
+                    ?: run {
+                        diagnoseArtistQueryClass(
+                            queryClass
+                        )
+                        return
+                    }
 
             queryConstructor.isAccessible =
                 true
@@ -211,43 +219,6 @@ class GmmpArtistCatalog {
 
                         emptyArray<Any?>()
                     )
-
-            /*
-             * ArtistDao.R1(tp4)
-             *
-             * =>
-             *
-             * List<Artist>
-             *
-             * Das ist eine echte GMMP-DAO-Funktion.
-             */
-            val queryMethod =
-                findSingleArgMethod(
-                    startClass =
-                        artistDao.javaClass,
-
-                    methodName =
-                        "R1",
-
-                    argumentClass =
-                        queryClass
-                )
-
-            if (
-                queryMethod == null
-            ) {
-
-                Log.w(
-                    TAG,
-                    "GMMP artist catalog: " +
-                            "ArtistDao.R1() not found"
-                )
-
-                return
-            }
-
-            queryMethod.isAccessible =
-                true
 
             val result =
                 queryMethod.invoke(
@@ -674,6 +645,85 @@ class GmmpArtistCatalog {
         }
 
         return null
+    }
+
+    private fun findSingleArgMethodByName(
+        startClass: Class<*>,
+        methodName: String
+    ): Method? {
+        val candidates =
+            generateSequence<Class<*>>(startClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter {
+                    it.name == methodName &&
+                        it.parameterTypes.size == 1
+                }
+                .toList()
+
+        return candidates.singleOrNull()
+    }
+
+    private fun diagnoseArtistQueryMethod(
+        artistDaoClass: Class<*>
+    ) {
+        val methods =
+            generateSequence<Class<*>>(artistDaoClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter { it.parameterTypes.size == 1 }
+                .distinctBy {
+                    it.name + "|" +
+                        it.parameterTypes.single().name + "|" +
+                        it.returnType.name
+                }
+                .sortedBy { it.name }
+                .toList()
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST QUERY MAPPING | expected=" +
+                artistDaoClass.name + ".R1/1 unavailable" +
+                " | oneArgMethods=" +
+                methods.take(24).joinToString(",") {
+                    it.declaringClass.name + "." +
+                        it.name + "(" +
+                        it.parameterTypes.single().name +
+                        "):" + it.returnType.name +
+                        if (
+                            java.lang.reflect.Modifier
+                                .isAbstract(it.modifiers)
+                        ) {
+                            "[abstract]"
+                        } else {
+                            ""
+                        }
+                }.ifBlank { "none" } +
+                " | oneArgMethodCount=" + methods.size
+        )
+    }
+
+    private fun diagnoseArtistQueryClass(
+        queryClass: Class<*>
+    ) {
+        val constructors =
+            queryClass.declaredConstructors
+                .sortedBy { it.parameterTypes.size }
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST QUERY CLASS | type=" +
+                queryClass.name +
+                " | constructors=" +
+                constructors.take(12).joinToString(",") { constructor ->
+                    "(" +
+                        constructor.parameterTypes
+                            .joinToString(",") { it.name } +
+                        ")"
+                }.ifBlank { "none" }
+        )
     }
 
     private fun findSingleArgMethod(
