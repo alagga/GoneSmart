@@ -12,7 +12,7 @@ Use this file for the **current cross-version map and repeatable update strategy
 - **Observed / unaccepted** — GoneSmart has run on the version and diagnostics exist, but one or more native boundaries are still unresolved or untested.
 - **Unsupported / unknown** — no reliable runtime evidence exists.
 
-The companion Home status must warn for every installed GMMP version other than the explicit tested version. The warning belongs on the **Compatibility row background**, not on the overall module/injection card: module injection can be healthy while one or more GMMP-native boundaries are unverified.
+The companion Home status must warn for every installed GMMP version other than the explicit tested version. The warning belongs on the **entire full-width bottom Compatibility section** of the status card, not on the overall module/injection card and not as an inset warning box inside the green area: module injection can be healthy while one or more GMMP-native boundaries are unverified.
 
 ## Current version ledger
 
@@ -42,7 +42,7 @@ Status meanings in this table:
 | ArtistDao accessor | `GMDatabase.y()` | succeeds once the correct GMDatabase field is used and returns runtime ArtistDao class `fn` | **Verified** |
 | Artist RawQuery method | `ArtistDao.R1(tp4)` | `R1` absent; `fn` exposes several `qp4` candidates including List-returning methods | **Unresolved**; derive/verify by semantic contract, not method name alone |
 | Artist RawQuery wrapper | `tp4(String,Object[])` | old `tp4` constructor absent; 4.2.1 DAO candidates use `qp4` | **Observed**; derive wrapper from the verified DAO method parameter |
-| Add-to-Playlist multi-selection lifecycle | `bo3.I3()` plus `k2()/D1()` view getters | `bo3.I3()` absent; later getters were not reached by the old all-or-nothing installer | **Unresolved**; resolve each sub-hook independently and diagnose no-arg methods by return type/lifecycle |
+| Add-to-Playlist multi-selection lifecycle | `bo3.I3()` plus `k2()/D1()` view getters | `bo3.I3()` absent; the compatibility installer now attempts/diagnoses `I3`, `k2`, `D1` and the native handler independently instead of aborting at the first miss | **Unresolved**; select a replacement only from unique semantic lifecycle/view evidence; independent native playlist-creation hooks must still register |
 | Playlist Link rule model | `ft4(int,int,String,int)` and related `ft4.z(...)` | constructor and evaluation method no longer match | **Unresolved** |
 | Playlist Link editor presenter | `ds4(Context,Bundle)`, `ds4.g2(boolean)`, `ds4$g` | constructor/method/inner class no longer match | **Unresolved** |
 | Playlist Link native label hook | `os2.U(gt4)` | method no longer matches | **Unresolved** |
