@@ -3107,7 +3107,10 @@ internal class SmartPlaylistFolderController(
             listOf(plan.folder)
         }
         if (!deletion.confirmNativeDeletion(
-                browser.list.context, targets, plan.folder
+                browser.list.context,
+                emptyList(),
+                targets,
+                plan.folder
             )
         ) return false
         val pending = PendingFolderDeletion(plan)

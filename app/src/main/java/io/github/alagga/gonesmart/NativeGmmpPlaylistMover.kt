@@ -55,17 +55,9 @@ internal class NativeGmmpPlaylistMover(
         NativeGmmpPlaylistDeleteBinding? = null
     private var nativeScan: java.lang.reflect.Method? = null
 
-    private fun resolveNativeMethods(sampleModel: Any): Boolean {
-        if (nativeDelete?.accepts(sampleModel) == true &&
-            nativeScan != null
-        ) return true
+    private fun resolveNativeScanner(): Boolean {
+        if (nativeScan != null) return true
         return runCatching {
-            val delete =
-                NativeGmmpPlaylistDeleteBinding.resolve(
-                    hostLoader,
-                    sampleModel
-                )
-
             val scanType = hostLoader.loadClass("t6")
             val scanner = runCatching {
                 scanType.getDeclaredMethod(
@@ -83,22 +75,37 @@ internal class NativeGmmpPlaylistMover(
             }.singleOrNull() ?: error(
                 "GMMP playlist scanner method is not structurally unique"
             )
-
             scanner.isAccessible = true
-            require(
-                Modifier.isStatic(delete.deleteMethod.modifiers) &&
-                    Modifier.isStatic(scanner.modifiers)
-            )
+            require(Modifier.isStatic(scanner.modifiers))
+            nativeScan = scanner
+            true
+        }.onFailure {
+            Log.w(TAG, "PLAYLIST MOVE | original scanner unavailable", it)
+        }.getOrDefault(false)
+    }
+
+    private fun resolveNativeMethods(sampleModel: Any): Boolean {
+        if (nativeDelete?.accepts(sampleModel) == true &&
+            resolveNativeScanner()
+        ) return true
+        return runCatching {
+            val delete =
+                NativeGmmpPlaylistDeleteBinding.resolve(
+                    hostLoader,
+                    sampleModel
+                )
+            require(Modifier.isStatic(delete.deleteMethod.modifiers))
+            require(resolveNativeScanner())
             Log.i(
                 TAG,
                 "PLAYLIST MOVE MAPPING | delete=" +
                     delete.deleteMethod.declaringClass.name + "." +
                     delete.deleteMethod.name +
                     " | scanner=" +
-                    scanner.declaringClass.name + "." + scanner.name
+                    requireNotNull(nativeScan).declaringClass.name + "." +
+                    requireNotNull(nativeScan).name
             )
             nativeDelete = delete
-            nativeScan = scanner
             true
         }.onFailure {
             Log.w(
@@ -377,7 +384,7 @@ internal class NativeGmmpPlaylistMover(
             }
             return
         }
-        if (!resolveNativeMethods()) return
+        if (!resolveNativeScanner()) return
         val staged = PlaylistMoveStager.recover(context.filesDir, nativeRoot)
         val batch = staged.firstOrNull { candidate ->
             candidate.entries.any { !it.source.exists() || it.target.exists() }
