@@ -185,6 +185,8 @@ A more detailed component overview lives in [docs/ARCHITECTURE.md](docs/ARCHITEC
 
 GoneSmart currently hooks obfuscated GMMP internals. That means a future GMMP update can change the classes or methods GoneSmart expects even if the public GMMP UI looks unchanged. Versions other than the tested one should be treated as unverified until checked.
 
+The maintained cross-version mapping ledger, update procedure and hardening strategy live in [docs/GMMP_COMPATIBILITY_PLAYBOOK.md](docs/GMMP_COMPATIBILITY_PLAYBOOK.md).
+
 ---
 
 ## Installation
