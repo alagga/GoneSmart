@@ -415,16 +415,23 @@ class GmmpArtistCatalog {
             candidates.singleOrNull()
                 ?: return null
 
+        val field =
+            resolved.first
+
+        val database =
+            resolved.second
+                ?: return null
+
         Log.w(
             TAG,
             "GMMP DATABASE MAPPING | legacy=qr.t unavailable" +
                 " | structurally resolved=" +
-                resolved.first.name + ":" +
-                resolved.first.type.name + "->" +
-                resolved.second.javaClass.name
+                field.name + ":" +
+                field.type.name + "->" +
+                database.javaClass.name
         )
 
-        return resolved.second
+        return database
     }
 
     private fun diagnoseAutoDjDatabaseFields(
