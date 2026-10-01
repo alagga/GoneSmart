@@ -714,7 +714,8 @@ class GmmpLibraryReader {
             return it
         }
 
-        deterministicMappingFailure = true
+        val objectArrayClass =
+            arrayOfNulls<Any>(0).javaClass
 
         val oneArgMethods =
             generateSequence<Class<*>>(type) { it.superclass }
@@ -733,14 +734,42 @@ class GmmpLibraryReader {
                 java.util.List::class.java.isAssignableFrom(it.returnType)
             }
 
+        val rawQueryCandidates =
+            listCandidates.filter { method ->
+                val queryClass = method.parameterTypes.single()
+                runCatching {
+                    queryClass.getDeclaredConstructor(
+                        String::class.java,
+                        objectArrayClass
+                    )
+                }.isSuccess
+            }
+
         fun signature(method: Method): String =
             method.name + "(" +
                 method.parameterTypes.joinToString(",") { it.name } +
                 "):" + method.returnType.name
 
+        if (rawQueryCandidates.size == 1) {
+            val resolved = rawQueryCandidates.single()
+            Log.w(
+                TAG,
+                "GMMP LIBRARY MAPPING | expected=" + type.name +
+                    ".g2/1 unavailable | structurally resolved=" +
+                    signature(resolved)
+            )
+            return resolved
+        }
+
+        deterministicMappingFailure = true
+
         Log.w(
             TAG,
             "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
+                " | rawQueryCandidates=" +
+                rawQueryCandidates.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
                 " | listCandidates=" +
                 listCandidates.take(12).joinToString(",") { signature(it) }
                     .ifBlank { "none" } +
