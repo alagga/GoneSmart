@@ -600,24 +600,36 @@ class GoneSmartModule : XposedModule() {
             // Native playlist UI is opt-in through the companion app and
             // remains independent of the Smart Auto-DJ recommendation mode.
             // Hook registration is available in release builds too.
-            try {
-                playlistController.setEnabled(options.multiPlaylistEnabled)
-                installPlaylistMultiSelectHooks(param)
-                // fo3's create callback also operates without Playlist
-                // folders; install its version-checked hook alongside
-                // Multi-selection in release and debug builds.
-                installNativePlaylistCreationHooks(param)
-                if (options.multiPlaylistEnabled) {
-                    runtimeReporter.reportEvent(
-                        GoneSmartRuntimeContract.CATEGORY_SYSTEM,
-                        "Playlist multi-selection is available."
+            playlistController.setEnabled(options.multiPlaylistEnabled)
+            val multiPlaylistHooksReady =
+                runCatching {
+                    installPlaylistMultiSelectHooks(param)
+                    true
+                }.onFailure { playlistHookError ->
+                    Log.w(
+                        TAG,
+                        "Playlist multi-selection hooks unavailable; continuing with independent Playlist features",
+                        playlistHookError
                     )
-                }
-            } catch (playlistHookError: Throwable) {
+                }.getOrDefault(false)
+
+            // fo3's create callback also operates without Multi-selection or
+            // Playlist folders. A remapped picker lifecycle must never prevent
+            // native playlist creation/folder-create routing from registering.
+            runCatching {
+                installNativePlaylistCreationHooks(param)
+            }.onFailure { createHookError ->
                 Log.w(
                     TAG,
-                    "Playlist UI hooks unavailable; native picker unaffected",
-                    playlistHookError
+                    "Native playlist creation hooks unavailable; continuing with independent Playlist features",
+                    createHookError
+                )
+            }
+
+            if (options.multiPlaylistEnabled && multiPlaylistHooksReady) {
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                    "Playlist multi-selection is available."
                 )
             }
 
@@ -668,7 +680,15 @@ class GoneSmartModule : XposedModule() {
                     )
                     installPlaylistNavigationBadgeHook(param)
                     installSmartPlaylistFolderFeatureHooks(param)
-                    installSmartPlaylistSaveHook(param)
+                    runCatching {
+                        installSmartPlaylistSaveHook(param)
+                    }.onFailure { smartSaveError ->
+                        Log.w(
+                            "GoneSmartSmartFolders",
+                            "SMART FOLDERS SAVE MAPPING | writer hook unavailable; continuing with Playlist surfaces",
+                            smartSaveError
+                        )
+                    }
 
                     // py0.b() shows its native MaterialDialog synchronously.
                     // Observe the ORIGINAL show() after it returns; alter
@@ -2184,25 +2204,27 @@ class GoneSmartModule : XposedModule() {
     ) {
         val pickerClass = param.classLoader.loadClass("bo3")
 
+        val installedPickerMethods = mutableSetOf<String>()
         listOf("I3", "k2", "D1").forEach { name ->
             val method = pickerClass.declaredMethods
                 .firstOrNull {
                     it.name == name && it.parameterCount == 0
                 }
-                ?: run {
-                    Log.w(
-                        "GoneSmartPlaylist",
-                        "PLAYLIST PICKER MAPPING | missing=bo3.$name()" +
-                            " | noArgMethods=" +
-                            GmmpReflectionDiagnostics.methods(
-                                type = pickerClass,
-                                limit = 28
-                            ) {
-                                it.parameterTypes.isEmpty()
-                            }
-                    )
-                    throw NoSuchMethodException("bo3.$name()")
-                }
+
+            if (method == null) {
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "PLAYLIST PICKER MAPPING | missing=bo3.$name()" +
+                        " | noArgMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = pickerClass,
+                            limit = 28
+                        ) {
+                            it.parameterTypes.isEmpty()
+                        }
+                )
+                return@forEach
+            }
 
             method.isAccessible = true
             hook(method).intercept { chain ->
@@ -2227,25 +2249,42 @@ class GoneSmartModule : XposedModule() {
                 }
                 result
             }
+            installedPickerMethods.add(name)
         }
 
         // go3.y2() constructs this native handler using the original
-        // source selection (ho3). Capture it during picker startup.
-        val handlerClass = param.classLoader.loadClass("io3")
-        val nativeConstructor = handlerClass.declaredConstructors
-            .firstOrNull {
-                it.parameterTypes.size == 2 &&
-                    it.parameterTypes[0].name == "ho3" &&
-                    it.parameterTypes[1] == Boolean::class.javaPrimitiveType
-            } ?: throw NoSuchMethodException("io3(ho3, boolean)")
+        // source selection (ho3). Capture it during picker startup. Keep this
+        // independent from the remapped bo3 lifecycle so one missing boundary
+        // cannot hide the rest of the 4.2.1 compatibility evidence.
+        runCatching {
+            val handlerClass = param.classLoader.loadClass("io3")
+            val nativeConstructor = handlerClass.declaredConstructors
+                .firstOrNull {
+                    it.parameterTypes.size == 2 &&
+                        it.parameterTypes[0].name == "ho3" &&
+                        it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+                } ?: throw NoSuchMethodException("io3(ho3, boolean)")
 
-        nativeConstructor.isAccessible = true
-        hook(nativeConstructor).intercept { chain ->
-            val result = chain.proceed()
-            playlistController.onNativeHandler(
-                chain.getThisObject()
+            nativeConstructor.isAccessible = true
+            hook(nativeConstructor).intercept { chain ->
+                val result = chain.proceed()
+                playlistController.onNativeHandler(
+                    chain.getThisObject()
+                )
+                result
+            }
+        }.onFailure { error ->
+            Log.w(
+                "GoneSmartPlaylist",
+                "PLAYLIST PICKER HANDLER MAPPING | io3(ho3,boolean) unavailable" +
+                    " | constructors=" +
+                    runCatching {
+                        GmmpReflectionDiagnostics.constructors(
+                            param.classLoader.loadClass("io3")
+                        )
+                    }.getOrDefault("class unavailable"),
+                error
             )
-            result
         }
 
         // GMMP io3.r() builds one jd(mode=4) completion callback per
@@ -2579,7 +2618,10 @@ class GoneSmartModule : XposedModule() {
 
         Log.i(
             "GoneSmartPlaylist",
-            "MULTI READY | native playlist multi-selection hooks"
+            "MULTI READY | native playlist multi-selection hooks" +
+                " | pickerMethods=" +
+                installedPickerMethods.sorted().joinToString(",")
+                    .ifBlank { "none" }
         )
     }
 
