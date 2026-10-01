@@ -310,7 +310,7 @@ class GmmpLibraryReader {
 
         val queryMethod =
             resolveLibraryQueryMethod(
-                trackDao.javaClass
+                trackDao
             )
 
         queryMethod.isAccessible =
@@ -717,8 +717,10 @@ class GmmpLibraryReader {
     }
 
     private fun resolveLibraryQueryMethod(
-        type: Class<*>
+        trackDao: Any
     ): Method {
+        val type =
+            trackDao.javaClass
         runCatching {
             findMethod(
                 type = type,
@@ -733,15 +735,24 @@ class GmmpLibraryReader {
             arrayOfNulls<Any>(0).javaClass
 
         val oneArgMethods =
-            generateSequence<Class<*>>(type) { it.superclass }
-                .flatMap { it.declaredMethods.asSequence() }
+            (
+                generateSequence<Class<*>>(type) { it.superclass }
+                    .flatMap { it.declaredMethods.asSequence() } +
+                    type.methods.asSequence()
+                )
                 .filter { it.parameterTypes.size == 1 }
                 .distinctBy { method ->
-                    method.name + "|" +
+                    method.declaringClass.name + "|" +
+                        method.name + "|" +
                         method.parameterTypes.joinToString(",") { it.name } + "|" +
                         method.returnType.name
                 }
-                .sortedBy { it.name }
+                .sortedWith(
+                    compareBy<Method>(
+                        { it.name },
+                        { it.declaringClass.name }
+                    )
+                )
                 .toList()
 
         val listCandidates =
@@ -850,8 +861,82 @@ class GmmpLibraryReader {
                 " | oneArgMethodCount=" + oneArgMethods.size
         )
 
+        diagnoseTrackDaoStructure(
+            trackDao
+        )
+
         throw NoSuchMethodException(
             type.name + ".g2/1 is unavailable; GMMP library mapping is unverified"
+        )
+    }
+
+    private fun diagnoseTrackDaoStructure(
+        trackDao: Any
+    ) {
+        val type =
+            trackDao.javaClass
+
+        val hierarchy =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .take(8)
+                .map { it.name }
+                .toList()
+
+        val interfaces =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .flatMap { it.interfaces.asSequence() }
+                .map { it.name }
+                .distinct()
+                .take(16)
+                .toList()
+
+        val fields =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .distinctBy {
+                    it.name + "|" + it.type.name
+                }
+                .take(24)
+                .map { field ->
+                    field.isAccessible = true
+                    val runtimeType =
+                        runCatching {
+                            field.get(trackDao)
+                                ?.javaClass
+                                ?.name
+                        }.getOrNull()
+
+                    field.name + ":" +
+                        field.type.name +
+                        if (runtimeType == null) {
+                            ""
+                        } else {
+                            "->" + runtimeType
+                        }
+                }
+                .toList()
+
+        Log.w(
+            TAG,
+            "GMMP TRACK DAO STRUCTURE | class=" +
+                type.name +
+                " | hierarchy=" +
+                hierarchy.joinToString(">") +
+                " | interfaces=" +
+                interfaces.joinToString(",")
+                    .ifBlank { "none" } +
+                " | fields=" +
+                fields.joinToString(",")
+                    .ifBlank { "none" }
         )
     }
 
