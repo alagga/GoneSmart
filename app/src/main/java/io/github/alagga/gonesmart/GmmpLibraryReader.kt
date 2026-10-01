@@ -894,7 +894,7 @@ class GmmpLibraryReader {
                 .take(16)
                 .toList()
 
-        val fields =
+        val instanceFields =
             generateSequence<Class<*>>(type) {
                 it.superclass
             }
@@ -906,24 +906,64 @@ class GmmpLibraryReader {
                     it.name + "|" + it.type.name
                 }
                 .take(24)
-                .map { field ->
+                .toList()
+
+        val fields =
+            instanceFields.map { field ->
+                field.isAccessible = true
+                val runtimeType =
+                    runCatching {
+                        field.get(trackDao)
+                            ?.javaClass
+                            ?.name
+                    }.getOrNull()
+
+                field.name + ":" +
+                    field.type.name +
+                    if (runtimeType == null) {
+                        ""
+                    } else {
+                        "->" + runtimeType
+                    }
+            }
+
+        val delegates =
+            instanceFields
+                .mapNotNull { field ->
                     field.isAccessible = true
-                    val runtimeType =
+                    val value =
                         runCatching {
                             field.get(trackDao)
-                                ?.javaClass
-                                ?.name
                         }.getOrNull()
+                            ?: return@mapNotNull null
 
-                    field.name + ":" +
-                        field.type.name +
-                        if (runtimeType == null) {
-                            ""
-                        } else {
-                            "->" + runtimeType
+                    val runtimeType =
+                        value.javaClass
+
+                    if (
+                        runtimeType == type ||
+                        runtimeType.name.startsWith("java.") ||
+                        runtimeType.name.startsWith("android.") ||
+                        runtimeType.name.startsWith("androidx.") ||
+                        runtimeType.isPrimitive ||
+                        Number::class.java.isAssignableFrom(runtimeType)
+                    ) {
+                        return@mapNotNull null
+                    }
+
+                    val oneArg =
+                        GmmpReflectionDiagnostics.methods(
+                            type = runtimeType,
+                            limit = 12
+                        ) {
+                            it.parameterTypes.size == 1
                         }
+
+                    field.name + "->" +
+                        runtimeType.name +
+                        "{" + oneArg + "}"
                 }
-                .toList()
+                .take(6)
 
         Log.w(
             TAG,
@@ -936,6 +976,9 @@ class GmmpLibraryReader {
                     .ifBlank { "none" } +
                 " | fields=" +
                 fields.joinToString(",")
+                    .ifBlank { "none" } +
+                " | delegates=" +
+                delegates.joinToString(";")
                     .ifBlank { "none" }
         )
     }
