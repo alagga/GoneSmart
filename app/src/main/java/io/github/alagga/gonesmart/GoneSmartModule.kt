@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r7"
+            "gmmp421-r8"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -1343,6 +1343,16 @@ class GoneSmartModule : XposedModule() {
             "ey3",
             "s6",
             "as4",
+            // r8: focused unresolved 4.2.1 boundaries only.
+            "d85",
+            "p94",
+            "f94",
+            "py0",
+            "th1",
+            "t6",
+            "qs4",
+            "ns4",
+            "uf5",
             "qr",
             "kr",
             "fn",
@@ -3745,6 +3755,24 @@ class GoneSmartModule : XposedModule() {
                     marker = "GMMP AUTO DJ RUNTIME",
                     instance = autoDjInstance
                 )
+                runCatching {
+                    val queueField = findField(
+                        type = autoDjInstance.javaClass,
+                        name = "q"
+                    ).apply { isAccessible = true }
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP QUEUE RUNTIME",
+                        instance = queueField.get(autoDjInstance)
+                    )
+                    val trackDaoField = findField(
+                        type = autoDjInstance.javaClass,
+                        name = "r"
+                    ).apply { isAccessible = true }
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP TRACK DAO RUNTIME",
+                        instance = trackDaoField.get(autoDjInstance)
+                    )
+                }
                 if (trackMixController.shouldSuppressNativeRefill()) {
                     // GMMP may start a refill as soon as native Play
                     // seeks to the selected queue row. That older refill
@@ -3830,40 +3858,47 @@ class GoneSmartModule : XposedModule() {
                     networkStateReader
                         .getState()
 
-                if (
-                    state ==
-                    GoneSmartNetworkState.OFFLINE
-                ) {
-
-                    Log.i(
-                        TAG,
-                        "SMART DJ OFFLINE FALLBACK | " +
-                            "queue context unavailable - using native GMMP Auto-DJ"
-                    )
-
-                    playerBadgeController
-                        .setMode(
-                            PlayerAutoDjBadgeController.Mode.FALLBACK
-                        )
-
-                    runtimeReporter.report(
-                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
-                        message = "Offline: using GMMP Auto-DJ fallback.",
-                        appendEvent = true
-                    )
-
-                    return@intercept chain.proceed()
-                }
+                val useNativeFallback =
+                    state == GoneSmartNetworkState.OFFLINE ||
+                        options.fallbackToNativeAutoDjWhenNoSuitableTracks
 
                 playerBadgeController
                     .setMode(
                         PlayerAutoDjBadgeController.Mode.FALLBACK
                     )
 
+                if (useNativeFallback) {
+                    autoDjSelectionWindow.set(null)
+                    val reason =
+                        if (state == GoneSmartNetworkState.OFFLINE) {
+                            "offline"
+                        } else {
+                            "queue mapping unavailable"
+                        }
+                    Log.i(
+                        TAG,
+                        "SMART DJ NATIVE FALLBACK | " +
+                            "$reason; using original GMMP Auto-DJ"
+                    )
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                        message =
+                            "Using GMMP Auto-DJ fallback while GoneSmart " +
+                                "cannot read this queue.",
+                        appendEvent = true
+                    )
+                    val result = chain.proceed()
+                    Log.i(
+                        TAG,
+                        "========================================"
+                    )
+                    return@intercept result
+                }
+
                 Log.w(
                     TAG,
-                    "SMART DJ SUPPRESSED | " +
-                        "queue context unavailable; native online fallback disabled"
+                    "SMART DJ SUPPRESSED | queue context unavailable; " +
+                        "native fallback disabled by GoneSmart settings"
                 )
 
                 Log.i(

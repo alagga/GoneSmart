@@ -1850,6 +1850,17 @@ internal class PlaylistFolderPreviewController(
             return
         }
 
+        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(
+                adapter.javaClass.name
+            ) && !NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            resolveRuntimePlaylistBinding(list, adapter)
+            if (!NativePlaylistRuntimeBinding.isReady(adapter)) {
+                retry(list, attempt)
+                return
+            }
+        }
+
         val native = NativePlaylistSourceInspector.inspect(adapter, itemCount)
         if (native.paths.size != itemCount ||
             native.nativeObjects.size != itemCount ||
@@ -3334,11 +3345,7 @@ internal class PlaylistFolderPreviewController(
                 getHolder.invoke(list, nativeRow)
             }.getOrNull() ?: continue
             if (holder.javaClass.name != expectedHolder) continue
-            val actual = runCatching {
-                holder.javaClass.getDeclaredField("A").apply {
-                    isAccessible = true
-                }.get(holder)
-            }.getOrNull() ?: continue
+            val actual = boundPlaylistModel(holder) ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
                 // Keep the folder browser visible until GMMP's NEW
@@ -3609,6 +3616,57 @@ internal class PlaylistFolderPreviewController(
         return search(browser.index.topLevelFolders, null)
     }
 
+    private fun resolveRuntimePlaylistBinding(
+        list: ViewGroup,
+        adapter: Any
+    ) {
+        val holderMethod = runCatching {
+            list.javaClass.getMethod(
+                "getChildViewHolder",
+                View::class.java
+            )
+        }.getOrNull() ?: return
+        val positionMethod = runCatching {
+            list.javaClass.getMethod(
+                "getChildAdapterPosition",
+                View::class.java
+            )
+        }.getOrNull() ?: return
+
+        for (index in 0 until list.childCount) {
+            val row = list.getChildAt(index) ?: continue
+            val holder = runCatching {
+                holderMethod.invoke(list, row)
+            }.getOrNull() ?: continue
+            val position = runCatching {
+                positionMethod.invoke(list, row) as? Int
+            }.getOrNull() ?: continue
+            val resolved = NativePlaylistRuntimeBinding.observeBoundRow(
+                adapter = adapter,
+                holder = holder,
+                adapterPosition = position,
+                renderedTitle = visiblePlaylistTitle(row)
+            ) ?: continue
+            val complete = NativePlaylistRuntimeBinding.readAll(
+                adapter,
+                runCatching {
+                    adapter.javaClass.getMethod("getItemCount")
+                        .invoke(adapter) as Int
+                }.getOrDefault(0)
+            )
+            if (complete != null) {
+                Log.i(
+                    TAG,
+                    "FOLDER MODEL SOURCE READY | adapter=" +
+                        resolved.adapterClass +
+                        " | model=" + resolved.modelClass +
+                        " | completeRows=" + complete.size
+                )
+            }
+            return
+        }
+    }
+
     private fun currentlyVisibleTitles(
         list: ViewGroup
     ): Map<String, String> {
@@ -3624,11 +3682,7 @@ internal class PlaylistFolderPreviewController(
             val holder = runCatching {
                 holderMethod.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            val model = runCatching {
-                holder.javaClass.getDeclaredField("A").apply {
-                    isAccessible = true
-                }.get(holder)
-            }.getOrNull() ?: continue
+            val model = boundPlaylistModel(holder) ?: continue
             val path = modelPath(model) ?: continue
             visiblePlaylistTitle(nativeRow)?.let {
                 found[path] = it
@@ -3668,11 +3722,29 @@ internal class PlaylistFolderPreviewController(
         list.javaClass.getMethod("getAdapter").invoke(list)
     }.getOrNull()
 
-    private fun modelPath(model: Any): String? = runCatching {
-        model.javaClass.getDeclaredField("q").apply {
-            isAccessible = true
-        }.get(model) as? String
-    }.getOrNull()?.takeIf(String::isNotBlank)
+    private fun boundPlaylistModel(holder: Any): Any? =
+        NativePlaylistRuntimeBinding.boundModel(holder)
+            ?: runCatching {
+                holder.javaClass.getDeclaredField("A").apply {
+                    isAccessible = true
+                }.get(holder)
+            }.getOrNull()
+
+    private fun modelPath(model: Any): String? =
+        NativePlaylistRuntimeBinding.pathOf(model)
+            ?: runCatching {
+                model.javaClass.getDeclaredField("q").apply {
+                    isAccessible = true
+                }.get(model) as? String
+            }.getOrNull()?.takeIf(String::isNotBlank)
+
+    private fun modelTitle(model: Any): String? =
+        NativePlaylistRuntimeBinding.titleOf(model)
+            ?: runCatching {
+                model.javaClass.getDeclaredField("p").apply {
+                    isAccessible = true
+                }.get(model) as? String
+            }.getOrNull()?.takeIf(String::isNotBlank)
 
     private fun isPicker(list: ViewGroup): Boolean =
         multiSelect.isPickerList(list)
@@ -3695,16 +3767,8 @@ internal class PlaylistFolderPreviewController(
                 holderGetter.invoke(list, nativeRow)
             }.getOrNull() ?: continue
             if (holder.javaClass.name != expected) continue
-            val boundModel = runCatching {
-                holder.javaClass.getDeclaredField("A").apply {
-                    isAccessible = true
-                }.get(holder)
-            }.getOrNull() ?: continue
-            val name = runCatching {
-                boundModel.javaClass.getDeclaredField("p").apply {
-                    isAccessible = true
-                }.get(boundModel) as? String
-            }.getOrNull()
+            val boundModel = boundPlaylistModel(holder) ?: continue
+            val name = modelTitle(boundModel)
             val title = findNativeTitleTextView(nativeRow, name) ?: continue
             val matchedNativeTitle = !name.isNullOrBlank() &&
                 title.text?.toString()?.trim().equals(name.trim(), true)

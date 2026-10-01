@@ -58,17 +58,78 @@ internal class NativeGmmpPlaylistMover(
         if (nativeDelete != null && nativeScan != null &&
             nativeFileCtor != null) return true
         return runCatching {
-            val delete = hostLoader.loadClass("py0").getDeclaredMethod(
-                "b", Context::class.java, java.util.List::class.java
-            ).apply { isAccessible = true }
-            val ctor = hostLoader.loadClass("th1").getDeclaredConstructor(
-                File::class.java, java.lang.Long::class.java
-            ).apply { isAccessible = true }
-            val scanner = hostLoader.loadClass("t6").getDeclaredMethod(
-                "f", Context::class.java, Array<String>::class.java
-            ).apply { isAccessible = true }
+            val deleteType = hostLoader.loadClass("py0")
+            val delete = runCatching {
+                deleteType.getDeclaredMethod(
+                    "b", Context::class.java, java.util.List::class.java
+                )
+            }.getOrNull() ?: deleteType.declaredMethods.filter {
+                Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    Context::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    ) &&
+                    java.util.List::class.java.isAssignableFrom(
+                        it.parameterTypes[1]
+                    )
+            }.singleOrNull() ?: error(
+                "GMMP playlist delete method is not structurally unique: " +
+                    deleteType.declaredMethods
+                        .filter {
+                            Modifier.isStatic(it.modifiers) &&
+                                it.parameterCount == 2
+                        }
+                        .joinToString(",") { it.name }
+                )
+
+            val fileType = hostLoader.loadClass("th1")
+            val ctor = runCatching {
+                fileType.getDeclaredConstructor(
+                    File::class.java, java.lang.Long::class.java
+                )
+            }.getOrNull() ?: fileType.declaredConstructors.filter {
+                it.parameterCount == 2 &&
+                    File::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    ) &&
+                    (it.parameterTypes[1] == java.lang.Long::class.java ||
+                        it.parameterTypes[1] == java.lang.Long.TYPE)
+            }.singleOrNull() ?: error(
+                "GMMP playlist file wrapper constructor is not unique"
+            )
+
+            val scanType = hostLoader.loadClass("t6")
+            val scanner = runCatching {
+                scanType.getDeclaredMethod(
+                    "f", Context::class.java, Array<String>::class.java
+                )
+            }.getOrNull() ?: scanType.declaredMethods.filter {
+                Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    Context::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    ) &&
+                    it.parameterTypes[1].isArray &&
+                    it.parameterTypes[1].componentType ==
+                        String::class.java
+            }.singleOrNull() ?: error(
+                "GMMP playlist scanner method is not structurally unique"
+            )
+
+            delete.isAccessible = true
+            ctor.isAccessible = true
+            scanner.isAccessible = true
             require(Modifier.isStatic(delete.modifiers) &&
                 Modifier.isStatic(scanner.modifiers))
+            if (delete.name != "b" || scanner.name != "f") {
+                Log.i(
+                    TAG,
+                    "PLAYLIST MOVE MAPPING | delete=" +
+                        delete.declaringClass.name + "." + delete.name +
+                        " | scanner=" +
+                        scanner.declaringClass.name + "." + scanner.name
+                )
+            }
             nativeDelete = delete
             nativeFileCtor = ctor
             nativeScan = scanner

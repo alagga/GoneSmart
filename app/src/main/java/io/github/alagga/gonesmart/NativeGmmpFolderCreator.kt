@@ -350,8 +350,14 @@ internal class NativeGmmpFolderCreator(
             Context::class.java,
             behaviorType
         ).apply { isAccessible = true }.newInstance(context, behavior)
-        val unit = kotlinUnitType.getDeclaredField("a")
-            .apply { isAccessible = true }.get(null)
+        val unitField = kotlinUnitType.declaredFields.singleOrNull {
+            java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                kotlinUnitType.isAssignableFrom(it.type)
+        } ?: error(
+            "Native Kotlin Unit singleton field is not structurally unique"
+        )
+        val unit = unitField.apply { isAccessible = true }.get(null)
+            ?: error("Native Kotlin Unit singleton is null")
         val callback = Proxy.newProxyInstance(
             classLoader,
             arrayOf(callbackType)
