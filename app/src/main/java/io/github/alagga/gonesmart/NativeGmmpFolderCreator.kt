@@ -269,8 +269,8 @@ internal class NativeGmmpFolderCreator(
     fun show(
         context: Context,
         directory: File,
-        onCreationCallback: () -> Unit,
-        nativePlaylistMenu: android.view.Menu? = null
+        nativePlaylistMenu: android.view.Menu? = null,
+        onCreationCallback: () -> Unit
     ): Boolean {
         if (showNativePlaylistShell(
                 context,
