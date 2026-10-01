@@ -1,8 +1,16 @@
 # GoneSmart v0.4.0 (upcoming)
 
-> **Development snapshot — 30 September 2026.** These notes track the current v0.4 branch and are not final release notes yet. More features may land before v0.4 is tagged. Current device acceptance refers to the maintainer's GoneMAD Music Player 4.2.0 setup unless stated otherwise.
+> **Development snapshot — 1 October 2026.** These notes track the current v0.4 branch and are not final release notes yet. More features may land before v0.4 is tagged. Current device acceptance refers to the maintainer's GoneMAD Music Player 4.2.0 setup unless stated otherwise. GMMP 4.2.1 is currently detected as untested and is not yet compatibility-accepted.
 
 Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader set of native-looking GMMP quality-of-life extensions while keeping playback, playlist writing and Smart-Playlist evaluation as close to GMMP's original paths as possible.
+
+## Compatibility hardening
+
+- The Home **Compatibility** row now turns amber when the installed GMMP version differs from the explicitly tested version, while the overall module/injection card continues to describe whether GoneSmart is injected.
+- GMMP 4.2.1 changed at least one verified obfuscated internal boundary: the 4.2.0 Auto-DJ selection method `kr.F1(int)` is no longer present under that name.
+- Smart-DJ hook failures are now isolated from independent GoneSmart features. A missing Auto-DJ mapping no longer prevents Playlist/Smart-Playlist UI hooks, Flip and other unrelated extensions from being installed.
+- Unknown replacement obfuscated methods are not hooked by signature guesswork. GoneSmart emits a bounded signature-only diagnostic for the affected class and fails closed for that specific boundary until the mapping is verified.
+
 
 ## Playlist and Smart-Playlist organization
 
