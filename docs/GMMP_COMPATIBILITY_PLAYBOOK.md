@@ -171,6 +171,21 @@ This does **not** authorize synthetic substitutes where AGENTS requires native-f
 11. Update `docs/NATIVE_GMMP_AUDIT.md` with detailed investigation notes when useful.
 12. Only after the intended feature matrix passes should the tested-version constant/README compatibility claim move to the new GMMP version.
 
+## Compatibility diagnostic markers
+
+For an unaccepted GMMP build, prefer one clean startup log containing the following bounded markers rather than many one-off probes:
+
+- `AUTO DJ SELECTION MAPPING` — concrete int→List selection candidates.
+- `GMMP DATABASE MAPPING` — structurally resolved GMDatabase field.
+- `GMMP ARTIST QUERY MAPPING` / `GMMP ARTIST QUERY CLASS` — ArtistDao query candidates and RawQuery constructor shape.
+- `GMMP LIBRARY MAPPING` / `GMMP TRACK DAO STRUCTURE` — TrackDao contracts, hierarchy, fields and delegate methods.
+- `PLAYLIST PICKER MAPPING` — no-arg picker lifecycle/view getters.
+- `BRIDGE MAPPING` — Playlist Link rule/editor/label constructors and methods.
+- `SMART MODEL MAPPING`, `SMART PRESENTER MAPPING`, `SMART FRAGMENT MAPPING`, `SMART CONTEXT MAPPING` — Smart-folder remap evidence.
+- `FLIP QUEUE MAPPING`, `MIX QUEUE MAPPING`, `FLIP SERVICE MAPPING` — queue and native Play remap evidence.
+
+These markers are development compatibility diagnostics. Remove or narrow probes once a boundary is verified and a stable resolver replaces them; do not let inventories become permanent per-action logging.
+
 ## Longer-term hardening backlog
 
 - Introduce semantic binding/resolver objects per native domain (Auto-DJ/Room, Playlist picker, Smart-Playlist model/editor, queue/playback) so feature code does not own raw obfuscated names.
