@@ -8,7 +8,9 @@ import android.util.Log
 import android.view.View
 import java.io.File
 import java.lang.ref.WeakReference
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.ParameterizedType
 import java.util.concurrent.Executors
 
 /**
@@ -54,34 +56,25 @@ internal class NativeGmmpPlaylistMover(
     private var nativeFileCtor: java.lang.reflect.Constructor<*>? = null
     private var nativeScan: java.lang.reflect.Method? = null
 
+    private fun genericListElementClass(
+        method: Method,
+        parameterIndex: Int
+    ): Class<*>? {
+        val type = method.genericParameterTypes
+            .getOrNull(parameterIndex) as? ParameterizedType
+            ?: return null
+        val argument = type.actualTypeArguments.singleOrNull() ?: return null
+        return when (argument) {
+            is Class<*> -> argument
+            is ParameterizedType -> argument.rawType as? Class<*>
+            else -> null
+        }
+    }
+
     private fun resolveNativeMethods(): Boolean {
         if (nativeDelete != null && nativeScan != null &&
             nativeFileCtor != null) return true
         return runCatching {
-            val deleteType = hostLoader.loadClass("py0")
-            val delete = runCatching {
-                deleteType.getDeclaredMethod(
-                    "b", Context::class.java, java.util.List::class.java
-                )
-            }.getOrNull() ?: deleteType.declaredMethods.filter {
-                Modifier.isStatic(it.modifiers) &&
-                    it.parameterCount == 2 &&
-                    Context::class.java.isAssignableFrom(
-                        it.parameterTypes[0]
-                    ) &&
-                    java.util.List::class.java.isAssignableFrom(
-                        it.parameterTypes[1]
-                    )
-            }.singleOrNull() ?: error(
-                "GMMP playlist delete method is not structurally unique: " +
-                    deleteType.declaredMethods
-                        .filter {
-                            Modifier.isStatic(it.modifiers) &&
-                                it.parameterCount == 2
-                        }
-                        .joinToString(",") { it.name }
-                )
-
             val fileType = hostLoader.loadClass("th1")
             val ctor = runCatching {
                 fileType.getDeclaredConstructor(
@@ -97,6 +90,37 @@ internal class NativeGmmpPlaylistMover(
             }.singleOrNull() ?: error(
                 "GMMP playlist file wrapper constructor is not unique"
             )
+
+            val deleteType = hostLoader.loadClass("py0")
+            val deleteCandidates = deleteType.declaredMethods.filter {
+                Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    Context::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    ) &&
+                    java.util.List::class.java.isAssignableFrom(
+                        it.parameterTypes[1]
+                    )
+            }
+            val genericWrapperMatches = deleteCandidates.filter {
+                genericListElementClass(it, 1)?.let(fileType::isAssignableFrom) ==
+                    true
+            }
+            val delete = runCatching {
+                deleteType.getDeclaredMethod(
+                    "b", Context::class.java, java.util.List::class.java
+                )
+            }.getOrNull()
+                ?: genericWrapperMatches.singleOrNull()
+                ?: deleteCandidates.singleOrNull()
+                ?: error(
+                    "GMMP playlist delete method is not structurally unique: " +
+                        deleteCandidates.joinToString(",") { method ->
+                            method.name + "<" +
+                                (genericListElementClass(method, 1)?.name
+                                    ?: "?") + ">"
+                        }
+                )
 
             val scanType = hostLoader.loadClass("t6")
             val scanner = runCatching {
@@ -126,6 +150,9 @@ internal class NativeGmmpPlaylistMover(
                     TAG,
                     "PLAYLIST MOVE MAPPING | delete=" +
                         delete.declaringClass.name + "." + delete.name +
+                        " | deleteElement=" +
+                        (genericListElementClass(delete, 1)?.name ?: "erased") +
+                        " | wrapper=" + fileType.name +
                         " | scanner=" +
                         scanner.declaringClass.name + "." + scanner.name
                 )
@@ -135,7 +162,11 @@ internal class NativeGmmpPlaylistMover(
             nativeScan = scanner
             true
         }.onFailure {
-            Log.w(TAG, "PLAYLIST MOVE | original delete/scan not verified; blocked", it)
+            Log.w(
+                TAG,
+                "PLAYLIST MOVE | original delete/scan not verified; blocked",
+                it
+            )
         }.getOrDefault(false)
     }
 
