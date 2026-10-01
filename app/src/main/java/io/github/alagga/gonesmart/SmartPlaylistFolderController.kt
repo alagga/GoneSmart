@@ -437,10 +437,80 @@ internal class SmartPlaylistFolderController(
             )
         }.onFailure {
             Log.e(TAG, "SMART FOLDERS BINDINGS FAILED | native tab untouched", it)
+            diagnoseCompatibilityBindings(loader)
         }.getOrNull()
         bindings = configured
         Log.i(TAG, "SMART FOLDERS BINDINGS | ready=" + (configured != null))
         return configured != null
+    }
+
+    private fun diagnoseCompatibilityBindings(
+        loader: ClassLoader
+    ) {
+        runCatching {
+            val type = loader.loadClass("ws4")
+            Log.w(
+                TAG,
+                "SMART MODEL MAPPING | constructors=" +
+                    GmmpReflectionDiagnostics.constructors(type) +
+                    " | fileMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 20
+                    ) {
+                        it.parameterTypes.size == 1 &&
+                            it.parameterTypes[0] == File::class.java
+                    }
+            )
+        }
+
+        runCatching {
+            val type = loader.loadClass("ss4")
+            val nested =
+                type.declaredClasses
+                    .take(16)
+                    .joinToString(",") { it.name }
+                    .ifBlank { "none" }
+            Log.w(
+                TAG,
+                "SMART PRESENTER MAPPING | oneArgMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 24
+                    ) {
+                        it.parameterTypes.size == 1
+                    } +
+                    " | nested=" + nested
+            )
+        }
+
+        runCatching {
+            val type = loader.loadClass("os4")
+            Log.w(
+                TAG,
+                "SMART FRAGMENT MAPPING | oneArgMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 24
+                    ) {
+                        it.parameterTypes.size == 1
+                    }
+            )
+        }
+
+        runCatching {
+            val type = loader.loadClass("nt4")
+            Log.w(
+                TAG,
+                "SMART CONTEXT MAPPING | threeArgMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 20
+                    ) {
+                        it.parameterTypes.size == 3
+                    }
+            )
+        }
     }
 
     fun setNativeFolderCreator(loader: ClassLoader) {
