@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r5"
+            "gmmp421-r6"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -41,19 +41,6 @@ class GoneSmartModule : XposedModule() {
                 "smartListRecyclerView",
                 "smartRuleListRecyclerView",
                 "queueRecyclerView"
-            )
-
-        private val COMPAT_421_RUNTIME_CANDIDATES =
-            listOf(
-                // All names below come directly from the r4 runtime trace.
-                // Keep this follow-up narrow to avoid another main-thread
-                // inventory of classes whose roles are already established.
-                "u23",
-                "wf1",
-                "bw",
-                "dx",
-                "qs4",
-                "ns4"
             )
 
         private const val MAX_COMPAT_RECYCLER_SURFACES =
@@ -126,9 +113,6 @@ class GoneSmartModule : XposedModule() {
         )
 
     private val compatibilityStaticProbeStarted =
-        AtomicBoolean(false)
-
-    private val compatibilityRuntimeInventoryStarted =
         AtomicBoolean(false)
 
     private val compatibilityRecyclerSnapshots =
@@ -1427,30 +1411,6 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun logCompatibility421RuntimeInventory(
-        loader: ClassLoader
-    ) {
-        if (!compatibilityRuntimeInventoryStarted.compareAndSet(false, true)) {
-            return
-        }
-        COMPAT_421_RUNTIME_CANDIDATES.forEach { requestedName ->
-            runCatching {
-                val type = loader.loadClass(requestedName)
-                logCompatibilityClassStructure(
-                    marker = "GMMP 4.2.1 CANDIDATE",
-                    requestedName = requestedName,
-                    type = type
-                )
-            }.onFailure { failure ->
-                Log.w(
-                    "GoneSmartCompat",
-                    "GMMP 4.2.1 CANDIDATE | requested=" + requestedName +
-                        " | unavailable=" + failure.javaClass.simpleName
-                )
-            }
-        }
-    }
-
     private fun logCompatibilityRuntimeInstance(
         marker: String,
         instance: Any?
@@ -1659,6 +1619,9 @@ class GoneSmartModule : XposedModule() {
         }.getOrNull() ?: return
 
         val resourceName = compatibilityResourceName(view)
+        if (resourceName !in COMPAT_RELEVANT_RECYCLER_IDS) {
+            return
+        }
         val surfaceKey = adapter.javaClass.name + "|" + resourceName
         val shouldLog = synchronized(compatibilityRecyclerProbeSurfaces) {
             if (compatibilityRecyclerProbeSurfaces.size >=
@@ -1698,17 +1661,11 @@ class GoneSmartModule : XposedModule() {
             instance = adapter
         )
 
-        if (resourceName in COMPAT_RELEVANT_RECYCLER_IDS) {
-            val loader = adapter.javaClass.classLoader
-            if (loader != null) {
-                logCompatibility421RuntimeInventory(loader)
-            }
-            scheduleCompatibilityRecyclerSnapshots(
-                view = view,
-                expectedAdapter = adapter,
-                resourceName = resourceName
-            )
-        }
+        scheduleCompatibilityRecyclerSnapshots(
+            view = view,
+            expectedAdapter = adapter,
+            resourceName = resourceName
+        )
     }
 
     /**
