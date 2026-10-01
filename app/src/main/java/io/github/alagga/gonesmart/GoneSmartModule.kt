@@ -2769,6 +2769,16 @@ class GoneSmartModule : XposedModule() {
                         if (
                             library.isEmpty()
                         ) {
+                            if (
+                                gmmpLibraryReader
+                                    .hasDeterministicMappingFailure()
+                            ) {
+                                Log.w(
+                                    TAG,
+                                    "STARTUP PREWARM STOPPED | GMMP library mapping unavailable for this build"
+                                )
+                                break
+                            }
 
                             Thread.sleep(
                                 STARTUP_PREWARM_RETRY_DELAY_MS
