@@ -1349,12 +1349,32 @@ class MainActivity : AppCompatActivity() {
                 "Compatibility\nUntested GMMP version $gmmpVersion • tested: $TESTED_GMMP_VERSION"
         }
         compatibilityText.setTextColor(
-            if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
-                COLOR_AMBER
-            } else {
-                COLOR_TEXT_SECONDARY
-            }
+            COLOR_TEXT_SECONDARY
         )
+        if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
+            compatibilityText.background =
+                rounded(
+                    withAlpha(
+                        COLOR_AMBER,
+                        0.32f
+                    ),
+                    12f
+                )
+            compatibilityText.setPadding(
+                dp(12),
+                dp(10),
+                dp(12),
+                dp(10)
+            )
+        } else {
+            compatibilityText.background = null
+            compatibilityText.setPadding(
+                0,
+                dp(12),
+                0,
+                dp(4)
+            )
+        }
     }
 
     private fun runtimeDescription(snapshot: GoneSmartEventStore.RuntimeSnapshot): String {
