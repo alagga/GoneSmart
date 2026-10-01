@@ -73,15 +73,14 @@ class GmmpArtistCatalog {
         try {
 
             /*
-             * qr.t = GMDatabase
+             * GMMP 4.2.0: qr.t = GMDatabase.
+             * 4.2.1 remapped that field. Prefer the verified legacy field
+             * when it is still database-like, otherwise accept only one
+             * structurally unique GMDatabase/RoomDatabase instance field.
              */
             val database =
-                readObjectField(
-                    target =
-                        autoDjInstance,
-
-                    fieldName =
-                        "t"
+                resolveDatabaseInstance(
+                    autoDjInstance
                 )
 
             if (
@@ -92,6 +91,10 @@ class GmmpArtistCatalog {
                     TAG,
                     "GMMP artist catalog: " +
                             "GMDatabase not available"
+                )
+
+                diagnoseAutoDjDatabaseFields(
+                    autoDjInstance
                 )
 
                 return
@@ -331,6 +334,97 @@ class GmmpArtistCatalog {
                 t
             )
         }
+    }
+
+    private fun resolveDatabaseInstance(
+        autoDjInstance: Any
+    ): Any? {
+        fun isDatabaseLike(
+            declaredType: Class<*>,
+            value: Any?
+        ): Boolean {
+            if (
+                declaredType.name ==
+                    "gonemad.gmmp.data.database.GMDatabase"
+            ) {
+                return value != null
+            }
+
+            val runtimeClass =
+                value?.javaClass
+                    ?: return false
+
+            return generateSequence<Class<*>>(runtimeClass) {
+                it.superclass
+            }.any {
+                it.name == "androidx.room.RoomDatabase" ||
+                    it.name ==
+                        "gonemad.gmmp.data.database.GMDatabase"
+            }
+        }
+
+        findField(
+            startClass = autoDjInstance.javaClass,
+            fieldName = "t"
+        )?.let { legacy ->
+            legacy.isAccessible = true
+            val value =
+                runCatching {
+                    legacy.get(autoDjInstance)
+                }.getOrNull()
+
+            if (
+                isDatabaseLike(
+                    legacy.type,
+                    value
+                )
+            ) {
+                return value
+            }
+        }
+
+        val candidates =
+            generateSequence<Class<*>>(autoDjInstance.javaClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .mapNotNull { field ->
+                    field.isAccessible = true
+                    val value =
+                        runCatching {
+                            field.get(autoDjInstance)
+                        }.getOrNull()
+
+                    if (
+                        isDatabaseLike(
+                            field.type,
+                            value
+                        )
+                    ) {
+                        field to value
+                    } else {
+                        null
+                    }
+                }
+                .toList()
+
+        val resolved =
+            candidates.singleOrNull()
+                ?: return null
+
+        Log.w(
+            TAG,
+            "GMMP DATABASE MAPPING | legacy=qr.t unavailable" +
+                " | structurally resolved=" +
+                resolved.first.name + ":" +
+                resolved.first.type.name + "->" +
+                resolved.second.javaClass.name
+        )
+
+        return resolved.second
     }
 
     private fun diagnoseAutoDjDatabaseFields(
