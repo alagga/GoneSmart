@@ -529,13 +529,43 @@ class GoneSmartModule : XposedModule() {
 
         try {
 
-            installAutoDjRefillHook(
-                param
-            )
+            var smartDjCoreHooksHealthy = true
 
-            installAutoDjSelectionHook(
-                param
-            )
+            runCatching {
+                installAutoDjRefillHook(
+                    param
+                )
+            }.onFailure { refillHookError ->
+                smartDjCoreHooksHealthy = false
+                Log.w(
+                    TAG,
+                    "Auto-DJ refill hook unavailable; continuing with independent GoneSmart features",
+                    refillHookError
+                )
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                    message = "GoneSmart Smart DJ refill hook is unavailable for this GMMP build. Independent UI features can still load.",
+                    appendEvent = true
+                )
+            }
+
+            runCatching {
+                installAutoDjSelectionHook(
+                    param
+                )
+            }.onFailure { selectionHookError ->
+                smartDjCoreHooksHealthy = false
+                Log.w(
+                    TAG,
+                    "Auto-DJ selection hook unavailable; continuing with independent GoneSmart features",
+                    selectionHookError
+                )
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                    message = "GoneSmart Smart DJ selection hook is unavailable for this GMMP build. Independent UI features can still load.",
+                    appendEvent = true
+                )
+            }
 
             try {
 
@@ -755,10 +785,17 @@ class GoneSmartModule : XposedModule() {
                 )
             }
 
-            Log.i(
-                TAG,
-                "All GoneSmart core hooks installed successfully"
-            )
+            if (smartDjCoreHooksHealthy) {
+                Log.i(
+                    TAG,
+                    "All GoneSmart core hooks installed successfully"
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "GoneSmart loaded with degraded Smart DJ hooks; independent UI hooks were still attempted"
+                )
+            }
 
         } catch (t: Throwable) {
 
@@ -3425,6 +3462,58 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+    /**
+     * GMMP 4.2.0 exposes the verified Auto-DJ selection boundary as
+     * kr.F1(int). New GMMP builds can reshuffle R8 names even when the
+     * underlying feature barely changes. Never guess a replacement hook:
+     * emit a bounded, signature-only diagnostic and fail closed so the rest
+     * of GoneSmart can continue loading.
+     */
+    private fun resolveAutoDjSelectionMethod(
+        autoDjDaoClass: Class<*>
+    ): java.lang.reflect.Method {
+        runCatching {
+            autoDjDaoClass.getDeclaredMethod(
+                "F1",
+                Integer.TYPE
+            )
+        }.getOrNull()?.let {
+            return it
+        }
+
+        val intMethods = autoDjDaoClass.declaredMethods
+            .filter {
+                it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE
+            }
+            .sortedBy { it.name }
+
+        val listReturning = intMethods.filter {
+            java.util.List::class.java.isAssignableFrom(it.returnType)
+        }
+
+        fun signature(method: java.lang.reflect.Method): String =
+            method.name + "(int):" + method.returnType.name
+
+        Log.w(
+            TAG,
+            "AUTO DJ SELECTION MAPPING | expected=kr.F1(int) unavailable" +
+                " | listCandidates=" +
+                listReturning.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | intMethods=" +
+                intMethods.take(12).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | intMethodCount=" + intMethods.size
+        )
+
+        throw NoSuchMethodException(
+            "kr.F1(int) is unavailable; GMMP internal mapping is unverified"
+        )
+    }
+
     private fun installAutoDjSelectionHook(
         param: PackageReadyParam
     ) {
@@ -3435,9 +3524,8 @@ class GoneSmartModule : XposedModule() {
             )
 
         val selectionMethod =
-            autoDjDaoClass.getDeclaredMethod(
-                "F1",
-                Integer.TYPE
+            resolveAutoDjSelectionMethod(
+                autoDjDaoClass
             )
 
         selectionMethod.isAccessible =
