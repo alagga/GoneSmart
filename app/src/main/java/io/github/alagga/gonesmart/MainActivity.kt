@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frameworkStatusText: TextView
     private lateinit var runtimeStatusText: TextView
     private lateinit var compatibilityText: TextView
+    private lateinit var compatibilitySection: LinearLayout
     private var updateStatusText: TextView? = null
     private var updateVersionText: TextView? = null
     private var updateState: GitHubReleaseChecker.State = GitHubReleaseChecker.State.Checking
@@ -308,29 +309,52 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("STATUS"))
 
         statusCard = card().apply {
-            setContentPadding(dp(22), dp(20), dp(22), dp(20))
+            // The status card is one visual unit, but Compatibility owns the
+            // complete bottom strip so an untested host version never renders
+            // as a smaller warning card inside the green module state.
+            setContentPadding(0, 0, 0, 0)
+            clipToOutline = true
         }
         val statusContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+        }
+        val statusMainContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(12))
         }
 
         statusHeadline = textView("Checking module…", 21f, COLOR_TEXT, bold = true)
         statusSubline = textView("Waiting for Xposed service", 15f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(5), 0, dp(14))
         }
-        statusContent.addView(statusHeadline)
-        statusContent.addView(statusSubline)
-        statusContent.addView(divider())
+        statusMainContent.addView(statusHeadline)
+        statusMainContent.addView(statusSubline)
+        statusMainContent.addView(divider())
 
         gmmpStatusText = statusRow("GoneMAD Music Player", "Checking…")
         frameworkStatusText = statusRow("Xposed framework", "Checking…")
         runtimeStatusText = statusRow("GoneSmart state", "Idle")
         compatibilityText = statusRow("Compatibility", "Tested with $TESTED_GMMP_VERSION")
 
-        statusContent.addView(gmmpStatusText)
-        statusContent.addView(frameworkStatusText)
-        statusContent.addView(runtimeStatusText)
-        statusContent.addView(compatibilityText)
+        statusMainContent.addView(gmmpStatusText)
+        statusMainContent.addView(frameworkStatusText)
+        statusMainContent.addView(runtimeStatusText)
+        statusContent.addView(statusMainContent)
+
+        compatibilitySection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), 0, dp(22), dp(12))
+            addView(divider())
+            addView(compatibilityText)
+        }
+        statusContent.addView(
+            compatibilitySection,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
         statusCard.addView(statusContent)
         container.addView(statusCard)
 
@@ -1351,30 +1375,23 @@ class MainActivity : AppCompatActivity() {
         compatibilityText.setTextColor(
             COLOR_TEXT_SECONDARY
         )
-        if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
-            compatibilityText.background =
-                rounded(
-                    withAlpha(
-                        COLOR_AMBER,
-                        0.32f
-                    ),
-                    12f
+        compatibilityText.background = null
+        compatibilityText.setPadding(
+            0,
+            dp(12),
+            0,
+            dp(4)
+        )
+        compatibilitySection.setBackgroundColor(
+            if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
+                withAlpha(
+                    COLOR_AMBER,
+                    0.32f
                 )
-            compatibilityText.setPadding(
-                dp(12),
-                dp(10),
-                dp(12),
-                dp(10)
-            )
-        } else {
-            compatibilityText.background = null
-            compatibilityText.setPadding(
-                0,
-                dp(12),
-                0,
-                dp(4)
-            )
-        }
+            } else {
+                Color.TRANSPARENT
+            }
+        )
     }
 
     private fun runtimeDescription(snapshot: GoneSmartEventStore.RuntimeSnapshot): String {
