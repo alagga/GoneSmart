@@ -2,6 +2,7 @@ package io.github.alagga.gonesmart
 
 import android.os.Looper
 import android.view.View
+import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 /**
@@ -103,15 +104,42 @@ internal object NativeGmmpAccent {
             .invoke(theme, attr)
             ?: error("GMMP accent observable missing")
         val utility = loader.loadClass("oy0")
-        val method = utility.declaredMethods.first {
-            it.name == "h" && it.parameterCount == 3 &&
-                it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
-                it.parameterTypes[1] == String::class.java
-        }.apply { isAccessible = true }
+        fun compatible(method: java.lang.reflect.Method): Boolean {
+            val p = method.parameterTypes
+            return Modifier.isStatic(method.modifiers) &&
+                p.size == 3 &&
+                p[0].isAssignableFrom(theme.javaClass) &&
+                p[1] == String::class.java &&
+                (
+                    p[2].isAssignableFrom(fallback.javaClass) ||
+                        p[2] == Any::class.java
+                ) &&
+                method.returnType != java.lang.Void.TYPE
+        }
+        val legacy = utility.declaredMethods.firstOrNull {
+            it.name == "h" && compatible(it)
+        }
+        val candidates = utility.declaredMethods.filter(::compatible)
+        val method = (legacy ?: candidates.singleOrNull())
+            ?.apply { isAccessible = true }
+            ?: error(
+                "GMMP live accent resolver is not structurally unique: " +
+                    candidates.joinToString(",") { it.name }
+            )
         val observable = method.invoke(
             null, theme, "!mainColorAccent", fallback
         ) ?: error("GMMP !mainColorAccent observable unavailable")
-        val observerType = loader.loadClass("nf3")
+        val observerType = runCatching {
+            loader.loadClass("nf3")
+        }.getOrElse {
+            val subscribeCandidates = observable.javaClass.methods.filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0].isInterface &&
+                    it.returnType != java.lang.Void.TYPE
+            }
+            subscribeCandidates.singleOrNull()?.parameterTypes?.single()
+                ?: error("GMMP live accent observer type is not unique")
+        }
         val disposables = arrayListOf<Any>()
         val listener = Proxy.newProxyInstance(
             observerType.classLoader, arrayOf(observerType)
@@ -135,9 +163,18 @@ internal object NativeGmmpAccent {
             }
             null
         }
-        Subscription(listener, disposables).also {
+        val subscribe = runCatching {
             observable.javaClass.getMethod("b", observerType)
-                .invoke(observable, listener)
+        }.getOrNull() ?: observable.javaClass.methods.filter {
+            it.parameterCount == 1 &&
+                it.parameterTypes[0] == observerType &&
+                it.returnType != java.lang.Void.TYPE
+        }.singleOrNull()
+        requireNotNull(subscribe) {
+            "GMMP live accent subscribe method is not structurally unique"
+        }
+        Subscription(listener, disposables).also {
+            subscribe.invoke(observable, listener)
         }
     }.onFailure(onError).getOrNull()
 }
