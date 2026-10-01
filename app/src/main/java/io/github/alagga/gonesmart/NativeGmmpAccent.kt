@@ -119,24 +119,30 @@ internal object NativeGmmpAccent {
                 )
             }.getOrNull()?.takeIf { it.second != null }
         }
-        val resolver = resolverResults.singleOrNull()
-            ?: resolverResults.singleOrNull { it.first.name == "h" }
-            ?: error(
-                "GMMP live accent resolver is not runtime-unique: " +
-                    resolverResults.joinToString(",") {
-                        it.first.name + "->" +
-                            (it.second?.javaClass?.name ?: "null")
-                    }
-            )
-        val observable = resolver.second
-            ?: error("GMMP !mainColorAccent observable unavailable")
+        val resolver = when {
+            resolverResults.size == 1 -> resolverResults.single()
+            resolverResults.size > 1 ->
+                resolverResults.singleOrNull { it.first.name == "h" }
+                    ?: error(
+                        "GMMP live accent resolver is runtime-ambiguous: " +
+                            resolverResults.joinToString(",") {
+                                it.first.name + "->" +
+                                    (it.second?.javaClass?.name ?: "null")
+                            }
+                    )
+            else -> null
+        }
+        // GMMP 4.2.1 no longer exposes the old oy0 resolver shape. The
+        // Aesthetic colorAccent observable obtained directly from the live
+        // theme is still dynamic and is preferable to a static theme color.
+        val observable = resolver?.second ?: fallback
 
         // Never assume the old nf3 name. Resolve the observer interface from
         // the observable's actual subscribe boundary in this GMMP build.
+        // Rx/Aesthetic variants may return either a disposable or void.
         val subscribeCandidates = observable.javaClass.methods.filter {
             it.parameterCount == 1 &&
-                it.parameterTypes[0].isInterface &&
-                it.returnType != java.lang.Void.TYPE
+                it.parameterTypes[0].isInterface
         }
         val subscribe = subscribeCandidates.singleOrNull { it.name == "b" }
             ?: subscribeCandidates.singleOrNull()

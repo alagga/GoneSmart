@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r12"
+            "gmmp421-r13"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -2069,7 +2069,10 @@ class GoneSmartModule : XposedModule() {
         if (resourceName !in COMPAT_RELEVANT_RECYCLER_IDS) return
         val weakView = WeakReference(view)
         val expectedClassName = expectedAdapter.javaClass.name
-        listOf(250L, 900L, 2_000L, 4_000L).forEach { delay ->
+        // One early and one settled snapshot are enough once a surface has
+        // already been structurally identified. The former four-pass probe
+        // caused visible frame skips in debug builds.
+        listOf(300L, 1_200L).forEach { delay ->
             view.postDelayed({
                 val current = weakView.get() ?: return@postDelayed
                 val adapter = runCatching {
@@ -3584,7 +3587,8 @@ class GoneSmartModule : XposedModule() {
             hook(clickMethod).intercept { chain ->
                 val view = chain.getArg(0) as? android.view.View
                 val intercepted = runCatching {
-                    playlistController.onClick(view) ||
+                    playlistFolderPreview.interceptPickerOverlayClick(view) ||
+                        playlistController.onClick(view) ||
                         playlistFolderPreview.interceptNativePickerFabClick(view)
                 }.getOrElse { error ->
                     Log.e(TAG, "Playlist click interception failed", error)
@@ -3603,7 +3607,8 @@ class GoneSmartModule : XposedModule() {
             hook(longClickMethod).intercept { chain ->
                 val view = chain.getArg(0) as? android.view.View
                 val intercepted = runCatching {
-                    playlistController.onLongClick(view)
+                    playlistFolderPreview.interceptPickerOverlayLongClick(view) ||
+                        playlistController.onLongClick(view)
                 }.getOrElse { error ->
                     Log.e(TAG, "Playlist long-click interception failed", error)
                     false
@@ -3632,7 +3637,8 @@ class GoneSmartModule : XposedModule() {
             hook(performClick).intercept { chain ->
                 val view = chain.getThisObject() as? android.view.View
                 val intercepted = runCatching {
-                    playlistController.onClick(view) ||
+                    playlistFolderPreview.interceptPickerOverlayClick(view) ||
+                        playlistController.onClick(view) ||
                         playlistFolderPreview
                             .interceptNativePickerFabClick(view)
                 }.getOrElse { error ->
@@ -3652,7 +3658,8 @@ class GoneSmartModule : XposedModule() {
             hook(performLongClick).intercept { chain ->
                 val view = chain.getThisObject() as? android.view.View
                 val intercepted = runCatching {
-                    playlistController.onLongClick(view)
+                    playlistFolderPreview.interceptPickerOverlayLongClick(view) ||
+                        playlistController.onLongClick(view)
                 }.getOrElse { error ->
                     Log.e(
                         TAG,

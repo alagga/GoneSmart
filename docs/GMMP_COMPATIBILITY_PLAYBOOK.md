@@ -301,3 +301,13 @@ The r12 compatibility pass must preserve the native row/list ownership demonstra
 Playlist-folder actions use adapter-position correlation, bounded holder binding retries, and the original row click/long-click. For non-empty folder deletion, select the verified native rows through GMMP itself and invoke the original contextual Delete action; this survives R8 moving the old `py0` helper and keeps GMMP's own confirmation/worker authoritative.
 
 Compatibility fast paths for obfuscated listener classes are optional. Install semantic view-dispatch hooks independently so a missing legacy listener class cannot silently disable picker multi-selection or the picker creation speed-dial. Folder creation's MaterialDialogs callback may return erased Kotlin `Unit`; nullable reference returns are valid and must not be rejected merely because no static Unit singleton is discoverable.
+
+## 4.2.1 r13: interface boundaries, native visual preservation and test burden
+
+The next device log proved that the remaining Queue Flip / Smart DJ / Track Auto-DJ read failure was not an unknown SQL API: the runtime already exposed `f94.q(p94): Cursor`, but the resolver walked only classes and superclasses. Include inherited interface methods when resolving read-only callable boundaries. This is appropriate for a verified database instance and a read-only Cursor method; do not generalize it to destructive methods without independent ownership proof.
+
+Picker folder rows are synthetic presentation around verified native playlist models. Android may dispatch the semantic long-click from a descendant TextView, so ownership is established by walking back to the registered GoneSmart row/model rather than requiring the clicked View itself to be the RecyclerView child.
+
+For Aesthetic styling, absence and ambiguity are different. If the old `oy0` `!mainColorAccent` helper has no compatible runtime method, use the live Aesthetic `colorAccent` observable already returned by the theme. Never hide the creation dialog or intentionally make its cursor/underline transparent while waiting for optional compatibility styling; untouched native Material/Aesthetic visuals are the fail-open baseline.
+
+Compatibility diagnostics must not become the performance problem they diagnose. Keep deep reflection snapshots bounded and convert each device-proven mapping into a JVM contract test. A stock emulator cannot validate LSPosed injection into proprietary GMMP unless the exact APK and an LSPosed-capable image are available, so the practical goal is to make the remaining real-device pass small and consolidated rather than pretending emulator coverage proves injection behavior.

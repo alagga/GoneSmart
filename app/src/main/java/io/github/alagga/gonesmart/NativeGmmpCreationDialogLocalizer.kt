@@ -47,7 +47,6 @@ internal object NativeGmmpCreationDialogLocalizer {
         val window = dialog.window ?: return false
         val originalWindowAlpha = window.attributes.alpha
         pendingWindowAlpha[dialog] = originalWindowAlpha
-        setWindowAlpha(dialog, 0f)
         ensureCancelAction(dialog)
         ensureInputAccent(dialog)
         localize(dialog)
@@ -55,7 +54,7 @@ internal object NativeGmmpCreationDialogLocalizer {
             TAG,
             "CREATION DIALOG PRE-SHOW | prepared=true" +
                 " | accentReady=" + accentColors.containsKey(dialog) +
-                " | holdWindow=true"
+                " | holdWindow=false"
         )
         return true
     }
@@ -63,7 +62,6 @@ internal object NativeGmmpCreationDialogLocalizer {
     fun finishAfterShow(dialog: Dialog) {
         val originalAlpha = pendingWindowAlpha[dialog] ?: return
         val decor = dialog.window?.decorView ?: return
-        setWindowAlpha(dialog, 0f)
         postShowRevealGuards.remove(dialog)?.let { old ->
             if (decor.viewTreeObserver.isAlive) {
                 decor.viewTreeObserver.removeOnPreDrawListener(old)
@@ -97,7 +95,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 // whole dialog lifetime.
                 accentColors[dialog]?.let {
                     applyInputAccent(decor, it)
-                } ?: applyPendingInputAccent(decor)
+                }
 
                 if (!revealed) {
                     localize(dialog)
@@ -132,7 +130,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 ) {
                     accentColors[dialog]?.let {
                         applyInputAccent(decor, it)
-                    } ?: applyPendingInputAccent(decor)
+                    }
                     revealed = true
                     pendingWindowAlpha.remove(dialog)
                     setWindowAlpha(dialog, originalAlpha)
@@ -414,12 +412,8 @@ internal object NativeGmmpCreationDialogLocalizer {
             }
         }
 
-        // Until Aesthetic's live color arrives, explicitly suppress only the
-        // focused line/cursor state. This prevents Android's unrelated red
-        // static accent from drawing for one frame without hiding the field.
-        if (!accentColors.containsKey(dialog)) {
-            applyPendingInputAccent(root)
-        }
+        // If no live accent has arrived, preserve Material/Aesthetic's
+        // original input field and cursor exactly as GMMP created them.
 
         if (locale.language.equals("en", ignoreCase = true)) {
             return changed > 0
@@ -497,16 +491,9 @@ internal object NativeGmmpCreationDialogLocalizer {
                     Integer.toHexString(initial)
             )
         } else {
-            pendingRevealAlpha[dialog] = decor.alpha
-            decor.alpha = 0f
-            decor.postDelayed({
-                if (!accentColors.containsKey(dialog)) {
-                    applyPendingInputAccent(decor)
-                    pendingRevealAlpha.remove(dialog)?.let { alpha ->
-                        if (dialog.isShowing) decor.alpha = alpha
-                    }
-                }
-            }, 180L)
+            // Do not blank the native field/cursor while waiting. 4.2.1 can
+            // omit the old !mainColorAccent helper; the untouched native
+            // Material/Aesthetic state is the safe visual fallback.
         }
         if (decor.viewTreeObserver.isAlive) {
             val firstDrawGuard =
@@ -517,7 +504,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                         }
                         accentColors[dialog]?.let {
                             applyInputAccent(decor, it)
-                        } ?: applyPendingInputAccent(decor)
+                        }
                         return true
                     }
                 }

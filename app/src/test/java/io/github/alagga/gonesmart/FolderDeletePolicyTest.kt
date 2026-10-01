@@ -76,4 +76,20 @@ class FolderDeletePolicyTest {
             root.deleteRecursively()
         }
     }
+
+    @Test fun verifiedEmptyHierarchyCanBeRemovedWithoutRecursiveFileDelete() {
+        val root = Files.createTempDirectory("gs-root").toFile()
+        val folder = File(root, "Empty").apply { mkdirs() }
+        val nested = File(folder, "Nested").apply { mkdirs() }
+        try {
+            val plan = FolderDeletePolicy.prepare(root, folder, emptyList())
+            assertNotNull(plan)
+            assertTrue(nested.isDirectory)
+            assertTrue(FolderDeletePolicy.removeEmptyDirectories(plan!!))
+            assertFalse(folder.exists())
+            assertTrue(root.isDirectory)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

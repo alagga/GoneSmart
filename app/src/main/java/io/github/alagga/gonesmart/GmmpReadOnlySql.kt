@@ -103,7 +103,8 @@ internal object GmmpReadOnlySql {
             val constructor: Constructor<*>?
         )
 
-        val cursorCandidates = hierarchyMethods(database.javaClass)
+        val cursorCandidates =
+            GmmpReflectionPolicy.callableMethods(database.javaClass)
             .filter {
                 it.parameterCount == 1 &&
                     Cursor::class.java.isAssignableFrom(it.returnType)

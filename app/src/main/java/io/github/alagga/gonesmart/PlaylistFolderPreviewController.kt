@@ -170,6 +170,8 @@ internal class PlaylistFolderPreviewController(
         var folderFab: View? = null,
         var playlistFab: View? = null,
         var pickerAddExpanded: Boolean = false,
+        var pickerPaletteGuard:
+            android.view.ViewTreeObserver.OnPreDrawListener? = null,
         var forwardingOriginalFab: Boolean = false,
         // Destination-selection mode reuses the actual Playlists-tab
         // browser, original GMMP row XML and already sampled quickNav.
@@ -294,6 +296,12 @@ internal class PlaylistFolderPreviewController(
     private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
     private val folderMemory = PlaylistFolderNavigationMemory()
     private val observedPickerOwners = WeakHashMap<ViewGroup, Boolean>()
+    private data class PickerOverlayTarget(
+        val list: WeakReference<ViewGroup>,
+        val model: Any
+    )
+    private val pickerOverlayTargets =
+        WeakHashMap<View, PickerOverlayTarget>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
@@ -1625,19 +1633,24 @@ internal class PlaylistFolderPreviewController(
             return startNativeFolderBulkDelete(browser, plan)
         }
 
-        // Empty-directory compatibility fallback. Non-empty folders never
-        // use the obsolete 4.2.0 py0 binding on GMMP 4.2.1.
-        val opened = nativeFolderDeletion!!.confirmNativeDeletion(
-            browser.list.context,
-            emptyList(),
-            listOf(plan.folder),
-            plan.folder
+        // 4.2.1 no longer exposes the old Files/playlist py0 delete
+        // helper. At this point FolderDeletePolicy has proved that there are
+        // zero native playlist files and no unindexed files. The user also
+        // explicitly chose Delete from the folder popup, so remove ONLY this
+        // verified empty directory hierarchy; never recurse through files.
+        if (FolderDeletePolicy.removeEmptyDirectories(plan)) {
+            refreshAfterFolderDeletion(plan)
+            Log.i(
+                TAG,
+                "FOLDER DELETE | verified-empty compatibility delete complete"
+            )
+            return true
+        }
+        Log.w(
+            TAG,
+            "FOLDER DELETE | verified-empty compatibility delete failed"
         )
-        if (!opened) return false
-        val pending = PendingFolderDeletion(plan)
-        pendingFolderDeletes.add(pending)
-        waitForOriginalFolderDeletion(pending)
-        return true
+        return false
     }
 
     private fun startNativeFolderBulkDelete(
@@ -3160,7 +3173,12 @@ internal class PlaylistFolderPreviewController(
                         handled
                     }
                 }
-            if (!isPicker(list)) {
+            if (isPicker(list) && model != null) {
+                pickerOverlayTargets[item] = PickerOverlayTarget(
+                    WeakReference(list),
+                    model
+                )
+            } else if (!isPicker(list)) {
                 browser.mainRenderedPlaylistRows[playlist.path] = item
                 browser.mainOriginalRowForegrounds[item] = item.foreground
                 applyMainSelectionVisual(browser, playlist.path, item)
@@ -3607,6 +3625,52 @@ internal class PlaylistFolderPreviewController(
                 onComplete
             )
         }
+    }
+
+    private fun pickerOverlayTarget(view: View?): PickerOverlayTarget? {
+        var current = view
+        repeat(10) {
+            val node = current ?: return null
+            pickerOverlayTargets[node]?.let { target ->
+                val list = target.list.get() ?: return@let
+                if (list.isAttachedToWindow &&
+                    isPicker(list) &&
+                    browsers.containsKey(list)
+                ) {
+                    return target
+                }
+            }
+            current = node.parent as? View
+        }
+        return null
+    }
+
+    fun interceptPickerOverlayLongClick(view: View?): Boolean {
+        val target = pickerOverlayTarget(view) ?: return false
+        val list = target.list.get() ?: return false
+        val handled = multiSelect.onFolderPlaylistLongClick(
+            list,
+            target.model
+        )
+        if (handled) {
+            browsers[list]?.let(::safeRender)
+            Log.i(TAG, "MULTI PICKER OVERLAY | long-click routed")
+        }
+        return handled
+    }
+
+    fun interceptPickerOverlayClick(view: View?): Boolean {
+        val target = pickerOverlayTarget(view) ?: return false
+        val list = target.list.get() ?: return false
+        val handled = multiSelect.onFolderPlaylistClick(
+            list,
+            target.model
+        )
+        if (handled) {
+            browsers[list]?.let(::safeRender)
+            Log.i(TAG, "MULTI PICKER OVERLAY | click routed")
+        }
+        return handled
     }
 
     private fun performMatchingNativeAction(
@@ -4341,13 +4405,23 @@ internal class PlaylistFolderPreviewController(
             }
 
             var visited = 0
-            var found: android.view.Menu? = null
+            data class MenuCandidate(
+                val menu: android.view.Menu,
+                val score: Int,
+                val host: String
+            )
+            val candidates = arrayListOf<MenuCandidate>()
             fun walk(view: View, depth: Int) {
-                if (found != null || depth > 10 || visited++ > 320) return
-                if (view.javaClass.name.contains("Toolbar")) {
+                if (depth > 14 || visited++ > 640) return
+                val className = view.javaClass.name
+                val isToolbarHost =
+                    className.contains("Toolbar", ignoreCase = true) ||
+                        className.contains("ActionMenu", ignoreCase = true)
+                if (isToolbarHost) {
                     val menu = runCatching {
                         view.javaClass.methods.firstOrNull {
-                            it.name == "getMenu" && it.parameterCount == 0 &&
+                            it.name == "getMenu" &&
+                                it.parameterCount == 0 &&
                                 android.view.Menu::class.java
                                     .isAssignableFrom(it.returnType)
                         }?.invoke(view) as? android.view.Menu
@@ -4359,35 +4433,33 @@ internal class PlaylistFolderPreviewController(
                                 menu.getItem(index).itemId
                             ) == "menuAdd"
                         }
-                        // We are already scoped to the attached non-picker
-                        // playlist RecyclerView. Prefer the toolbar carrying
-                        // native menuAdd, but in 4.2.1 retain the first live
-                        // non-empty toolbar menu as a verified surface so the
-                        // GoneSmart New Folder item does not disappear merely
-                        // because GMMP moved/removed menuAdd.
-                        if (hasNativeAdd) {
-                            found = menu
-                            return
-                        }
-                        if (found == null) found = menu
+                        val score =
+                            (if (hasNativeAdd) 100 else 0) +
+                                (if (className.contains(
+                                        "ActionMenu",
+                                        ignoreCase = true
+                                    )
+                                ) 30 else 20)
+                        candidates += MenuCandidate(menu, score, className)
                     }
                 }
                 if (view is ViewGroup) {
                     for (index in 0 until view.childCount) {
                         walk(view.getChildAt(index), depth + 1)
-                        if (found != null) return
                     }
                 }
             }
             walk(list.rootView, 0)
-            val menu = found
+            val best = candidates.maxByOrNull { it.score }
+            val menu = best?.menu
             if (menu != null) {
                 playlistTabMenu = WeakReference(menu)
                 installNativeNewFolderMenu(menu, list.context)
                 updatePlaylistMenu()
                 Log.i(
                     TAG,
-                    "FOLDER CREATE MENU | captured live native toolbar menu"
+                    "FOLDER CREATE MENU | captured live native menu host=" +
+                        (best?.host ?: "unknown")
                 )
             } else if (attempt < 10) {
                 schedulePlaylistMenuCapture(list, attempt + 1)
@@ -4621,6 +4693,12 @@ internal class PlaylistFolderPreviewController(
 
     private fun closePickerAddOptions(browser: Browser) {
         browser.pickerAddExpanded = false
+        browser.pickerPaletteGuard?.let { guard ->
+            multiSelect.folderNativeFab(browser.list)?.viewTreeObserver
+                ?.takeIf { it.isAlive }
+                ?.removeOnPreDrawListener(guard)
+        }
+        browser.pickerPaletteGuard = null
         val oldButtons = listOf(browser.playlistFab, browser.folderFab)
             .filterNotNull()
         browser.playlistFab = null
@@ -4686,6 +4764,28 @@ internal class PlaylistFolderPreviewController(
                     Log.w(TAG, "FOLDER PICKER FAB | native show unavailable", it)
                 }
             }
+
+        // Both native-clone mini FABs install their own Aesthetic observers.
+        // Re-copy the ONE visible GMMP FAB palette immediately before each
+        // frame so neither clone can race the other to a stale theme color.
+        val paletteGuard =
+            object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (!browser.pickerAddExpanded ||
+                        browsers[browser.list] !== browser
+                    ) return true
+                    listOf(browser.playlistFab, browser.folderFab)
+                        .filterNotNull()
+                        .forEach { mini ->
+                            syncNativeMiniFabPalette(fab, mini)
+                        }
+                    return true
+                }
+            }
+        if (fab.viewTreeObserver.isAlive) {
+            fab.viewTreeObserver.addOnPreDrawListener(paletteGuard)
+            browser.pickerPaletteGuard = paletteGuard
+        }
         Log.i(TAG, "FOLDER PICKER FAB | original GMMP mini FABs shown")
         return true
     }

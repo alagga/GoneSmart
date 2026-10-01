@@ -3092,7 +3092,7 @@ internal class SmartPlaylistFolderController(
         browser: Browser,
         folder: File
     ): Boolean {
-        val deletion = folderDeletion ?: return false
+        if (folderDeletion == null) return false
         val plan = FolderDeletePolicy.prepare(
             browser.root, folder, allSmartPlaylistPaths(browser.root)
         )
@@ -3104,21 +3104,47 @@ internal class SmartPlaylistFolderController(
             showMoveError(browser.list.context)
             return false
         }
-        val targets = if (plan.nativePlaylistFiles.isNotEmpty()) {
-            plan.nativePlaylistFiles
-        } else {
-            listOf(plan.folder)
+        // GMMP 4.2.1 removed the old py0 bulk-delete utility. Smart
+        // Playlists are file-backed here (the same controller already moves
+        // verified .spl files atomically), so delete only the plan that
+        // FolderDeletePolicy has proven contains Smart-Playlist files and
+        // empty directories. Never recurse through arbitrary files.
+        val context = browser.list.context
+        worker.execute {
+            val success = runCatching {
+                plan.nativePlaylistFiles.forEach { file ->
+                    require(
+                        file.isFile &&
+                            file.extension.equals("spl", ignoreCase = true)
+                    )
+                    require(file.delete()) {
+                        "Smart-Playlist file delete failed"
+                    }
+                }
+                require(FolderDeletePolicy.removeEmptyDirectories(plan)) {
+                    "Smart folder cleanup failed"
+                }
+                true
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "SMART FOLDER DELETE | verified file delete failed",
+                    it
+                )
+            }.getOrDefault(false)
+
+            main.post {
+                if (success) {
+                    refreshAfterFolderDeletion(plan)
+                    Log.i(
+                        TAG,
+                        "SMART FOLDER DELETE | verified Smart files/folders removed"
+                    )
+                } else {
+                    showMoveError(context)
+                }
+            }
         }
-        if (!deletion.confirmNativeDeletion(
-                browser.list.context,
-                emptyList(),
-                targets,
-                plan.folder
-            )
-        ) return false
-        val pending = PendingFolderDeletion(plan)
-        pendingFolderDeletes.add(pending)
-        waitForNativeFolderDeletion(pending)
         return true
     }
 

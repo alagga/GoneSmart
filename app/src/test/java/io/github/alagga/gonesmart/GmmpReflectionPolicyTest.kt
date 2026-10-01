@@ -19,6 +19,16 @@ class GmmpReflectionPolicyTest {
         fun second(count: Int): List<String> = emptyList()
     }
 
+    private interface InterfaceBoundary {
+        fun query(input: String): List<String>
+    }
+
+    private abstract class InterfaceOwner : InterfaceBoundary
+
+    private class InterfaceRuntime : InterfaceOwner() {
+        override fun query(input: String): List<String> = listOf(input)
+    }
+
     @Test
     fun ignoresAbstractContractAndFindsConcreteImplementation() {
         val method = GmmpReflectionPolicy.uniqueConcreteMethod(
@@ -45,5 +55,24 @@ class GmmpReflectionPolicyTest {
         }
 
         assertNull(method)
+    }
+
+    @Test
+    fun callableMethodsIncludeInheritedInterfaceContract() {
+        val candidates = GmmpReflectionPolicy.callableMethods(
+            InterfaceRuntime::class.java
+        ).filter {
+            it.name == "query" &&
+                it.parameterTypes.contentEquals(
+                    arrayOf(String::class.java)
+                ) &&
+                List::class.java.isAssignableFrom(it.returnType)
+        }
+
+        assertEquals(1, candidates.size)
+        assertEquals(
+            listOf("ok"),
+            candidates.single().invoke(InterfaceRuntime(), "ok")
+        )
     }
 }
