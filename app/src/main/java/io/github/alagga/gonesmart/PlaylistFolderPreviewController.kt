@@ -1639,7 +1639,7 @@ internal class PlaylistFolderPreviewController(
         // explicitly chose Delete from the folder popup, so remove ONLY this
         // verified empty directory hierarchy; never recurse through files.
         if (FolderDeletePolicy.removeEmptyDirectories(plan)) {
-            refreshAfterFolderDeletion(plan)
+            refreshFoldersAfterNativeDeletion(plan.root.path)
             Log.i(
                 TAG,
                 "FOLDER DELETE | verified-empty compatibility delete complete"
