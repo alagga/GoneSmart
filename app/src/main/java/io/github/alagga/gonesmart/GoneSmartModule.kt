@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r9"
+            "gmmp421-r10"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -1369,11 +1369,25 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["queueReader"] = result {
-            val queueType = loader.loadClass("ex3")
-            require(queueType.declaredMethods.any {
-                it.name == "D" && it.parameterCount == 0
-            })
-            "READY_LEGACY"
+            val legacy = runCatching {
+                val queueType = loader.loadClass("ex3")
+                queueType.declaredMethods.any {
+                    it.name == "D" && it.parameterCount == 0
+                }
+            }.getOrDefault(false)
+            if (legacy) {
+                "READY_LEGACY"
+            } else {
+                val db = loader.loadClass("f94")
+                val cursorMethods =
+                    GmmpReflectionPolicy.concreteMethods(db).filter {
+                        it.parameterCount == 1 &&
+                            android.database.Cursor::class.java
+                                .isAssignableFrom(it.returnType)
+                    }
+                require(cursorMethods.size == 1)
+                "READY_CURSOR_RUNTIME_POINTER"
+            }
         }
 
         checks["libraryReader"] = result {
@@ -1408,7 +1422,21 @@ class GoneSmartModule : XposedModule() {
                         p[0] == String::class.java &&
                         p[1].isArray
                 }
-                require(queryCtor)
+                val queryInterface = query.isInterface &&
+                    query.methods.count {
+                        it.parameterCount == 0 &&
+                            it.returnType == String::class.java
+                    } == 1 &&
+                    query.methods.count {
+                        it.parameterCount == 0 &&
+                            (it.returnType == Integer.TYPE ||
+                                it.returnType == Integer::class.java)
+                    } == 1 &&
+                    query.methods.count {
+                        it.parameterCount == 1 &&
+                            it.returnType == java.lang.Void.TYPE
+                    } == 1
+                require(queryCtor || queryInterface)
                 "READY_CURSOR_STRUCTURAL"
             }
         }
@@ -1447,28 +1475,7 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["playlistMove"] = result {
-            val wrapper = loader.loadClass("th1")
-            require(wrapper.declaredConstructors.any {
-                val p = it.parameterTypes
-                p.size == 2 &&
-                    File::class.java.isAssignableFrom(p[0]) &&
-                    (p[1] == java.lang.Long::class.java ||
-                        p[1] == java.lang.Long.TYPE)
-            })
-            val delete = loader.loadClass("py0").declaredMethods.filter {
-                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
-                    it.parameterCount == 2 &&
-                    android.content.Context::class.java
-                        .isAssignableFrom(it.parameterTypes[0]) &&
-                    java.util.List::class.java
-                        .isAssignableFrom(it.parameterTypes[1])
-            }
-            val exact = delete.any { it.name == "b" }
-            val typed = delete.count {
-                it.genericParameterTypes.getOrNull(1)
-                    ?.typeName?.contains(wrapper.name) == true
-            }
-            require(exact || delete.size == 1 || typed == 1)
+            NativeGmmpPlaylistDeleteBinding.resolve(loader)
             val scanner = loader.loadClass("t6").declaredMethods.filter {
                 java.lang.reflect.Modifier.isStatic(it.modifiers) &&
                     it.parameterCount == 2 &&
@@ -1494,14 +1501,18 @@ class GoneSmartModule : XposedModule() {
                 runCatching { loader.loadClass(name) }.getOrNull()
             }.filter(::smartModelShape)
             val model = models.single()
+            val readers = methods(model).filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    it.returnType == java.lang.Void.TYPE
+            }
             val writers = methods(model).filter {
                 it.parameterCount == 1 &&
                     it.parameterTypes[0] == File::class.java &&
                     (it.returnType == java.lang.Boolean.TYPE ||
-                        it.returnType == java.lang.Boolean::class.java ||
-                        it.returnType == java.lang.Void.TYPE)
+                        it.returnType == java.lang.Boolean::class.java)
             }
-            require(writers.size == 1)
+            require(readers.size == 1 && writers.size == 1)
             "READY_STRUCTURAL"
         }
 

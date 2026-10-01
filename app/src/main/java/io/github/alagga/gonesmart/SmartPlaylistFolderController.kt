@@ -647,11 +647,19 @@ internal class SmartPlaylistFolderController(
                         java.util.List::class.java
                             .isAssignableFrom(it.returnType)
                 }
+                val androidxDiffer =
+                    field.type.name.startsWith("androidx.recyclerview.widget.") ||
+                        value.javaClass.name.startsWith(
+                            "androidx.recyclerview.widget."
+                        )
+                if (!androidxDiffer || currents.size != 1) {
+                    return@mapNotNull null
+                }
                 DifferCandidate(
                     field.apply { isAccessible = true },
                     value,
                     submits.single().apply { isAccessible = true },
-                    currents.singleOrNull()?.apply { isAccessible = true }
+                    currents.single().apply { isAccessible = true }
                 )
             }
         val differ = differCandidates.singleOrNull() ?: return null

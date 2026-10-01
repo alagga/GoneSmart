@@ -756,12 +756,16 @@ internal class PlaylistFolderPreviewController(
             return
         }
         val adapter = nativeAdapter(list) ?: return
+        val pickerFab = nativePickerFab(list)
+        if (pickerFab != null) {
+            multiSelect.adoptPickerSurface(list, pickerFab)
+        }
+        val adapterVerified =
+            GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
         val nativePlaylistSurface =
             resourceName(list) == "playlistListRecyclerView" ||
-                GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
-        if (!nativePlaylistSurface ||
-            !GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
-        ) return
+                adapterVerified || pickerFab != null
+        if (!nativePlaylistSurface) return
         if (BuildConfig.DEBUG &&
             resourceName(list) != "playlistListRecyclerView"
         ) {
@@ -775,7 +779,19 @@ internal class PlaylistFolderPreviewController(
         }
         knownLists[list] = true
         val adapterClassName = adapter.javaClass.name
-        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapterClassName)) {
+        if (adapterVerified && pickerFab == null) {
+            // Capture the toolbar while the native list is still loading.
+            // Waiting for the full overlay made New Folder appear late.
+            schedulePlaylistMenuCapture(list)
+        }
+        val modelSourceReady =
+            if (adapterVerified) {
+                GmmpPlaylistAdapterPolicy
+                    .hasVerifiedModelSource(adapterClassName)
+            } else {
+                NativePlaylistRuntimeBinding.isReady(adapter)
+            }
+        if (!modelSourceReady && pickerFab == null) {
             pendingRetries.remove(list)
             nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
             if (unsupportedModelSourceReports.put(list, adapterClassName) != adapterClassName) {
@@ -1819,11 +1835,21 @@ internal class PlaylistFolderPreviewController(
             retry(list, attempt)
             return
         }
-        if (!GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)) {
-            retry(list, attempt)
-            return
+        val adapterVerified =
+            GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
+        if (!adapterVerified &&
+            !NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            resolveRuntimePlaylistBinding(list, adapter)
+            if (!NativePlaylistRuntimeBinding.isReady(adapter)) {
+                retry(list, attempt)
+                return
+            }
         }
-        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapter.javaClass.name)) {
+        if (adapterVerified &&
+            !GmmpPlaylistAdapterPolicy
+                .hasVerifiedModelSource(adapter.javaClass.name)
+        ) {
             pendingRetries.remove(list)
             nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
             return
@@ -1854,9 +1880,10 @@ internal class PlaylistFolderPreviewController(
             return
         }
 
-        if (GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding(
+        if ((GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding(
                 adapter.javaClass.name
-            ) && !NativePlaylistRuntimeBinding.isReady(adapter)
+            ) || !adapterVerified) &&
+            !NativePlaylistRuntimeBinding.isReady(adapter)
         ) {
             resolveRuntimePlaylistBinding(list, adapter)
             if (!NativePlaylistRuntimeBinding.isReady(adapter)) {
@@ -3344,14 +3371,11 @@ internal class PlaylistFolderPreviewController(
                 View::class.java
             )
         }.getOrNull() ?: return false
-        val expectedHolder =
-            if (isPicker(list)) "jo3" else "wp3"
         for (i in 0 until list.childCount) {
             val nativeRow = list.getChildAt(i) ?: continue
             val holder = runCatching {
                 getHolder.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            if (holder.javaClass.name != expectedHolder) continue
             val actual = boundPlaylistModel(holder) ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
@@ -3753,8 +3777,29 @@ internal class PlaylistFolderPreviewController(
                 }.get(model) as? String
             }.getOrNull()?.takeIf(String::isNotBlank)
 
+    private fun nativePickerFab(list: ViewGroup): View? {
+        fun find(root: View, depth: Int, visited: IntArray): View? {
+            if (visited[0]++ > 256 || depth > 7) return null
+            if (resourceName(root) == "playlistFab") return root
+            val group = root as? ViewGroup ?: return null
+            for (index in 0 until group.childCount) {
+                find(group.getChildAt(index), depth + 1, visited)
+                    ?.let { return it }
+            }
+            return null
+        }
+
+        var scope = list.parent as? View
+        repeat(6) {
+            val current = scope ?: return@repeat
+            find(current, 0, intArrayOf(0))?.let { return it }
+            scope = current.parent as? View
+        }
+        return null
+    }
+
     private fun isPicker(list: ViewGroup): Boolean =
-        multiSelect.isPickerList(list)
+        multiSelect.isPickerList(list) || nativePickerFab(list) != null
 
     private fun surface(list: ViewGroup): String =
         if (isPicker(list)) "add-picker" else "playlists-tab"
@@ -3767,13 +3812,11 @@ internal class PlaylistFolderPreviewController(
         val holderGetter = runCatching {
             list.javaClass.getMethod("getChildViewHolder", View::class.java)
         }.getOrNull() ?: return null
-        val expected = if (isPicker(list)) "jo3" else "wp3"
         for (index in 0 until list.childCount) {
             val nativeRow = list.getChildAt(index) ?: continue
             val holder = runCatching {
                 holderGetter.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            if (holder.javaClass.name != expected) continue
             val boundModel = boundPlaylistModel(holder) ?: continue
             val name = modelTitle(boundModel)
             val title = findNativeTitleTextView(nativeRow, name) ?: continue

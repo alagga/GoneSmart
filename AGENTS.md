@@ -253,3 +253,12 @@ These are not regressions in the accepted 4.2.0 feature flows, but they remain e
 - **Contributor/issue information:** CONTRIBUTING.md
 
 **Maintenance instruction:** Keep this file as the persistent, current contract rather than a chronological debug diary. Long reverse-engineering traces and failed historical experiments belong in feature docs or commit history. When an unresolved native boundary becomes device-verified, update this handoff and the relevant feature document in the same commit.
+
+
+### GMMP 4.2.1 runtime-remap follow-up (2026-10-01)
+
+- Room read-only SQL resolution must accept both the legacy concrete query wrapper and the R8-renamed SupportSQLiteQuery-style interface. Interface support is structural (SQL getter, argument-count getter, binder callback); do not pin `p94`.
+- Queue reading is dual-path: keep the verified 4.2.0 native queue path as a fast path, then use the already-open GMMP Room Cursor for `queue_table`. Any runtime current-position signal must be validated against live queue rows and must fail closed if ambiguous.
+- Playlist delete/move must derive the native `List<T>` wrapper from GMMP's original delete method before resolving its constructor. `th1` is a legacy fallback only.
+- Add-to-Playlist picker ownership is established by the native `playlistListRecyclerView` + `playlistFab` surface pair, not an R8 fragment name. Holder/model binding remains runtime-correlated through the visible native row.
+- Smart Playlist differ resolution requires the AndroidX differ field plus both submit-list and current-list contracts; generic one-argument List methods elsewhere on the adapter are not sufficient.

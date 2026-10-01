@@ -275,3 +275,12 @@ These markers are development compatibility diagnostics. Remove or narrow probes
 - Track per-feature compatibility capability rather than one binary “module works” flag; surface degraded feature groups in logs/status without turning the overall injection state red.
 - Consider persisting only the **GMMP version + resolved capability summary**, never reflected members or user library data.
 - Keep an explicit device acceptance matrix for every GMMP version that GoneSmart publicly claims to support.
+
+
+## 4.2.1 lessons: Room query interfaces and picker surfaces
+
+When Room's generated database implementation exposes a Cursor method whose argument is an R8-renamed interface, treat the interface contract as the stable boundary. A compatible read-only query interface has one no-arg String SQL getter, one no-arg int argument-count getter and one one-arg void binder callback. Build a proxy for that contract instead of requiring a concrete `(String, Object[])` constructor.
+
+For playlist deletion, resolve the original static `Context + List<T>` GMMP method first and derive `T` from its generic signature. Only then resolve the native File wrapper constructor. This prevents stale wrapper names from blocking both Folder Delete and Playlist Move.
+
+For the Add-to-Playlist screen, the native `playlistListRecyclerView` and sibling `playlistFab` form the semantic picker boundary. A remapped fragment/presenter name must not downgrade that surface to the normal Playlists tab. Correlate a visible holder/model/title with the adapter-position getter before using any unknown adapter.

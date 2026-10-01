@@ -32,13 +32,11 @@ internal class NativeGmmpFolderDeletion(
         require(nativeFilePaths.all { it.exists() })
         val verifiedFolder = folder.canonicalFile
         require(verifiedFolder.isDirectory)
-        val itemClass = hostClassLoader.loadClass("th1")
-        val itemCtor = itemClass.getDeclaredConstructor(
-            File::class.java, java.lang.Long::class.java
-        ).apply { isAccessible = true }
+        val deletion =
+            NativeGmmpPlaylistDeleteBinding.resolve(hostClassLoader)
         val nativeFiles = ArrayList<Any>(nativeFilePaths.size)
         nativeFilePaths.forEach { file ->
-            nativeFiles += itemCtor.newInstance(file, null)
+            nativeFiles += deletion.wrap(file)
         }
         val nativeFilesId = context.resources.getIdentifier(
             "files", "string", context.packageName
@@ -47,10 +45,7 @@ internal class NativeGmmpFolderDeletion(
             runCatching { context.getString(nativeFilesId) }.getOrNull()
         } else null
 
-        val original = hostClassLoader.loadClass("py0")
-            .getDeclaredMethod(
-                "b", Context::class.java, java.util.List::class.java
-            ).apply { isAccessible = true }
+        val original = deletion.deleteMethod
         pendingDialog.set(
             PendingDialog(verifiedFolder.path, genericFilesLabel)
         )

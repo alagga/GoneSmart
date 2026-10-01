@@ -6,18 +6,14 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.Proxy
 
 /**
  * Read-only SQL bridge through GMMP's already-open Room database.
  *
- * This intentionally resolves by semantic structure instead of R8 names:
- * - the unique direct Auto-DJ field whose runtime hierarchy is GMDatabase /
- *   RoomDatabase;
- * - the unique concrete database method taking one query object and
- *   returning Cursor;
- * - that query object's unique (String, array) constructor.
- *
- * It never opens GMMP's database file itself and never executes mutations.
+ * This intentionally resolves by semantic structure instead of R8 names.
+ * GMMP 4.2.0 used a concrete query wrapper, while 4.2.1 exposes Room's
+ * query contract as an R8-renamed interface. Both paths stay read-only.
  */
 internal object GmmpReadOnlySql {
     private const val TAG = "GoneSmart"
@@ -28,7 +24,8 @@ internal object GmmpReadOnlySql {
         val database: Any,
         val databaseField: Field,
         val queryMethod: Method,
-        val queryConstructor: Constructor<*>
+        val queryType: Class<*>,
+        val queryConstructor: Constructor<*>?
     )
 
     fun <T> query(
@@ -38,7 +35,7 @@ internal object GmmpReadOnlySql {
         reader: (Cursor) -> T
     ): T {
         val binding = resolve(autoDjInstance)
-        val query = newQuery(binding.queryConstructor, sql, args)
+        val query = newQuery(binding, sql, args)
         val cursor = binding.queryMethod.invoke(
             binding.database,
             query
@@ -50,8 +47,7 @@ internal object GmmpReadOnlySql {
             binding.database.javaClass.name + "|" +
                 binding.databaseField.name + "|" +
                 binding.queryMethod.declaringClass.name + "." +
-                binding.queryMethod.name + "|" +
-                binding.queryConstructor.declaringClass.name
+                binding.queryMethod.name + "|" + binding.queryType.name
 
         if (reportedBindings.add(key)) {
             Log.i(
@@ -61,10 +57,14 @@ internal object GmmpReadOnlySql {
                     " | database=" + binding.database.javaClass.name +
                     " | query=" + binding.queryMethod.declaringClass.name +
                     "." + binding.queryMethod.name +
-                    "(" + binding.queryMethod.parameterTypes.single().name +
-                    "):Cursor" +
-                    " | wrapper=" +
-                    binding.queryConstructor.declaringClass.name
+                    "(" + binding.queryType.name + "):Cursor" +
+                    " | wrapper=" + binding.queryType.name +
+                    " | factory=" +
+                    if (binding.queryConstructor != null) {
+                        "constructor"
+                    } else {
+                        "interface-proxy"
+                    }
             )
         }
 
@@ -99,7 +99,8 @@ internal object GmmpReadOnlySql {
 
         data class Candidate(
             val method: Method,
-            val constructor: Constructor<*>
+            val queryType: Class<*>,
+            val constructor: Constructor<*>?
         )
 
         val cursorCandidates = hierarchyMethods(database.javaClass)
@@ -108,27 +109,34 @@ internal object GmmpReadOnlySql {
                     Cursor::class.java.isAssignableFrom(it.returnType)
             }
             .mapNotNull { method ->
-                resolveQueryConstructor(method.parameterTypes.single())
-                    ?.let { Candidate(method, it) }
+                val queryType = method.parameterTypes.single()
+                val constructor = resolveQueryConstructor(queryType)
+                when {
+                    constructor != null ->
+                        Candidate(method, queryType, constructor)
+                    supportsQueryInterface(queryType) ->
+                        Candidate(method, queryType, null)
+                    else -> null
+                }
             }
 
         val chosen = cursorCandidates.singleOrNull() ?: error(
             "GMMP Cursor query boundary is not structurally unique: " +
                 cursorCandidates.joinToString(",") {
                     it.method.declaringClass.name + "." +
-                        it.method.name + "(" +
-                        it.method.parameterTypes.single().name + ")"
+                        it.method.name + "(" + it.queryType.name + ")"
                 }.ifBlank { "none" }
         )
 
         databaseField.isAccessible = true
         chosen.method.isAccessible = true
-        chosen.constructor.isAccessible = true
+        chosen.constructor?.isAccessible = true
 
         return Binding(
             database = database,
             databaseField = databaseField,
             queryMethod = chosen.method,
+            queryType = chosen.queryType,
             queryConstructor = chosen.constructor
         )
     }
@@ -146,29 +154,140 @@ internal object GmmpReadOnlySql {
         return candidates.singleOrNull()
     }
 
+    private fun supportsQueryInterface(queryType: Class<*>): Boolean {
+        if (!queryType.isInterface) return false
+        val methods = queryType.methods.filter { !it.isSynthetic }
+        val sql = methods.count {
+            it.parameterCount == 0 &&
+                it.returnType == String::class.java
+        }
+        val count = methods.count {
+            it.parameterCount == 0 &&
+                (it.returnType == Integer.TYPE ||
+                    it.returnType == Integer::class.java)
+        }
+        val binder = methods.count {
+            it.parameterCount == 1 &&
+                it.returnType == java.lang.Void.TYPE &&
+                !it.parameterTypes[0].isPrimitive
+        }
+        return sql == 1 && count == 1 && binder == 1
+    }
+
     private fun newQuery(
-        constructor: Constructor<*>,
+        binding: Binding,
         sql: String,
         args: Array<Any?>
     ): Any {
-        val arrayType = constructor.parameterTypes[1]
-        val component = arrayType.componentType
-        val nativeArgs = java.lang.reflect.Array.newInstance(
-            component,
-            args.size
-        )
-        args.forEachIndexed { index, value ->
-            if (value != null && !component.isInstance(value) &&
-                component != Any::class.java
-            ) {
-                error(
-                    "GMMP query argument " + index +
-                        " does not match " + component.name
+        val constructor = binding.queryConstructor
+        if (constructor != null) {
+            val arrayType = constructor.parameterTypes[1]
+            val component = arrayType.componentType
+            val nativeArgs = java.lang.reflect.Array.newInstance(
+                component,
+                args.size
+            )
+            args.forEachIndexed { index, value ->
+                if (value != null && !component.isInstance(value) &&
+                    component != Any::class.java
+                ) {
+                    error(
+                        "GMMP query argument " + index +
+                            " does not match " + component.name
+                    )
+                }
+                java.lang.reflect.Array.set(nativeArgs, index, value)
+            }
+            return constructor.newInstance(sql, nativeArgs)
+        }
+
+        val queryType = binding.queryType
+        val loader = queryType.classLoader
+            ?: binding.database.javaClass.classLoader
+        return Proxy.newProxyInstance(
+            loader,
+            arrayOf(queryType)
+        ) { proxy, method, methodArgs ->
+            when {
+                method.declaringClass == Any::class.java &&
+                    method.name == "toString" ->
+                    "GoneSmart read-only query"
+                method.declaringClass == Any::class.java &&
+                    method.name == "hashCode" ->
+                    System.identityHashCode(proxy)
+                method.declaringClass == Any::class.java &&
+                    method.name == "equals" ->
+                    proxy === methodArgs?.firstOrNull()
+                method.parameterCount == 0 &&
+                    method.returnType == String::class.java ->
+                    sql
+                method.parameterCount == 0 &&
+                    (method.returnType == Integer.TYPE ||
+                        method.returnType == Integer::class.java) ->
+                    args.size
+                method.parameterCount == 1 &&
+                    method.returnType == java.lang.Void.TYPE -> {
+                    bindArguments(methodArgs?.firstOrNull(), args)
+                    null
+                }
+                else -> error(
+                    "Unsupported GMMP query-interface method: " +
+                        method.toGenericString()
                 )
             }
-            java.lang.reflect.Array.set(nativeArgs, index, value)
         }
-        return constructor.newInstance(sql, nativeArgs)
+    }
+
+    private fun bindArguments(
+        program: Any?,
+        args: Array<Any?>
+    ) {
+        if (args.isEmpty()) return
+        val target = program ?: error("GMMP query binder is null")
+        val methods = hierarchyMethods(target.javaClass)
+
+        fun unique(vararg types: Class<*>): Method {
+            return methods.filter { method ->
+                method.returnType == java.lang.Void.TYPE &&
+                    method.parameterTypes.contentEquals(types)
+            }.singleOrNull()?.apply {
+                isAccessible = true
+            } ?: error(
+                "GMMP bind method is not structurally unique for " +
+                    types.joinToString(",") { it.name }
+            )
+        }
+
+        val bindNull by lazy { unique(Integer.TYPE) }
+        val bindLong by lazy {
+            unique(Integer.TYPE, java.lang.Long.TYPE)
+        }
+        val bindDouble by lazy {
+            unique(Integer.TYPE, java.lang.Double.TYPE)
+        }
+        val bindString by lazy {
+            unique(Integer.TYPE, String::class.java)
+        }
+        val bindBlob by lazy {
+            unique(Integer.TYPE, ByteArray::class.java)
+        }
+
+        args.forEachIndexed { index, value ->
+            val slot = index + 1
+            when (value) {
+                null -> bindNull.invoke(target, slot)
+                is ByteArray -> bindBlob.invoke(target, slot, value)
+                is Float -> bindDouble.invoke(target, slot, value.toDouble())
+                is Double -> bindDouble.invoke(target, slot, value)
+                is Boolean -> bindLong.invoke(
+                    target, slot, if (value) 1L else 0L
+                )
+                is Byte, is Short, is Int, is Long ->
+                    bindLong.invoke(target, slot, (value as Number).toLong())
+                is String -> bindString.invoke(target, slot, value)
+                else -> bindString.invoke(target, slot, value.toString())
+            }
+        }
     }
 
     private fun isDatabaseLike(

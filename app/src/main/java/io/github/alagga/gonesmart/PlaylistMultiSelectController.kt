@@ -506,6 +506,28 @@ internal class PlaylistMultiSelectController {
         Log.i(TAG, "MULTI PICKER | new session")
     }
 
+    /**
+     * GMMP 4.2.1 remapped the picker fragment lifecycle. The visible native
+     * playlistListRecyclerView + playlistFab pair is a stronger semantic
+     * boundary than an R8 class name, so adopt it when the legacy hook did
+     * not create a picker session.
+     */
+    fun adoptPickerSurface(list: ViewGroup, fab: View) {
+        if (!enabled || resourceName(fab) != "playlistFab" ||
+            resourceName(list) != "playlistListRecyclerView"
+        ) return
+        val current = active
+        if (current == null ||
+            (current.list != null && current.list !== list)
+        ) {
+            reset()
+            active = Session(list)
+            Log.i(TAG, "MULTI PICKER | runtime surface adopted")
+        }
+        onListFound(list)
+        onFabFound(fab)
+    }
+
     fun onFabFound(fab: View) {
         if (!enabled) return
         val session = active ?: return
@@ -723,7 +745,7 @@ internal class PlaylistMultiSelectController {
             val holder = runCatching {
                 holderMethod.invoke(list, list.getChildAt(index))
             }.getOrNull()
-            if (holder?.javaClass?.name == "jo3") return holder
+            if (holder != null && holderModel(holder) != null) return holder
         }
         return null
     }
@@ -813,26 +835,33 @@ internal class PlaylistMultiSelectController {
                 "MULTI LONG | rowHolder=${holder?.javaClass?.name ?: "null"}"
             )
         }
-        if (holder?.javaClass?.name != "jo3") {
-            if (trace) Log.w(TAG, "MULTI LONG STOP | expected jo3 holder")
+        if (holder == null || holderModel(holder) == null) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | playlist holder model unavailable"
+                )
+            }
             return null
         }
         return holder
     }
 
     private fun holderModel(holder: Any): Any? =
-        runCatching {
-            holder.javaClass.getDeclaredField("A").apply {
-                isAccessible = true
-            }.get(holder)?.takeIf { it.javaClass.name == "xn3" }
-        }.getOrNull()
+        NativePlaylistRuntimeBinding.boundModel(holder)
+            ?: runCatching {
+                holder.javaClass.getDeclaredField("A").apply {
+                    isAccessible = true
+                }.get(holder)?.takeIf { it.javaClass.name == "xn3" }
+            }.getOrNull()
 
     private fun modelPath(model: Any): String? =
-        runCatching {
-            model.javaClass.getDeclaredField("q").apply {
-                isAccessible = true
-            }.get(model) as? String
-        }.getOrNull()?.takeIf { it.isNotBlank() }
+        NativePlaylistRuntimeBinding.pathOf(model)
+            ?: runCatching {
+                model.javaClass.getDeclaredField("q").apply {
+                    isAccessible = true
+                }.get(model) as? String
+            }.getOrNull()?.takeIf { it.isNotBlank() }
 
     private fun adapterItems(
         list: ViewGroup,
@@ -842,6 +871,20 @@ internal class PlaylistMultiSelectController {
             val adapter = list.javaClass
                 .getMethod("getAdapter").invoke(list)
                 ?: return emptyList()
+            val count = runCatching {
+                adapter.javaClass.getMethod("getItemCount")
+                    .invoke(adapter) as Int
+            }.getOrDefault(0)
+            NativePlaylistRuntimeBinding.readAll(adapter, count)?.let {
+                val models = it.map { row -> row.model }
+                if (trace) {
+                    Log.i(
+                        TAG,
+                        "MULTI LONG | runtime playlistModels=" + models.size
+                    )
+                }
+                return models
+            }
             val groups = adapter.javaClass
                 .getMethod("i0").invoke(adapter) as? List<*>
                 ?: return emptyList()
