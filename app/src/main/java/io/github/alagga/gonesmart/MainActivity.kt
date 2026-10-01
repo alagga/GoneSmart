@@ -1336,11 +1336,25 @@ class MainActivity : AppCompatActivity() {
         val runtime = GoneSmartEventStore.snapshot(this)
         runtimeStatusText.text = "GoneSmart state\n${runtimeDescription(runtime)}"
 
-        compatibilityText.text = when {
-            gmmpVersion == null -> "Compatibility\nTested with GMMP $TESTED_GMMP_VERSION"
-            gmmpVersion == TESTED_GMMP_VERSION -> "Compatibility\nTested • GMMP $gmmpVersion"
-            else -> "Compatibility\nUntested GMMP version $gmmpVersion • tested: $TESTED_GMMP_VERSION"
+        val compatibilityState = GmmpCompatibilityPolicy.state(
+            gmmpVersion,
+            TESTED_GMMP_VERSION
+        )
+        compatibilityText.text = when (compatibilityState) {
+            GmmpCompatibilityPolicy.State.UNKNOWN ->
+                "Compatibility\nTested with GMMP $TESTED_GMMP_VERSION"
+            GmmpCompatibilityPolicy.State.TESTED ->
+                "Compatibility\nTested • GMMP $gmmpVersion"
+            GmmpCompatibilityPolicy.State.UNTESTED ->
+                "Compatibility\nUntested GMMP version $gmmpVersion • tested: $TESTED_GMMP_VERSION"
         }
+        compatibilityText.setTextColor(
+            if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
+                COLOR_AMBER
+            } else {
+                COLOR_TEXT_SECONDARY
+            }
+        )
     }
 
     private fun runtimeDescription(snapshot: GoneSmartEventStore.RuntimeSnapshot): String {
