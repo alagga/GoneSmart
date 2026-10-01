@@ -179,6 +179,7 @@ For an unaccepted GMMP build, prefer one clean startup log containing the follow
 - `GMMP COMPAT CLASS` — bounded hierarchy/constructor/field/declared-method inventory for known 4.2.0 native boundaries.
 - `GMMP RECYCLER ADAPTER` / `GMMP RECYCLER ADAPTER CLASS` — runtime RecyclerView resource/path, actual adapter class, item count and privacy-safe adapter structure/runtime field types.
 - `GMMP RECYCLER SNAPSHOT` — delayed item-count plus collection element **types only** for relevant Playlist/Smart/Queue adapters, allowing model remaps without logging titles, paths or row values.
+- `GMMP RECYCLER HOLDER` / `GMMP RECYCLER HOLDER CLASS` — the first actually bound native ViewHolder on each relevant surface, including runtime field **types only**. This is used to discover the 4.2.1 Smart model/holder remap without logging row text or invoking guessed write methods.
 - `GMMP AUTO DJ RUNTIME` — delayed runtime field/collection **types only** for the live Auto-DJ object, used to identify the remapped queue-controller field without invoking guessed methods.
 - `GMMP 4.2.1 CANDIDATE` — bounded class structure for candidate names observed directly in 4.2.1 fragment/adapter runtime logs.
 - `AUTO DJ SELECTION MAPPING` — concrete int→List selection candidates.

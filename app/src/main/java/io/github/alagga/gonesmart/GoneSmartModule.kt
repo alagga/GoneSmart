@@ -33,10 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r4"
-
-        private val GMMP_PLAYLIST_ADAPTER_CLASS_NAMES =
-            setOf("zn3", "ao3")
+            "gmmp421-r5"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -48,25 +45,15 @@ class GoneSmartModule : XposedModule() {
 
         private val COMPAT_421_RUNTIME_CANDIDATES =
             listOf(
-                "ao3",
-                "qp3",
-                "op3",
-                "tp3",
-                "eo3",
-                "co3",
-                "ho3",
-                "is4",
-                "ps4",
-                "zr4",
-                "tr4",
-                "sr4",
-                "fx3",
-                "ey3",
-                "s6",
-                "as4",
-                "qr",
-                "ex3",
-                "gonemad.gmmp.playback.service.MusicService"
+                // All names below come directly from the r4 runtime trace.
+                // Keep this follow-up narrow to avoid another main-thread
+                // inventory of classes whose roles are already established.
+                "u23",
+                "wf1",
+                "bw",
+                "dx",
+                "qs4",
+                "ns4"
             )
 
         private const val MAX_COMPAT_RECYCLER_SURFACES =
@@ -145,6 +132,11 @@ class GoneSmartModule : XposedModule() {
         AtomicBoolean(false)
 
     private val compatibilityRecyclerSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityRecyclerHolderSnapshots =
         java.util.Collections.synchronizedSet(
             mutableSetOf<String>()
         )
@@ -1505,6 +1497,58 @@ class GoneSmartModule : XposedModule() {
         }
     }
 
+    private fun logCompatibilityRecyclerHolder(
+        view: android.view.View,
+        adapterClassName: String,
+        resourceName: String
+    ) {
+        val group = view as? android.view.ViewGroup ?: return
+        if (group.childCount <= 0) return
+        val child = group.getChildAt(0) ?: return
+        val holder = runCatching {
+            view.javaClass.methods
+                .firstOrNull { method ->
+                    method.name == "getChildViewHolder" &&
+                        method.parameterCount == 1 &&
+                        android.view.View::class.java.isAssignableFrom(
+                            method.parameterTypes[0]
+                        )
+                }
+                ?.invoke(view, child)
+        }.getOrNull() ?: return
+
+        val key = resourceName + "|" + adapterClassName + "|" +
+            holder.javaClass.name
+        val shouldLog = synchronized(compatibilityRecyclerHolderSnapshots) {
+            compatibilityRecyclerHolderSnapshots.add(key)
+        }
+        if (!shouldLog) return
+
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP RECYCLER HOLDER | resource=" + resourceName +
+                " | adapter=" + adapterClassName +
+                " | holder=" + holder.javaClass.name +
+                " | runtimeFields=" +
+                GmmpReflectionDiagnostics.runtimeFieldTypes(
+                    instance = holder,
+                    limit = 48
+                ) +
+                " | collections=" +
+                GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                    instance = holder,
+                    limitFields = 24,
+                    limitTypesPerField = 8
+                )
+        )
+        logCompatibilityClassStructure(
+            marker = "GMMP RECYCLER HOLDER CLASS",
+            requestedName = holder.javaClass.name,
+            type = holder.javaClass,
+            instance = holder
+        )
+    }
+
     private fun scheduleCompatibilityRecyclerSnapshots(
         view: android.view.View,
         expectedAdapter: Any,
@@ -1553,6 +1597,13 @@ class GoneSmartModule : XposedModule() {
                             " | adapter=" + expectedClassName +
                             " | itemCount=" + itemCount +
                             " | collections=" + collections
+                    )
+                }
+                if (itemCount != "0" && itemCount != "unknown") {
+                    logCompatibilityRecyclerHolder(
+                        view = current,
+                        adapterClassName = expectedClassName,
+                        resourceName = resourceName
                     )
                 }
             }, delay)
@@ -1859,7 +1910,7 @@ class GoneSmartModule : XposedModule() {
             "androidx.recyclerview.widget.RecyclerView\$h"
         )
         val nativePlaylistClasses =
-            GMMP_PLAYLIST_ADAPTER_CLASS_NAMES.mapNotNull { name ->
+            GmmpPlaylistAdapterPolicy.verifiedClassNames.mapNotNull { name ->
                 runCatching {
                     param.classLoader.loadClass(name)
                 }.getOrNull()?.takeIf(adapterBase::isAssignableFrom)
@@ -3012,7 +3063,7 @@ class GoneSmartModule : XposedModule() {
         runCatching {
             var bindHookCount = 0
             val boundAdapterNames = arrayListOf<String>()
-            GMMP_PLAYLIST_ADAPTER_CLASS_NAMES.forEach { className ->
+            GmmpPlaylistAdapterPolicy.verifiedClassNames.forEach { className ->
                 val adapterClass = runCatching {
                     param.classLoader.loadClass(className)
                 }.getOrNull() ?: return@forEach

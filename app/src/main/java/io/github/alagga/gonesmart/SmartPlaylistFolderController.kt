@@ -580,16 +580,30 @@ internal class SmartPlaylistFolderController(
 
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
-        val adapter = nativeAdapter(list)
         val native = bindings
+        val adapter = nativeAdapter(list)
+        val adapterMatches =
+            adapter != null &&
+                native?.adapterClass?.isInstance(adapter) == true
         val nativeSmartSurface =
-            resourceName(list) == SMART_LIST_ID ||
-                (adapter != null &&
-                    native?.adapterClass?.isInstance(adapter) == true)
+            resourceName(list) == SMART_LIST_ID || adapterMatches
         if (!nativeSmartSurface) return
-        if (adapter != null &&
-            native?.adapterClass?.isInstance(adapter) != true
-        ) return
+
+        if (!SmartFolderSurfaceCompatibilityPolicy.canMaskNativeList(
+                bindingsReady = native != null,
+                adapterPresent = adapter != null,
+                adapterMatchesBindings = adapterMatches
+            )
+        ) {
+            // setAdapter/attach order is not stable across GMMP versions.
+            // If an earlier no-adapter observation hid this view, restore
+            // it immediately instead of leaving a fully interactive alpha=0
+            // native Smart list behind.
+            if (pendingOriginalAlphas.containsKey(list)) {
+                restorePendingNativeList(list)
+            }
+            return
+        }
         if (BuildConfig.DEBUG && resourceName(list) != SMART_LIST_ID) {
             Log.i(
                 TAG,
@@ -603,7 +617,7 @@ internal class SmartPlaylistFolderController(
             if (!pendingOriginalAlphas.containsKey(list)) {
                 pendingOriginalAlphas[list] = list.alpha
             }
-            // Hide the raw native root before ls4 can draw its first rows.
+            // Hide only after a concrete adapter has matched the verified bindings.
             // The original alpha is restored only after the folder header
             // and current-directory native models are both ready.
             list.alpha = 0f
@@ -912,7 +926,10 @@ internal class SmartPlaylistFolderController(
             if (!enabled || browsers.containsKey(list) ||
                 !list.isAttachedToWindow
             ) return@postDelayed
-            val native = bindings ?: return@postDelayed
+            val native = bindings ?: run {
+                restorePendingNativeList(list)
+                return@postDelayed
+            }
             val adapter = nativeAdapter(list)
             if (adapter == null || !native.adapterClass.isInstance(adapter) ||
                 list.width <= 0 || list.height <= 0

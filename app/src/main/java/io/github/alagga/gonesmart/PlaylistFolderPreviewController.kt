@@ -43,8 +43,6 @@ internal class PlaylistFolderPreviewController(
 ) {
     companion object {
         private const val TAG = "GoneSmartPlaylist"
-        private val NATIVE_PLAYLIST_ADAPTER_NAMES =
-            setOf("zn3", "ao3")
         private const val MAX_ATTACH_RETRIES = 20
         private const val ATTACH_RETRY_MS = 150L
         // GMMP 4.2.0 native quickNav measured 58.8px on the same skin
@@ -755,12 +753,13 @@ internal class PlaylistFolderPreviewController(
             observeNativeBreadcrumb(list)
             return
         }
-        val adapter = nativeAdapter(list)
+        val adapter = nativeAdapter(list) ?: return
         val nativePlaylistSurface =
             resourceName(list) == "playlistListRecyclerView" ||
-                adapter?.javaClass?.name in NATIVE_PLAYLIST_ADAPTER_NAMES
-        if (!nativePlaylistSurface) return
-        if (adapter != null && adapter.javaClass.name !in NATIVE_PLAYLIST_ADAPTER_NAMES) return
+                GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
+        if (!nativePlaylistSurface ||
+            !GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
+        ) return
         if (BuildConfig.DEBUG &&
             resourceName(list) != "playlistListRecyclerView"
         ) {
@@ -1796,7 +1795,10 @@ internal class PlaylistFolderPreviewController(
             return
         }
         val adapter = nativeAdapter(list)
-        if (adapter?.javaClass?.name != "zn3") {
+        if (!GmmpPlaylistAdapterPolicy.isVerified(
+                adapter?.javaClass?.name
+            )
+        ) {
             retry(list, attempt)
             return
         }
