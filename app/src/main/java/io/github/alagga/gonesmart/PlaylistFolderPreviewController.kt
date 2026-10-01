@@ -1850,7 +1850,7 @@ internal class PlaylistFolderPreviewController(
             return
         }
 
-        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(
+        if (GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding(
                 adapter.javaClass.name
             ) && !NativePlaylistRuntimeBinding.isReady(adapter)
         ) {

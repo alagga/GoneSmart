@@ -14,5 +14,9 @@ class GmmpPlaylistAdapterPolicyTest {
         assertTrue(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource("zn3"))
         assertTrue(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource("ao3"))
         assertFalse(GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(null))
+
+        assertFalse(GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding("zn3"))
+        assertTrue(GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding("ao3"))
+        assertFalse(GmmpPlaylistAdapterPolicy.requiresRuntimeModelBinding(null))
     }
 }

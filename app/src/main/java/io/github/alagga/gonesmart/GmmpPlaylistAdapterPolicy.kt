@@ -19,9 +19,15 @@ internal object GmmpPlaylistAdapterPolicy {
     private val verifiedModelSourceClassNames: Set<String> =
         setOf("zn3", "ao3")
 
+    private val runtimeBoundModelSourceClassNames: Set<String> =
+        setOf("ao3")
+
     fun isVerified(className: String?): Boolean =
         className != null && className in verifiedClassNames
 
     fun hasVerifiedModelSource(className: String?): Boolean =
         className != null && className in verifiedModelSourceClassNames
+
+    fun requiresRuntimeModelBinding(className: String?): Boolean =
+        className != null && className in runtimeBoundModelSourceClassNames
 }
