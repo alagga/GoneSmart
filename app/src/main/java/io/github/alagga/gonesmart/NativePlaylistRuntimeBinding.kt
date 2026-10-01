@@ -1,5 +1,8 @@
 package io.github.alagga.gonesmart
 
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -51,6 +54,40 @@ internal object NativePlaylistRuntimeBinding {
         synchronized(byAdapter) {
             byAdapter.containsKey(adapter.javaClass)
         }
+
+    fun observeBoundRow(
+        adapter: Any,
+        holder: Any
+    ): Description? {
+        val position = runCatching {
+            holder.javaClass.methods
+                .firstOrNull {
+                    (it.name == "getBindingAdapterPosition" ||
+                        it.name == "getAdapterPosition") &&
+                        it.parameterCount == 0 &&
+                        it.returnType == Int::class.javaPrimitiveType
+                }
+                ?.invoke(holder) as? Int
+        }.getOrNull() ?: return null
+        val itemView = runCatching {
+            generateSequence<Class<*>>(holder.javaClass) { it.superclass }
+                .mapNotNull { owner ->
+                    runCatching {
+                        owner.getDeclaredField("itemView").apply {
+                            isAccessible = true
+                        }
+                    }.getOrNull()
+                }
+                .firstOrNull()
+                ?.get(holder) as? View
+        }.getOrNull() ?: return null
+        return observeBoundRow(
+            adapter = adapter,
+            holder = holder,
+            adapterPosition = position,
+            renderedTitle = visibleNativeTitle(itemView)
+        )
+    }
 
     fun observeBoundRow(
         adapter: Any,
@@ -282,6 +319,32 @@ internal object NativePlaylistRuntimeBinding {
             value.contains("://") -> "uri"
             else -> null
         }
+    }
+
+    private fun visibleNativeTitle(root: View): String? {
+        val candidates = ArrayList<Pair<String, Float>>()
+        fun collect(view: View, depth: Int) {
+            if (depth > 7 || candidates.size >= 40 ||
+                view.visibility != View.VISIBLE
+            ) return
+            if (view is TextView) {
+                val text = view.text?.toString()?.trim().orEmpty()
+                if (text.length in 1..250 &&
+                    text.any(Char::isLetterOrDigit) &&
+                    !text.startsWith("/") &&
+                    !text.contains("://")
+                ) {
+                    candidates += text to view.textSize
+                }
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    collect(view.getChildAt(index), depth + 1)
+                }
+            }
+        }
+        collect(root, 0)
+        return candidates.maxByOrNull { it.second }?.first
     }
 
     private fun isPlatformType(type: Class<*>): Boolean {
