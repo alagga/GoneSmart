@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r8"
+            "gmmp421-r9"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -480,6 +480,11 @@ class GoneSmartModule : XposedModule() {
     private val startupExecutor =
         Executors.newSingleThreadExecutor()
 
+    private val compatibilityExecutor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "GoneSmart-Compat").apply { isDaemon = true }
+        }
+
     private val poolFillLock =
         Any()
 
@@ -560,7 +565,10 @@ class GoneSmartModule : XposedModule() {
                 " | moduleVersion=${BuildConfig.VERSION_NAME}" +
                 " | buildDebug=${BuildConfig.DEBUG}"
         )
-        logCompatibilityStaticInventory(param.classLoader)
+        compatibilityExecutor.execute {
+            logCompatibilityStaticInventory(param.classLoader)
+            logCompatibilitySelfTest(param.classLoader)
+        }
 
         runtimeReporter.report(
             mode = GoneSmartRuntimeContract.MODE_NONE,
@@ -1304,6 +1312,255 @@ class GoneSmartModule : XposedModule() {
                 "Song-based Auto-DJ is available in song menus."
             )
         }
+    }
+
+    private fun logCompatibilitySelfTest(
+        loader: ClassLoader
+    ) {
+        fun result(block: () -> String): String =
+            runCatching(block).getOrElse {
+                "UNRESOLVED(" + it.javaClass.simpleName + ")"
+            }
+
+        fun fields(type: Class<*>): List<Field> =
+            generateSequence<Class<*>>(type) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .toList()
+
+        fun methods(type: Class<*>): List<Method> =
+            generateSequence<Class<*>>(type) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter { !java.lang.reflect.Modifier.isAbstract(it.modifiers) }
+                .toList()
+
+        fun smartModelShape(type: Class<*>): Boolean {
+            val fs = fields(type)
+            val ctor = type.declaredConstructors.any {
+                val p = it.parameterTypes
+                p.size == 6 &&
+                    p[0] == String::class.java &&
+                    p[1] == Integer.TYPE &&
+                    p[2] == Integer.TYPE &&
+                    p[3] == Integer.TYPE &&
+                    java.util.ArrayList::class.java.isAssignableFrom(p[4]) &&
+                    p[5] == Integer.TYPE
+            }
+            val reader = methods(type).count {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    it.returnType == java.lang.Void.TYPE
+            } == 1
+            return ctor && reader &&
+                fs.count { File::class.java.isAssignableFrom(it.type) } == 1 &&
+                fs.count { it.type == String::class.java } == 1
+        }
+
+        val checks = linkedMapOf<String, String>()
+
+        checks["autoDjRefill"] = result {
+            val type = loader.loadClass("qr")
+            require(type.declaredMethods.any {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    it.returnType == java.lang.Void.TYPE
+            })
+            "READY"
+        }
+
+        checks["queueReader"] = result {
+            val queueType = loader.loadClass("ex3")
+            require(queueType.declaredMethods.any {
+                it.name == "D" && it.parameterCount == 0
+            })
+            "READY_LEGACY"
+        }
+
+        checks["libraryReader"] = result {
+            val dao = loader.loadClass("kr")
+            val objectArray = arrayOfNulls<Any>(0).javaClass
+            val raw = GmmpReflectionPolicy.concreteMethods(dao).filter { method ->
+                method.parameterCount == 1 &&
+                    java.util.List::class.java
+                        .isAssignableFrom(method.returnType) &&
+                    runCatching {
+                        method.parameterTypes[0].getDeclaredConstructor(
+                            String::class.java,
+                            objectArray
+                        )
+                    }.isSuccess
+            }
+            if (raw.size == 1) {
+                "READY_STRUCTURAL"
+            } else {
+                val db = loader.loadClass("f94")
+                val cursorMethods = GmmpReflectionPolicy.concreteMethods(db)
+                    .filter {
+                        it.parameterCount == 1 &&
+                            android.database.Cursor::class.java
+                                .isAssignableFrom(it.returnType)
+                    }
+                require(cursorMethods.size == 1)
+                val query = cursorMethods.single().parameterTypes.single()
+                val queryCtor = query.declaredConstructors.any {
+                    val p = it.parameterTypes
+                    p.size == 2 &&
+                        p[0] == String::class.java &&
+                        p[1].isArray
+                }
+                require(queryCtor)
+                "READY_CURSOR_STRUCTURAL"
+            }
+        }
+
+        checks["playlistFolders"] = result {
+            val adapter = loader.loadClass("ao3")
+            require(
+                GmmpPlaylistAdapterPolicy.isVerified(adapter.name) &&
+                    GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapter.name)
+            )
+            "READY_RUNTIME_MODEL"
+        }
+
+        checks["playlistCreate"] = result {
+            val creator = loader.loadClass(
+                "com.afollestad.materialdialogs.files.DialogFileChooserExtKt"
+            )
+            val candidates = creator.declaredMethods.filter { method ->
+                val p = method.parameterTypes
+                java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    p.size == 4 &&
+                    File::class.java.isAssignableFrom(p[1]) &&
+                    (p[2] == Integer::class.java || p[2] == Integer.TYPE) &&
+                    p[3].isInterface
+            }
+            require(
+                candidates.count { it.name == "showNewFolderCreator" } == 1 ||
+                    candidates.size == 1
+            )
+            val unitType = loader.loadClass("uf5")
+            require(unitType.declaredFields.count {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    unitType.isAssignableFrom(it.type)
+            } == 1)
+            "READY_STRUCTURAL"
+        }
+
+        checks["playlistMove"] = result {
+            val wrapper = loader.loadClass("th1")
+            require(wrapper.declaredConstructors.any {
+                val p = it.parameterTypes
+                p.size == 2 &&
+                    File::class.java.isAssignableFrom(p[0]) &&
+                    (p[1] == java.lang.Long::class.java ||
+                        p[1] == java.lang.Long.TYPE)
+            })
+            val delete = loader.loadClass("py0").declaredMethods.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    android.content.Context::class.java
+                        .isAssignableFrom(it.parameterTypes[0]) &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.parameterTypes[1])
+            }
+            val exact = delete.any { it.name == "b" }
+            val typed = delete.count {
+                it.genericParameterTypes.getOrNull(1)
+                    ?.typeName?.contains(wrapper.name) == true
+            }
+            require(exact || delete.size == 1 || typed == 1)
+            val scanner = loader.loadClass("t6").declaredMethods.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    android.content.Context::class.java
+                        .isAssignableFrom(it.parameterTypes[0]) &&
+                    it.parameterTypes[1].isArray &&
+                    it.parameterTypes[1].componentType == String::class.java
+            }
+            require(scanner.size == 1 || scanner.any { it.name == "f" })
+            "READY_STRUCTURAL"
+        }
+
+        checks["smartFolders"] = result {
+            val models = listOf("ws4", "ts4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }.filter(::smartModelShape)
+            require(models.size == 1)
+            "RUNTIME_ROW_BINDING"
+        }
+
+        checks["smartWriter"] = result {
+            val models = listOf("ws4", "ts4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }.filter(::smartModelShape)
+            val model = models.single()
+            val writers = methods(model).filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    (it.returnType == java.lang.Boolean.TYPE ||
+                        it.returnType == java.lang.Boolean::class.java ||
+                        it.returnType == java.lang.Void.TYPE)
+            }
+            require(writers.size == 1)
+            "READY_STRUCTURAL"
+        }
+
+        checks["playlistLink"] = result {
+            val leaf = loader.loadClass("ft4")
+            require(leaf.declaredConstructors.any {
+                val p = it.parameterTypes
+                p.size == 4 &&
+                    p[0] == Integer.TYPE &&
+                    p[1] == Integer.TYPE &&
+                    p[2] == String::class.java &&
+                    p[3] == Integer.TYPE
+            })
+            "READY_LEGACY"
+        }
+
+        checks["flipQueue"] = result {
+            val type = loader.loadClass("ex3")
+            require(type.declaredMethods.any {
+                it.name == "D" && it.parameterCount == 0
+            })
+            require(type.declaredMethods.any {
+                it.parameterCount == 1 &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.parameterTypes[0])
+            })
+            "READY_LEGACY"
+        }
+
+        checks["trackMix"] = result {
+            val type = loader.loadClass("qr")
+            require(type.declaredMethods.any {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    it.returnType == java.lang.Void.TYPE
+            })
+            "READY_REFILL"
+        }
+
+        checks["liveAccent"] = result {
+            val utility = loader.loadClass("oy0")
+            val candidates = utility.declaredMethods.filter {
+                val p = it.parameterTypes
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    p.size == 3 &&
+                    p[1] == String::class.java &&
+                    it.returnType != java.lang.Void.TYPE
+            }
+            require(candidates.isNotEmpty())
+            "RUNTIME_THEME_BINDING"
+        }
+
+        Log.i(
+            "GoneSmartCompat",
+            "COMPAT SELF TEST | revision=$COMPAT_PROBE_REVISION | " +
+                checks.entries.joinToString(" | ") {
+                    it.key + "=" + it.value
+                }
+        )
     }
 
     private fun logCompatibilityStaticInventory(
