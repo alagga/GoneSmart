@@ -335,6 +335,8 @@ internal class SmartPlaylistFolderController(
     @Volatile private var runtimeRoot: File? = null
     @Volatile private var hostLoader: ClassLoader? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
+    @Volatile private var modelWriterHookInstaller: ((Method) -> Unit)? = null
+    private val publishedModelWriters = linkedSetOf<String>()
     private val runtimeBindingAttempts = WeakHashMap<ViewGroup, Int>()
     @Volatile private var folderCreator: NativeGmmpFolderCreator? = null
     @Volatile private var folderDeletion: NativeGmmpFolderDeletion? = null
@@ -361,6 +363,7 @@ internal class SmartPlaylistFolderController(
             diagnoseCompatibilityBindings(loader)
         }.getOrNull()
         bindings = configured
+        configured?.let(::publishModelWriter)
         Log.i(
             TAG,
             "SMART FOLDERS BINDINGS | ready=" + (configured != null) +
@@ -741,6 +744,7 @@ internal class SmartPlaylistFolderController(
             }.getOrNull()
             if (resolved != null) {
                 bindings = resolved
+                publishModelWriter(resolved)
                 updateMenus()
                 onNativeRecyclerObserved(list)
             } else if (attempt < MAX_ATTACH_RETRIES) {
@@ -789,6 +793,35 @@ internal class SmartPlaylistFolderController(
                         GmmpReflectionDiagnostics.fields(type, 32)
                 )
             }
+        }
+    }
+
+    fun setModelWriterHookInstaller(
+        installer: (Method) -> Unit
+    ) {
+        modelWriterHookInstaller = installer
+        bindings?.let(::publishModelWriter)
+    }
+
+    private fun publishModelWriter(native: Bindings) {
+        val writer = native.modelWriter ?: return
+        val key = writer.declaringClass.name + "|" + writer.name + "|" +
+            writer.returnType.name
+        val shouldPublish = synchronized(publishedModelWriters) {
+            publishedModelWriters.add(key)
+        }
+        if (!shouldPublish) return
+        runCatching {
+            modelWriterHookInstaller?.invoke(writer)
+        }.onFailure {
+            synchronized(publishedModelWriters) {
+                publishedModelWriters.remove(key)
+            }
+            Log.w(
+                TAG,
+                "SMART FOLDERS SAVE MAPPING | resolved writer hook failed",
+                it
+            )
         }
     }
 
