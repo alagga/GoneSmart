@@ -11,6 +11,8 @@ import android.widget.EditText
 import android.widget.Toast
 import java.io.File
 import java.lang.ref.WeakReference
+import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.WeakHashMap
 
@@ -138,7 +140,9 @@ internal class NativeGmmpFolderCreator(
             arg1: Any?
         ): Boolean {
             val request = synchronized(lock) { pending } ?: return false
-            val owner = callback?.let(::mainPresenterOwner) ?: return false
+            val owner = callback?.let {
+                mainPresenterOwner(it, request.presenter)
+            } ?: return false
             if (owner !== request.presenter) return false
 
             val input = listOf(arg0, arg1)
@@ -171,11 +175,46 @@ internal class NativeGmmpFolderCreator(
             return true
         }
 
-        private fun mainPresenterOwner(callback: Any): Any? = runCatching {
-            callback.javaClass.declaredFields.firstOrNull {
-                it.type.name == "tp3"
-            }?.apply { isAccessible = true }?.get(callback)
+        private fun mainPresenterOwner(
+            callback: Any,
+            expectedPresenter: Any
+        ): Any? = runCatching {
+            generateSequence<Class<*>>(callback.javaClass) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { !Modifier.isStatic(it.modifiers) }
+                .firstNotNullOfOrNull { field ->
+                    field.isAccessible = true
+                    field.get(callback)?.takeIf { it === expectedPresenter }
+                }
         }.getOrNull()
+
+        private fun menuAddId(
+            context: Context,
+            menu: android.view.Menu?
+        ): Int? {
+            menu ?: return null
+            for (index in 0 until menu.size()) {
+                val item = menu.getItem(index)
+                val name = runCatching {
+                    context.resources.getResourceEntryName(item.itemId)
+                }.getOrNull()
+                if (name == "menuAdd") return item.itemId
+            }
+            return null
+        }
+
+        private fun resolveCallbackUnit(method: Method): Any? {
+            val returnType = method.returnType
+            if (returnType == java.lang.Void.TYPE) return null
+            return returnType.declaredFields
+                .filter {
+                    Modifier.isStatic(it.modifiers) &&
+                        returnType.isAssignableFrom(it.type)
+                }
+                .singleOrNull()
+                ?.apply { isAccessible = true }
+                ?.get(null)
+        }
 
         private fun createDirectChild(
             request: PendingShell,
@@ -230,12 +269,14 @@ internal class NativeGmmpFolderCreator(
     fun show(
         context: Context,
         directory: File,
-        onCreationCallback: () -> Unit
+        onCreationCallback: () -> Unit,
+        nativePlaylistMenu: android.view.Menu? = null
     ): Boolean {
         if (showNativePlaylistShell(
                 context,
                 directory,
-                onCreationCallback
+                onCreationCallback,
+                nativePlaylistMenu
             )
         ) return true
         return showLegacyFolderCreator(
@@ -248,13 +289,11 @@ internal class NativeGmmpFolderCreator(
     private fun showNativePlaylistShell(
         context: Context,
         directory: File,
-        onCreationCallback: () -> Unit
+        onCreationCallback: () -> Unit,
+        nativePlaylistMenu: android.view.Menu?
     ): Boolean {
         if (Looper.myLooper() != Looper.getMainLooper()) return false
         val presenter = synchronized(lock) { presenterRef.get() } ?: return false
-        val method = presenter.javaClass.declaredMethods.firstOrNull {
-            it.name == "onAddNewPlaylist" && it.parameterCount == 0
-        }?.apply { isAccessible = true } ?: return false
         val canonical = runCatching { directory.canonicalFile }.getOrNull()
             ?: return false
         if (!canonical.isDirectory || !canonical.canWrite()) return false
@@ -271,16 +310,48 @@ internal class NativeGmmpFolderCreator(
             )
         }
 
-        val invoked = runCatching {
-            method.invoke(presenter)
-            true
-        }.onFailure {
-            Log.w(
-                TAG,
-                "FOLDER CREATE SHELL | tp3.onAddNewPlaylist unavailable",
-                it
-            )
-        }.getOrDefault(false)
+        val nativeMenuAddId = menuAddId(context, nativePlaylistMenu)
+        val invoked = if (nativeMenuAddId != null) {
+            runCatching {
+                val handled = nativePlaylistMenu
+                    ?.performIdentifierAction(nativeMenuAddId, 0) == true
+                require(handled) {
+                    "GMMP native menuAdd action was not handled"
+                }
+                Log.i(
+                    TAG,
+                    "FOLDER CREATE SHELL | original menuAdd action dispatched"
+                )
+                true
+            }.onFailure {
+                Log.w(
+                    TAG,
+                    "FOLDER CREATE SHELL | original menuAdd dispatch unavailable",
+                    it
+                )
+            }.getOrDefault(false)
+        } else {
+            // Accepted 4.2.0 fast path. Future builds should normally use the
+            // original live menu action above instead of guessing a renamed
+            // presenter method.
+            val method = presenter.javaClass.declaredMethods.firstOrNull {
+                it.name == "onAddNewPlaylist" && it.parameterCount == 0
+            }?.apply { isAccessible = true }
+            if (method == null) {
+                false
+            } else {
+                runCatching {
+                    method.invoke(presenter)
+                    true
+                }.onFailure {
+                    Log.w(
+                        TAG,
+                        "FOLDER CREATE SHELL | native presenter action unavailable",
+                        it
+                    )
+                }.getOrDefault(false)
+            }
+        }
 
         if (!invoked) {
             synchronized(lock) {
@@ -320,7 +391,7 @@ internal class NativeGmmpFolderCreator(
 
         Log.i(
             TAG,
-            "FOLDER CREATE SHELL | tp3.onAddNewPlaylist invoked"
+            "FOLDER CREATE SHELL | original New Playlist shell invoked"
         )
         return true
     }
@@ -339,33 +410,71 @@ internal class NativeGmmpFolderCreator(
         val creatorType = classLoader.loadClass(
             "com.afollestad.materialdialogs.files.DialogFileChooserExtKt"
         )
-        val callbackType = classLoader.loadClass("uq1")
-        val kotlinUnitType = classLoader.loadClass("uf5")
-        if (!callbackType.isInterface) {
-            error("Native GMMP folder callback is not an interface")
-        }
         val behavior = dialogType.getDeclaredField("DEFAULT_BEHAVIOR")
             .apply { isAccessible = true }.get(null)
         val parentDialog = dialogType.getDeclaredConstructor(
             Context::class.java,
             behaviorType
         ).apply { isAccessible = true }.newInstance(context, behavior)
-        val unitField = kotlinUnitType.declaredFields.singleOrNull {
-            java.lang.reflect.Modifier.isStatic(it.modifiers) &&
-                kotlinUnitType.isAssignableFrom(it.type)
-        } ?: error(
-            "Native Kotlin Unit singleton field is not structurally unique"
-        )
-        val unit = unitField.apply { isAccessible = true }.get(null)
-            ?: error("Native Kotlin Unit singleton is null")
+
+        fun compatible(method: Method): Boolean {
+            val p = method.parameterTypes
+            if (!Modifier.isStatic(method.modifiers) || p.size != 4) return false
+            val firstOk =
+                p[0].isAssignableFrom(dialogType) ||
+                    dialogType.isAssignableFrom(p[0])
+            val secondOk = File::class.java.isAssignableFrom(p[1])
+            val thirdOk =
+                p[2] == Integer::class.java ||
+                    p[2] == Integer.TYPE
+            val fourthOk = p[3].isInterface
+            return firstOk && secondOk && thirdOk && fourthOk
+        }
+
+        val named = creatorType.declaredMethods.filter {
+            it.name == "showNewFolderCreator" && compatible(it)
+        }
+        val creator = (
+            named.singleOrNull()
+                ?: creatorType.declaredMethods.filter(::compatible)
+                    .singleOrNull()
+            )?.apply { isAccessible = true }
+            ?: error(
+                "Native folder creator method is not structurally unique"
+            )
+
+        val callbackType = creator.parameterTypes[3]
+        val callbackMethod = callbackType.methods
+            .filter {
+                Modifier.isAbstract(it.modifiers) &&
+                    it.declaringClass != Any::class.java
+            }
+            .distinctBy {
+                it.name + "|" +
+                    it.parameterTypes.joinToString(",") { p -> p.name } +
+                    "|" + it.returnType.name
+            }
+            .singleOrNull()
+            ?: error(
+                "Native folder callback SAM is not structurally unique"
+            )
+        val callbackResult = resolveCallbackUnit(callbackMethod)
+        if (callbackMethod.returnType != java.lang.Void.TYPE &&
+            callbackResult == null
+        ) {
+            error(
+                "Native folder callback result singleton is unavailable"
+            )
+        }
+
         val callback = Proxy.newProxyInstance(
-            classLoader,
+            callbackType.classLoader ?: classLoader,
             arrayOf(callbackType)
         ) { _, method, _ ->
             when (method.name) {
-                "invoke" -> {
+                callbackMethod.name -> {
                     onCreationCallback()
-                    unit
+                    callbackResult
                 }
                 "toString" -> "GoneSmart folder refresh"
                 "hashCode" -> System.identityHashCode(this)
@@ -373,15 +482,25 @@ internal class NativeGmmpFolderCreator(
                 else -> null
             }
         }
-        val creator = creatorType.getDeclaredMethod(
-            "showNewFolderCreator",
-            dialogType,
-            File::class.java,
-            Integer::class.java,
-            callbackType
-        ).apply { isAccessible = true }
+
+        val optionalIcon =
+            if (creator.parameterTypes[2] == Integer.TYPE) 0 else null
+
+        Log.i(
+            TAG,
+            "FOLDER CREATE MAPPING | creator=" +
+                creator.declaringClass.name + "." + creator.name +
+                " | callback=" + callbackType.name +
+                " | callbackMethod=" + callbackMethod.name
+        )
         withLegacyShowScope {
-            creator.invoke(null, parentDialog, directory, null, callback)
+            creator.invoke(
+                null,
+                parentDialog,
+                directory,
+                optionalIcon,
+                callback
+            )
         }
         true
     }.onFailure {
