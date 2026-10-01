@@ -23,6 +23,29 @@ internal class NativeGmmpFolderDeletion(
     )
     private val pendingDialog = ThreadLocal<PendingDialog?>()
 
+    fun runWithFolderDialogScope(
+        context: Context,
+        folder: File,
+        action: () -> Boolean
+    ): Boolean {
+        val verifiedFolder = runCatching { folder.canonicalFile }
+            .getOrNull() ?: return false
+        val nativeFilesId = context.resources.getIdentifier(
+            "files", "string", context.packageName
+        )
+        val genericFilesLabel = if (nativeFilesId != 0) {
+            runCatching { context.getString(nativeFilesId) }.getOrNull()
+        } else null
+        pendingDialog.set(
+            PendingDialog(verifiedFolder.path, genericFilesLabel)
+        )
+        return try {
+            action()
+        } finally {
+            pendingDialog.remove()
+        }
+    }
+
     fun confirmNativeDeletion(
         context: Context,
         nativeModels: List<Any>,

@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r11"
+            "gmmp421-r12"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -1500,20 +1500,18 @@ class GoneSmartModule : XposedModule() {
             val adapters = listOf("ls4", "is4").mapNotNull { name ->
                 runCatching { loader.loadClass(name) }.getOrNull()
             }
-            val direct = adapters.any { type ->
-                methods(type).any {
-                    it.parameterCount == 1 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.parameterTypes[0]) &&
-                        it.returnType == java.lang.Void.TYPE
-                } && methods(type).any {
-                    it.parameterCount == 0 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.returnType)
-                }
+            val hasDifferField = adapters.any { type ->
+                generateSequence<Class<*>>(type) { it.superclass }
+                    .flatMap { it.declaredFields.asSequence() }
+                    .any { field ->
+                        !java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                            field.type.name.startsWith(
+                                "androidx.recyclerview.widget."
+                            )
+                    }
             }
-            require(direct)
-            "RUNTIME_ROW_DIRECT_LIST"
+            require(hasDifferField)
+            "RUNTIME_ROW_DIFFER"
         }
 
         checks["smartWriter"] = result {
@@ -3573,41 +3571,54 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
-        val clickClass = param.classLoader.loadClass("xj5\$a")
-        val clickMethod = clickClass.getDeclaredMethod(
-            "onClick",
-            android.view.View::class.java
-        )
-        clickMethod.isAccessible = true
-        hook(clickMethod).intercept { chain ->
-            val view = chain.getArg(0) as? android.view.View
-            val intercepted = runCatching {
-                playlistController.onClick(view) ||
-                    playlistFolderPreview.interceptNativePickerFabClick(view)
-            }.getOrElse { error ->
-                Log.e(TAG, "Playlist click interception failed", error)
-                false
+        // 4.2.0 fast paths. These class names are explicitly optional:
+        // a 4.2.1 R8 rename must NOT abort installation of the semantic
+        // View dispatch hooks below.
+        runCatching {
+            val clickClass = param.classLoader.loadClass("xj5\$a")
+            val clickMethod = clickClass.getDeclaredMethod(
+                "onClick",
+                android.view.View::class.java
+            )
+            clickMethod.isAccessible = true
+            hook(clickMethod).intercept { chain ->
+                val view = chain.getArg(0) as? android.view.View
+                val intercepted = runCatching {
+                    playlistController.onClick(view) ||
+                        playlistFolderPreview.interceptNativePickerFabClick(view)
+                }.getOrElse { error ->
+                    Log.e(TAG, "Playlist click interception failed", error)
+                    false
+                }
+    
+                if (intercepted) null else chain.proceed()
             }
-
-            if (intercepted) null else chain.proceed()
-        }
-
-        val longClickClass = param.classLoader.loadClass("rk5\$a")
-        val longClickMethod = longClickClass.getDeclaredMethod(
-            "onLongClick",
-            android.view.View::class.java
-        )
-        longClickMethod.isAccessible = true
-        hook(longClickMethod).intercept { chain ->
-            val view = chain.getArg(0) as? android.view.View
-            val intercepted = runCatching {
-                playlistController.onLongClick(view)
-            }.getOrElse { error ->
-                Log.e(TAG, "Playlist long-click interception failed", error)
-                false
+    
+            val longClickClass = param.classLoader.loadClass("rk5\$a")
+            val longClickMethod = longClickClass.getDeclaredMethod(
+                "onLongClick",
+                android.view.View::class.java
+            )
+            longClickMethod.isAccessible = true
+            hook(longClickMethod).intercept { chain ->
+                val view = chain.getArg(0) as? android.view.View
+                val intercepted = runCatching {
+                    playlistController.onLongClick(view)
+                }.getOrElse { error ->
+                    Log.e(TAG, "Playlist long-click interception failed", error)
+                    false
+                }
+    
+                if (intercepted) true else chain.proceed()
             }
-
-            if (intercepted) true else chain.proceed()
+    
+    
+        }.onFailure {
+            Log.i(
+                "GoneSmartPlaylist",
+                "PLAYLIST INPUT MAPPING | legacy listener names unavailable; " +
+                    "using semantic View dispatch"
+            )
         }
 
         // 4.2.1 remapped the concrete OnClick/OnLongClick listener

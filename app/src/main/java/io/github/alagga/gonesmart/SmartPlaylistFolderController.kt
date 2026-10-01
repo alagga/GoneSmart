@@ -622,41 +622,48 @@ internal class SmartPlaylistFolderController(
                     it.returnType == java.lang.Boolean::class.java)
         }.singleOrNull()?.apply { isAccessible = true }
 
-        // GMMP 4.2.1 exposes the stable list boundary directly on is4:
-        // U(List):void submits the native list and i0():List returns it.
-        // Do not reconstruct the adapter's private AsyncListDiffer; its R8
-        // wrapper is an implementation detail and was the reason the runtime
-        // binding kept failing despite a valid is4 -> ss4 -> ts4 row.
-        val adapterMethods = hierarchyMethods(adapter.javaClass)
-        val submitCandidates = adapterMethods.filter {
-            it.parameterCount == 1 &&
-                java.util.List::class.java
-                    .isAssignableFrom(it.parameterTypes[0]) &&
-                it.returnType == java.lang.Void.TYPE
-        }
-        val currentCandidates = adapterMethods.filter {
-            it.parameterCount == 0 &&
-                java.util.List::class.java
-                    .isAssignableFrom(it.returnType)
-        }
-        val directSubmit =
-            submitCandidates.singleOrNull { it.name == "U" }
-                ?: submitCandidates.singleOrNull()
-                ?: return null
-        val directCurrent =
-            currentCandidates.singleOrNull { it.name == "i0" }
-                ?: currentCandidates.singleOrNull()
-                ?: return null
-        directSubmit.isAccessible = true
-        directCurrent.isAccessible = true
+        // GMMP 4.2.1 keeps the same semantic split as 4.2.0:
+        // is4.U(List) configures metadata rows (u23), while is4.x is the
+        // AndroidX AsyncListDiffer holding the actual ts4 Smart-Playlist
+        // models. Device evidence proved that U(List<ts4>) corrupts is4.w
+        // and crashes onCreateViewHolder with "ts4 cannot be cast to u23".
+        data class DifferCandidate(
+            val field: Field,
+            val value: Any,
+            val submit: Method
+        )
+        val differCandidates = hierarchyFields(adapter.javaClass)
+            .mapNotNull { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(adapter)
+                }.getOrNull() ?: return@mapNotNull null
+                val typeName = value.javaClass.name
+                if (!typeName.startsWith("androidx.recyclerview.widget.")) {
+                    return@mapNotNull null
+                }
+                val submits = hierarchyMethods(value.javaClass).filter {
+                    it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+                val submit = submits.singleOrNull { it.name == "b" }
+                    ?: submits.singleOrNull()
+                    ?: return@mapNotNull null
+                DifferCandidate(
+                    field.apply { isAccessible = true },
+                    value,
+                    submit.apply { isAccessible = true }
+                )
+            }
+        val differ = differCandidates.singleOrNull()
+            ?: return null
 
-        val currentModels = (
-            runCatching {
-                directCurrent.invoke(adapter) as? List<*>
-            }.getOrNull().orEmpty()
-        ).filterNotNull().filter(modelClass::isInstance)
-            .map { it as Any }
-            .ifEmpty { listOf(sampleModel) }
+        // The visible native holder is already a verified ts4 model and is
+        // sufficient to infer the Smart-Playlist root. Do not call is4.i0():
+        // in 4.2.1; that adapter accessor is not the model-list contract.
+        val currentModels = listOf(sampleModel)
 
         val resolvedRoot = inferRuntimeRoot(currentModels, modelFile)
             ?: return null
@@ -674,9 +681,9 @@ internal class SmartPlaylistFolderController(
             modelFile = modelFile,
             modelRules = modelRules,
             holderModel = holderModel,
-            adapterDiffer = null,
-            differSubmit = directSubmit,
-            differCurrentList = directCurrent,
+            adapterDiffer = differ.field,
+            differSubmit = differ.submit,
+            differCurrentList = null,
             storagePath = null,
             smartStorageLocation = null,
             nativeSort = null,
@@ -705,9 +712,8 @@ internal class SmartPlaylistFolderController(
                 " | model=" + modelClass.name +
                 " | reader=" + modelRead.name +
                 " | writer=" + (modelWriter?.name ?: "none") +
-                " | listTarget=adapter" +
-                " | submit=" + directSubmit.name +
-                " | current=" + directCurrent.name +
+                " | listTarget=differ:" + differ.field.name +
+                " | submit=" + differ.submit.name +
                 " | root=verified-from-native-models"
         )
         return resolved
@@ -1782,21 +1788,16 @@ internal class SmartPlaylistFolderController(
 
     private fun applyNativeModels(browser: Browser, models: List<Any>) {
         val native = bindings ?: return
-        val target = native.adapterDiffer?.let { field ->
-            runCatching {
-                field.get(browser.nativeAdapter)
-            }.onFailure {
-                Log.e(
-                    TAG,
-                    "SMART FOLDERS DIFFER | legacy differ unavailable",
-                    it
-                )
-            }.getOrNull()
-        } ?: browser.nativeAdapter
-        runCatching {
-            native.differSubmit.invoke(target, models)
+        val field = native.adapterDiffer ?: return
+        val differ = runCatching {
+            field.get(browser.nativeAdapter)
         }.onFailure {
-            Log.e(TAG, "SMART FOLDERS LIST SUBMIT | native submit failed", it)
+            Log.e(TAG, "SMART FOLDERS DIFFER | native differ unavailable", it)
+        }.getOrNull() ?: return
+        runCatching {
+            native.differSubmit.invoke(differ, models)
+        }.onFailure {
+            Log.e(TAG, "SMART FOLDERS DIFFER | native ts4 submit failed", it)
         }
     }
 
@@ -2346,6 +2347,8 @@ internal class SmartPlaylistFolderController(
     private fun smartSelectionOverlayColor(browser: Browser): Int {
         val accent = browser.liveSelectionAccent
             ?: NativeGmmpAccent.lastObserved()
+            ?: multiSelect.nativeContextBarColor(browser.list)
+            ?: NativeGmmpAccent.current(browser.list)
             ?: browser.style?.accentColor
             ?: resolveColor(
                 browser.list,

@@ -1120,7 +1120,12 @@ internal class PlaylistFolderPreviewController(
                 (name.contains("playlist", ignoreCase = true) &&
                     name.contains("list", ignoreCase = true) &&
                     !name.contains("smart", ignoreCase = true) &&
-                    hasNativeAdd)
+                    !name.contains("context", ignoreCase = true) &&
+                    !name.contains("action", ignoreCase = true))
+        // GMMP 4.2.1 may no longer expose menuAdd in the already-inflated
+        // Playlists toolbar. The toolbar/menu identity itself is enough to
+        // install GoneSmart's folder action; menuAdd is only needed when we
+        // want to forward the ORIGINAL New Playlist action.
         if (playlistListMenu) {
             if (BuildConfig.DEBUG && name != "menu_gm_playlist_list") {
                 Log.i(
@@ -1616,38 +1621,180 @@ internal class PlaylistFolderPreviewController(
             ).show()
             return false
         }
-        val nativeTargets = if (plan.nativePlaylistFiles.isNotEmpty()) {
-            plan.nativePlaylistFiles
-        } else listOf(plan.folder)
-        val nativeModels = if (plan.nativePlaylistFiles.isNotEmpty()) {
-            plan.nativePlaylistFiles.mapNotNull { file ->
-                val path = runCatching { file.canonicalPath }
-                    .getOrNull() ?: return@mapNotNull null
-                browser.modelsByPath[path]
-            }
-        } else {
-            emptyList()
+        if (plan.nativePlaylistFiles.isNotEmpty()) {
+            return startNativeFolderBulkDelete(browser, plan)
         }
-        if (plan.nativePlaylistFiles.isNotEmpty() &&
-            nativeModels.size != plan.nativePlaylistFiles.size
-        ) {
-            Log.w(
-                TAG,
-                "FOLDER DELETE | native playlist models changed; " +
-                    "confirmation cancelled"
-            )
-            return false
-        }
+
+        // Empty-directory compatibility fallback. Non-empty folders never
+        // use the obsolete 4.2.0 py0 binding on GMMP 4.2.1.
         val opened = nativeFolderDeletion!!.confirmNativeDeletion(
             browser.list.context,
-            nativeModels,
-            nativeTargets,
+            emptyList(),
+            listOf(plan.folder),
             plan.folder
         )
         if (!opened) return false
         val pending = PendingFolderDeletion(plan)
         pendingFolderDeletes.add(pending)
         waitForOriginalFolderDeletion(pending)
+        return true
+    }
+
+    private fun startNativeFolderBulkDelete(
+        browser: Browser,
+        plan: FolderDeletePolicy.Plan
+    ): Boolean {
+        if (browser.actionPending || browser.nativeNavigationInProgress) {
+            return false
+        }
+        val targets = plan.nativePlaylistFiles.mapNotNull {
+            runCatching { it.canonicalPath }.getOrNull()
+        }
+        if (targets.size != plan.nativePlaylistFiles.size ||
+            targets.any { it !in browser.modelsByPath }
+        ) {
+            Log.w(
+                TAG,
+                "FOLDER DELETE | native model set changed; bulk selection blocked"
+            )
+            return false
+        }
+
+        browser.mainSelection.clear()
+        fun select(index: Int) {
+            if (browsers[browser.list] !== browser ||
+                !browser.list.isAttachedToWindow
+            ) return
+            if (index >= targets.size) {
+                mainHandler.post {
+                    if (!triggerNativeFolderDeleteAction(browser, plan, targets)) {
+                        browser.mainSelection.clear()
+                        syncMainSelectionVisuals(browser)
+                        Log.w(
+                            TAG,
+                            "FOLDER DELETE | native ActionMode delete action unavailable"
+                        )
+                    }
+                }
+                return
+            }
+
+            val path = targets[index]
+            val model = browser.modelsByPath[path] ?: return
+            dispatchNativeAction(
+                browser = browser,
+                model = model,
+                longClick = index == 0,
+                contextMenu = false
+            ) { handled ->
+                if (!handled) {
+                    browser.mainSelection.clear()
+                    syncMainSelectionVisuals(browser)
+                    return@dispatchNativeAction
+                }
+                mainHandler.post { select(index + 1) }
+            }
+        }
+
+        select(0)
+        Log.i(
+            TAG,
+            "FOLDER DELETE | selecting native playlist rows | count=" +
+                targets.size
+        )
+        return true
+    }
+
+    private fun triggerNativeFolderDeleteAction(
+        browser: Browser,
+        plan: FolderDeletePolicy.Plan,
+        targets: List<String>
+    ): Boolean {
+        if (browser.mainSelection.selectedPaths().toSet() != targets.toSet()) {
+            Log.w(
+                TAG,
+                "FOLDER DELETE | native selection mirror mismatch | selected=" +
+                    browser.mainSelection.selectedCount +
+                    " expected=" + targets.size
+            )
+            return false
+        }
+
+        fun isDelete(item: android.view.MenuItem): Boolean {
+            val name = resourceEntryName(
+                browser.list.resources,
+                item.itemId
+            )
+            if (name?.contains("delete", ignoreCase = true) == true) return true
+            val nativeDeleteId = browser.list.resources.getIdentifier(
+                "delete", "string", browser.list.context.packageName
+            )
+            val nativeDelete = if (nativeDeleteId != 0) {
+                runCatching {
+                    browser.list.context.getString(nativeDeleteId)
+                }.getOrNull()
+            } else null
+            return !nativeDelete.isNullOrBlank() &&
+                item.title?.toString()?.trim()
+                    ?.equals(nativeDelete.trim(), ignoreCase = true) == true
+        }
+
+        val menus = arrayListOf<android.view.Menu>()
+        activeNativePlaylistMode?.get()?.let { mode ->
+            runCatching {
+                mode.javaClass.methods.firstOrNull {
+                    it.name == "getMenu" && it.parameterCount == 0
+                }?.invoke(mode) as? android.view.Menu
+            }.getOrNull()?.let(menus::add)
+        }
+
+        fun walk(view: View, depth: Int) {
+            if (depth > 14) return
+            runCatching {
+                view.javaClass.methods.firstOrNull {
+                    it.name == "getMenu" &&
+                        it.parameterCount == 0 &&
+                        android.view.Menu::class.java
+                            .isAssignableFrom(it.returnType)
+                }?.invoke(view) as? android.view.Menu
+            }.getOrNull()?.let { if (it !in menus) menus += it }
+            val group = view as? ViewGroup ?: return
+            for (i in 0 until group.childCount) {
+                walk(group.getChildAt(i), depth + 1)
+            }
+        }
+        walk(browser.list.rootView, 0)
+
+        val candidates = menus.mapNotNull { menu ->
+            (0 until menu.size())
+                .map { menu.getItem(it) }
+                .singleOrNull(::isDelete)
+                ?.let { menu to it }
+        }
+        val candidate = candidates.singleOrNull()
+            ?: candidates.firstOrNull()
+            ?: return false
+
+        val deletion = nativeFolderDeletion ?: return false
+        val invoked = deletion.runWithFolderDialogScope(
+            browser.list.context,
+            plan.folder
+        ) {
+            candidate.first.performIdentifierAction(
+                candidate.second.itemId,
+                0
+            )
+        }
+        if (!invoked) return false
+
+        val pending = PendingFolderDeletion(plan)
+        pendingFolderDeletes.add(pending)
+        waitForOriginalFolderDeletion(pending)
+        Log.i(
+            TAG,
+            "FOLDER DELETE | original GMMP ActionMode delete dispatched" +
+                " | count=" + targets.size
+        )
         return true
     }
 
@@ -3251,6 +3398,8 @@ internal class PlaylistFolderPreviewController(
     private fun mainSelectionAccent(browser: Browser): Int =
         browser.liveSelectionAccent
             ?: NativeGmmpAccent.lastObserved()
+            ?: multiSelect.nativeContextBarColor(browser.list)
+            ?: NativeGmmpAccent.current(browser.list)
             ?: styles[browser.list]?.accentColor
             ?: resolveAccent(browser.list)
 
@@ -3323,7 +3472,8 @@ internal class PlaylistFolderPreviewController(
         browser: Browser,
         model: Any,
         longClick: Boolean,
-        contextMenu: Boolean = false
+        contextMenu: Boolean = false,
+        onComplete: ((Boolean) -> Unit)? = null
     ): Boolean {
         val path = modelPath(model) ?: return false
         val list = browser.list
@@ -3333,6 +3483,7 @@ internal class PlaylistFolderPreviewController(
                 list, path, longClick, contextMenu
             )
         ) {
+            onComplete?.invoke(true)
             return true
         }
 
@@ -3340,46 +3491,122 @@ internal class PlaylistFolderPreviewController(
         if (expectedPosition < 0) {
             Log.w(TAG, "FOLDER INLINE ACTION | path absent from native snapshot")
             warn(list, "Playlist no longer available")
+            onComplete?.invoke(false)
             return false
         }
 
         browser.actionPending = true
         val scroll = runCatching {
+            // Use both RecyclerView and its LayoutManager. GMMP 4.2.1's
+            // paged/fast-scroll wrapper can defer the outer call for more
+            // than two frames, which previously made every off-screen
+            // folder-row action fail despite a correct adapter position.
             list.javaClass.getMethod(
                 "scrollToPosition",
                 Int::class.javaPrimitiveType
             ).invoke(list, expectedPosition)
-        }.isSuccess
+            val layoutManager = list.javaClass.methods.firstOrNull {
+                it.name == "getLayoutManager" && it.parameterCount == 0
+            }?.invoke(list)
+            layoutManager?.javaClass?.methods?.firstOrNull {
+                it.name == "scrollToPosition" &&
+                    it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Int::class.javaPrimitiveType
+            }?.invoke(layoutManager, expectedPosition)
+            list.requestLayout()
+            true
+        }.getOrDefault(false)
         if (!scroll) {
             browser.actionPending = false
             Log.w(TAG, "FOLDER INLINE ACTION | native scroll unavailable")
             warn(list, "Native playlist action unavailable")
+            onComplete?.invoke(false)
             return false
         }
 
-        // RecyclerView binds its target holder on the next layout frame.
-        // Never dispatch a row click if it still holds a different model.
+        awaitMatchingNativeAction(
+            browser = browser,
+            targetPath = path,
+            expectedPosition = expectedPosition,
+            longClick = longClick,
+            contextMenu = contextMenu,
+            attempt = 0,
+            onComplete = onComplete
+        )
+        return true
+    }
+
+    private fun awaitMatchingNativeAction(
+        browser: Browser,
+        targetPath: String,
+        expectedPosition: Int,
+        longClick: Boolean,
+        contextMenu: Boolean,
+        attempt: Int,
+        onComplete: ((Boolean) -> Unit)?
+    ) {
+        val list = browser.list
         list.postOnAnimation {
-            list.postOnAnimation {
+            if (browsers[list] !== browser || !list.isAttachedToWindow) {
                 browser.actionPending = false
-                if (browsers[list] !== browser || !list.isAttachedToWindow) {
-                    return@postOnAnimation
-                }
-                if (!performMatchingNativeAction(
-                        list, path, longClick, contextMenu
-                    )
-                ) {
-                    Log.w(
-                        TAG,
-                        "FOLDER INLINE ACTION | target not bound" +
-                            " | expectedPosition=" + expectedPosition +
-                            " | path=" + path
-                    )
-                    warn(list, "Playlist row not ready; please try again")
+                onComplete?.invoke(false)
+                return@postOnAnimation
+            }
+
+            // Ask RecyclerView for the exact adapter position first. This
+            // also forces us to wait until that position is actually bound,
+            // rather than assuming two animation frames are enough.
+            val holderReady = runCatching {
+                val holder = list.javaClass.methods.firstOrNull {
+                    it.name == "findViewHolderForAdapterPosition" &&
+                        it.parameterCount == 1 &&
+                        it.parameterTypes[0] == Int::class.javaPrimitiveType
+                }?.invoke(list, expectedPosition)
+                holder != null && boundPlaylistModel(holder)?.let(::modelPath) ==
+                    targetPath
+            }.getOrDefault(false)
+
+            if (holderReady && performMatchingNativeAction(
+                    list, targetPath, longClick, contextMenu
+                )
+            ) {
+                browser.actionPending = false
+                onComplete?.invoke(true)
+                return@postOnAnimation
+            }
+
+            if (attempt >= 11) {
+                browser.actionPending = false
+                Log.w(
+                    TAG,
+                    "FOLDER INLINE ACTION | target not bound after retries" +
+                        " | expectedPosition=" + expectedPosition +
+                        " | path=" + targetPath
+                )
+                warn(list, "Playlist row not ready; please try again")
+                onComplete?.invoke(false)
+                return@postOnAnimation
+            }
+
+            if (attempt == 3 || attempt == 7) {
+                runCatching {
+                    list.javaClass.getMethod(
+                        "scrollToPosition",
+                        Int::class.javaPrimitiveType
+                    ).invoke(list, expectedPosition)
+                    list.requestLayout()
                 }
             }
+            awaitMatchingNativeAction(
+                browser,
+                targetPath,
+                expectedPosition,
+                longClick,
+                contextMenu,
+                attempt + 1,
+                onComplete
+            )
         }
-        return true
     }
 
     private fun performMatchingNativeAction(
@@ -4125,17 +4352,24 @@ internal class PlaylistFolderPreviewController(
                                     .isAssignableFrom(it.returnType)
                         }?.invoke(view) as? android.view.Menu
                     }.getOrNull()
-                    if (menu != null) {
+                    if (menu != null && menu.size() > 0) {
                         val hasNativeAdd = (0 until menu.size()).any { index ->
                             resourceEntryName(
                                 list.resources,
                                 menu.getItem(index).itemId
                             ) == "menuAdd"
                         }
+                        // We are already scoped to the attached non-picker
+                        // playlist RecyclerView. Prefer the toolbar carrying
+                        // native menuAdd, but in 4.2.1 retain the first live
+                        // non-empty toolbar menu as a verified surface so the
+                        // GoneSmart New Folder item does not disappear merely
+                        // because GMMP moved/removed menuAdd.
                         if (hasNativeAdd) {
                             found = menu
                             return
                         }
+                        if (found == null) found = menu
                     }
                 }
                 if (view is ViewGroup) {

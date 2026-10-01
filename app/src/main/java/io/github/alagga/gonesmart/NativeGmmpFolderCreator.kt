@@ -459,12 +459,17 @@ internal class NativeGmmpFolderCreator(
                 "Native folder callback SAM is not structurally unique"
             )
         val callbackResult = resolveCallbackUnit(callbackMethod)
-        if (callbackMethod.returnType != java.lang.Void.TYPE &&
-            callbackResult == null
-        ) {
-            error(
-                "Native folder callback result singleton is unavailable"
-            )
+        val callbackFallback = when (callbackMethod.returnType) {
+            java.lang.Void.TYPE -> null
+            java.lang.Boolean.TYPE -> false
+            java.lang.Byte.TYPE -> 0.toByte()
+            java.lang.Short.TYPE -> 0.toShort()
+            java.lang.Integer.TYPE -> 0
+            java.lang.Long.TYPE -> 0L
+            java.lang.Float.TYPE -> 0f
+            java.lang.Double.TYPE -> 0.0
+            java.lang.Character.TYPE -> '\u0000'
+            else -> null
         }
 
         val callback = Proxy.newProxyInstance(
@@ -474,7 +479,7 @@ internal class NativeGmmpFolderCreator(
             when (method.name) {
                 callbackMethod.name -> {
                     onCreationCallback()
-                    callbackResult
+                    callbackResult ?: callbackFallback
                 }
                 "toString" -> "GoneSmart folder refresh"
                 "hashCode" -> System.identityHashCode(this)

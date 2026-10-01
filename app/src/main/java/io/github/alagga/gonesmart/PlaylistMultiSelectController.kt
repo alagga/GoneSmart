@@ -1608,16 +1608,32 @@ internal class PlaylistMultiSelectController {
      * fallbacks for fixed/custom themes or a currently untinted FAB.
      */
     private fun gmmpPrimary(session: Session, view: View): Int =
-        session.liveFabAccent
-            ?: session.livePrimary
+        nativeFabTint(session)
+            ?: session.liveFabAccent
+            ?: NativeGmmpAccent.lastObserved()
             ?: session.liveAccent
+            ?: session.livePrimary?.takeUnless { color ->
+                Color.red(color) < 12 &&
+                    Color.green(color) < 12 &&
+                    Color.blue(color) < 12
+            }
             ?: gmmpAccent(session, view)
+
+    private fun nativeFabTint(session: Session): Int? {
+        val fab = session.fab as?
+            com.google.android.material.floatingactionbutton.FloatingActionButton
+            ?: return null
+        return fab.backgroundTintList?.let { tint ->
+            tint.getColorForState(fab.drawableState, tint.defaultColor)
+        }?.takeIf { Color.alpha(it) >= 200 }
+    }
 
     private fun gmmpSelectionAccent(
         session: Session,
         view: View
     ): Int =
-        session.liveAccent
+        nativeFabTint(session)
+            ?: session.liveAccent
             ?: NativeGmmpAccent.lastObserved()
             ?: session.liveFabAccent
             ?: session.livePrimary

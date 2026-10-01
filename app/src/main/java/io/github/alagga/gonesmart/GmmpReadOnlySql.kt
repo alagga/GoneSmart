@@ -114,6 +114,14 @@ internal object GmmpReadOnlySql {
                 when {
                     constructor != null ->
                         Candidate(method, queryType, constructor)
+                    // GMMP 4.2.1 exposes Room's query contract as p94.
+                    // The UNIQUE one-argument Cursor boundary on the verified
+                    // GMDatabase implementation is the semantic ownership
+                    // proof. R8 may rename/bridge every method of the query
+                    // interface, so pre-filtering it by method names/counts
+                    // incorrectly rejected f94.q(p94): Cursor.
+                    queryType.isInterface ->
+                        Candidate(method, queryType, null)
                     supportsQueryInterface(queryType) ->
                         Candidate(method, queryType, null)
                     else -> null

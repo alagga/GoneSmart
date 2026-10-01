@@ -104,76 +104,79 @@ internal object NativeGmmpAccent {
             .invoke(theme, attr)
             ?: error("GMMP accent observable missing")
         val utility = loader.loadClass("oy0")
-        fun compatible(method: java.lang.reflect.Method): Boolean {
-            val p = method.parameterTypes
-            return Modifier.isStatic(method.modifiers) &&
-                p.size == 3 &&
-                p[0].isAssignableFrom(theme.javaClass) &&
-                p[1] == String::class.java &&
-                (
-                    p[2].isAssignableFrom(fallback.javaClass) ||
-                        p[2] == Any::class.java
-                ) &&
-                method.returnType != java.lang.Void.TYPE
+        val resolverResults = utility.declaredMethods.mapNotNull { candidate ->
+            val p = candidate.parameterTypes
+            if (!Modifier.isStatic(candidate.modifiers) ||
+                p.size != 3 ||
+                p[1] != String::class.java ||
+                candidate.returnType == java.lang.Void.TYPE ||
+                !p[0].isAssignableFrom(theme.javaClass)
+            ) return@mapNotNull null
+            runCatching {
+                candidate.isAccessible = true
+                candidate to candidate.invoke(
+                    null, theme, "!mainColorAccent", fallback
+                )
+            }.getOrNull()?.takeIf { it.second != null }
         }
-        val legacy = utility.declaredMethods.firstOrNull {
-            it.name == "h" && compatible(it)
-        }
-        val candidates = utility.declaredMethods.filter(::compatible)
-        val method = (legacy ?: candidates.singleOrNull())
-            ?.apply { isAccessible = true }
+        val resolver = resolverResults.singleOrNull()
+            ?: resolverResults.singleOrNull { it.first.name == "h" }
             ?: error(
-                "GMMP live accent resolver is not structurally unique: " +
-                    candidates.joinToString(",") { it.name }
+                "GMMP live accent resolver is not runtime-unique: " +
+                    resolverResults.joinToString(",") {
+                        it.first.name + "->" +
+                            (it.second?.javaClass?.name ?: "null")
+                    }
             )
-        val observable = method.invoke(
-            null, theme, "!mainColorAccent", fallback
-        ) ?: error("GMMP !mainColorAccent observable unavailable")
-        val observerType = runCatching {
-            loader.loadClass("nf3")
-        }.getOrElse {
-            val subscribeCandidates = observable.javaClass.methods.filter {
-                it.parameterCount == 1 &&
-                    it.parameterTypes[0].isInterface &&
-                    it.returnType != java.lang.Void.TYPE
-            }
-            subscribeCandidates.singleOrNull()?.parameterTypes?.single()
-                ?: error("GMMP live accent observer type is not unique")
+        val observable = resolver.second
+            ?: error("GMMP !mainColorAccent observable unavailable")
+
+        // Never assume the old nf3 name. Resolve the observer interface from
+        // the observable's actual subscribe boundary in this GMMP build.
+        val subscribeCandidates = observable.javaClass.methods.filter {
+            it.parameterCount == 1 &&
+                it.parameterTypes[0].isInterface &&
+                it.returnType != java.lang.Void.TYPE
         }
+        val subscribe = subscribeCandidates.singleOrNull { it.name == "b" }
+            ?: subscribeCandidates.singleOrNull()
+            ?: error(
+                "GMMP live accent subscribe boundary is not unique: " +
+                    subscribeCandidates.joinToString(",") {
+                        it.name + "(" + it.parameterTypes[0].name + ")"
+                    }
+            )
+        val observerType = subscribe.parameterTypes.single()
         val disposables = arrayListOf<Any>()
         val listener = Proxy.newProxyInstance(
             observerType.classLoader, arrayOf(observerType)
         ) { _, callback, args ->
-            when (callback.name) {
-                "a" -> (args?.firstOrNull() as? Number)?.let { value ->
+            val value = args?.firstOrNull()
+            when {
+                value is Number -> {
                     val color = value.toInt()
                     lastObservedLiveColor = color
-                    // Aesthetic commonly emits the current value
-                    // synchronously while we subscribe on GMMP's main
-                    // thread. Posting that value delayed creation-dialog
-                    // chrome by a visible frame (~80 ms on the test device).
                     if (Looper.myLooper() == Looper.getMainLooper()) {
                         onColor(color)
                     } else {
                         view.post { onColor(color) }
                     }
                 }
-                "c" -> args?.firstOrNull()?.let(disposables::add)
-                "onError" -> onError(args?.firstOrNull() as? Throwable)
+                value is Throwable -> onError(value)
+                value != null && callback.parameterCount == 1 -> {
+                    // Rx disposable/onSubscribe callback. Keep only objects
+                    // exposing a zero-arg dispose-like void method.
+                    val disposable = value.javaClass.methods.any {
+                        it.parameterCount == 0 &&
+                            it.returnType == java.lang.Void.TYPE
+                    }
+                    if (disposable) disposables.add(value)
+                }
             }
             null
         }
-        val subscribe = runCatching {
-            observable.javaClass.getMethod("b", observerType)
-        }.getOrNull() ?: observable.javaClass.methods.filter {
-            it.parameterCount == 1 &&
-                it.parameterTypes[0] == observerType &&
-                it.returnType != java.lang.Void.TYPE
-        }.singleOrNull()
-        requireNotNull(subscribe) {
-            "GMMP live accent subscribe method is not structurally unique"
-        }
         Subscription(listener, disposables).also {
+            subscribe.isAccessible = true
             subscribe.invoke(observable, listener)
         }
     }.onFailure(onError).getOrNull()

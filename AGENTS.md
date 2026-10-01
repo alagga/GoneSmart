@@ -261,15 +261,24 @@ These are not regressions in the accepted 4.2.0 feature flows, but they remain e
 - Queue reading is dual-path: keep the verified 4.2.0 native queue path as a fast path, then use the already-open GMMP Room Cursor for `queue_table`. Any runtime current-position signal must be validated against live queue rows and must fail closed if ambiguous.
 - Playlist delete/move must derive the native `List<T>` wrapper from GMMP's original delete method before resolving its constructor. `th1` is a legacy fallback only.
 - Add-to-Playlist picker ownership is established by the native `playlistListRecyclerView` + `playlistFab` surface pair, not an R8 fragment name. Holder/model binding remains runtime-correlated through the visible native row.
-- Smart Playlist differ resolution requires the AndroidX differ field plus both submit-list and current-list contracts; generic one-argument List methods elsewhere on the adapter are not sufficient.
+- Smart Playlist differ resolution requires the AndroidX differ field plus a verified one-argument submit-list contract; generic one-argument List methods elsewhere on the adapter are not sufficient. A current-list accessor is optional when a visible holder already provides a verified native Smart model.
 
 
 ### GMMP 4.2.1 r11 lessons from device verification (2026-10-01)
 
 - A unique GMDatabase Cursor boundary is stronger evidence than an exact method-count fingerprint on its R8-renamed query interface. SupportSQLiteQuery bridge/default methods may change; require the semantic SQL + binder contract, not exactly one method of each shape.
 - Queue current-position recovery must not interpret one state integer as both queue_position and shuffle_position. Preserve the verified legacy D() meaning (queue_position) first; use shuffle only as fallback.
-- Smart Playlist folders on 4.2.1 use the adapter's own U(List) + i0():List boundary. Do not reconstruct private AsyncListDiffer internals when the adapter already exposes submit/current-list semantics.
+- **Correction from the r12 device log:** GMMP 4.2.1 keeps the same semantic split as 4.2.0. On `is4`, `U(List)` writes the metadata/config list (`u23`), while the private AndroidX differ field `is4.x` owns the actual `ts4` Smart-Playlist rows. Passing `List<ts4>` to `U` corrupts `is4.w` and crashes with `ts4 cannot be cast to u23`. Smart-folder projection must submit only through the verified differ field.
 - Playlist delete/move must pass the native model already correlated from the visible row (4.2.1: yn3). Never convert that model back into an assumed th1(File,Long) wrapper.
 - Picker interaction hooks belong at the semantic View.performClick / View.performLongClick boundary when R8 listener class names move. Reject unrelated Views quickly and preserve the original View dispatch when GoneSmart does not consume the action.
 - Multi-playlist add may reuse GMMP's original native row click per selected native model. Do not require an obfuscated helper class such as io3 when the normal row click is already the host's canonical add operation.
 - Queue Flip and Track Mix share one runtime-correlated 4.2.1 queue mutation bridge: identify native DAO entities by queue_id / song_id / queue_position against the read-only Cursor snapshot, then use GMMP's generated DAO update/delete methods. Fail closed on any ambiguous correlation.
+
+### GMMP 4.2.1 r12 device verification (2026-10-02)
+
+- The r11 Smart-folder direct-adapter hypothesis was disproven on-device. `is4.w` changed from a singleton `u23` metadata list to `84 x ts4`, then `is4.onCreateViewHolder` crashed on the cast to `u23`. `is4.U(List)` is therefore forbidden for Smart models; use `is4.x`'s AndroidX differ submit boundary.
+- For Room read-only access, a unique one-argument `Cursor` method on the verified GMDatabase implementation is sufficient ownership evidence when its parameter is an interface. Do not reject the boundary because R8 renamed/bridged the SupportSQLiteQuery methods; the proxy itself remains fail-closed on unsupported calls.
+- Optional 4.2.0 listener class names (`xj5$a`, `rk5$a`) must be isolated in their own compatibility guards. Their absence must never prevent installation of semantic `View.performClick` / `performLongClick` hooks.
+- Non-empty Playlist-folder deletion on 4.2.1 should reuse GMMP's actual row selection and ActionMode Delete action rather than searching for the old static `py0.b(Context,List<th1>)` utility by name. The native confirmation/worker remains authoritative.
+- A native RecyclerView target may need multiple layout frames after `scrollToPosition`; verify `findViewHolderForAdapterPosition` and the bound model path with bounded retries before declaring a row unavailable.
+- The 4.2.1 MaterialDialogs folder callback may erase Kotlin `Unit` to a nullable reference return. Reference-return callbacks may return `null`; only primitive returns require a synthetic default.
