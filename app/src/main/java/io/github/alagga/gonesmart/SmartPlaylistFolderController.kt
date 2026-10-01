@@ -42,6 +42,7 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.ArrayList
@@ -173,32 +174,34 @@ internal class SmartPlaylistFolderController(
         val adapterClass: Class<*>,
         val holderClass: Class<*>,
         val modelClass: Class<*>,
-        val presenterClass: Class<*>,
         val modelConstructor: Constructor<*>,
         val modelRead: Method,
+        val modelWriter: Method?,
         val modelName: Field,
         val modelFile: Field,
-        val modelRules: Field,
+        val modelRules: Field?,
         val holderModel: Field,
         val adapterDiffer: Field,
         val differSubmit: Method,
-        val storagePath: Method,
-        val smartStorageLocation: Any,
-        val nativeSort: Method,
-        val presenterState: Field,
-        val stateSort: Field,
-        val sortOrder: Method,
-        val sortDescending: Method,
-        val leafRuleClass: Class<*>,
-        val leafRuleValue: Field,
-        val groupRuleClass: Class<*>,
-        val groupRules: Field,
-        val actionModeBaseClass: Class<*>,
-        val smartFragmentClass: Class<*>,
-        val actionModeView: Field,
-        val actionModeSelection: Field,
-        val selectionEntries: Field,
-        val selectionEntryModel: Field
+        val differCurrentList: Method?,
+        val storagePath: Method?,
+        val smartStorageLocation: Any?,
+        val nativeSort: Method?,
+        val presenterClass: Class<*>?,
+        val presenterState: Field?,
+        val stateSort: Field?,
+        val sortOrder: Method?,
+        val sortDescending: Method?,
+        val leafRuleClass: Class<*>?,
+        val leafRuleValue: Field?,
+        val groupRuleClass: Class<*>?,
+        val groupRules: Field?,
+        val actionModeBaseClass: Class<*>?,
+        val smartFragmentClass: Class<*>?,
+        val actionModeView: Field?,
+        val actionModeSelection: Field?,
+        val selectionEntries: Field?,
+        val selectionEntryModel: Field?
     )
 
     private data class NativeStyle(
@@ -329,7 +332,10 @@ internal class SmartPlaylistFolderController(
     @Volatile private var groupRootPlaylists = false
     @Volatile private var multiSelectEnabled = true
     @Volatile private var bindings: Bindings? = null
+    @Volatile private var runtimeRoot: File? = null
+    @Volatile private var hostLoader: ClassLoader? = null
     @Volatile private var presenterRef: WeakReference<Any>? = null
+    private val runtimeBindingAttempts = WeakHashMap<ViewGroup, Int>()
     @Volatile private var folderCreator: NativeGmmpFolderCreator? = null
     @Volatile private var folderDeletion: NativeGmmpFolderDeletion? = null
     private data class PendingFolderDeletion(
@@ -343,173 +349,446 @@ internal class SmartPlaylistFolderController(
     @Volatile private var pendingCreationAt = 0L
 
     fun configure(loader: ClassLoader): Boolean {
+        hostLoader = loader
         val configured = runCatching {
-            val adapterClass = loader.loadClass("ls4")
-            val holderClass = loader.loadClass("vs4")
-            val modelClass = loader.loadClass("ws4")
-            val presenterClass = loader.loadClass("ss4")
-            val stateClass = loader.loadClass("ts4")
-            val sortStateClass = loader.loadClass("zu4")
-            val storageClass = loader.loadClass("tx4")
-            val storageLocationClass = loader.loadClass("rx4")
-            val sortExtensions = loader.loadClass("ou4")
-            val leafRuleClass = loader.loadClass("ft4")
-            val groupRuleClass = loader.loadClass("jt4")
-            val actionModeBaseClass = loader.loadClass("n3")
-            val smartFragmentClass = loader.loadClass("os4")
-            val selectionTrackerClass = loader.loadClass("s3")
-            val selectionEntryClass = loader.loadClass("s3\$a")
-
-            Bindings(
-                loader = loader,
-                adapterClass = adapterClass,
-                holderClass = holderClass,
-                modelClass = modelClass,
-                presenterClass = presenterClass,
-                modelConstructor = modelClass.getDeclaredConstructor(
-                    String::class.java,
-                    Integer.TYPE,
-                    Integer.TYPE,
-                    Integer.TYPE,
-                    ArrayList::class.java,
-                    Integer.TYPE
-                ).apply { isAccessible = true },
-                modelRead = modelClass.getDeclaredMethod(
-                    "r",
-                    File::class.java
-                ).apply { isAccessible = true },
-                modelName = modelClass.getDeclaredField("o")
-                    .apply { isAccessible = true },
-                modelFile = modelClass.getDeclaredField("v")
-                    .apply { isAccessible = true },
-                modelRules = findField(modelClass, "u")
-                    .apply { isAccessible = true },
-                holderModel = holderClass.getDeclaredField("A")
-                    .apply { isAccessible = true },
-                adapterDiffer = adapterClass.getDeclaredField("y")
-                    .apply { isAccessible = true },
-                differSubmit = adapterClass.getDeclaredField("y")
-                    .apply { isAccessible = true }
-                    .type
-                    .getDeclaredMethod(
-                        "b",
-                        java.util.List::class.java
-                    )
-                    .apply { isAccessible = true },
-                storagePath = storageClass.getDeclaredMethod(
-                    "b",
-                    storageLocationClass
-                ).apply { isAccessible = true },
-                smartStorageLocation = storageLocationClass
-                    .getDeclaredField("s")
-                    .apply { isAccessible = true }
-                    .get(null),
-                nativeSort = sortExtensions.getDeclaredMethod(
-                    "e",
-                    Integer.TYPE,
-                    ArrayList::class.java,
-                    java.lang.Boolean.TYPE
-                ).apply { isAccessible = true },
-                presenterState = presenterClass.getDeclaredField("x")
-                    .apply { isAccessible = true },
-                stateSort = stateClass.getDeclaredField("q")
-                    .apply { isAccessible = true },
-                sortOrder = sortStateClass.getDeclaredMethod("b")
-                    .apply { isAccessible = true },
-                sortDescending = sortStateClass.getDeclaredMethod("c")
-                    .apply { isAccessible = true },
-                leafRuleClass = leafRuleClass,
-                leafRuleValue = findField(leafRuleClass, "q")
-                    .apply { isAccessible = true },
-                groupRuleClass = groupRuleClass,
-                groupRules = findField(groupRuleClass, "o")
-                    .apply { isAccessible = true },
-                actionModeBaseClass = actionModeBaseClass,
-                smartFragmentClass = smartFragmentClass,
-                actionModeView = findField(actionModeBaseClass, "q")
-                    .apply { isAccessible = true },
-                actionModeSelection = findField(actionModeBaseClass, "s")
-                    .apply { isAccessible = true },
-                selectionEntries = findField(selectionTrackerClass, "c")
-                    .apply { isAccessible = true },
-                selectionEntryModel = findField(selectionEntryClass, "b")
-                    .apply { isAccessible = true }
-            )
+            legacyBindings(loader)
         }.onFailure {
-            Log.e(TAG, "SMART FOLDERS BINDINGS FAILED | native tab untouched", it)
+            Log.w(
+                TAG,
+                "SMART FOLDERS LEGACY BINDINGS | 4.2.0 mapping unavailable; " +
+                    "waiting for live structural binding"
+            )
             diagnoseCompatibilityBindings(loader)
         }.getOrNull()
         bindings = configured
-        Log.i(TAG, "SMART FOLDERS BINDINGS | ready=" + (configured != null))
+        Log.i(
+            TAG,
+            "SMART FOLDERS BINDINGS | ready=" + (configured != null) +
+                " | source=" + if (configured != null) "legacy" else "runtime-pending"
+        )
         return configured != null
+    }
+
+    private fun legacyBindings(loader: ClassLoader): Bindings {
+        val adapterClass = loader.loadClass("ls4")
+        val holderClass = loader.loadClass("vs4")
+        val modelClass = loader.loadClass("ws4")
+        val presenterClass = loader.loadClass("ss4")
+        val stateClass = loader.loadClass("ts4")
+        val sortStateClass = loader.loadClass("zu4")
+        val storageClass = loader.loadClass("tx4")
+        val storageLocationClass = loader.loadClass("rx4")
+        val sortExtensions = loader.loadClass("ou4")
+        val leafRuleClass = loader.loadClass("ft4")
+        val groupRuleClass = loader.loadClass("jt4")
+        val actionModeBaseClass = loader.loadClass("n3")
+        val smartFragmentClass = loader.loadClass("os4")
+        val selectionTrackerClass = loader.loadClass("s3")
+        val selectionEntryClass = loader.loadClass("s3\$a")
+        val differField = adapterClass.getDeclaredField("y")
+            .apply { isAccessible = true }
+        val differType = differField.type
+        return Bindings(
+            loader = loader,
+            adapterClass = adapterClass,
+            holderClass = holderClass,
+            modelClass = modelClass,
+            modelConstructor = modelClass.getDeclaredConstructor(
+                String::class.java,
+                Integer.TYPE,
+                Integer.TYPE,
+                Integer.TYPE,
+                ArrayList::class.java,
+                Integer.TYPE
+            ).apply { isAccessible = true },
+            modelRead = modelClass.getDeclaredMethod(
+                "r", File::class.java
+            ).apply { isAccessible = true },
+            modelWriter = runCatching {
+                modelClass.getDeclaredMethod("t", File::class.java)
+                    .apply { isAccessible = true }
+            }.getOrNull(),
+            modelName = modelClass.getDeclaredField("o")
+                .apply { isAccessible = true },
+            modelFile = modelClass.getDeclaredField("v")
+                .apply { isAccessible = true },
+            modelRules = findField(modelClass, "u")
+                .apply { isAccessible = true },
+            holderModel = holderClass.getDeclaredField("A")
+                .apply { isAccessible = true },
+            adapterDiffer = differField,
+            differSubmit = differType.getDeclaredMethod(
+                "b", java.util.List::class.java
+            ).apply { isAccessible = true },
+            differCurrentList = differType.declaredMethods
+                .firstOrNull {
+                    it.parameterCount == 0 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.returnType)
+                }?.apply { isAccessible = true },
+            storagePath = storageClass.getDeclaredMethod(
+                "b", storageLocationClass
+            ).apply { isAccessible = true },
+            smartStorageLocation = storageLocationClass
+                .getDeclaredField("s")
+                .apply { isAccessible = true }
+                .get(null),
+            nativeSort = sortExtensions.getDeclaredMethod(
+                "e",
+                Integer.TYPE,
+                ArrayList::class.java,
+                java.lang.Boolean.TYPE
+            ).apply { isAccessible = true },
+            presenterClass = presenterClass,
+            presenterState = presenterClass.getDeclaredField("x")
+                .apply { isAccessible = true },
+            stateSort = stateClass.getDeclaredField("q")
+                .apply { isAccessible = true },
+            sortOrder = sortStateClass.getDeclaredMethod("b")
+                .apply { isAccessible = true },
+            sortDescending = sortStateClass.getDeclaredMethod("c")
+                .apply { isAccessible = true },
+            leafRuleClass = leafRuleClass,
+            leafRuleValue = findField(leafRuleClass, "q")
+                .apply { isAccessible = true },
+            groupRuleClass = groupRuleClass,
+            groupRules = findField(groupRuleClass, "o")
+                .apply { isAccessible = true },
+            actionModeBaseClass = actionModeBaseClass,
+            smartFragmentClass = smartFragmentClass,
+            actionModeView = findField(actionModeBaseClass, "q")
+                .apply { isAccessible = true },
+            actionModeSelection = findField(actionModeBaseClass, "s")
+                .apply { isAccessible = true },
+            selectionEntries = findField(selectionTrackerClass, "c")
+                .apply { isAccessible = true },
+            selectionEntryModel = findField(selectionEntryClass, "b")
+                .apply { isAccessible = true }
+        )
+    }
+
+    private fun hierarchyFields(type: Class<*>): List<Field> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter { !Modifier.isStatic(it.modifiers) && !it.isSynthetic }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" + it.type.name
+            }
+            .toList()
+
+    private fun hierarchyMethods(type: Class<*>): List<Method> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredMethods.asSequence() }
+            .filter {
+                !Modifier.isAbstract(it.modifiers) && !it.isSynthetic
+            }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" +
+                    it.parameterTypes.joinToString(",") { p -> p.name } +
+                    "|" + it.returnType.name
+            }
+            .toList()
+
+    private fun runtimeSmartModelShape(type: Class<*>): Boolean {
+        val fields = hierarchyFields(type)
+        val fileFields = fields.count {
+            File::class.java.isAssignableFrom(it.type)
+        }
+        val stringFields = fields.count {
+            it.type == String::class.java
+        }
+        val listFields = fields.count {
+            java.util.List::class.java.isAssignableFrom(it.type)
+        }
+        val constructors = type.declaredConstructors.count {
+            val p = it.parameterTypes
+            p.size == 6 &&
+                p[0] == String::class.java &&
+                p[1] == Integer.TYPE &&
+                p[2] == Integer.TYPE &&
+                p[3] == Integer.TYPE &&
+                java.util.ArrayList::class.java.isAssignableFrom(p[4]) &&
+                p[5] == Integer.TYPE
+        }
+        val fileReaders = hierarchyMethods(type).count {
+            it.parameterCount == 1 &&
+                it.parameterTypes[0] == File::class.java &&
+                it.returnType == java.lang.Void.TYPE
+        }
+        return constructors == 1 &&
+            fileFields == 1 &&
+            stringFields == 1 &&
+            listFields >= 1 &&
+            fileReaders == 1
+    }
+
+    private fun inferRuntimeRoot(
+        models: List<Any>,
+        modelFile: Field
+    ): File? {
+        val files = models.mapNotNull { model ->
+            runCatching {
+                modelFile.get(model) as? File
+            }.getOrNull()?.let {
+                runCatching { it.canonicalFile }.getOrNull()
+            }
+        }.filter {
+            it.extension.equals("spl", ignoreCase = true)
+        }
+        if (files.isEmpty()) return null
+        var candidate = files.first().parentFile?.canonicalFile ?: return null
+        while (files.any { file ->
+                val prefix = candidate.path.trimEnd(File.separatorChar) +
+                    File.separator
+                file.path != candidate.path &&
+                    !file.path.startsWith(prefix)
+            }
+        ) {
+            candidate = candidate.parentFile?.canonicalFile ?: return null
+        }
+        return candidate.takeIf { it.isDirectory }
+    }
+
+    private fun resolveRuntimeBindings(
+        list: ViewGroup,
+        adapter: Any
+    ): Bindings? {
+        val getHolder = runCatching {
+            list.javaClass.getMethod(
+                "getChildViewHolder", View::class.java
+            )
+        }.getOrNull() ?: return null
+
+        var holder: Any? = null
+        for (index in 0 until list.childCount) {
+            val row = list.getChildAt(index) ?: continue
+            holder = runCatching {
+                getHolder.invoke(list, row)
+            }.getOrNull()
+            if (holder != null) break
+        }
+        holder ?: return null
+
+        val modelCandidates = hierarchyFields(holder.javaClass)
+            .mapNotNull { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(holder)
+                }.getOrNull() ?: return@mapNotNull null
+                if (runtimeSmartModelShape(value.javaClass)) {
+                    field to value
+                } else null
+            }
+        val (holderModel, sampleModel) =
+            modelCandidates.singleOrNull() ?: return null
+        holderModel.isAccessible = true
+        val modelClass = sampleModel.javaClass
+        val modelFields = hierarchyFields(modelClass)
+
+        val modelFile = modelFields.filter {
+            File::class.java.isAssignableFrom(it.type)
+        }.singleOrNull()?.apply { isAccessible = true } ?: return null
+        val modelName = modelFields.filter {
+            it.type == String::class.java
+        }.singleOrNull()?.apply { isAccessible = true } ?: return null
+        val modelRules = modelFields.filter {
+            java.util.List::class.java.isAssignableFrom(it.type)
+        }.singleOrNull()?.apply { isAccessible = true }
+
+        val modelConstructor = modelClass.declaredConstructors.filter {
+            val p = it.parameterTypes
+            p.size == 6 &&
+                p[0] == String::class.java &&
+                p[1] == Integer.TYPE &&
+                p[2] == Integer.TYPE &&
+                p[3] == Integer.TYPE &&
+                java.util.ArrayList::class.java.isAssignableFrom(p[4]) &&
+                p[5] == Integer.TYPE
+        }.singleOrNull()?.apply { isAccessible = true } ?: return null
+
+        val modelRead = hierarchyMethods(modelClass).filter {
+            it.parameterCount == 1 &&
+                it.parameterTypes[0] == File::class.java &&
+                it.returnType == java.lang.Void.TYPE
+        }.singleOrNull()?.apply { isAccessible = true } ?: return null
+
+        val modelWriter = hierarchyMethods(modelClass).filter {
+            it.parameterCount == 1 &&
+                it.parameterTypes[0] == File::class.java &&
+                (it.returnType == java.lang.Boolean.TYPE ||
+                    it.returnType == java.lang.Boolean::class.java)
+        }.singleOrNull()?.apply { isAccessible = true }
+
+        data class DifferCandidate(
+            val field: Field,
+            val value: Any,
+            val submit: Method,
+            val current: Method?
+        )
+        val differCandidates = hierarchyFields(adapter.javaClass)
+            .mapNotNull { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(adapter)
+                }.getOrNull() ?: return@mapNotNull null
+                val methods = hierarchyMethods(value.javaClass)
+                val submits = methods.filter {
+                    it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+                if (submits.size != 1) return@mapNotNull null
+                val currents = methods.filter {
+                    it.parameterCount == 0 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.returnType)
+                }
+                DifferCandidate(
+                    field.apply { isAccessible = true },
+                    value,
+                    submits.single().apply { isAccessible = true },
+                    currents.singleOrNull()?.apply { isAccessible = true }
+                )
+            }
+        val differ = differCandidates.singleOrNull() ?: return null
+
+        val currentModels = (
+            differ.current?.let {
+                runCatching {
+                    it.invoke(differ.value) as? List<*>
+                }.getOrNull()
+            }.orEmpty()
+        ).filterNotNull().filter(modelClass::isInstance)
+            .map { it as Any }
+            .ifEmpty { listOf(sampleModel) }
+
+        val resolvedRoot = inferRuntimeRoot(currentModels, modelFile)
+            ?: return null
+        runtimeRoot = resolvedRoot
+
+        val resolved = Bindings(
+            loader = hostLoader ?: adapter.javaClass.classLoader,
+            adapterClass = adapter.javaClass,
+            holderClass = holder.javaClass,
+            modelClass = modelClass,
+            modelConstructor = modelConstructor,
+            modelRead = modelRead,
+            modelWriter = modelWriter,
+            modelName = modelName,
+            modelFile = modelFile,
+            modelRules = modelRules,
+            holderModel = holderModel,
+            adapterDiffer = differ.field,
+            differSubmit = differ.submit,
+            differCurrentList = differ.current,
+            storagePath = null,
+            smartStorageLocation = null,
+            nativeSort = null,
+            presenterClass = null,
+            presenterState = null,
+            stateSort = null,
+            sortOrder = null,
+            sortDescending = null,
+            leafRuleClass = null,
+            leafRuleValue = null,
+            groupRuleClass = null,
+            groupRules = null,
+            actionModeBaseClass = null,
+            smartFragmentClass = null,
+            actionModeView = null,
+            actionModeSelection = null,
+            selectionEntries = null,
+            selectionEntryModel = null
+        )
+
+        Log.i(
+            TAG,
+            "SMART FOLDERS RUNTIME BINDING | resolved=true" +
+                " | adapter=" + adapter.javaClass.name +
+                " | holder=" + holder.javaClass.name +
+                " | model=" + modelClass.name +
+                " | reader=" + modelRead.name +
+                " | writer=" + (modelWriter?.name ?: "none") +
+                " | differ=" + differ.field.name +
+                " | submit=" + differ.submit.name +
+                " | root=verified-from-native-models"
+        )
+        return resolved
+    }
+
+    private fun scheduleRuntimeBinding(
+        list: ViewGroup,
+        attempt: Int
+    ) {
+        val previous = runtimeBindingAttempts[list]
+        if (previous != null && previous >= attempt) return
+        runtimeBindingAttempts[list] = attempt
+        main.postDelayed({
+            runtimeBindingAttempts.remove(list)
+            if (!enabled || !list.isAttachedToWindow || bindings != null) {
+                return@postDelayed
+            }
+            val adapter = nativeAdapter(list) ?: return@postDelayed
+            val resolved = runCatching {
+                resolveRuntimeBindings(list, adapter)
+            }.onFailure {
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS RUNTIME BINDING | attempt failed",
+                    it
+                )
+            }.getOrNull()
+            if (resolved != null) {
+                bindings = resolved
+                updateMenus()
+                onNativeRecyclerObserved(list)
+            } else if (attempt < MAX_ATTACH_RETRIES) {
+                scheduleRuntimeBinding(list, attempt + 1)
+            } else {
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS RUNTIME BINDING | unresolved after retries"
+                )
+            }
+        }, if (attempt == 0) 0L else ATTACH_RETRY_MS)
     }
 
     private fun diagnoseCompatibilityBindings(
         loader: ClassLoader
     ) {
-        runCatching {
-            val type = loader.loadClass("ws4")
-            Log.w(
-                TAG,
-                "SMART MODEL MAPPING | constructors=" +
-                    GmmpReflectionDiagnostics.constructors(type) +
-                    " | fileMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 20
-                    ) {
-                        it.parameterTypes.size == 1 &&
-                            it.parameterTypes[0] == File::class.java
-                    }
-            )
+        listOf("ws4", "ts4").forEach { name ->
+            runCatching {
+                val type = loader.loadClass(name)
+                Log.w(
+                    TAG,
+                    "SMART MODEL MAPPING | requested=" + name +
+                        " | constructors=" +
+                        GmmpReflectionDiagnostics.constructors(type) +
+                        " | fileMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = type,
+                            limit = 20
+                        ) {
+                            it.parameterTypes.size == 1 &&
+                                it.parameterTypes[0] == File::class.java
+                        }
+                )
+            }
         }
 
-        runCatching {
-            val type = loader.loadClass("ss4")
-            val nested =
-                type.declaredClasses
-                    .take(16)
-                    .joinToString(",") { it.name }
-                    .ifBlank { "none" }
-            Log.w(
-                TAG,
-                "SMART PRESENTER MAPPING | oneArgMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 24
-                    ) {
-                        it.parameterTypes.size == 1
-                    } +
-                    " | nested=" + nested
-            )
-        }
-
-        runCatching {
-            val type = loader.loadClass("os4")
-            Log.w(
-                TAG,
-                "SMART FRAGMENT MAPPING | oneArgMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 24
-                    ) {
-                        it.parameterTypes.size == 1
-                    }
-            )
-        }
-
-        runCatching {
-            val type = loader.loadClass("nt4")
-            Log.w(
-                TAG,
-                "SMART CONTEXT MAPPING | threeArgMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 20
-                    ) {
-                        it.parameterTypes.size == 3
-                    }
-            )
+        listOf("ls4", "is4").forEach { name ->
+            runCatching {
+                val type = loader.loadClass(name)
+                Log.w(
+                    TAG,
+                    "SMART ADAPTER MAPPING | requested=" + name +
+                        " | hierarchy=" +
+                        GmmpReflectionDiagnostics.hierarchy(type) +
+                        " | fields=" +
+                        GmmpReflectionDiagnostics.fields(type, 32)
+                )
+            }
         }
     }
 
@@ -573,7 +852,8 @@ internal class SmartPlaylistFolderController(
 
     fun capturePresenter(presenter: Any?) {
         val native = bindings ?: return
-        if (presenter != null && native.presenterClass.isInstance(presenter)) {
+        val presenterClass = native.presenterClass ?: return
+        if (presenter != null && presenterClass.isInstance(presenter)) {
             presenterRef = WeakReference(presenter)
         }
     }
@@ -582,12 +862,18 @@ internal class SmartPlaylistFolderController(
         val list = view as? ViewGroup ?: return
         val native = bindings
         val adapter = nativeAdapter(list)
+        val byResource = resourceName(list) == SMART_LIST_ID
         val adapterMatches =
             adapter != null &&
                 native?.adapterClass?.isInstance(adapter) == true
-        val nativeSmartSurface =
-            resourceName(list) == SMART_LIST_ID || adapterMatches
+        val nativeSmartSurface = byResource || adapterMatches
         if (!nativeSmartSurface) return
+        knownLists[list] = true
+
+        if (native == null && byResource && adapter != null) {
+            if (enabled) scheduleRuntimeBinding(list, 0)
+            return
+        }
 
         if (!SmartFolderSurfaceCompatibilityPolicy.canMaskNativeList(
                 bindingsReady = native != null,
@@ -611,7 +897,6 @@ internal class SmartPlaylistFolderController(
                     resourceName(list).ifBlank { "<none>" }
             )
         }
-        knownLists[list] = true
         if (failedOverlayHosts.containsKey(list)) return
         if (enabled && !browsers.containsKey(list)) {
             if (!pendingOriginalAlphas.containsKey(list)) {
@@ -1405,17 +1690,29 @@ internal class SmartPlaylistFolderController(
     private fun sortNative(models: ArrayList<Any>): List<Any> {
         val native = bindings ?: return models
         val presenter = presenterRef?.get()
-        if (presenter != null) {
+        val presenterState = native.presenterState
+        val stateSort = native.stateSort
+        val sortOrder = native.sortOrder
+        val sortDescending = native.sortDescending
+        val nativeSort = native.nativeSort
+        if (presenter != null &&
+            presenterState != null &&
+            stateSort != null &&
+            sortOrder != null &&
+            sortDescending != null &&
+            nativeSort != null
+        ) {
             runCatching {
-                val state = native.presenterState.get(presenter)
-                val sortState = native.stateSort.get(state)
-                val orderPreference = native.sortOrder.invoke(sortState)
+                val state = presenterState.get(presenter)
+                val sortState = stateSort.get(state)
+                val orderPreference = sortOrder.invoke(sortState)
                 val descendingPreference =
-                    native.sortDescending.invoke(sortState)
+                    sortDescending.invoke(sortState)
                 val order = preferenceValue(orderPreference) as Number
-                val descending = preferenceValue(descendingPreference) as Boolean
+                val descending =
+                    preferenceValue(descendingPreference) as Boolean
                 @Suppress("UNCHECKED_CAST")
-                return native.nativeSort.invoke(
+                return nativeSort.invoke(
                     null,
                     order.toInt(),
                     ArrayList(models),
@@ -2358,30 +2655,33 @@ internal class SmartPlaylistFolderController(
 
     private fun isSmartActionMode(callback: Any?): Boolean {
         val native = bindings ?: return false
-        if (callback == null ||
-            !native.actionModeBaseClass.isInstance(callback)
-        ) return false
+        val base = native.actionModeBaseClass ?: return false
+        val viewField = native.actionModeView ?: return false
+        val fragment = native.smartFragmentClass ?: return false
+        if (callback == null || !base.isInstance(callback)) return false
         val view = runCatching {
-            native.actionModeView.get(callback)
+            viewField.get(callback)
         }.getOrNull() ?: return false
-        return native.smartFragmentClass.isInstance(view)
+        return fragment.isInstance(view)
     }
 
     private fun selectedSmartPaths(callback: Any?): List<String> {
         val native = bindings ?: return emptyList()
-        if (callback == null ||
-            !native.actionModeBaseClass.isInstance(callback)
-        ) return emptyList()
+        val base = native.actionModeBaseClass ?: return emptyList()
+        val selectionField = native.actionModeSelection ?: return emptyList()
+        val entriesField = native.selectionEntries ?: return emptyList()
+        val entryModelField = native.selectionEntryModel ?: return emptyList()
+        if (callback == null || !base.isInstance(callback)) return emptyList()
         val tracker = runCatching {
-            native.actionModeSelection.get(callback)
+            selectionField.get(callback)
         }.getOrNull() ?: return emptyList()
         val entries = runCatching {
-            native.selectionEntries.get(tracker) as? Iterable<*>
+            entriesField.get(tracker) as? Iterable<*>
         }.getOrNull() ?: return emptyList()
         return entries.mapNotNull { entry ->
             if (entry == null) null else {
                 val model = runCatching {
-                    native.selectionEntryModel.get(entry)
+                    entryModelField.get(entry)
                 }.getOrNull()
                 model?.takeIf(native.modelClass::isInstance)?.let(::modelPath)
             }
@@ -2549,6 +2849,18 @@ internal class SmartPlaylistFolderController(
         selected: Set<String>
     ): Boolean {
         val native = bindings ?: return true
+        val modelRules = native.modelRules ?: run {
+            Log.w(TAG, "SMART MOVE | native rule graph unavailable")
+            return true
+        }
+        if (native.leafRuleClass == null ||
+            native.leafRuleValue == null ||
+            native.groupRuleClass == null ||
+            native.groupRules == null
+        ) {
+            Log.w(TAG, "SMART MOVE | native link-rule mapping unavailable")
+            return true
+        }
         val canonicalSelected = selected.map(::canonicalPath).toSet()
         val candidates = root.walkTopDown()
             .filter {
@@ -2563,7 +2875,7 @@ internal class SmartPlaylistFolderController(
                 }
             }.getOrNull() ?: continue
             val rules = runCatching {
-                native.modelRules.get(model) as? Iterable<*>
+                modelRules.get(model) as? Iterable<*>
             }.getOrNull() ?: continue
             if (rules.any { ruleReferencesSelected(native, it, canonicalSelected) }) {
                 Log.i(
@@ -2582,17 +2894,21 @@ internal class SmartPlaylistFolderController(
         selected: Set<String>
     ): Boolean {
         if (rule == null) return false
-        if (native.groupRuleClass.isInstance(rule)) {
+        val groupRuleClass = native.groupRuleClass ?: return false
+        val groupRules = native.groupRules ?: return false
+        val leafRuleClass = native.leafRuleClass ?: return false
+        val leafRuleValue = native.leafRuleValue ?: return false
+        if (groupRuleClass.isInstance(rule)) {
             val children = runCatching {
-                native.groupRules.get(rule) as? Iterable<*>
+                groupRules.get(rule) as? Iterable<*>
             }.getOrNull() ?: return false
             return children.any {
                 ruleReferencesSelected(native, it, selected)
             }
         }
-        if (!native.leafRuleClass.isInstance(rule)) return false
+        if (!leafRuleClass.isInstance(rule)) return false
         val value = runCatching {
-            native.leafRuleValue.get(rule) as? String
+            leafRuleValue.get(rule) as? String
         }.getOrNull() ?: return false
         if (PlaylistBridgeReference.isBridgeValue(value) ||
             !PlaylistBridgePolicy
@@ -3432,16 +3748,19 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun rootFile(): File? {
-        val native = bindings ?: return null
-        val path = runCatching {
-            native.storagePath.invoke(
-                null,
-                native.smartStorageLocation
-            ) as? String
-        }.getOrNull()?.takeUnless(String::isBlank) ?: return null
-        return runCatching { File(path).canonicalFile }
-            .getOrNull()
-            ?.takeIf { it.isDirectory }
+        val native = bindings ?: return runtimeRoot
+        val storagePath = native.storagePath
+        val storageLocation = native.smartStorageLocation
+        if (storagePath != null && storageLocation != null) {
+            val path = runCatching {
+                storagePath.invoke(null, storageLocation) as? String
+            }.getOrNull()?.takeUnless(String::isBlank)
+            val legacy = path?.let {
+                runCatching { File(it).canonicalFile }.getOrNull()
+            }?.takeIf { it.isDirectory }
+            if (legacy != null) return legacy
+        }
+        return runtimeRoot?.takeIf { it.isDirectory }
     }
 
     private fun modelName(model: Any): String {
