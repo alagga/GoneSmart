@@ -125,6 +125,11 @@ class GoneSmartModule : XposedModule() {
             mutableSetOf<String>()
         )
 
+    private val compatibilityNestedHolderSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
     private val compatibilityRuntimeInstanceSnapshots =
         java.util.Collections.synchronizedSet(
             mutableSetOf<String>()
@@ -1457,6 +1462,103 @@ class GoneSmartModule : XposedModule() {
         }
     }
 
+    private fun isCompatibilityPlatformType(type: Class<*>): Boolean {
+        val name = type.name
+        return name.startsWith("java.") ||
+            name.startsWith("javax.") ||
+            name.startsWith("android.") ||
+            name.startsWith("androidx.") ||
+            name.startsWith("kotlin.") ||
+            name.startsWith("kotlinx.") ||
+            name.startsWith("com.google.") ||
+            name.startsWith("com.afollestad.")
+    }
+
+    private fun logCompatibilityHolderNestedObjects(
+        holder: Any,
+        adapterClassName: String,
+        resourceName: String
+    ) {
+        val candidates =
+            generateSequence<Class<*>>(holder.javaClass) { it.superclass }
+                .flatMap { owner -> owner.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        !it.isSynthetic
+                }
+                .mapNotNull { field ->
+                    val value = runCatching {
+                        field.isAccessible = true
+                        field.get(holder)
+                    }.getOrNull() ?: return@mapNotNull null
+                    if (isCompatibilityPlatformType(value.javaClass)) {
+                        return@mapNotNull null
+                    }
+                    val holderOwned = field.declaringClass == holder.javaClass
+                    val collectionCarrier =
+                        generateSequence<Class<*>>(value.javaClass) {
+                            it.superclass
+                        }.flatMap { it.declaredFields.asSequence() }
+                            .any {
+                                !java.lang.reflect.Modifier.isStatic(
+                                    it.modifiers
+                                ) && (
+                                    java.util.Collection::class.java
+                                        .isAssignableFrom(it.type) ||
+                                        java.util.Map::class.java
+                                            .isAssignableFrom(it.type) ||
+                                        it.type.isArray
+                                )
+                            }
+                    if (!holderOwned && !collectionCarrier) {
+                        return@mapNotNull null
+                    }
+                    Triple(field, value, holderOwned)
+                }
+                .take(4)
+                .toList()
+
+        candidates.forEach { (field, value, holderOwned) ->
+            val role =
+                if (holderOwned) "holder-owned" else "collection-carrier"
+            val key = resourceName + "|" + adapterClassName + "|" +
+                holder.javaClass.name + "|" + field.declaringClass.name +
+                "." + field.name + "|" + value.javaClass.name + "|" + role
+            val shouldLog = synchronized(compatibilityNestedHolderSnapshots) {
+                compatibilityNestedHolderSnapshots.add(key)
+            }
+            if (!shouldLog) return@forEach
+
+            Log.i(
+                "GoneSmartCompat",
+                "GMMP RECYCLER NESTED | resource=" + resourceName +
+                    " | adapter=" + adapterClassName +
+                    " | holder=" + holder.javaClass.name +
+                    " | role=" + role +
+                    " | field=" + field.declaringClass.name +
+                    "." + field.name +
+                    " | runtime=" + value.javaClass.name +
+                    " | runtimeFields=" +
+                    GmmpReflectionDiagnostics.runtimeFieldTypes(
+                        instance = value,
+                        limit = 36
+                    ) +
+                    " | collections=" +
+                    GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                        instance = value,
+                        limitFields = 24,
+                        limitTypesPerField = 8
+                    )
+            )
+            logCompatibilityClassStructure(
+                marker = "GMMP RECYCLER NESTED CLASS",
+                requestedName = value.javaClass.name,
+                type = value.javaClass,
+                instance = value
+            )
+        }
+    }
+
     private fun logCompatibilityRecyclerHolder(
         view: android.view.View,
         adapterClassName: String,
@@ -1506,6 +1608,11 @@ class GoneSmartModule : XposedModule() {
             requestedName = holder.javaClass.name,
             type = holder.javaClass,
             instance = holder
+        )
+        logCompatibilityHolderNestedObjects(
+            holder = holder,
+            adapterClassName = adapterClassName,
+            resourceName = resourceName
         )
     }
 
