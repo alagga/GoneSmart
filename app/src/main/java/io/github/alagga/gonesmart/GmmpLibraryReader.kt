@@ -343,13 +343,28 @@ class GmmpLibraryReader {
                     emptyArray<Any>()
                 )
 
+        val queryResult =
+            try {
+                queryMethod.invoke(
+                    trackDao,
+                    query
+                )
+            } catch (t: java.lang.reflect.InvocationTargetException) {
+                if (t.cause is AbstractMethodError) {
+                    deterministicMappingFailure = true
+                }
+                throw t
+            }
+
         @Suppress("UNCHECKED_CAST")
         val rows =
-            queryMethod.invoke(
-                trackDao,
-                query
-            ) as? List<Any?>
-                ?: emptyList()
+            queryResult as? List<Any?>
+                ?: run {
+                    deterministicMappingFailure = true
+                    throw IllegalStateException(
+                        "Resolved GMMP library query did not return a List"
+                    )
+                }
 
         val tracks =
             rows
@@ -734,29 +749,84 @@ class GmmpLibraryReader {
                 java.util.List::class.java.isAssignableFrom(it.returnType)
             }
 
-        val rawQueryCandidates =
-            listCandidates.filter { method ->
-                val queryClass = method.parameterTypes.single()
-                runCatching {
-                    queryClass.getDeclaredConstructor(
-                        String::class.java,
-                        objectArrayClass
-                    )
-                }.isSuccess
+        fun hasRawQueryConstructor(method: Method): Boolean {
+            val queryClass = method.parameterTypes.single()
+            return runCatching {
+                queryClass.getDeclaredConstructor(
+                    String::class.java,
+                    objectArrayClass
+                )
+            }.isSuccess
+        }
+
+        val rawQueryMethods =
+            oneArgMethods.filter(::hasRawQueryConstructor)
+
+        val concreteRawQueryMethods =
+            rawQueryMethods.filter {
+                !java.lang.reflect.Modifier.isAbstract(it.modifiers)
+            }
+
+        val concreteListCandidates =
+            concreteRawQueryMethods.filter {
+                java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+
+        val abstractListContracts =
+            rawQueryMethods.filter {
+                java.lang.reflect.Modifier.isAbstract(it.modifiers) &&
+                    java.util.List::class.java.isAssignableFrom(it.returnType)
             }
 
         fun signature(method: Method): String =
-            method.name + "(" +
+            method.declaringClass.name + "." +
+                method.name + "(" +
                 method.parameterTypes.joinToString(",") { it.name } +
-                "):" + method.returnType.name
+                "):" + method.returnType.name +
+                if (java.lang.reflect.Modifier.isAbstract(method.modifiers)) {
+                    "[abstract]"
+                } else {
+                    ""
+                }
 
-        if (rawQueryCandidates.size == 1) {
-            val resolved = rawQueryCandidates.single()
+        val resolved =
+            when {
+                concreteListCandidates.size == 1 ->
+                    concreteListCandidates.single()
+
+                abstractListContracts.size == 1 -> {
+                    val contractParam =
+                        abstractListContracts.single()
+                            .parameterTypes
+                            .single()
+
+                    val concreteForContract =
+                        concreteRawQueryMethods.filter {
+                            it.parameterTypes.single() == contractParam &&
+                                (
+                                    it.returnType == Any::class.java ||
+                                        java.util.List::class.java
+                                            .isAssignableFrom(it.returnType)
+                                    )
+                        }
+
+                    concreteForContract.singleOrNull()
+                }
+
+                else -> null
+            }
+
+        if (resolved != null) {
             Log.w(
                 TAG,
                 "GMMP LIBRARY MAPPING | expected=" + type.name +
                     ".g2/1 unavailable | structurally resolved=" +
-                    signature(resolved)
+                    signature(resolved) +
+                    " | abstractContract=" +
+                    abstractListContracts.singleOrNull()
+                        ?.let(::signature)
+                        .orEmpty()
+                        .ifBlank { "none" }
             )
             return resolved
         }
@@ -766,15 +836,16 @@ class GmmpLibraryReader {
         Log.w(
             TAG,
             "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
-                " | rawQueryCandidates=" +
-                rawQueryCandidates.take(8).joinToString(",") {
+                " | concreteRawQuery=" +
+                concreteRawQueryMethods.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | abstractContracts=" +
+                abstractListContracts.take(8).joinToString(",") {
                     signature(it)
                 }.ifBlank { "none" } +
                 " | listCandidates=" +
                 listCandidates.take(12).joinToString(",") { signature(it) }
-                    .ifBlank { "none" } +
-                " | oneArgMethods=" +
-                oneArgMethods.take(20).joinToString(",") { signature(it) }
                     .ifBlank { "none" } +
                 " | oneArgMethodCount=" + oneArgMethods.size
         )
