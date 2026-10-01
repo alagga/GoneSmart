@@ -6,8 +6,8 @@ Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader se
 
 ## Compatibility hardening
 
-- The Home **Compatibility** row now turns amber when the installed GMMP version differs from the explicitly tested version, while the overall module/injection card continues to describe whether GoneSmart is injected.
-- GMMP 4.2.1 changed at least one verified obfuscated internal boundary: the 4.2.0 Auto-DJ selection method `kr.F1(int)` is no longer present under that name.
+- The Home **Compatibility** row now keeps its normal text color but receives an amber/orange background when the installed GMMP version differs from the explicitly tested version, while the overall module/injection card continues to describe whether GoneSmart is injected.
+- GMMP 4.2.1 performs a broad internal R8 remap despite its small public changelog. Observed breaks include the 4.2.0 Auto-DJ selection method `kr.F1(int)`, Playlist picker lifecycle hooks, Playlist Link editor/rule bindings, Smart-Playlist model/folder hooks, queue/Flip observers and native playlist-Play entry points. Stable boundaries and unresolved mappings are tracked in `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`.
 - Smart-DJ hook failures are now isolated from independent GoneSmart features. A missing Auto-DJ mapping no longer prevents Playlist/Smart-Playlist UI hooks, Flip and other unrelated extensions from being installed.
 - Unknown replacement obfuscated methods are not hooked by signature guesswork. GoneSmart emits a bounded signature-only diagnostic for the affected class and fails closed for that specific boundary until the mapping is verified.
 
