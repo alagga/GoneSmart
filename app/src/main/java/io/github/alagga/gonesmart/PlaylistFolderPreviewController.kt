@@ -289,6 +289,8 @@ internal class PlaylistFolderPreviewController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val styles = WeakHashMap<ViewGroup, NativeRowStyle>()
     private val pendingRetries = WeakHashMap<ViewGroup, Int>()
+    private val unsupportedModelSourceReports =
+        WeakHashMap<ViewGroup, String>()
     private val suspendedNativeLists = WeakHashMap<ViewGroup, NavigationHold>()
     private val folderMemory = PlaylistFolderNavigationMemory()
     private val observedPickerOwners = WeakHashMap<ViewGroup, Boolean>()
@@ -772,6 +774,21 @@ internal class PlaylistFolderPreviewController(
             )
         }
         knownLists[list] = true
+        val adapterClassName = adapter.javaClass.name
+        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapterClassName)) {
+            pendingRetries.remove(list)
+            nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
+            if (unsupportedModelSourceReports.put(list, adapterClassName) != adapterClassName) {
+                Log.w(
+                    TAG,
+                    "FOLDER INLINE COMPAT | adapter=" + adapterClassName +
+                        " | native surface verified but model source unresolved; " +
+                        "native list retained"
+                )
+            }
+            return
+        }
+        unsupportedModelSourceReports.remove(list)
         if (suspendedNativeLists.containsKey(list)) return
         // Hide the native ungrouped list as soon as its verified native playlist adapter
         // is observed. The complete native model can take another frame (or
@@ -1800,6 +1817,11 @@ internal class PlaylistFolderPreviewController(
         }
         if (!GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)) {
             retry(list, attempt)
+            return
+        }
+        if (!GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapter.javaClass.name)) {
+            pendingRetries.remove(list)
+            nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
             return
         }
 
