@@ -8,19 +8,35 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.ParameterizedType
 
 /**
- * Resolves GMMP's original playlist-delete entry point and the exact native
- * list element type as one semantic unit. The element type is derived from
- * py0's generic List<T> contract first; "th1" remains only a 4.2.0 fallback.
+ * Resolves GMMP's ORIGINAL playlist-delete entry point from its
+ * Context + List<T> contract.
+ *
+ * On 4.2.1 T is the already-bound native playlist model (yn3). Do not
+ * manufacture a stale 4.2.0 File wrapper when GMMP has already supplied the
+ * exact native model for the visible row. Legacy File wrappers remain only
+ * for older builds where the delete contract itself proves that shape.
  */
 internal class NativeGmmpPlaylistDeleteBinding private constructor(
     val deleteMethod: Method,
-    private val wrapperType: Class<*>,
-    private val wrapperConstructor: Constructor<*>?
+    private val elementType: Class<*>?,
+    private val legacyConstructor: Constructor<*>?
 ) {
-    fun wrap(file: File): Any {
-        if (wrapperType == File::class.java) return file
-        val ctor = wrapperConstructor
-            ?: error("GMMP playlist wrapper constructor unavailable")
+    fun accepts(model: Any): Boolean =
+        elementType == null || elementType.isInstance(model)
+
+    fun nativeModel(model: Any): Any {
+        require(accepts(model)) {
+            "GMMP playlist delete model mismatch: " +
+                model.javaClass.name + " -> " +
+                (elementType?.name ?: "<erased>")
+        }
+        return model
+    }
+
+    fun wrapLegacy(file: File): Any {
+        if (elementType == File::class.java) return file
+        val ctor = legacyConstructor
+            ?: error("GMMP legacy playlist wrapper unavailable")
         val p = ctor.parameterTypes
         return when (p.size) {
             1 -> ctor.newInstance(file)
@@ -35,12 +51,13 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
     companion object {
         private data class Candidate(
             val method: Method,
-            val wrapper: Class<*>,
-            val constructor: Constructor<*>?,
-            val score: Int
+            val element: Class<*>?
         )
 
-        fun resolve(loader: ClassLoader): NativeGmmpPlaylistDeleteBinding {
+        fun resolve(
+            loader: ClassLoader,
+            sampleModel: Any? = null
+        ): NativeGmmpPlaylistDeleteBinding {
             val deleteType = loader.loadClass("py0")
             val methods = deleteType.declaredMethods.filter {
                 Modifier.isStatic(it.modifiers) &&
@@ -52,78 +69,84 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
                         it.parameterTypes[1]
                     )
             }
-
-            val typed = methods.mapNotNull { method ->
-                val wrapper = genericListElementClass(method, 1)
-                    ?: return@mapNotNull null
-                val factory = wrapperFactory(wrapper)
-                    ?: return@mapNotNull null
-                Candidate(
-                    method = method,
-                    wrapper = wrapper,
-                    constructor = factory.first,
-                    score = factory.second
-                )
+            require(methods.isNotEmpty()) {
+                "GMMP playlist delete method unavailable"
             }
 
-            val exactTyped = typed.filter { it.method.name == "b" }
-            val chosen = when {
-                exactTyped.size == 1 -> exactTyped.single()
-                else -> {
-                    val bestScore = typed.maxOfOrNull { it.score }
-                    val best = typed.filter { it.score == bestScore }
-                    best.singleOrNull()
+            val candidates = methods.map {
+                Candidate(it, genericListElementClass(it, 1))
+            }
+
+            val chosen = if (sampleModel != null) {
+                val modelClass = sampleModel.javaClass
+                val typed = candidates.filter { candidate ->
+                    candidate.element?.let {
+                        it.isAssignableFrom(modelClass) ||
+                            modelClass.isAssignableFrom(it)
+                    } == true
                 }
-            } ?: run {
-                val legacy = loader.loadClass("th1")
-                val factory = wrapperFactory(legacy)
-                    ?: error("GMMP legacy playlist wrapper unavailable")
-                val delete = methods.singleOrNull { it.name == "b" }
-                    ?: methods.singleOrNull()
+                typed.singleOrNull()
+                    ?: typed.singleOrNull { it.method.name == "b" }
+                    ?: candidates.singleOrNull()
                     ?: error(
-                        "GMMP playlist delete method is not structurally unique: " +
-                            methods.joinToString(",") { it.name }
+                        "GMMP playlist delete method is not unique for " +
+                            modelClass.name + ": " +
+                            candidates.joinToString(",") {
+                                it.method.name + "<" +
+                                    (it.element?.name ?: "erased") + ">"
+                            }
                     )
-                Candidate(
-                    delete,
-                    legacy,
-                    factory.first,
-                    factory.second
-                )
+            } else {
+                candidates.singleOrNull { it.method.name == "b" }
+                    ?: candidates.singleOrNull()
+                    ?: run {
+                        // 4.2.0 fallback: identify the List<T> whose T has
+                        // the native File[,Long] constructor.
+                        val legacy = candidates.filter {
+                            it.element?.let(::legacyFactory) != null
+                        }
+                        legacy.singleOrNull()
+                            ?: error(
+                                "GMMP playlist delete method is not structurally unique: " +
+                                    candidates.joinToString(",") {
+                                        it.method.name + "<" +
+                                            (it.element?.name ?: "erased") + ">"
+                                    }
+                            )
+                    }
             }
 
             chosen.method.isAccessible = true
-            chosen.constructor?.isAccessible = true
+            val ctor = chosen.element?.let(::legacyFactory)
+            ctor?.isAccessible = true
             return NativeGmmpPlaylistDeleteBinding(
                 chosen.method,
-                chosen.wrapper,
-                chosen.constructor
+                chosen.element,
+                ctor
             )
         }
 
-        private fun wrapperFactory(
-            wrapper: Class<*>
-        ): Pair<Constructor<*>?, Int>? {
-            if (wrapper == File::class.java) return null to 0
-            val one = wrapper.declaredConstructors.filter {
-                val p = it.parameterTypes
-                p.size == 1 &&
-                    File::class.java.isAssignableFrom(p[0])
-            }
-            val two = wrapper.declaredConstructors.filter {
+        private fun legacyFactory(
+            type: Class<*>
+        ): Constructor<*>? {
+            if (type == File::class.java) return null
+            val two = type.declaredConstructors.filter {
                 val p = it.parameterTypes
                 p.size == 2 &&
                     File::class.java.isAssignableFrom(p[0]) &&
                     (p[1] == java.lang.Long::class.java ||
                         p[1] == java.lang.Long.TYPE)
             }
-            val ctor = when {
+            val one = type.declaredConstructors.filter {
+                val p = it.parameterTypes
+                p.size == 1 &&
+                    File::class.java.isAssignableFrom(p[0])
+            }
+            return when {
                 two.size == 1 -> two.single()
                 one.size == 1 -> one.single()
                 else -> null
-            } ?: return null
-            ctor.isAccessible = true
-            return ctor to if (ctor.parameterCount == 2) 2 else 1
+            }
         }
 
         private fun genericListElementClass(

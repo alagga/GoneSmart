@@ -232,6 +232,43 @@ internal object NativePlaylistRuntimeBinding {
         }
     }
 
+    fun swapBoundModel(holder: Any, model: Any): Any? {
+        val binding = synchronized(byHolder) {
+            byHolder[holder.javaClass]
+        } ?: return null
+        if (!binding.modelClass.isInstance(model)) return null
+        return runCatching {
+            val previous = binding.holderField.get(holder)
+            binding.holderField.set(holder, model)
+            previous
+        }.getOrNull()
+    }
+
+    fun restoreBoundModel(holder: Any, model: Any?) {
+        val binding = synchronized(byHolder) {
+            byHolder[holder.javaClass]
+        } ?: return
+        runCatching {
+            if (model == null || binding.modelClass.isInstance(model)) {
+                binding.holderField.set(holder, model)
+            }
+        }
+    }
+
+    fun itemViewOf(holder: Any): View? =
+        runCatching {
+            generateSequence<Class<*>>(holder.javaClass) { it.superclass }
+                .mapNotNull { owner ->
+                    runCatching {
+                        owner.getDeclaredField("itemView").apply {
+                            isAccessible = true
+                        }
+                    }.getOrNull()
+                }
+                .firstOrNull()
+                ?.get(holder) as? View
+        }.getOrNull()
+
     fun pathOf(model: Any): String? {
         val binding = synchronized(byAdapter) {
             byAdapter.values.firstOrNull {

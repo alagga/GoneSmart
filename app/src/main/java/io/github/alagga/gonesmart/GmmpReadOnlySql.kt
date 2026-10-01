@@ -155,23 +155,23 @@ internal object GmmpReadOnlySql {
     }
 
     private fun supportsQueryInterface(queryType: Class<*>): Boolean {
+        // The Cursor-returning Room boundary is already unique on the
+        // concrete GMDatabase implementation. R8 may add bridge/default
+        // methods to SupportSQLiteQuery, so exact method COUNTS are not a
+        // stable contract. Accept the interface when it exposes the two
+        // semantic operations Room needs; argument-count is optional.
         if (!queryType.isInterface) return false
         val methods = queryType.methods.filter { !it.isSynthetic }
-        val sql = methods.count {
+        val hasSql = methods.any {
             it.parameterCount == 0 &&
                 it.returnType == String::class.java
         }
-        val count = methods.count {
-            it.parameterCount == 0 &&
-                (it.returnType == Integer.TYPE ||
-                    it.returnType == Integer::class.java)
-        }
-        val binder = methods.count {
+        val hasBinder = methods.any {
             it.parameterCount == 1 &&
                 it.returnType == java.lang.Void.TYPE &&
                 !it.parameterTypes[0].isPrimitive
         }
-        return sql == 1 && count == 1 && binder == 1
+        return hasSql && hasBinder
     }
 
     private fun newQuery(
@@ -230,6 +230,7 @@ internal object GmmpReadOnlySql {
                     bindArguments(methodArgs?.firstOrNull(), args)
                     null
                 }
+                method.isDefault -> null
                 else -> error(
                     "Unsupported GMMP query-interface method: " +
                         method.toGenericString()

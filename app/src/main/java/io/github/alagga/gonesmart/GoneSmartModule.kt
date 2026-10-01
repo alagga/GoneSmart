@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r10"
+            "gmmp421-r11"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -1423,19 +1423,15 @@ class GoneSmartModule : XposedModule() {
                         p[1].isArray
                 }
                 val queryInterface = query.isInterface &&
-                    query.methods.count {
+                    query.methods.any {
                         it.parameterCount == 0 &&
                             it.returnType == String::class.java
-                    } == 1 &&
-                    query.methods.count {
-                        it.parameterCount == 0 &&
-                            (it.returnType == Integer.TYPE ||
-                                it.returnType == Integer::class.java)
-                    } == 1 &&
-                    query.methods.count {
+                    } &&
+                    query.methods.any {
                         it.parameterCount == 1 &&
-                            it.returnType == java.lang.Void.TYPE
-                    } == 1
+                            it.returnType == java.lang.Void.TYPE &&
+                            !it.parameterTypes[0].isPrimitive
+                    }
                 require(queryCtor || queryInterface)
                 "READY_CURSOR_STRUCTURAL"
             }
@@ -1475,7 +1471,15 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["playlistMove"] = result {
-            NativeGmmpPlaylistDeleteBinding.resolve(loader)
+            val delete = loader.loadClass("py0").declaredMethods.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    android.content.Context::class.java
+                        .isAssignableFrom(it.parameterTypes[0]) &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.parameterTypes[1])
+            }
+            require(delete.isNotEmpty())
             val scanner = loader.loadClass("t6").declaredMethods.filter {
                 java.lang.reflect.Modifier.isStatic(it.modifiers) &&
                     it.parameterCount == 2 &&
@@ -1493,7 +1497,23 @@ class GoneSmartModule : XposedModule() {
                 runCatching { loader.loadClass(name) }.getOrNull()
             }.filter(::smartModelShape)
             require(models.size == 1)
-            "RUNTIME_ROW_BINDING"
+            val adapters = listOf("ls4", "is4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }
+            val direct = adapters.any { type ->
+                methods(type).any {
+                    it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                } && methods(type).any {
+                    it.parameterCount == 0 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.returnType)
+                }
+            }
+            require(direct)
+            "RUNTIME_ROW_DIRECT_LIST"
         }
 
         checks["smartWriter"] = result {
@@ -1530,16 +1550,30 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["flipQueue"] = result {
-            val type = loader.loadClass("ex3")
-            require(type.declaredMethods.any {
-                it.name == "D" && it.parameterCount == 0
-            })
-            require(type.declaredMethods.any {
-                it.parameterCount == 1 &&
-                    java.util.List::class.java
-                        .isAssignableFrom(it.parameterTypes[0])
-            })
-            "READY_LEGACY"
+            val legacy = runCatching {
+                val type = loader.loadClass("ex3")
+                type.declaredMethods.any {
+                    it.name == "D" && it.parameterCount == 0
+                }
+            }.getOrDefault(false)
+            if (legacy) {
+                "READY_LEGACY"
+            } else {
+                val dao = loader.loadClass("d85")
+                val daoMethods = methods(dao)
+                require(daoMethods.any {
+                    it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                })
+                require(daoMethods.any {
+                    it.parameterCount == 0 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.returnType)
+                })
+                "READY_RUNTIME_DAO"
+            }
         }
 
         checks["trackMix"] = result {
@@ -3576,6 +3610,60 @@ class GoneSmartModule : XposedModule() {
             if (intercepted) true else chain.proceed()
         }
 
+        // 4.2.1 remapped the concrete OnClick/OnLongClick listener
+        // classes. Hook Android's semantic dispatch boundary as a fallback:
+        // the controller immediately rejects unrelated Views, while the
+        // native listener still runs unchanged when GoneSmart returns false.
+        runCatching {
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick")
+                .apply { isAccessible = true }
+            hook(performClick).intercept { chain ->
+                val view = chain.getThisObject() as? android.view.View
+                val intercepted = runCatching {
+                    playlistController.onClick(view) ||
+                        playlistFolderPreview
+                            .interceptNativePickerFabClick(view)
+                }.getOrElse { error ->
+                    Log.e(
+                        TAG,
+                        "Playlist semantic click interception failed",
+                        error
+                    )
+                    false
+                }
+                if (intercepted) true else chain.proceed()
+            }
+
+            val performLongClick = android.view.View::class.java
+                .getDeclaredMethod("performLongClick")
+                .apply { isAccessible = true }
+            hook(performLongClick).intercept { chain ->
+                val view = chain.getThisObject() as? android.view.View
+                val intercepted = runCatching {
+                    playlistController.onLongClick(view)
+                }.getOrElse { error ->
+                    Log.e(
+                        TAG,
+                        "Playlist semantic long-click interception failed",
+                        error
+                    )
+                    false
+                }
+                if (intercepted) true else chain.proceed()
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "PLAYLIST INPUT MAPPING | semantic View dispatch hooks ready"
+            )
+        }.onFailure {
+            Log.e(
+                TAG,
+                "Playlist semantic input hooks unavailable",
+                it
+            )
+        }
+
         // GMMP reuses PlaylistAdd row views while scrolling. Refresh the
         // tint AFTER a native bind so no selected background can leak onto
         // an unrelated playlist occupying the same RecyclerView holder.
@@ -4138,6 +4226,7 @@ class GoneSmartModule : XposedModule() {
             if (autoDjInstance != null) {
                 trackMixAutoDj = WeakReference(autoDjInstance)
                 trackMixController.captureNativeAutoDj(autoDjInstance)
+                queueFlipController.captureNativeAutoDj(autoDjInstance)
                 scheduleCompatibilityRuntimeInstance(
                     marker = "GMMP AUTO DJ RUNTIME",
                     instance = autoDjInstance

@@ -25,6 +25,7 @@ internal class NativeGmmpFolderDeletion(
 
     fun confirmNativeDeletion(
         context: Context,
+        nativeModels: List<Any>,
         nativeFilePaths: List<File>,
         folder: File
     ): Boolean = runCatching {
@@ -32,12 +33,28 @@ internal class NativeGmmpFolderDeletion(
         require(nativeFilePaths.all { it.exists() })
         val verifiedFolder = folder.canonicalFile
         require(verifiedFolder.isDirectory)
-        val deletion =
-            NativeGmmpPlaylistDeleteBinding.resolve(hostClassLoader)
-        val nativeFiles = ArrayList<Any>(nativeFilePaths.size)
-        nativeFilePaths.forEach { file ->
-            nativeFiles += deletion.wrap(file)
+
+        val nativeTargets = if (nativeModels.isNotEmpty()) {
+            require(nativeModels.size == nativeFilePaths.size)
+            val deletion = NativeGmmpPlaylistDeleteBinding.resolve(
+                hostClassLoader,
+                nativeModels.first()
+            )
+            require(nativeModels.all(deletion::accepts))
+            deletion to ArrayList(nativeModels.map(deletion::nativeModel))
+        } else {
+            // Legacy/empty-directory path only. 4.2.1 playlist deletion
+            // never reaches this branch because the browser supplies yn3.
+            val deletion =
+                NativeGmmpPlaylistDeleteBinding.resolve(hostClassLoader)
+            val wrapped = ArrayList<Any>(nativeFilePaths.size)
+            nativeFilePaths.forEach {
+                wrapped += deletion.wrapLegacy(it)
+            }
+            deletion to wrapped
         }
+        val deletion = nativeTargets.first
+        val nativeFiles = nativeTargets.second
         val nativeFilesId = context.resources.getIdentifier(
             "files", "string", context.packageName
         )
@@ -45,19 +62,20 @@ internal class NativeGmmpFolderDeletion(
             runCatching { context.getString(nativeFilesId) }.getOrNull()
         } else null
 
-        val original = deletion.deleteMethod
         pendingDialog.set(
             PendingDialog(verifiedFolder.path, genericFilesLabel)
         )
         try {
-            original.invoke(null, context, nativeFiles)
+            deletion.deleteMethod.invoke(null, context, nativeFiles)
         } finally {
             pendingDialog.remove()
         }
         Log.i(
             "GoneSmartPlaylist",
             "FOLDER DELETE | original GMMP confirmation opened" +
-                " | items=" + nativeFiles.size
+                " | items=" + nativeFiles.size +
+                " | model=" +
+                (nativeModels.firstOrNull()?.javaClass?.name ?: "legacy")
         )
         true
     }.onFailure {

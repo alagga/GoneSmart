@@ -89,6 +89,9 @@ internal class QueueFlipController {
     @Volatile
     private var nativeQueue: WeakReference<Any>? = null
 
+    @Volatile
+    private var nativeAutoDj: WeakReference<Any>? = null
+
     fun setEnabled(value: Boolean) {
         enabled = value
         if (!value) pendingPlayback = null
@@ -98,6 +101,12 @@ internal class QueueFlipController {
     fun captureNativeQueue(candidate: Any?) {
         if (candidate?.javaClass?.name != "ex3") return
         nativeQueue = WeakReference(candidate)
+    }
+
+    fun captureNativeAutoDj(candidate: Any?) {
+        if (candidate?.javaClass?.name == "qr") {
+            nativeAutoDj = WeakReference(candidate)
+        }
     }
 
     fun onMenuInflated(
@@ -501,8 +510,13 @@ internal class QueueFlipController {
      * batch reverse while keeping duplicate song IDs distinguishable.
      */
     private fun performNativeQueueFlip(): Int {
-        val queue = nativeQueue?.get()
-            ?: error("GMMP native queue not captured")
+        val legacyQueue = nativeQueue?.get()
+        if (legacyQueue == null) {
+            val autoDj = nativeAutoDj?.get()
+                ?: error("GMMP native Auto-DJ/queue not captured")
+            return GmmpQueueMutationBridge(autoDj).reverseQueue()
+        }
+        val queue = legacyQueue
         val dao = field(queue, "r")
             ?: error("GMMP queue DAO unavailable")
         val read = dao.javaClass.getMethod("H1")

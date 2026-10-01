@@ -471,6 +471,25 @@ internal class TrackMixController(
         request: Pending,
         selectedTrackId: Long
     ): Snapshot? {
+        nativeAutoDj?.get()?.let { autoDj ->
+            val queue = field(autoDj, "q")
+            if (queue?.javaClass?.name != "ex3") {
+                val isolated = runCatching {
+                    GmmpQueueMutationBridge(autoDj)
+                        .isolateCurrentTrack(selectedTrackId)
+                }.onFailure {
+                    Log.e(
+                        TAG,
+                        "MIX ISOLATE | 4.2.1 native DAO bridge failed",
+                        it
+                    )
+                }.getOrDefault(false)
+                return if (isolated) {
+                    Snapshot(listOf(selectedTrackId), 0)
+                } else null
+            }
+        }
+
         val queue = nativeQueue?.get()
             ?: nativeAutoDj?.get()?.let { field(it, "q") }
             ?: run {
@@ -662,6 +681,21 @@ internal class TrackMixController(
         pending === request
 
     private fun queueSnapshot(): Snapshot? = runCatching {
+        nativeAutoDj?.get()?.let { autoDj ->
+            GmmpQueueReader().read(autoDj)?.let { context ->
+                val currentIndex = context.items.indexOfFirst {
+                    it.state == QueueItemState.CURRENT
+                }
+                if (currentIndex >= 0) {
+                    return@runCatching Snapshot(
+                        context.items.map { it.track.id },
+                        currentIndex
+                    )
+                }
+            }
+        }
+
+        // Verified 4.2.0 fallback.
         val queue = nativeQueue?.get()
             ?: nativeAutoDj?.get()?.let { field(it, "q") }
             ?: return@runCatching null

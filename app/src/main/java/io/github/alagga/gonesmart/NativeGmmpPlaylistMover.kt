@@ -55,11 +55,16 @@ internal class NativeGmmpPlaylistMover(
         NativeGmmpPlaylistDeleteBinding? = null
     private var nativeScan: java.lang.reflect.Method? = null
 
-    private fun resolveNativeMethods(): Boolean {
-        if (nativeDelete != null && nativeScan != null) return true
+    private fun resolveNativeMethods(sampleModel: Any): Boolean {
+        if (nativeDelete?.accepts(sampleModel) == true &&
+            nativeScan != null
+        ) return true
         return runCatching {
             val delete =
-                NativeGmmpPlaylistDeleteBinding.resolve(hostLoader)
+                NativeGmmpPlaylistDeleteBinding.resolve(
+                    hostLoader,
+                    sampleModel
+                )
 
             val scanType = hostLoader.loadClass("t6")
             val scanner = runCatching {
@@ -112,10 +117,21 @@ internal class NativeGmmpPlaylistMover(
         context: Context,
         plan: PlaylistMovePolicy.Plan,
         currentPaths: () -> List<String>?,
+        nativeModelsByPath: Map<String, Any>,
         onResult: (Boolean, String) -> Unit
     ): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (pending != null || !resolveNativeMethods()) return false
+        if (pending != null) return false
+        val sourceModels = plan.entries.mapNotNull { entry ->
+            nativeModelsByPath[
+                runCatching { entry.source.canonicalPath }
+                    .getOrNull() ?: return@mapNotNull null
+            ]
+        }
+        if (sourceModels.size != plan.entries.size ||
+            sourceModels.map { it.javaClass }.distinct().size != 1 ||
+            !resolveNativeMethods(sourceModels.first())
+        ) return false
         if (!PlaylistMovePolicy.sourcesStillMatch(
                 plan, currentPaths() ?: return false
             )
@@ -156,8 +172,8 @@ internal class NativeGmmpPlaylistMover(
                 val native = runCatching {
                     val files = ArrayList<Any>(batch.entries.size)
                     val deletion = requireNotNull(nativeDelete)
-                    batch.entries.forEach {
-                        files += deletion.wrap(it.source)
+                    sourceModels.forEach {
+                        files += deletion.nativeModel(it)
                     }
                     awaitingNativeDialog = task
                     try {

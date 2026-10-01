@@ -284,3 +284,12 @@ When Room's generated database implementation exposes a Cursor method whose argu
 For playlist deletion, resolve the original static `Context + List<T>` GMMP method first and derive `T` from its generic signature. Only then resolve the native File wrapper constructor. This prevents stale wrapper names from blocking both Folder Delete and Playlist Move.
 
 For the Add-to-Playlist screen, the native `playlistListRecyclerView` and sibling `playlistFab` form the semantic picker boundary. A remapped fragment/presenter name must not downgrade that surface to the normal Playlists tab. Correlate a visible holder/model/title with the adapter-position getter before using any unknown adapter.
+
+
+## 4.2.1 device verification: prefer host semantic boundaries
+
+The October 1 device log exposed three false-positive compatibility assumptions. First, a unique GMDatabase method returning Cursor may accept an R8-renamed SupportSQLiteQuery whose bridge/default method count differs from the previous build; validate the semantic interface, not exact counts. Second, when a native RecyclerView has already correlated its visible holder/model to a playlist file, destructive playlist operations must forward that native model to the original GMMP action rather than reconstructing an obsolete File wrapper. Third, when an adapter directly exposes submit-list and current-list operations, use those adapter contracts instead of reverse engineering its private AsyncListDiffer.
+
+For Add-to-Playlist, treat View.performClick / View.performLongClick plus the verified playlist RecyclerView/FAB surface as the stable input boundary. Obfuscated listener helper names are diagnostic evidence only, not ownership contracts. For 4.2.1 multi-add, rebinding an already verified native holder to each selected native model and dispatching the original row click is preferable to depending on a remapped helper handler.
+
+Queue compatibility is split into read identity and native mutation. Read queue identity through the already-open GMMP database Cursor. For mutation, correlate generated DAO entity fields to the Cursor snapshot by queue_id first and only then resolve song_id and queue_position. Never guess queue/shuffle fields from value ranges alone, and roll back reversible queue-position changes if post-write verification fails.

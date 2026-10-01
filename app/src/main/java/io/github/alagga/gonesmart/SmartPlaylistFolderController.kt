@@ -181,7 +181,7 @@ internal class SmartPlaylistFolderController(
         val modelFile: Field,
         val modelRules: Field?,
         val holderModel: Field,
-        val adapterDiffer: Field,
+        val adapterDiffer: Field?,
         val differSubmit: Method,
         val differCurrentList: Method?,
         val storagePath: Method?,
@@ -622,54 +622,38 @@ internal class SmartPlaylistFolderController(
                     it.returnType == java.lang.Boolean::class.java)
         }.singleOrNull()?.apply { isAccessible = true }
 
-        data class DifferCandidate(
-            val field: Field,
-            val value: Any,
-            val submit: Method,
-            val current: Method?
-        )
-        val differCandidates = hierarchyFields(adapter.javaClass)
-            .mapNotNull { field ->
-                val value = runCatching {
-                    field.isAccessible = true
-                    field.get(adapter)
-                }.getOrNull() ?: return@mapNotNull null
-                val methods = hierarchyMethods(value.javaClass)
-                val submits = methods.filter {
-                    it.parameterCount == 1 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.parameterTypes[0]) &&
-                        it.returnType == java.lang.Void.TYPE
-                }
-                if (submits.size != 1) return@mapNotNull null
-                val currents = methods.filter {
-                    it.parameterCount == 0 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.returnType)
-                }
-                val androidxDiffer =
-                    field.type.name.startsWith("androidx.recyclerview.widget.") ||
-                        value.javaClass.name.startsWith(
-                            "androidx.recyclerview.widget."
-                        )
-                if (!androidxDiffer || currents.size != 1) {
-                    return@mapNotNull null
-                }
-                DifferCandidate(
-                    field.apply { isAccessible = true },
-                    value,
-                    submits.single().apply { isAccessible = true },
-                    currents.single().apply { isAccessible = true }
-                )
-            }
-        val differ = differCandidates.singleOrNull() ?: return null
+        // GMMP 4.2.1 exposes the stable list boundary directly on is4:
+        // U(List):void submits the native list and i0():List returns it.
+        // Do not reconstruct the adapter's private AsyncListDiffer; its R8
+        // wrapper is an implementation detail and was the reason the runtime
+        // binding kept failing despite a valid is4 -> ss4 -> ts4 row.
+        val adapterMethods = hierarchyMethods(adapter.javaClass)
+        val submitCandidates = adapterMethods.filter {
+            it.parameterCount == 1 &&
+                java.util.List::class.java
+                    .isAssignableFrom(it.parameterTypes[0]) &&
+                it.returnType == java.lang.Void.TYPE
+        }
+        val currentCandidates = adapterMethods.filter {
+            it.parameterCount == 0 &&
+                java.util.List::class.java
+                    .isAssignableFrom(it.returnType)
+        }
+        val directSubmit =
+            submitCandidates.singleOrNull { it.name == "U" }
+                ?: submitCandidates.singleOrNull()
+                ?: return null
+        val directCurrent =
+            currentCandidates.singleOrNull { it.name == "i0" }
+                ?: currentCandidates.singleOrNull()
+                ?: return null
+        directSubmit.isAccessible = true
+        directCurrent.isAccessible = true
 
         val currentModels = (
-            differ.current?.let {
-                runCatching {
-                    it.invoke(differ.value) as? List<*>
-                }.getOrNull()
-            }.orEmpty()
+            runCatching {
+                directCurrent.invoke(adapter) as? List<*>
+            }.getOrNull().orEmpty()
         ).filterNotNull().filter(modelClass::isInstance)
             .map { it as Any }
             .ifEmpty { listOf(sampleModel) }
@@ -690,9 +674,9 @@ internal class SmartPlaylistFolderController(
             modelFile = modelFile,
             modelRules = modelRules,
             holderModel = holderModel,
-            adapterDiffer = differ.field,
-            differSubmit = differ.submit,
-            differCurrentList = differ.current,
+            adapterDiffer = null,
+            differSubmit = directSubmit,
+            differCurrentList = directCurrent,
             storagePath = null,
             smartStorageLocation = null,
             nativeSort = null,
@@ -721,8 +705,9 @@ internal class SmartPlaylistFolderController(
                 " | model=" + modelClass.name +
                 " | reader=" + modelRead.name +
                 " | writer=" + (modelWriter?.name ?: "none") +
-                " | differ=" + differ.field.name +
-                " | submit=" + differ.submit.name +
+                " | listTarget=adapter" +
+                " | submit=" + directSubmit.name +
+                " | current=" + directCurrent.name +
                 " | root=verified-from-native-models"
         )
         return resolved
@@ -1797,15 +1782,21 @@ internal class SmartPlaylistFolderController(
 
     private fun applyNativeModels(browser: Browser, models: List<Any>) {
         val native = bindings ?: return
-        val differ = runCatching {
-            native.adapterDiffer.get(browser.nativeAdapter)
-        }.onFailure {
-            Log.e(TAG, "SMART FOLDERS DIFFER | native ls4.y unavailable", it)
-        }.getOrNull() ?: return
+        val target = native.adapterDiffer?.let { field ->
+            runCatching {
+                field.get(browser.nativeAdapter)
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "SMART FOLDERS DIFFER | legacy differ unavailable",
+                    it
+                )
+            }.getOrNull()
+        } ?: browser.nativeAdapter
         runCatching {
-            native.differSubmit.invoke(differ, models)
+            native.differSubmit.invoke(target, models)
         }.onFailure {
-            Log.e(TAG, "SMART FOLDERS DIFFER | native ws4 submit failed", it)
+            Log.e(TAG, "SMART FOLDERS LIST SUBMIT | native submit failed", it)
         }
     }
 

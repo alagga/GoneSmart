@@ -84,6 +84,7 @@ internal class PlaylistMultiSelectController {
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
         var submitting = false
+        var nativeDispatchInProgress = false
     }
 
     private var active: Session? = null
@@ -557,10 +558,24 @@ internal class PlaylistMultiSelectController {
                 override fun onViewAttachedToWindow(view: View) = Unit
 
                 override fun onViewDetachedFromWindow(view: View) {
-                    if (active === session) {
-                        Log.i(TAG, "MULTI PICKER | view detached; clearing session")
-                        reset()
-                    }
+                    // 4.2.1 can detach/re-attach or replace the native
+                    // RecyclerView while GoneSmart installs the folder
+                    // overlay. Do not destroy the picker session inside that
+                    // same traversal; a replacement surface gets a chance to
+                    // adopt the session first.
+                    view.postDelayed({
+                        if (active === session &&
+                            session.list === view &&
+                            !view.isAttachedToWindow
+                        ) {
+                            Log.i(
+                                TAG,
+                                "MULTI PICKER | detached surface remained gone; " +
+                                    "clearing session"
+                            )
+                            reset()
+                        }
+                    }, 650L)
                 }
             }
         )
@@ -636,7 +651,9 @@ internal class PlaylistMultiSelectController {
 
     fun onClick(view: View?): Boolean {
         if (!enabled) return false
-        val session = visibleSession() ?: return false
+        val session = active ?: return false
+        if (session.nativeDispatchInProgress) return false
+        if (visibleSession() !== session) return false
 
         if (view === session.fab && session.selectedPaths.isNotEmpty()) {
             confirm(session)
@@ -998,6 +1015,14 @@ internal class PlaylistMultiSelectController {
             // Native Aesthetic palette observables notify while the
             // currently playing track or the user's custom theme changes.
             val observerType = loader.loadClass("nf3")
+            if (!observerType.isInterface) {
+                Log.i(
+                    TAG,
+                    "MULTI PALETTE | GMMP observer type remapped; " +
+                        "live theme/FAB colors retained"
+                )
+                return@runCatching
+            }
             val observeAttribute = themeClass.getDeclaredMethod(
                 "b",
                 Int::class.javaPrimitiveType
@@ -1765,31 +1790,13 @@ internal class PlaylistMultiSelectController {
 
         val fab = session.fab ?: return
         val list = session.list ?: return
-        val handler = session.nativeHandler
 
-        if (handler == null || handler.javaClass.name != "io3") {
-            warn(fab.context, "GMMP-Playlistfunktion nicht verfügbar")
-            Log.w(TAG, "MULTI CONFIRM | native io3 handler missing")
-            return
-        }
-
-        val sourceCount = sourceCount(handler)
-        if (sourceCount <= 0) {
-            warn(fab.context, "Keine ausgewählten Titel mehr vorhanden")
-            Log.w(TAG, "MULTI CONFIRM | native source selection empty")
-            return
-        }
-
-        // bw.i0() yields t23 groups. The groups' r() lists contain
-        // xn3 playlist models. Re-resolve by stable native playlist path.
         val currentModels = adapterItems(list)
         val byPath = currentModels.mapNotNull { model ->
             modelPath(model)?.let { path -> path to model }
         }.toMap()
         val targets = session.selectedPaths.mapNotNull { path ->
             if (currentModels.isEmpty()) {
-                // Only fall back when the adapter cannot expose models;
-                // captured models still have their original native path.
                 session.selectedModels[path]
                     ?.takeIf { modelPath(it) == path }
             } else {
@@ -1803,104 +1810,143 @@ internal class PlaylistMultiSelectController {
             return
         }
 
-        val holder = session.dispatchHolder
-        val modelField = runCatching {
-            holder?.javaClass?.getDeclaredField("A")?.also {
-                it.isAccessible = true
-            }
-        }.getOrNull()
-        if (holder?.javaClass?.name != "jo3" || modelField == null) {
+        val holder = session.dispatchHolder ?: findDispatchHolder(list)
+        if (holder == null) {
             warn(fab.context, "GMMP-Playlistzeile nicht verfügbar")
-            Log.w(TAG, "MULTI CONFIRM | jo3 dispatch holder missing")
+            Log.w(TAG, "MULTI CONFIRM | native dispatch holder missing")
             return
         }
 
-        val addMethod: Method = runCatching {
-            handler.javaClass.declaredMethods.first {
-                it.name == "r" &&
-                    it.parameterTypes.size == 2 &&
+        val handler = session.nativeHandler
+        val addMethod = handler?.let { candidate ->
+            GmmpReflectionPolicy.concreteMethods(candidate.javaClass).singleOrNull {
+                it.parameterTypes.size == 2 &&
                     Context::class.java.isAssignableFrom(
                         it.parameterTypes[0]
                     ) &&
-                    it.parameterTypes[1].name == "ie0" &&
                     it.returnType == Boolean::class.javaPrimitiveType
-            }.also { it.isAccessible = true }
-        }.getOrElse { error ->
+            }?.apply { isAccessible = true }
+        }
+        val legacyField = runCatching {
+            holder.javaClass.getDeclaredField("A").apply {
+                isAccessible = true
+            }
+        }.getOrNull()
+        val nativeRow = NativePlaylistRuntimeBinding.itemViewOf(holder)
+        if (addMethod == null && nativeRow == null) {
             warn(fab.context, "Native GMMP-Methode nicht gefunden")
-            Log.e(TAG, "MULTI CONFIRM | io3.r missing", error)
+            Log.w(
+                TAG,
+                "MULTI CONFIRM | neither native handler nor row click available"
+            )
             return
         }
 
-        // GMMP io3.r(Context, ie0) accepts a jo3 view holder but reads
-        // only jo3.A -> xn3.q synchronously. Temporarily switch A to each
-        // selected model, call the native handler, then restore it.
-        // Never retain recycled view objects as destination identity.
-        val originalModel = modelField.get(holder)
-        // One batch spans every destination, but only the native completion
-        // callback is allowed to dismiss the picker, and only once.
-        val navigationBatch = if (targets.size > 1) {
+        val sourceCount = handler?.let(::sourceCount)
+            ?.takeIf { it > 0 } ?: 0
+        val navigationBatch = if (targets.size > 1 && sourceCount > 0) {
             NativeNavigationBatch(
                 sourceCount = sourceCount,
-                // Use the picker Activity context: GMMP may apply a
-                // different in-app language than the application default.
                 context = fab.context
             )
-        } else {
-            null
-        }
+        } else null
+
+        val originalRuntimeModel =
+            NativePlaylistRuntimeBinding.boundModel(holder)
+        val originalLegacyModel = runCatching {
+            legacyField?.get(holder)
+        }.getOrNull()
+
         session.submitting = true
         var accepted = 0
         try {
             for (model in targets) {
                 val path = modelPath(model) ?: continue
-                modelField.set(holder, model)
+                val runtimePrevious =
+                    NativePlaylistRuntimeBinding.swapBoundModel(holder, model)
+                val legacyReady = if (runtimePrevious != null) {
+                    true
+                } else {
+                    runCatching {
+                        legacyField?.set(holder, model)
+                        legacyField != null
+                    }.getOrDefault(false)
+                }
+                if (!legacyReady) {
+                    Log.w(
+                        TAG,
+                        "MULTI NATIVE ADD | destination=$path | " +
+                            "bound model swap unavailable"
+                    )
+                    continue
+                }
 
-                val previous = constructingNativeCallback.get()
+                val previousCallback = constructingNativeCallback.get()
                 if (navigationBatch != null) {
                     constructingNativeCallback.set(navigationBatch)
                 }
                 val dispatched = try {
-                    addMethod.invoke(handler, fab.context, holder) as? Boolean
-                        ?: false
+                    if (addMethod != null && handler != null) {
+                        addMethod.invoke(
+                            handler,
+                            fab.context,
+                            holder
+                        ) as? Boolean ?: false
+                    } else {
+                        // 4.2.1: dispatch the exact native row click. The
+                        // holder is temporarily bound to the selected yn3,
+                        // so GMMP executes its normal one-playlist add path.
+                        session.nativeDispatchInProgress = true
+                        nativeRow?.performClick() == true
+                    }
                 } finally {
-                    if (previous == null) {
+                    session.nativeDispatchInProgress = false
+                    if (previousCallback == null) {
                         constructingNativeCallback.remove()
                     } else {
-                        constructingNativeCallback.set(previous)
+                        constructingNativeCallback.set(previousCallback)
                     }
                 }
 
                 Log.i(
                     TAG,
                     "MULTI NATIVE ADD | destination=$path | " +
-                        "accepted=$dispatched | sourceCount=$sourceCount"
+                        "accepted=$dispatched | dispatch=" +
+                        if (addMethod != null) "handler" else "native-row"
                 )
                 if (dispatched) accepted++
             }
         } catch (error: Throwable) {
             Log.e(TAG, "MULTI CONFIRM | native dispatch failed", error)
         } finally {
-            runCatching { modelField.set(holder, originalModel) }
-                .onFailure { Log.e(TAG, "MULTI CONFIRM | holder restore failed", it) }
+            if (originalRuntimeModel != null) {
+                NativePlaylistRuntimeBinding.restoreBoundModel(
+                    holder,
+                    originalRuntimeModel
+                )
+            } else {
+                runCatching {
+                    legacyField?.set(holder, originalLegacyModel)
+                }
+            }
             markNativeDispatchFinished(navigationBatch, accepted)
-            // A retry after partial dispatch could duplicate tracks.
             exitSelection(session)
             session.submitting = false
         }
 
-        if (navigationBatch == null) {
-            // This case is a single destination dispatched from a selection
-            // session; preserve GMMP's normal native completion toast.
-            if (accepted == 0) {
-                warn(fab.context, NativeGmmpUiText.error(
-                    fab.context, gmmpString(fab.context, "playlists")
-                ))
-            }
-        } else if (accepted == 0) {
-            warn(fab.context, NativeGmmpUiText.error(
-                fab.context, gmmpString(fab.context, "playlists")
-            ))
-        } else {
+        if (accepted == 0) {
+            warn(
+                fab.context,
+                NativeGmmpUiText.error(
+                    fab.context,
+                    gmmpString(fab.context, "playlists")
+                )
+            )
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+                "Could not start adding the selected songs to playlists."
+            )
+        } else if (navigationBatch != null) {
             Log.i(
                 TAG,
                 "MULTI TOAST | awaiting native confirmations for " +
@@ -1908,12 +1954,6 @@ internal class PlaylistMultiSelectController {
             )
         }
 
-        if (accepted == 0) {
-            eventReporter.reportEvent(
-                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
-                "Could not start adding the selected songs to playlists."
-            )
-        }
         Log.i(
             TAG,
             "MULTI CONFIRM | accepted=$accepted / ${targets.size}" +

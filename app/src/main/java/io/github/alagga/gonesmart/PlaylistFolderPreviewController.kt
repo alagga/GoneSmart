@@ -1283,6 +1283,7 @@ internal class PlaylistFolderPreviewController(
                             browsers[current]?.let(::readActualNativePaths)
                         }
                     },
+                    browser.modelsByPath.toMap(),
                     { success, message ->
                         Log.i(TAG, "PLAYLIST MOVE | result=" +
                             success + " | " + message)
@@ -1618,8 +1619,30 @@ internal class PlaylistFolderPreviewController(
         val nativeTargets = if (plan.nativePlaylistFiles.isNotEmpty()) {
             plan.nativePlaylistFiles
         } else listOf(plan.folder)
+        val nativeModels = if (plan.nativePlaylistFiles.isNotEmpty()) {
+            plan.nativePlaylistFiles.mapNotNull { file ->
+                val path = runCatching { file.canonicalPath }
+                    .getOrNull() ?: return@mapNotNull null
+                browser.modelsByPath[path]
+            }
+        } else {
+            emptyList()
+        }
+        if (plan.nativePlaylistFiles.isNotEmpty() &&
+            nativeModels.size != plan.nativePlaylistFiles.size
+        ) {
+            Log.w(
+                TAG,
+                "FOLDER DELETE | native playlist models changed; " +
+                    "confirmation cancelled"
+            )
+            return false
+        }
         val opened = nativeFolderDeletion!!.confirmNativeDeletion(
-            browser.list.context, nativeTargets, plan.folder
+            browser.list.context,
+            nativeModels,
+            nativeTargets,
+            plan.folder
         )
         if (!opened) return false
         val pending = PendingFolderDeletion(plan)

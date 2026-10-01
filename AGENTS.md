@@ -262,3 +262,14 @@ These are not regressions in the accepted 4.2.0 feature flows, but they remain e
 - Playlist delete/move must derive the native `List<T>` wrapper from GMMP's original delete method before resolving its constructor. `th1` is a legacy fallback only.
 - Add-to-Playlist picker ownership is established by the native `playlistListRecyclerView` + `playlistFab` surface pair, not an R8 fragment name. Holder/model binding remains runtime-correlated through the visible native row.
 - Smart Playlist differ resolution requires the AndroidX differ field plus both submit-list and current-list contracts; generic one-argument List methods elsewhere on the adapter are not sufficient.
+
+
+### GMMP 4.2.1 r11 lessons from device verification (2026-10-01)
+
+- A unique GMDatabase Cursor boundary is stronger evidence than an exact method-count fingerprint on its R8-renamed query interface. SupportSQLiteQuery bridge/default methods may change; require the semantic SQL + binder contract, not exactly one method of each shape.
+- Queue current-position recovery must not interpret one state integer as both queue_position and shuffle_position. Preserve the verified legacy D() meaning (queue_position) first; use shuffle only as fallback.
+- Smart Playlist folders on 4.2.1 use the adapter's own U(List) + i0():List boundary. Do not reconstruct private AsyncListDiffer internals when the adapter already exposes submit/current-list semantics.
+- Playlist delete/move must pass the native model already correlated from the visible row (4.2.1: yn3). Never convert that model back into an assumed th1(File,Long) wrapper.
+- Picker interaction hooks belong at the semantic View.performClick / View.performLongClick boundary when R8 listener class names move. Reject unrelated Views quickly and preserve the original View dispatch when GoneSmart does not consume the action.
+- Multi-playlist add may reuse GMMP's original native row click per selected native model. Do not require an obfuscated helper class such as io3 when the normal row click is already the host's canonical add operation.
+- Queue Flip and Track Mix share one runtime-correlated 4.2.1 queue mutation bridge: identify native DAO entities by queue_id / song_id / queue_position against the read-only Cursor snapshot, then use GMMP's generated DAO update/delete methods. Fail closed on any ambiguous correlation.

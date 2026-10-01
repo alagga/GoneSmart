@@ -283,38 +283,37 @@ class GmmpQueueReader {
         rows: List<CursorRow>,
         source: String
     ): CurrentMarker? {
-        val markers = arrayListOf<CurrentMarker>()
-        signals.forEach { (name, value) ->
-            if (value < 0) return@forEach
-            val queue = rows.indices.filter {
-                rows[it].queuePosition == value
+        fun resolve(kind: OrderKind): CurrentMarker? {
+            val markers = arrayListOf<CurrentMarker>()
+            signals.forEach { (name, value) ->
+                if (value < 0) return@forEach
+                val matches = rows.indices.filter {
+                    if (kind == OrderKind.QUEUE) {
+                        rows[it].queuePosition == value
+                    } else {
+                        rows[it].shufflePosition == value
+                    }
+                }
+                if (matches.size == 1) {
+                    markers += CurrentMarker(
+                        matches.single(),
+                        kind,
+                        source + "." + name
+                    )
+                }
             }
-            val shuffle = rows.indices.filter {
-                rows[it].shufflePosition == value
-            }
-            if (shuffle.size == 1) {
-                markers += CurrentMarker(
-                    shuffle.single(),
-                    OrderKind.SHUFFLE,
-                    source + "." + name
-                )
-            }
-            if (queue.size == 1) {
-                markers += CurrentMarker(
-                    queue.single(),
-                    OrderKind.QUEUE,
-                    source + "." + name
-                )
+            val uniqueRows = markers.map { it.rowIndex }.distinct()
+            if (uniqueRows.size != 1) return null
+            return markers.firstOrNull {
+                it.rowIndex == uniqueRows.single()
             }
         }
-        val uniqueRows = markers.map { it.rowIndex }.distinct()
-        if (uniqueRows.size != 1) return null
-        return markers.firstOrNull {
-            it.rowIndex == uniqueRows.single() &&
-                it.orderKind == OrderKind.SHUFFLE
-        } ?: markers.firstOrNull {
-            it.rowIndex == uniqueRows.single()
-        }
+
+        // GMMP's verified 4.2.0 D() pointer is queue_position. Preserve
+        // that semantic first. Treating one integer as BOTH queue and
+        // shuffle positions makes a normal shuffled queue look ambiguous.
+        return resolve(OrderKind.QUEUE)
+            ?: resolve(OrderKind.SHUFFLE)
     }
 
     private fun integerSignals(target: Any): List<Pair<String, Int>> {
