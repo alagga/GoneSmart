@@ -135,6 +135,11 @@ class GoneSmartModule : XposedModule() {
             mutableSetOf<String>()
         )
 
+    private val compatibilityRuntimeNestedSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
     private var remoteSettingsPreferences:
             SharedPreferences? =
         null
@@ -1352,6 +1357,12 @@ class GoneSmartModule : XposedModule() {
             "t6",
             "qs4",
             "ns4",
+            "tx4",
+            "rx4",
+            "zu4",
+            "ct4",
+            "vw3",
+            "qw3",
             "uf5",
             "qr",
             "kr",
@@ -1458,6 +1469,69 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+    private fun logCompatibilityRuntimeNestedObjects(
+        marker: String,
+        instance: Any?
+    ) {
+        instance ?: return
+        generateSequence<Class<*>>(instance.javaClass) { it.superclass }
+            .flatMap { owner -> owner.declaredFields.asSequence() }
+            .filter {
+                !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    !it.isSynthetic
+            }
+            .mapNotNull { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(instance)
+                }.getOrNull() ?: return@mapNotNull null
+                if (isCompatibilityPlatformType(value.javaClass) ||
+                    value.javaClass.name ==
+                        "gonemad.gmmp.data.database.GMDatabase_Impl"
+                ) {
+                    return@mapNotNull null
+                }
+                field to value
+            }
+            .distinctBy { it.second.javaClass.name }
+            .take(6)
+            .forEach { (field, value) ->
+                val key = marker + "|" + instance.javaClass.name + "|" +
+                    field.declaringClass.name + "." + field.name + "|" +
+                    value.javaClass.name
+                val shouldLog = synchronized(
+                    compatibilityRuntimeNestedSnapshots
+                ) {
+                    compatibilityRuntimeNestedSnapshots.add(key)
+                }
+                if (!shouldLog) return@forEach
+                Log.i(
+                    "GoneSmartCompat",
+                    "$marker NESTED | owner=" + instance.javaClass.name +
+                        " | field=" + field.declaringClass.name +
+                        "." + field.name +
+                        " | runtime=" + value.javaClass.name +
+                        " | runtimeFields=" +
+                        GmmpReflectionDiagnostics.runtimeFieldTypes(
+                            value,
+                            limit = 32
+                        ) +
+                        " | collections=" +
+                        GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                            value,
+                            limitFields = 16,
+                            limitTypesPerField = 6
+                        )
+                )
+                logCompatibilityClassStructure(
+                    marker = "$marker NESTED CLASS",
+                    requestedName = value.javaClass.name,
+                    type = value.javaClass,
+                    instance = value
+                )
+            }
+    }
+
     private fun scheduleCompatibilityRuntimeInstance(
         marker: String,
         instance: Any?
@@ -1467,7 +1541,13 @@ class GoneSmartModule : XposedModule() {
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         listOf(0L, 400L, 1_200L, 3_000L).forEach { delay ->
             handler.postDelayed({
-                logCompatibilityRuntimeInstance(marker, weak.get())
+                val current = weak.get()
+                logCompatibilityRuntimeInstance(marker, current)
+                if (marker == "GMMP QUEUE RUNTIME" ||
+                    marker == "GMMP TRACK DAO RUNTIME"
+                ) {
+                    logCompatibilityRuntimeNestedObjects(marker, current)
+                }
             }, delay)
         }
     }

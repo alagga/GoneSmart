@@ -820,10 +820,17 @@ internal class SmartPlaylistFolderController(
                 if (menuRefs.none { it.get() === menu }) {
                     menuRefs += WeakReference(menu)
                 }
-                if (enabled) {
+                if (enabled && bindings != null) {
                     installNewFolderMenu(menu, context)
                 } else {
                     menu.findItem(newFolderMenuId)?.isVisible = false
+                    if (enabled && bindings == null) {
+                        Log.i(
+                            TAG,
+                            "SMART FOLDERS MENU | compatibility bindings " +
+                                "unavailable; folder action hidden"
+                        )
+                    }
                 }
             }
             SMART_CONTEXT_MENU -> {
@@ -2877,16 +2884,17 @@ internal class SmartPlaylistFolderController(
             val menu = reference.get() ?: return@forEach
             val context = currentBrowser()?.list?.context
                 ?: menuContext(menu, null)
-            if (enabled && menu.findItem(newFolderMenuId) == null &&
+            if (enabled && bindings != null &&
+                menu.findItem(newFolderMenuId) == null &&
                 context != null
             ) {
                 // GMMP may rebuild/clear the same Menu after inflation.
-                // Reinstall the verified Add-folder action before first root use.
+                // Reinstall only after the native Smart bindings are usable.
                 installNewFolderMenu(menu, context)
             }
             menu.findItem(newFolderMenuId)?.let { item ->
                 val visible =
-                    enabled &&
+                    enabled && bindings != null &&
                         (browser == null ||
                             (!browser.otherLocations &&
                                 browser.moveSources == null))
