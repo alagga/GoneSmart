@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r6"
+            "gmmp421-r7"
 
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
@@ -1614,6 +1614,64 @@ class GoneSmartModule : XposedModule() {
             adapterClassName = adapterClassName,
             resourceName = resourceName
         )
+
+        if (resourceName == "playlistListRecyclerView") {
+            val adapter = runCatching {
+                view.javaClass.methods
+                    .firstOrNull {
+                        it.name == "getAdapter" &&
+                            it.parameterCount == 0
+                    }
+                    ?.invoke(view)
+            }.getOrNull()
+            if (adapter != null) {
+                val resolved =
+                    NativePlaylistRuntimeBinding.observeBoundRow(
+                        adapter = adapter,
+                        holder = holder
+                    )
+                if (resolved != null) {
+                    val itemCount = runCatching {
+                        adapter.javaClass.methods
+                            .firstOrNull {
+                                it.name == "getItemCount" &&
+                                    it.parameterCount == 0
+                            }
+                            ?.invoke(adapter) as? Int
+                    }.getOrNull() ?: -1
+                    val complete =
+                        if (itemCount > 0) {
+                            NativePlaylistRuntimeBinding.readAll(
+                                adapter,
+                                itemCount
+                            )?.size
+                        } else {
+                            null
+                        }
+                    Log.i(
+                        "GoneSmartCompat",
+                        "GMMP PLAYLIST MODEL SOURCE | resolved=true" +
+                            " | adapter=" + resolved.adapterClass +
+                            " | holder=" + resolved.holderClass +
+                            " | model=" + resolved.modelClass +
+                            " | getter=" + resolved.getter +
+                            " | holderField=" + resolved.holderField +
+                            " | pathField=" + resolved.pathField +
+                            " | titleField=" + resolved.titleField +
+                            " | pathKind=" + resolved.samplePathKind +
+                            " | rows=" + itemCount +
+                            " | completeRows=" + (complete ?: -1)
+                    )
+                } else {
+                    Log.w(
+                        "GoneSmartCompat",
+                        "GMMP PLAYLIST MODEL SOURCE | resolved=false" +
+                            " | adapter=" + adapterClassName +
+                            " | holder=" + holder.javaClass.name
+                    )
+                }
+            }
+        }
     }
 
     private fun scheduleCompatibilityRecyclerSnapshots(
