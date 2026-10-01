@@ -6,6 +6,20 @@ It exists because GoneSmart deliberately reuses GMMP internals to preserve nativ
 
 Use this file for the **current cross-version map and repeatable update strategy**. Keep detailed reverse-engineering chronology in `docs/NATIVE_GMMP_AUDIT.md`; keep standing contributor rules in `AGENTS.md`. Do not duplicate long investigation histories into AGENTS.
 
+## Maintained probe ledger is part of the compatibility contract
+
+Every compatibility probe is temporary code but **permanent process knowledge**. Whenever a probe is added, changed, narrowed, promoted into a resolver or removed, update this playbook in the same commit. For each probe or resolver family, preserve enough information that a future GMMP update can reuse the method without rediscovering it from chat logs:
+
+- revision/marker and the feature/native boundary being investigated;
+- when it runs and what event/surface triggers it;
+- exactly which structural/runtime facts it records;
+- privacy/performance bounds and why the probe is safe;
+- the observation that caused the next probe or resolver;
+- the condition under which the probe can be retired;
+- the resolver/postcondition that replaces it after graduation.
+
+A probe should not become permanent background logging merely because it is useful. The intended lifecycle is **unknown boundary → bounded passive probe → runtime-correlated candidate → unique structural/semantic resolver → postcondition/device verification → retire or narrow the probe**.
+
 ## Compatibility states
 
 - **Accepted** — maintainer device testing has verified the relevant GoneSmart feature boundaries on that exact GMMP version.
@@ -42,6 +56,9 @@ Status meanings in this table:
 | ArtistDao accessor | `GMDatabase.y()` | succeeds once the correct GMDatabase field is used and returns runtime ArtistDao class `fn` | **Verified** |
 | Artist RawQuery method | `ArtistDao.R1(tp4)` | `R1` absent; `fn` exposes several `qp4` candidates including List-returning methods | **Unresolved**; derive/verify by semantic contract, not method name alone |
 | Artist RawQuery wrapper | `tp4(String,Object[])` | old `tp4` constructor absent; 4.2.1 DAO candidates use `qp4` | **Observed**; derive wrapper from the verified DAO method parameter |
+| Main Playlist RecyclerView adapter | `zn3` | `playlistListRecyclerView` runtime adapter is `ao3`; both are now centralized in `GmmpPlaylistAdapterPolicy` | **Verified for surface identity**; never duplicate adapter-name ledgers in later attach/event paths |
+| Main Playlist source extraction | accepted `NativePlaylistSourceInspector` path on 4.2.0 | r5 sees 256 native rows but still resolves 0 models; first bound holder is `wp3 > jw > rx` and `jw.v` contains runtime type `u23` | **Unresolved**; next resolver should correlate the bound holder/model contract structurally instead of assuming the old adapter model list shape |
+| Smart Playlist RecyclerView adapter / bound holder | accepted 4.2.0 Smart adapter/model path | `smartListRecyclerView` uses `is4`; r5 sees 84 rows and first holder `ss4 > jw > rx` with `jw.v -> u23` and `ss4.z -> ts4` | **Observed**; crucially, the old 4.2.0 symbol `ss4` now has a ViewHolder role, proving that name equality across versions is not semantic identity |
 | Add-to-Playlist multi-selection lifecycle | `bo3.I3()` plus `k2()/D1()` view getters | `bo3.I3()` absent; the compatibility installer now attempts/diagnoses `I3`, `k2`, `D1` and the native handler independently instead of aborting at the first miss | **Unresolved**; select a replacement only from unique semantic lifecycle/view evidence; independent native playlist-creation hooks must still register |
 | Playlist Link rule model | `ft4(int,int,String,int)` and related `ft4.z(...)` | constructor and evaluation method no longer match | **Unresolved** |
 | Playlist Link editor presenter | `ds4(Context,Bundle)`, `ds4.g2(boolean)`, `ds4$g` | constructor/method/inner class no longer match | **Unresolved** |
@@ -73,6 +90,8 @@ Preferred resolver order:
 4. If the candidate is not unique or validation is impossible, **fail closed and log bounded diagnostics**.
 
 Never pick a replacement solely because its name or one signature “looks likely”.
+
+The r5 Smart-list trace adds a stronger rule: **the same obfuscated class name can survive an update while its semantic role changes completely**. In 4.2.0 `ss4` was part of the Smart presenter path; in the observed 4.2.1 surface, `ss4` is the concrete RecyclerView ViewHolder. Always validate Android/Java superclass, owning surface, live adapter/holder relationship and runtime field types before treating a familiar name as the same boundary.
 
 ### 2. Reject abstract/interface contracts as callable implementations
 
@@ -156,6 +175,54 @@ When possible, anchor discovery to:
 
 This does **not** authorize synthetic substitutes where AGENTS requires native-first reuse.
 
+## Probe revision history for the 4.2.1 investigation
+
+| Revision / commit | Purpose | What it established / changed | Graduation state |
+|---|---|---|---|
+| diagnostic foundation — `2c456510` | bounded hierarchy/field/constructor descriptions | reusable privacy-safe structural inventory instead of ad-hoc reflection dumps | retained as shared diagnostics utility |
+| `gmmp421-r3` — `bc0bb7dc` | one-pass 4.2.1 compatibility inventory | exact probe revision marker; bounded class structures; richer Playlist picker, Smart, Flip/queue/service diagnostics | superseded by narrower runtime-correlated probes |
+| r3 all-build visibility — `46df396e` | ensure the actually installed local build emits the probe | removed DEBUG-only gating for the temporary compatibility inventory and logged `buildDebug` | retained only while 4.2.1 is unaccepted; must be narrowed/removed after acceptance |
+| `gmmp421-r4` — `c664b0a0` | correlate actual surfaces and live objects | runtime field/collection element types; delayed Recycler snapshots; observed `ao3` Playlist, `is4` Smart and `fx3` Queue adapters | Playlist adapter graduated; Smart/Queue identities remain evidence for deeper resolvers |
+| `gmmp421-r5` — `934e762e` + `07364f8f` | fix fail-open regressions and discover row-model ownership | centralized verified Playlist adapters; Smart list is never masked before complete compatible bindings; first bound RecyclerView holder structure is logged; candidate inventory narrowed to types seen in r4 | active until Playlist source and Smart model/presenter/writer mappings graduate |
+
+The revision string exists so a submitted Logcat can prove which probe generation actually ran. Increment it whenever the meaning or coverage of the compatibility probe changes materially.
+
+## Active probe registry and retirement rules
+
+| Marker / mechanism | Trigger and scope | Evidence collected | Bounds / safety | Retire or narrow when |
+|---|---|---|---|---|
+| `GMMP COMPAT PROBE` | package-ready + hook-registration completion | exact probe revision, module/build variant | two small process-level lines | keep only a compact revision marker once the version is accepted |
+| `GMMP COMPAT CLASS` | one process-level static inventory | hierarchy, interfaces, constructors, fields, declared methods of known boundaries | bounded counts; types only | corresponding domain has semantic bindings/resolvers and no unresolved class identity |
+| `GMMP 4.2.1 CANDIDATE` | once per process, only names discovered by prior evidence | narrowed candidate structures | candidate list must shrink between rounds; never scan the whole APK | every candidate has either been rejected with reason or graduated |
+| `GMMP RECYCLER ADAPTER/CLASS` | native RecyclerView `setAdapter` / attach | resource/surface, runtime adapter class, hierarchy and field types | unique surface/class snapshots; no row text | surface adapter can be found structurally or explicit version mapping is accepted |
+| `GMMP RECYCLER SNAPSHOT` | short delayed samples after relevant adapter attach | item count plus collection element **types** | fixed delays and relevant resource IDs only | model ownership is known and no timing question remains |
+| `GMMP RECYCLER HOLDER/CLASS` | first bound child after non-zero item count | actual ViewHolder hierarchy and runtime field **types** | first unique holder per surface/adapter; no view text/model values | row-model relationship is encoded in a structural resolver |
+| `GMMP AUTO DJ RUNTIME` | captured live Auto-DJ instance, short delayed samples | runtime field and collection types | fixed sample count; types only | queue/database/DAO fields have stable semantic resolvers |
+| domain mapping markers (`AUTO DJ SELECTION MAPPING`, `GMMP LIBRARY MAPPING`, `PLAYLIST PICKER MAPPING`, `SMART * MAPPING`, `FLIP * MAPPING`, `BRIDGE MAPPING`) | only when that legacy boundary fails | candidate signatures, hierarchy and rejection reason | bounded, feature-local, no user data | resolver uniquely identifies and validates the replacement |
+
+### Probe escalation rule
+
+Do not immediately add a broader probe when a mapping fails. Reuse existing evidence in this order: current semantic binding result → runtime surface identity → holder/live-instance field types → narrowly selected candidate classes → only then add one new bounded observation. Every new probe must answer a named uncertainty that the previous one could not answer. This keeps future update passes short and prevents compatibility diagnostics themselves from causing main-thread lag.
+
+## Automatic semantic remapping design
+
+The long-term goal is not a larger table of `4.2.0 name → 4.2.1 name`. It is a small set of **semantic binding descriptors** that can rediscover safe native boundaries after R8 renames them.
+
+A mature binding should carry:
+
+1. a stable semantic ID such as `playlist.main.adapter`, `smart.row.model`, `autodj.trackDao` or `playback.playSelected`;
+2. an accepted-version fast path, treated only as an optimization;
+3. structural constraints: superclass/interfaces, parameter and return types, static/abstract modifiers, constructor shape and owner relationships;
+4. runtime anchors: resource ID/surface, actual adapter/holder ownership, field runtime type, RoomDatabase relationship or captured live service instance;
+5. uniqueness requirement: zero or multiple candidates means unresolved, never “pick the first”;
+6. a non-destructive validation step where possible;
+7. a semantic postcondition before any mutating/write boundary is considered usable;
+8. a version/process-scoped cache of the successful binding plus a compact diagnostic reason when resolution fails.
+
+This allows many **read-only/observer** remaps to become automatic while remaining fail-closed. Mutating boundaries such as queue writes, Smart-Playlist serialization or file moves require a stronger postcondition and still need device acceptance before the GMMP version becomes supported.
+
+The existing `GmmpReflectionPolicy` is the seed of this architecture: it already rejects abstract methods and only returns a structural fallback when it is unique. Future compatibility work should move repeated field/constructor/method discovery into shared semantic resolvers rather than adding local string checks to controllers. The r5 holder evidence is particularly useful because it gives a runtime ownership chain (`resource → adapter → bound holder → model-like field type`) that is substantially more robust than matching an obfuscated class name in isolation.
+
 ## Update procedure for every new GMMP version
 
 1. **Do not change the tested-version constant immediately.** Let the companion mark the new version untested.
@@ -163,13 +230,15 @@ This does **not** authorize synthetic substitutes where AGENTS requires native-f
 3. Compare the log against this ledger and classify every native boundary as stable, remapped or unresolved.
 4. Fix the earliest shared/core boundaries first (database/DAO, queue, Smart models), because many features depend on them.
 5. Prefer structural resolvers over adding a new obfuscated name table.
-6. Add bounded diagnostics for unresolved boundaries in the same test build so one device pass can answer several questions.
-7. Keep failures isolated by feature and stop deterministic retry loops.
-8. Run unit tests + debug APK + unsigned release APK + artifact upload on the exact head.
-9. Device-test only the affected native boundaries and their immediate regressions; do not repeat unrelated accepted flows.
-10. Update this ledger with **observed evidence**, marking mappings Verified only after the relevant runtime behavior is confirmed.
-11. Update `docs/NATIVE_GMMP_AUDIT.md` with detailed investigation notes when useful.
-12. Only after the intended feature matrix passes should the tested-version constant/README compatibility claim move to the new GMMP version.
+6. Before adding a new diagnostic, consult the **Active probe registry** and reuse/narrow an existing probe when it can answer the question.
+7. Add bounded diagnostics for unresolved boundaries in the same test build so one device pass can answer several questions; increment the probe revision when coverage/meaning materially changes and document the probe in this file in the same commit.
+8. Keep failures isolated by feature and stop deterministic retry loops.
+9. Run unit tests + debug APK + unsigned release APK + artifact upload on the exact head.
+10. Device-test only the affected native boundaries and their immediate regressions; do not repeat unrelated accepted flows.
+11. Update this ledger with **observed evidence**, marking mappings Verified only after the relevant runtime behavior is confirmed and recording which probe/resolver produced that evidence.
+12. Update `docs/NATIVE_GMMP_AUDIT.md` with detailed investigation notes when useful.
+13. Retire or narrow probes whose uncertainty is resolved; do not leave broad inventories active by default.
+14. Only after the intended feature matrix passes should the tested-version constant/README compatibility claim move to the new GMMP version.
 
 ## Compatibility diagnostic markers
 
@@ -195,7 +264,7 @@ These markers are development compatibility diagnostics. Remove or narrow probes
 
 ## Longer-term hardening backlog
 
-- Introduce semantic binding/resolver objects per native domain (Auto-DJ/Room, Playlist picker, Smart-Playlist model/editor, queue/playback) so feature code does not own raw obfuscated names.
+- Continue introducing semantic binding/resolver objects per native domain (Auto-DJ/Room, Playlist picker, Smart-Playlist model/editor, queue/playback) so feature code does not own raw obfuscated names. Treat `GmmpReflectionPolicy` and the centralized Playlist adapter policy as the first pieces, not the finished architecture.
 - Give each binding a legacy fast path, structural fallback, validation function and compact diagnostic description.
 - Unit-test resolvers with small fake class hierarchies covering renamed methods, abstract contracts, bridge methods, ambiguous candidates and moved fields.
 - Track per-feature compatibility capability rather than one binary “module works” flag; surface degraded feature groups in logs/status without turning the overall injection state red.
