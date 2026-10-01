@@ -501,7 +501,7 @@ class GoneSmartModule : XposedModule() {
 
         Log.i(
             TAG,
-            "GoneMAD Music Player detected - v${BuildConfig.VERSION_NAME}"
+            "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
 
         runtimeReporter.report(
@@ -524,7 +524,7 @@ class GoneSmartModule : XposedModule() {
         log(
             Log.INFO,
             TAG,
-            "GoneMAD Music Player detected - v${BuildConfig.VERSION_NAME}"
+            "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
 
         try {
