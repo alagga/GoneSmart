@@ -141,6 +141,12 @@ Classic drawer sparkle behavior remains MenuItem-based. A separate navigation-la
 
 The Tabs trace identified the more important structural difference: GMMP creates the Playlist `op3/tp3` and Smart `os4/ss4` surfaces as pages under its tab pager rather than under the CoordinatorLayout host used by the accepted navigation styles. The old ordinary Playlist attach path discovered that incompatibility only after reflecting/parsing all native playlist models and building the physical folder index; subsequent layouts repeated the same failed work and caused severe main-thread stalls. The correction resolves an overlay host first, memoizes unsupported attached lists, and supports a pager host only through a reflected ViewPager **decor** LayoutParams so GoneSmart never becomes another pager page. Tabs remains implemented-but-unverified until the next device pass.
 
+## 2026-10-01 GMMP 4.2.1 compatibility break
+
+A device update from GMMP 4.2.0 to 4.2.1 demonstrated why the tested-version boundary must stay explicit even for small upstream releases. GoneSmart itself loaded, connected to remote settings and installed the verified Auto-DJ refill hook, but the next 4.2.0-specific reflection lookup failed with `NoSuchMethodException: kr.F1 [int]`. Because that lookup previously sat inside the outer startup transaction, the exception prevented all later independent hook families from being registered and made Playlist/Smart-Playlist UI features, Flip and other options appear completely dead.
+
+The startup path now isolates the verified refill and selection hooks. A missing Smart-DJ boundary reports a degraded Smart-DJ runtime state but does not suppress unrelated hook registration. The 4.2.1 selection replacement is **not guessed**: when `kr.F1(int)` is absent, debug/runtime Logcat emits a bounded signature-only inventory of `kr` methods taking one `int`, then fails closed for that selection hook. That diagnostic is the evidence source for a later 4.2.1 mapping pass. The companion Home Compatibility row is amber for any installed GMMP version other than the explicitly tested version.
+
 ## 2026-09-30 release-prep audit consolidation
 
 The completed Playlist/Smart-Playlist feature set was re-audited against the current branch after the final Smart-folder and creation-dialog device passes.
