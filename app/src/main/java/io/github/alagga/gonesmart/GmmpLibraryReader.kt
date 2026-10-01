@@ -309,9 +309,21 @@ class GmmpLibraryReader {
                 )
 
         val queryMethod =
-            resolveLibraryQueryMethod(
-                trackDao
-            )
+            runCatching {
+                resolveLibraryQueryMethod(trackDao)
+            }.getOrElse { mappingError ->
+                if (mappingError !is NoSuchMethodException &&
+                    mappingError.cause !is AbstractMethodError
+                ) {
+                    throw mappingError
+                }
+                val tracks = loadLibraryThroughCursor(
+                    autoDjInstance,
+                    startTime
+                )
+                deterministicMappingFailure = false
+                return tracks
+            }
 
         queryMethod.isAccessible =
             true
@@ -398,6 +410,88 @@ class GmmpLibraryReader {
                     "durationMs=$elapsedMs"
         )
 
+        return tracks
+    }
+
+    private fun loadLibraryThroughCursor(
+        autoDjInstance: Any,
+        startTime: Long
+    ): List<GmmpLibraryTrack> {
+        val tracks = GmmpReadOnlySql.query(
+            autoDjInstance = autoDjInstance,
+            sql = LIBRARY_QUERY.trimIndent()
+        ) { cursor ->
+            fun column(name: String): Int {
+                val index = cursor.getColumnIndex(name)
+                require(index >= 0) {
+                    "GMMP library Cursor missing column " + name
+                }
+                return index
+            }
+
+            val id = column("song_id")
+            val title = column("track_name")
+            val path = column("track_uri")
+            val artist = column("artist")
+            val albumArtist = column("albumartist")
+            val year = column("track_year")
+            val rating = column("song_rating")
+            val playCount = column("playcount")
+            val skipCount = column("skipcount")
+            val dateAdded = column("track_date_added")
+            val dateUpdated = column("track_date_updated")
+            val lastPlayed = column("track_last_played")
+
+            buildList {
+                while (cursor.moveToNext()) {
+                    val trackId = cursor.getLong(id)
+                    add(
+                        GmmpLibraryTrack(
+                            track = TrackInfo(
+                                id = trackId,
+                                title = if (cursor.isNull(title)) null
+                                    else cursor.getString(title),
+                                artist = if (cursor.isNull(artist)) null
+                                    else cursor.getString(artist),
+                                albumArtist =
+                                    if (cursor.isNull(albumArtist)) null
+                                    else cursor.getString(albumArtist),
+                                path = if (cursor.isNull(path)) null
+                                    else cursor.getString(path)
+                            ),
+                            year = if (cursor.isNull(year)) 0
+                                else cursor.getInt(year),
+                            ratingRaw = if (cursor.isNull(rating)) 0
+                                else cursor.getInt(rating),
+                            playCount = if (cursor.isNull(playCount)) 0
+                                else cursor.getInt(playCount),
+                            skipCount = if (cursor.isNull(skipCount)) 0
+                                else cursor.getInt(skipCount),
+                            dateAddedEpochMs =
+                                if (cursor.isNull(dateAdded)) null
+                                else cursor.getLong(dateAdded)
+                                    .takeIf { it > 0L },
+                            dateUpdatedEpochMs =
+                                if (cursor.isNull(dateUpdated)) null
+                                else cursor.getLong(dateUpdated)
+                                    .takeIf { it > 0L },
+                            lastPlayedEpochMs =
+                                if (cursor.isNull(lastPlayed)) null
+                                else cursor.getLong(lastPlayed)
+                                    .takeIf { it > 0L }
+                        )
+                    )
+                }
+            }
+        }
+
+        val elapsedMs =
+            (System.nanoTime() - startTime) / 1_000_000L
+        Log.i(
+            TAG,
+            "GMMP library loaded through read-only database Cursor: " +
+                tracks.size + " track(s) | durationMs=" + elapsedMs
+        )
         return tracks
     }
 

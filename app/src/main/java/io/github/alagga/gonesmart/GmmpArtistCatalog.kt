@@ -179,6 +179,20 @@ class GmmpArtistCatalog {
                         diagnoseArtistQueryMethod(
                             artistDao.javaClass
                         )
+                        val fallback = loadAmpersandArtistsThroughCursor(
+                            autoDjInstance
+                        )
+                        if (fallback != null) {
+                            knownAmpersandArtists = fallback
+                            loaded = true
+                            Log.i(
+                                TAG,
+                                "GMMP artist catalog loaded through " +
+                                    "read-only database Cursor: " +
+                                    fallback.size +
+                                    " artist(s) containing '&'"
+                            )
+                        }
                         return
                     }
 
@@ -306,6 +320,38 @@ class GmmpArtistCatalog {
             )
         }
     }
+
+    private fun loadAmpersandArtistsThroughCursor(
+        autoDjInstance: Any
+    ): Set<String>? = runCatching {
+        GmmpReadOnlySql.query(
+            autoDjInstance = autoDjInstance,
+            sql = AMPERSAND_ARTIST_QUERY.trimIndent()
+        ) { cursor ->
+            val index = cursor.getColumnIndex("artist")
+            require(index >= 0) {
+                "GMMP artist Cursor missing artist column"
+            }
+            buildSet {
+                while (cursor.moveToNext()) {
+                    if (!cursor.isNull(index)) {
+                        cursor.getString(index)
+                            ?.trim()
+                            ?.takeIf {
+                                it.isNotBlank() && it.contains("&")
+                            }
+                            ?.let(::add)
+                    }
+                }
+            }
+        }
+    }.onFailure {
+        Log.w(
+            TAG,
+            "GMMP artist catalog read-only Cursor fallback unavailable",
+            it
+        )
+    }.getOrNull()
 
     private fun resolveDatabaseInstance(
         autoDjInstance: Any
