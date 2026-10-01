@@ -120,11 +120,68 @@ internal class PlaylistBridgeController {
         val loaded = runCatching { createBindings(loader) }
             .onFailure {
                 Log.e(TAG, "BRIDGE BINDINGS FAILED | native GMMP untouched", it)
+                diagnoseCompatibilityBindings(loader)
             }
             .getOrNull()
         bindings = loaded
         Log.i(TAG, "BRIDGE BINDINGS | ready=${loaded != null}")
         return loaded != null
+    }
+
+    private fun diagnoseCompatibilityBindings(
+        loader: ClassLoader
+    ) {
+        runCatching {
+            val type = loader.loadClass("ft4")
+            Log.w(
+                TAG,
+                "BRIDGE MAPPING | ft4 constructors=" +
+                    GmmpReflectionDiagnostics.constructors(type) +
+                    " | methods2=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 20
+                    ) {
+                        it.parameterTypes.size == 2
+                    }
+            )
+        }
+
+        runCatching {
+            val type = loader.loadClass("ds4")
+            val nested =
+                type.declaredClasses
+                    .take(12)
+                    .joinToString(",") { it.name }
+                    .ifBlank { "none" }
+            Log.w(
+                TAG,
+                "BRIDGE MAPPING | ds4 constructors=" +
+                    GmmpReflectionDiagnostics.constructors(type) +
+                    " | oneArgMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 20
+                    ) {
+                        it.parameterTypes.size == 1
+                    } +
+                    " | nested=" + nested
+            )
+        }
+
+        runCatching {
+            val type = loader.loadClass("os2")
+            Log.w(
+                TAG,
+                "BRIDGE MAPPING | os2 oneArgMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = type,
+                        limit = 20
+                    ) {
+                        it.parameterTypes.size == 1
+                    }
+            )
+        }
     }
 
     fun capturePresenter(presenter: Any?, context: Context?) {
