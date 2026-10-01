@@ -3491,19 +3491,43 @@ class GoneSmartModule : XposedModule() {
             return it
         }
 
-        val intMethods = autoDjDaoClass.declaredMethods
-            .filter {
-                it.parameterTypes.size == 1 &&
-                    it.parameterTypes[0] == Integer.TYPE
-            }
-            .sortedBy { it.name }
+        val intMethods =
+            GmmpReflectionPolicy.concreteMethods(
+                autoDjDaoClass
+            )
+                .filter {
+                    it.parameterTypes.size == 1 &&
+                        it.parameterTypes[0] == Integer.TYPE
+                }
+                .sortedBy { it.name }
 
         val listReturning = intMethods.filter {
             java.util.List::class.java.isAssignableFrom(it.returnType)
         }
 
         fun signature(method: java.lang.reflect.Method): String =
-            method.name + "(int):" + method.returnType.name
+            method.declaringClass.name + "." +
+                method.name + "(int):" + method.returnType.name
+
+        val structural =
+            GmmpReflectionPolicy.uniqueConcreteMethod(
+                autoDjDaoClass
+            ) {
+                it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.returnType)
+            }
+
+        if (structural != null) {
+            Log.w(
+                TAG,
+                "AUTO DJ SELECTION MAPPING | expected=kr.F1(int) unavailable" +
+                    " | structurally resolved=" +
+                    signature(structural)
+            )
+            return structural
+        }
 
         Log.w(
             TAG,
