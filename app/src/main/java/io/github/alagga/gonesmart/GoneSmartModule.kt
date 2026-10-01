@@ -436,6 +436,9 @@ class GoneSmartModule : XposedModule() {
     private val smartPlaylistSaveRedirectDepth =
         ThreadLocal.withInitial { 0 }
 
+    private val smartPlaylistSaveHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 
@@ -716,6 +719,9 @@ class GoneSmartModule : XposedModule() {
                     playlistFolderPreview.setNativeFolderCreator(param.classLoader)
                     playlistFolderPreview.setNativePlaylistMover(param.classLoader)
 
+                    smartPlaylistFolderController.setModelWriterHookInstaller {
+                        method -> installSmartPlaylistSaveMethodHook(method)
+                    }
                     smartPlaylistFolderController.configure(param.classLoader)
                     smartPlaylistFolderController.setNativeFolderCreator(
                         param.classLoader
@@ -734,15 +740,6 @@ class GoneSmartModule : XposedModule() {
                     )
                     installPlaylistNavigationBadgeHook(param)
                     installSmartPlaylistFolderFeatureHooks(param)
-                    runCatching {
-                        installSmartPlaylistSaveHook(param)
-                    }.onFailure { smartSaveError ->
-                        Log.w(
-                            "GoneSmartSmartFolders",
-                            "SMART FOLDERS SAVE MAPPING | writer hook unavailable; continuing with Playlist surfaces",
-                            smartSaveError
-                        )
-                    }
 
                     // py0.b() shows its native MaterialDialog synchronously.
                     // Observe the ORIGINAL show() after it returns; alter
@@ -2695,52 +2692,83 @@ class GoneSmartModule : XposedModule() {
      * GMMP compatibility. Re-entry is bounded and the native writer remains
      * the only code that serializes .spl files.
      */
-    private fun installSmartPlaylistSaveHook(
-        param: PackageReadyParam
+    private fun installSmartPlaylistSaveMethodHook(
+        method: Method
     ) {
-        val smartPlaylistClass = param.classLoader.loadClass("ws4")
-        val method = smartPlaylistClass
-            .getDeclaredMethod("t", File::class.java)
-            .apply { isAccessible = true }
+        require(
+            method.parameterCount == 1 &&
+                method.parameterTypes[0] == File::class.java
+        ) {
+            "Resolved Smart writer does not accept exactly one File"
+        }
+        require(
+            method.returnType == java.lang.Boolean.TYPE ||
+                method.returnType == java.lang.Boolean::class.java ||
+                method.returnType == java.lang.Void.TYPE
+        ) {
+            "Resolved Smart writer has unexpected return type"
+        }
+        method.isAccessible = true
+        val key = method.declaringClass.name + "|" + method.name + "|" +
+            method.returnType.name
+        if (!smartPlaylistSaveHookKeys.add(key)) return
 
-        hook(method).intercept { chain ->
-            val originalDestination = chain.getArg(0) as? File
-            val depth = smartPlaylistSaveRedirectDepth.get()
+        runCatching {
+            hook(method).intercept { chain ->
+                val originalDestination = chain.getArg(0) as? File
+                val depth = smartPlaylistSaveRedirectDepth.get()
 
-            if (depth == 0) {
-                val redirected = smartPlaylistFolderController
-                    .consumeRedirectedSaveDestination(originalDestination)
-                if (redirected != null &&
-                    originalDestination != null &&
-                    redirected.path != originalDestination.path
-                ) {
-                    smartPlaylistSaveRedirectDepth.set(1)
-                    try {
-                        return@intercept method.invoke(
-                            chain.getThisObject(),
-                            redirected
-                        )
-                    } finally {
-                        smartPlaylistSaveRedirectDepth.set(0)
+                if (depth == 0) {
+                    val redirected = smartPlaylistFolderController
+                        .consumeRedirectedSaveDestination(originalDestination)
+                    if (redirected != null &&
+                        originalDestination != null &&
+                        redirected.path != originalDestination.path
+                    ) {
+                        smartPlaylistSaveRedirectDepth.set(1)
+                        try {
+                            return@intercept method.invoke(
+                                chain.getThisObject(),
+                                redirected
+                            )
+                        } finally {
+                            smartPlaylistSaveRedirectDepth.set(0)
+                        }
+                    }
+                }
+
+                val token = runCatching {
+                    playlistBridgeController.preparePortableSave(
+                        chain.getThisObject(),
+                        originalDestination
+                    )
+                }.onFailure {
+                    Log.w(
+                        PLAYLIST_BRIDGE_TAG,
+                        "BRIDGE SAVE | current Smart model mapping unavailable; " +
+                            "native writer continues",
+                        it
+                    )
+                }.getOrNull()
+                try {
+                    chain.proceed()
+                } finally {
+                    if (token != null) {
+                        playlistBridgeController.restorePortableSave(token)
                     }
                 }
             }
 
-            val token = playlistBridgeController.preparePortableSave(
-                chain.getThisObject(),
-                originalDestination
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS SAVE READY | writer=" +
+                    method.declaringClass.name + "." + method.name +
+                    " | return=" + method.returnType.name
             )
-            try {
-                chain.proceed()
-            } finally {
-                playlistBridgeController.restorePortableSave(token)
-            }
+        }.onFailure {
+            smartPlaylistSaveHookKeys.remove(key)
+            throw it
         }
-
-        Log.i(
-            "GoneSmartSmartFolders",
-            "SMART FOLDERS SAVE READY | original ws4 writer preserved"
-        )
     }
 
     private fun installPlaylistBridgeHooks(
