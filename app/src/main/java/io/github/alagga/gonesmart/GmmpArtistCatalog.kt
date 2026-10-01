@@ -42,6 +42,10 @@ class GmmpArtistCatalog {
             Set<String> =
         emptySet()
 
+    @Volatile
+    private var artistDaoMappingDiagnosed =
+        false
+
     /**
      * Lädt den Artist-Katalog einmalig über
      * GMMPs eigene Database-/DAO-Objekte.
@@ -120,6 +124,10 @@ class GmmpArtistCatalog {
                     TAG,
                     "GMMP artist catalog: " +
                             "ArtistDao accessor not found"
+                )
+
+                diagnoseArtistDaoAccessor(
+                    database.javaClass
                 )
 
                 return
@@ -320,6 +328,35 @@ class GmmpArtistCatalog {
                 t
             )
         }
+    }
+
+    private fun diagnoseArtistDaoAccessor(
+        databaseClass: Class<*>
+    ) {
+        if (artistDaoMappingDiagnosed) return
+        artistDaoMappingDiagnosed = true
+
+        val methods =
+            generateSequence<Class<*>>(databaseClass) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter {
+                    it.parameterTypes.isEmpty() &&
+                        it.returnType != java.lang.Void.TYPE
+                }
+                .distinctBy { it.name + "|" + it.returnType.name }
+                .sortedBy { it.name }
+                .toList()
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST DAO MAPPING | expected=" +
+                databaseClass.name + ".y() unavailable" +
+                " | noArgMethods=" +
+                methods.take(24).joinToString(",") {
+                    it.name + "():" + it.returnType.name
+                }.ifBlank { "none" } +
+                " | noArgMethodCount=" + methods.size
+        )
     }
 
     /**
