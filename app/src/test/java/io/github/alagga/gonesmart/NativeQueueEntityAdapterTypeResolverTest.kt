@@ -33,7 +33,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class QueueAdapter {
         fun M(): String =
-            "INSERT OR REPLACE INTO q " +
+            "INSERT OR REPLACE INTO queue_table " +
                 "(queue_id, queue_track_id, queue_position, " +
                 "queue_shuffle_position) VALUES (?,?,?,?)"
 
@@ -48,7 +48,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class ConcreteStatementQueueAdapter {
         fun M(): String =
-            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
 
         fun G(statement: ConcreteStatement?, value: Any) {
             val row = value as QueueRow
@@ -64,7 +64,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class SyntheticBridgeQueueAdapter : GenericAdapter<QueueRow>() {
         override fun M(): String =
-            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
 
         override fun G(statement: ConcreteStatement?, value: QueueRow) {
             statement?.bindLong(1, value.position.toLong())
@@ -75,7 +75,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
     private class SyntheticBridgeQueueAdapterWithGenericNoise :
         GenericAdapter<QueueRow>(), GenericNoise<OtherRow> {
         override fun M(): String =
-            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
 
         override fun G(statement: ConcreteStatement?, value: QueueRow) {
             statement?.bindLong(1, value.position.toLong())
@@ -93,7 +93,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class QueueAdapterWithInheritedBinder : InheritedBinderNoise() {
         fun M(): String =
-            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
 
         fun G(statement: ConcreteStatement?, value: Any) {
             val row = value as QueueRow
@@ -104,7 +104,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class OtherQueueAdapter {
         fun M(): String =
-            "DELETE FROM q WHERE queue_id = ?"
+            "DELETE FROM queue_table WHERE queue_id = ?"
 
         fun G(binder: Binder, value: Any) {
             val row = value as OtherRow
@@ -125,6 +125,11 @@ class NativeQueueEntityAdapterTypeResolverTest {
         @Suppress("unused")
         private val insert = QueueAdapter()
 
+        @Suppress("unused")
+        private val unrelated = NonQueueAdapter()
+    }
+
+    private class NonQueueOnlyDao {
         @Suppress("unused")
         private val unrelated = NonQueueAdapter()
     }
@@ -162,7 +167,13 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
         assertEquals(QueueRow::class.java, result?.modelClass)
         assertEquals(true, result?.evidence?.contains("binder-cast"))
-        assertEquals(true, result?.evidence?.contains("owned-dml"))
+        assertEquals(true, result?.evidence?.contains("queue-sql"))
+    }
+
+    @Test fun unrelatedOwnedDmlDoesNotClaimQueueEntityOwnership() {
+        assertNull(
+            NativeQueueEntityAdapterTypeResolver.resolve(NonQueueOnlyDao())
+        )
     }
 
     @Test fun concreteStatementContractStillExposesErasedEntityCast() {
@@ -172,7 +183,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
         assertEquals(QueueRow::class.java, result?.modelClass)
         assertEquals(true, result?.evidence?.contains("null-statement"))
-        assertEquals(true, result?.evidence?.contains("owned-dml"))
+        assertEquals(true, result?.evidence?.contains("queue-sql"))
     }
 
     @Test fun syntheticRoomBridgeDoesNotDisappearFromOwnedAdapterResolution() {
@@ -185,10 +196,6 @@ class NativeQueueEntityAdapterTypeResolverTest {
             }
         assertTrue("expected JVM erased bridge", bridges.isNotEmpty())
 
-        // Generic metadata is an even stronger proof in this JVM fixture, so
-        // the resolver is allowed to finish before invoking the bridge. The
-        // regression requirement is that an owned generated adapter with a
-        // synthetic erased bind still resolves the same concrete entity.
         val result = NativeQueueEntityAdapterTypeResolver.resolve(
             SyntheticBridgeQueueDao()
         )
