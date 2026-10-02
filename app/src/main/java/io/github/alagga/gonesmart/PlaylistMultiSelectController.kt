@@ -1551,16 +1551,20 @@ internal class PlaylistMultiSelectController {
             session.barView = bar
             session.originalBarBackground = bar.background
             session.barBackgroundSaved = true
-            (bar.background as? ColorDrawable)?.color
-                ?.takeIf(::isUsableSelectionColor)
-                ?.let { native ->
-                    session.resolvedSelectionAccent = native
-                    rememberNativeSelectionAccent(native)
-                }
+            // Never let the picker certify/overwrite an already verified
+            // native Playlist selection witness.
+            if (verifiedNativeSelectionAccent() == null) {
+                (bar.background as? ColorDrawable)?.color
+                    ?.takeIf(::isUsableSelectionColor)
+                    ?.let { native ->
+                        session.resolvedSelectionAccent = native
+                        rememberNativeSelectionAccent(native)
+                    }
+            }
         }
 
-        val accent = session.resolvedSelectionAccent
-            ?: verifiedNativeSelectionAccent()
+        val accent = verifiedNativeSelectionAccent()
+            ?: session.resolvedSelectionAccent
             ?: standaloneSelectionAccent(bar)
         session.resolvedSelectionAccent = accent
         if (session.lastBarColor != accent ||

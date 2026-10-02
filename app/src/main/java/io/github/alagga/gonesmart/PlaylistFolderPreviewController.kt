@@ -3543,9 +3543,9 @@ internal class PlaylistFolderPreviewController(
 
     private fun mainSelectionAccent(browser: Browser): Int =
         multiSelect.nativeContextBarColor(browser.list)
-            ?: browser.liveSelectionAccent
-            ?: NativeGmmpAccent.currentPrimary(browser.list)
+            ?: multiSelect.verifiedNativeSelectionAccent()
             ?: multiSelect.standaloneSelectionAccent(browser.list)
+            ?: browser.liveSelectionAccent
             ?: styles[browser.list]?.accentColor
             ?: resolveAccent(browser.list)
 
