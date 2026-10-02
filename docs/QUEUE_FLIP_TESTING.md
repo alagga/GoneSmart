@@ -92,3 +92,8 @@ For Playlist Play Flipped, GMMP 4.2.1 no longer satisfies the exact 4.2.0 `Music
 ## GMMP 4.2.1 r22 queue-entity note
 
 The r21 device log proves Queue Flip reaches the accepted read-only Cursor snapshot, then fails in the shared native mutation bridge because no full generated-DAO entity set is materialized. r22 derives the queue-specific native entity type from the nearest generated DAO array contract (`y75 -> ww3[]` on the tested build), uses that type to read/merge bounded `d85.W1()/X1()` reactive emissions, and still requires exact Cursor identity correlation before `O0/P0` or any other existing GMMP writer is eligible. This is the same mutation boundary used by Track Auto-DJ; retest the two together once, not as separate probe loops.
+
+
+## GMMP 4.2.1 r23 generated-entity fallback
+
+The r22 device run confirms Queue Flip reads the complete 54-row queue and current entry correctly, then fails only because `W1()/X1()` do not expose the generated `ww3` entity set through the bounded reactive readers. r23 therefore stops treating more Rx probing as the next step. It structurally validates a `ww3` constructor with GMMP's own generated Room INSERT binder executed against a fake statement: queue ID, track ID, queue position and shuffle position must all bind to the verified Cursor values. No SQL is executed during discovery. If that proof succeeds, Queue Flip still uses GMMP's original DAO update path and the existing post-write Cursor verification/rollback. If it cannot be proved uniquely, Flip remains fail-closed and emits one compact entity-factory shape diagnostic.

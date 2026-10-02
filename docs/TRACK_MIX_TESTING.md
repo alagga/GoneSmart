@@ -86,3 +86,8 @@ The 2026-10-02 r17 device log shows that native Play does switch to the selected
 ## GMMP 4.2.1 r22 queue-entity note
 
 The r21 device pass confirms native Play and the current-song postcondition before Track Auto-DJ fails: the selected track becomes current, but queue isolation cannot start because the shared 4.2.1 mutation bridge has no verified generated Queue entity set. r22 resolves the concrete entity family from the nearest queue-specific DAO array contract (`ww3[]` on the tested runtime), feeds that type witness into the bounded `W1()/X1()` reactive reader and permits cross-carrier partial aggregation only before the existing strict `queue_id + song_id + queue_position` correlation. Queue Flip uses the same bridge, so one combined host check covers both remaining features.
+
+
+## GMMP 4.2.1 r23 generated-entity fallback
+
+The r22 host log shows Track Auto-DJ now passes native Play/current-song verification: the requested Queue track is already reported as Current before isolation begins. The remaining failure is identical to Queue Flip: the 4.2.1 generated Queue DAO entities cannot be materialized from `W1()/X1()`. r23 uses the same generated Room fake-binder proof to reconstruct only fully validated `ww3` entities from the already-verified Cursor snapshot, then keeps the original native delete/update + Cursor-verification isolation sequence. No direct SQL mutation is introduced, and this remains one shared Track Auto-DJ/Queue Flip device boundary.

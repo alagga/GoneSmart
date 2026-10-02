@@ -21,6 +21,8 @@ internal class GmmpQueueMutationBridge(
         private const val TAG = "GoneSmartQueue"
         private val reportedMutationShapes =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        private val reportedEntityFactoryShapes =
+            java.util.Collections.synchronizedSet(mutableSetOf<String>())
     }
 
     private interface StatePositionBinding {
@@ -245,14 +247,53 @@ internal class GmmpQueueMutationBridge(
             }
         }
 
+        // r22 proved that W1/X1 do not materialize the generated ww3 entity
+        // set on this GMMP build. Before attempting reactive carrier guesses,
+        // ask GMMP's own generated Room INSERT binder to prove a constructor
+        // mapping against a fake statement. No SQL is executed here. If the
+        // mapping is unique, fresh native entity objects can be reconstructed
+        // from the already-verified read-only Cursor snapshot and then passed
+        // through the original DAO writers below.
+        if (listCandidates.isEmpty() && entityTypeHint != null) {
+            val reconstructed = NativeQueueEntityReconstructor.reconstruct(
+                dao = dao,
+                modelClass = entityTypeHint,
+                context = context
+            )
+            if (reconstructed != null) {
+                listCandidates +=
+                    reconstructed.boundary to reconstructed.rows
+                Log.i(
+                    TAG,
+                    "QUEUE ENTITY FACTORY | model=" +
+                        entityTypeHint.name +
+                        " | rows=" + reconstructed.rows.size +
+                        " | proof=" + reconstructed.boundary
+                )
+            } else {
+                val key = dao.javaClass.name + "|" + entityTypeHint.name
+                if (reportedEntityFactoryShapes.add(key)) {
+                    Log.w(
+                        TAG,
+                        "QUEUE ENTITY FACTORY | unresolved | " +
+                            NativeQueueEntityReconstructor.diagnosticShape(
+                                dao,
+                                entityTypeHint
+                            )
+                    )
+                }
+            }
+        }
+
         // GMMP 4.2.1 d85 no longer exposes the native Queue entity snapshot
         // as a direct List. Its no-arg W1/X1 boundaries return R8-renamed
         // reactive carriers. Subscribe read-only and accept an emission only
         // when its row count matches the already-verified Cursor snapshot.
         // queue_id/song_id/queue_position correlation below remains the real
         // ownership proof before any writer is eligible.
-        val allReactiveReaders = methods.filter {
-            !Modifier.isStatic(it.modifiers) &&
+        val allReactiveReaders = if (listCandidates.isEmpty()) {
+            methods.filter {
+                !Modifier.isStatic(it.modifiers) &&
                 it.parameterCount == 0 &&
                 it.returnType != java.lang.Void.TYPE &&
                 !it.returnType.isPrimitive &&
@@ -261,6 +302,9 @@ internal class GmmpQueueMutationBridge(
                 it.declaringClass != Any::class.java &&
                 it.returnType != String::class.java &&
                 it.returnType != Class::class.java
+            }
+        } else {
+            emptyList()
         }
         // Prefer generated DAO implementation boundaries. In the r18 shape
         // these are exactly d85.W1()/X1(); inherited ys3 helpers are not

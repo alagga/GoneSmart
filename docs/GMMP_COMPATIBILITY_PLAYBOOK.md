@@ -504,3 +504,27 @@ New accepted evidence and resolver policy:
 Probe status: `gmmp421-r22` adds no broad inventory. It promotes the already logged `y75.*(ww3[])` relationship into a resolver + JVM contract tests. Keep `QUEUE REACTIVE SHAPE` only while the entity reader remains unverified on-device; retire it immediately after a successful mutation mapping.
 
 Manual validation remains one combined host-only check: Track Auto-DJ from a Queue row, then Queue Flip. Previously accepted Playlist selection/color, Smart DJ, folder creation and navigation flows are outside this retest.
+
+
+## GMMP 4.2.1 r23 — front-surface Smart lifecycle + generated Room entity proof
+
+The r22 host log closes two more questions without another broad remap.
+
+- **Read-only Queue and Current are graduated:** `f94.q(p94):Cursor` succeeds, the library loads 18,743 tracks, Queue snapshots repeatedly contain 54 rows and Current is resolved by `qr.t -> ur.method:b`. Track Auto-DJ reaches `MIX PLAY VERIFIED` for the selected queue row before failing at isolation. Queue Flip reaches the same accepted Queue snapshot before failing. Neither feature needs another Room/Current probe.
+- **One shared write blocker remains:** both features fail with `entityHint=ww3` and no native entity set from `d85.W1():xp4` / `d85.X1():jm1`. This disproves the r22 assumption that the concrete type witness alone would make the existing reactive terminals sufficient.
+- **r23 entity factory:** the generated Queue DAO already owns Room entity adapters. GoneSmart may call an adapter's SQL-string method and its entity→binder callback against a **fake binder only**. A constructor mapping is eligible only when one Queue INSERT contract exposes exactly the four expected columns and the captured bind values equal the verified Cursor row's queue ID, track ID, queue position and shuffle position. The same mapping is rechecked across every reconstructed row. This path performs no SQL and does not bypass GMMP's DAO; actual mutation still goes through the original generated update/delete methods followed by the existing Cursor verification and rollback.
+- **Failure-scoped diagnostic:** if the binder proof cannot establish a unique constructor, log `QUEUE ENTITY FACTORY | unresolved` once with only the `ww3` constructor shapes and Queue adapter SQL/binder signatures. Do not add another broad DAO/Rx inventory.
+- **Smart detail lifecycle:** the latest run shows a Smart folder browser can be attached again while another GMMP detail fragment is in front. The old attach path could set that background native RecyclerView to alpha zero before an async render completed. r23 permits masking and native-root suppression only for a front-proven Smart surface. Background Smart lists keep native alpha; their folder projection may refresh behind the detail and is revealed normally when Back returns.
+
+### r23 probe/test lifecycle
+
+| Boundary | r23 status | Automated/failure evidence | Next host check |
+| --- | --- | --- | --- |
+| Room SQL / library / Queue Cursor | graduated | successful library + 54-row Queue snapshots | none |
+| Queue Current | graduated | repeated `qr.t -> ur.method:b` | none |
+| Smart folder adapter/model/differ | graduated | `is4 -> ss4 -> ts4 -> differ:x.submit:b` | detail→Back lifecycle only |
+| Smart foreground masking | semantic lifecycle fix | pure front-surface policy test | one detail→Back check |
+| Queue entity construction | active narrow boundary | generated fake-binder constructor proof test | Track Auto-DJ + Queue Flip together |
+| Reactive Queue carriers | fallback only | existing bounded shape log | retire after entity factory success |
+
+The next real-device pass is intentionally only three short actions: open a Smart Playlist from the folder view and Back, run Track Auto-DJ from a Queue row, then Queue Flip. Do not repeat Smart DJ, Playlist selection/colors, folder creation or navigation-layout tests unless this commit touches those boundaries.

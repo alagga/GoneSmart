@@ -933,13 +933,19 @@ internal class SmartPlaylistFolderController(
         }
         if (failedOverlayHosts.containsKey(list)) return
         if (enabled && !browsers.containsKey(list)) {
-            if (!pendingOriginalAlphas.containsKey(list)) {
-                pendingOriginalAlphas[list] = list.alpha
+            // An attached Smart RecyclerView can sit behind a Smart-Playlist
+            // detail fragment. Never make that off-screen native list
+            // transparent: the detail can be popped before our async folder
+            // refresh completes, which previously returned to black rows.
+            if (SmartFolderAttachPolicy.mayMaskNativeRows(
+                    isFrontFragmentView(list)
+                )
+            ) {
+                if (!pendingOriginalAlphas.containsKey(list)) {
+                    pendingOriginalAlphas[list] = list.alpha
+                }
+                list.alpha = 0f
             }
-            // Hide only after a concrete adapter has matched the verified bindings.
-            // The original alpha is restored only after the folder header
-            // and current-directory native models are both ready.
-            list.alpha = 0f
             scheduleAttach(list, 0)
         }
     }
@@ -993,7 +999,12 @@ internal class SmartPlaylistFolderController(
     fun shouldSuppressNativeSmartRootSubmission(): Boolean {
         if (!enabled) return false
         return browsers.values.toList()
-            .filter { it.list.isAttachedToWindow }
+            .filter {
+                it.list.isAttachedToWindow &&
+                    SmartFolderAttachPolicy.mayControlNativeRootSubmission(
+                        isFrontFragmentView(it.list)
+                    )
+            }
             .any { browser ->
                 SmartNativeSubmissionPolicy.shouldSuppressNativeRootRefresh(
                     projectionPrepared = browser.projectionPrepared,
@@ -1009,7 +1020,12 @@ internal class SmartPlaylistFolderController(
         if (!enabled) return
         val refreshAttached = {
             browsers.values.toList()
-                .filter { it.list.isAttachedToWindow }
+                .filter {
+                    it.list.isAttachedToWindow &&
+                        SmartFolderAttachPolicy.mayControlNativeRootSubmission(
+                            isFrontFragmentView(it.list)
+                        )
+                }
                 .forEach { browser ->
                     refresh(browser)
                 }
@@ -1029,7 +1045,12 @@ internal class SmartPlaylistFolderController(
     fun onNativeSmartListSubmitting() {
         if (!enabled) return
         browsers.values.toList()
-            .filter { it.list.isAttachedToWindow }
+            .filter {
+                it.list.isAttachedToWindow &&
+                    SmartFolderAttachPolicy.mayControlNativeRootSubmission(
+                        isFrontFragmentView(it.list)
+                    )
+            }
             .forEach { browser ->
                 val mask = SmartNativeSubmissionPolicy.shouldMaskNativeRootRefresh(
                     currentIsRoot = sameFile(browser.current, browser.root),
@@ -1547,10 +1568,15 @@ internal class SmartPlaylistFolderController(
             list.viewTreeObserver.addOnPreDrawListener(scrollDrawListener)
         }
 
-        // Match the accepted normal Playlist-folder first frame: keep the
-        // raw native Smart root hidden until GoneSmart has both the native
-        // filtered snapshot and the physical-folder header ready.
-        list.alpha = 0f
+        // Match the accepted normal Playlist-folder first frame only on the
+        // actual front Smart surface. A list attached behind a detail view
+        // remains fully native/visible so Back can never reveal alpha=0 rows.
+        if (SmartFolderAttachPolicy.mayMaskNativeRows(
+                isFrontFragmentView(list)
+            )
+        ) {
+            list.alpha = 0f
+        }
         if (!PlaylistNavigationSurfaceHost.addOverlay(
                 host = host,
                 list = list,
