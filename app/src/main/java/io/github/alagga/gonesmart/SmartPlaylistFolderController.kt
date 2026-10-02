@@ -1044,7 +1044,8 @@ internal class SmartPlaylistFolderController(
                 }.getOrDefault(false)
         } ?: return false
 
-        val submittedPaths = submitted.mapNotNull { model ->
+        val submittedPaths = submitted.mapNotNull { nullableModel ->
+            val model = nullableModel ?: return@mapNotNull null
             if (!native.modelClass.isInstance(model)) {
                 null
             } else {

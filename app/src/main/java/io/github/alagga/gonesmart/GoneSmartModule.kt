@@ -2983,7 +2983,9 @@ class GoneSmartModule : XposedModule() {
             submitMethods.forEach { submit ->
                 submit.isAccessible = true
                 hook(submit).intercept { chain ->
-                    val incoming = chain.getArg(0) as? java.util.List<*>
+                    val incoming =
+                        (chain.getArg(0) as? java.util.List<*>)
+                            ?.toList()
                     if (incoming != null &&
                         smartPlaylistFolderController
                             .shouldSuppressNativeSmartDifferSubmission(
