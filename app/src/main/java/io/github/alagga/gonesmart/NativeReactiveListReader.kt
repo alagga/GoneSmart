@@ -31,12 +31,32 @@ internal object NativeReactiveListReader {
     fun read(
         source: Any,
         expectedRows: Int,
-        timeoutMs: Long = 900L
+        timeoutMs: Long = 900L,
+        expectedModelClass: Class<*>? = null,
+        allowPartial: Boolean = false
     ): Result? {
         if (expectedRows <= 0) return null
 
-        directList(source, expectedRows)?.let {
-            return Result(it, "direct")
+        var bestPartial: Result? = null
+        fun keepPartial(rows: List<Any>, boundary: String) {
+            if (!allowPartial || rows.isEmpty()) return
+            if (bestPartial == null ||
+                rows.size > bestPartial!!.rows.size
+            ) {
+                bestPartial = Result(rows, boundary)
+            }
+        }
+
+        directList(
+            source,
+            expectedRows,
+            expectedModelClass,
+            allowPartial
+        )?.let { rows ->
+            if (rows.size == expectedRows) {
+                return Result(rows, "direct")
+            }
+            keepPartial(rows, "direct")
         }
 
         // Room/Rx 4.2.1 can expose a generated DAO read as a Single/Maybe/
@@ -44,45 +64,79 @@ internal object NativeReactiveListReader {
         // Object. Invoking a verified read carrier's no-arg Object-returning
         // terminal is still read-only; accept it only when the runtime result
         // is exactly a List with the already-known Cursor row count.
-        blockingList(source, expectedRows, timeoutMs)?.let { (rows, boundary) ->
-            return Result(rows, boundary)
+        blockingList(
+            source,
+            expectedRows,
+            timeoutMs,
+            expectedModelClass,
+            allowPartial
+        )?.let { (rows, boundary) ->
+            if (rows.size == expectedRows) {
+                return Result(rows, boundary)
+            }
+            keepPartial(rows, boundary)
         }
 
-        val methods = GmmpReflectionPolicy.callableMethods(source.javaClass)
-            .asSequence()
-            .filter { !Modifier.isStatic(it.modifiers) }
-            .filter { it.parameterCount == 1 }
-            .filter { it.parameterTypes.single().isInterface }
-            // Operators such as map/doOnNext generally return the same
-            // reactive source family. A subscribe/observe terminal either
-            // returns void or a different disposable/subscription type.
-            .filter {
-                it.returnType == java.lang.Void.TYPE ||
-                    !it.returnType.isAssignableFrom(source.javaClass)
+        val callbackCandidates =
+            GmmpReflectionPolicy.callableMethods(source.javaClass)
+                .asSequence()
+                .filter { !Modifier.isStatic(it.modifiers) }
+                .filter { it.parameterCount == 1 }
+                .filter { it.parameterTypes.single().isInterface }
+                // Operators such as map/doOnNext generally return the same
+                // reactive source family. A subscribe/observe terminal either
+                // returns void or a different disposable/subscription type.
+                .filter {
+                    it.returnType == java.lang.Void.TYPE ||
+                        !it.returnType.isAssignableFrom(source.javaClass)
+                }
+                .distinctBy {
+                    it.name + "|" + it.parameterTypes.single().name + "|" +
+                        it.returnType.name
+                }
+                .take(12)
+                .toList()
+        // Rx/Room's observer-style terminal is void on the tested 4.2.1
+        // carriers. Prefer those methods so we do not spend multiple timeout
+        // windows speculatively invoking transformation operators.
+        val voidCandidates = callbackCandidates.filter {
+            it.returnType == java.lang.Void.TYPE
+        }
+        val methods = (voidCandidates.ifEmpty { callbackCandidates })
+            .sortedByDescending { method ->
+                observerScore(method.parameterTypes.single())
             }
-            .distinctBy {
-                it.name + "|" + it.parameterTypes.single().name + "|" +
-                    it.returnType.name
-            }
-            .take(12)
-            .toList()
 
         for (method in methods) {
-            subscribeOnce(source, method, expectedRows, timeoutMs)?.let {
-                return Result(
-                    rows = it,
-                    boundary = source.javaClass.name + "." + method.name +
+            subscribeOnce(
+                source,
+                method,
+                expectedRows,
+                timeoutMs,
+                expectedModelClass,
+                allowPartial
+            )?.let { rows ->
+                val boundary =
+                    source.javaClass.name + "." + method.name +
                         "(" + method.parameterTypes.single().name + ")"
-                )
+                if (rows.size == expectedRows) {
+                    return Result(
+                        rows = rows,
+                        boundary = boundary
+                    )
+                }
+                keepPartial(rows, boundary)
             }
         }
-        return null
+        return bestPartial
     }
 
     private fun blockingList(
         source: Any,
         expectedRows: Int,
-        timeoutMs: Long
+        timeoutMs: Long,
+        expectedModelClass: Class<*>?,
+        allowPartial: Boolean
     ): Pair<List<Any>, String>? {
         val methods = GmmpReflectionPolicy.callableMethods(source.javaClass)
             .filter {
@@ -113,11 +167,12 @@ internal object NativeReactiveListReader {
                 future.cancel(true)
                 null
             }
-            val rows = (returned as? List<*>)
-                ?.filterNotNull()
-                ?.map { it }
-                ?.takeIf { it.size == expectedRows }
-                ?: continue
+            val rows = extractRows(
+                returned,
+                expectedRows,
+                expectedModelClass,
+                allowPartial
+            ) ?: continue
             return rows to (
                 source.javaClass.name + "." + method.name +
                     "():blocking-object"
@@ -128,13 +183,16 @@ internal object NativeReactiveListReader {
 
     private fun directList(
         source: Any,
-        expectedRows: Int
+        expectedRows: Int,
+        expectedModelClass: Class<*>?,
+        allowPartial: Boolean
     ): List<Any>? {
-        if (source is List<*>) {
-            return source.filterNotNull()
-                .takeIf { it.size == expectedRows }
-                ?.map { it }
-        }
+        extractRows(
+            source,
+            expectedRows,
+            expectedModelClass,
+            allowPartial
+        )?.let { return it }
         val candidates = GmmpReflectionPolicy.callableMethods(source.javaClass)
             .filter {
                 !Modifier.isStatic(it.modifiers) &&
@@ -148,7 +206,13 @@ internal object NativeReactiveListReader {
                     ?.filterNotNull()
                     ?.map { it }
             }.getOrNull()
-            if (rows?.size == expectedRows) return rows
+            val accepted = extractRows(
+                rows,
+                expectedRows,
+                expectedModelClass,
+                allowPartial
+            )
+            if (accepted != null) return accepted
         }
         return null
     }
@@ -157,7 +221,9 @@ internal object NativeReactiveListReader {
         source: Any,
         method: Method,
         expectedRows: Int,
-        timeoutMs: Long
+        timeoutMs: Long,
+        expectedModelClass: Class<*>?,
+        allowPartial: Boolean
     ): List<Any>? {
         val callbackType = method.parameterTypes.single()
         val callbackMethods = callbackType.methods
@@ -188,21 +254,49 @@ internal object NativeReactiveListReader {
                 "equals" -> return@newProxyInstance proxy === args?.firstOrNull()
             }
 
+            fun acceptRows(rows: List<Any>) {
+                if (rows.isEmpty()) return
+                val model = expectedModelClass ?: rows.first().javaClass
+                if (!rows.all(model::isInstance)) return
+                val expectedClass = streamedRowClass.get()
+                if (expectedClass == null) {
+                    streamedRowClass.compareAndSet(null, model)
+                }
+                if (streamedRowClass.get() != model) return
+                synchronized(streamedRows) {
+                    rows.forEach { row ->
+                        if (streamedRows.none { it === row }) {
+                            streamedRows.add(row)
+                        }
+                    }
+                    if (streamedRows.size == expectedRows) {
+                        result.compareAndSet(
+                            null,
+                            streamedRows.toList()
+                        )
+                        latch.countDown()
+                    }
+                }
+            }
+
             args.orEmpty().forEach { value ->
                 when (value) {
                     is Throwable -> {
                         failure.compareAndSet(null, value)
                         latch.countDown()
                     }
-                    is List<*> -> {
-                        val rows = value.filterNotNull().map { it }
-                        if (rows.size == expectedRows) {
-                            result.compareAndSet(null, rows)
-                            latch.countDown()
-                        }
-                    }
                     null -> Unit
                     else -> {
+                        extractRows(
+                            value,
+                            expectedRows,
+                            expectedModelClass,
+                            allowPartial = true
+                        )?.let { rows ->
+                            acceptRows(rows)
+                            return@forEach
+                        }
+
                         // Reactive Streams Subscriber requires request(n)
                         // before onNext. A subscription/control object must
                         // never be mistaken for a queue entity.
@@ -228,38 +322,18 @@ internal object NativeReactiveListReader {
                             )
                         }
 
-                        // GMMP 4.2.1 d85.W1()/X1() can expose the queue as a
-                        // stream of native entity rows rather than one
-                        // List<row>. Accumulate only homogeneous objects with
-                        // a queue-entity-like numeric shape. The caller still
-                        // performs the authoritative queue_id/song_id/
-                        // queue_position correlation against the read-only
-                        // Cursor before ANY writer is eligible.
+                        // If DAO ownership already proved the concrete entity
+                        // class (r21: queue-specific ww3[] contracts), that
+                        // type is stronger evidence than the old numeric-field
+                        // heuristic. Keep the heuristic only as a legacy
+                        // fallback when no type witness is available.
                         val entityShape =
-                            queueEntityShapeCache.computeIfAbsent(
-                                value.javaClass
-                            ) { looksLikeQueueEntity(value) }
+                            expectedModelClass?.isInstance(value) == true ||
+                                queueEntityShapeCache.computeIfAbsent(
+                                    value.javaClass
+                                ) { looksLikeQueueEntity(value) }
                         if (entityShape) {
-                            val expectedClass = streamedRowClass.get()
-                            if (expectedClass == null) {
-                                streamedRowClass.compareAndSet(
-                                    null, value.javaClass
-                                )
-                            }
-                            if (streamedRowClass.get() == value.javaClass) {
-                                synchronized(streamedRows) {
-                                    if (streamedRows.none { it === value }) {
-                                        streamedRows.add(value)
-                                    }
-                                    if (streamedRows.size == expectedRows) {
-                                        result.compareAndSet(
-                                            null,
-                                            streamedRows.toList()
-                                        )
-                                        latch.countDown()
-                                    }
-                                }
-                            }
+                            acceptRows(listOf(value))
                         } else {
                             cancellation.compareAndSet(null, value)
                         }
@@ -286,7 +360,64 @@ internal object NativeReactiveListReader {
         }
 
         cancelIfUnambiguous(cancellation.get())
-        return result.get()
+        result.get()?.let { return it }
+        if (allowPartial) {
+            synchronized(streamedRows) {
+                if (streamedRows.isNotEmpty()) {
+                    return streamedRows.toList()
+                }
+            }
+        }
+        return null
+    }
+
+    private fun extractRows(
+        value: Any?,
+        expectedRows: Int,
+        expectedModelClass: Class<*>?,
+        allowPartial: Boolean
+    ): List<Any>? {
+        if (value == null) return null
+        val rows: List<Any> = when {
+            expectedModelClass?.isInstance(value) == true ->
+                listOf(value)
+            value is Iterable<*> ->
+                value.filterNotNull().map { it }
+            value.javaClass.isArray -> {
+                val size = java.lang.reflect.Array.getLength(value)
+                (0 until size).mapNotNull { index ->
+                    java.lang.reflect.Array.get(value, index)
+                }
+            }
+            else -> return null
+        }
+        if (rows.isEmpty()) return null
+        if (expectedModelClass != null &&
+            !rows.all(expectedModelClass::isInstance)
+        ) return null
+        return when {
+            rows.size == expectedRows -> rows
+            allowPartial && rows.size < expectedRows -> rows
+            else -> null
+        }
+    }
+
+    private fun observerScore(type: Class<*>): Int {
+        val methods = type.methods.filter {
+            it.declaringClass != Any::class.java
+        }
+        val hasError = methods.any {
+            it.parameterCount == 1 &&
+                Throwable::class.java.isAssignableFrom(it.parameterTypes[0])
+        }
+        val hasValue = methods.any {
+            it.parameterCount == 1 &&
+                !Throwable::class.java.isAssignableFrom(it.parameterTypes[0])
+        }
+        val hasTerminal = methods.any { it.parameterCount == 0 }
+        return (if (hasValue) 4 else 0) +
+            (if (hasError) 2 else 0) +
+            (if (hasTerminal) 1 else 0)
     }
 
     private fun looksLikeQueueEntity(value: Any): Boolean {

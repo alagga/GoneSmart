@@ -486,3 +486,21 @@ The r20 device log disproves two assumptions and narrows the remaining Queue bou
 | Track Auto-DJ / Queue Flip write path | downstream of entity reader | same native entity/update/delete bridge, verified/rolled back by Cursor | only the first downstream unique failure |
 
 Do not request separate probe builds for these items. CI must pass the full unit suite, debug APK and unsigned release smoke build first. The next real-device pass is one consolidated four-boundary check: Playlist contextual close, Add-picker selection/Back colors, Track Auto-DJ, Queue Flip.
+
+
+### GMMP 4.2.1 r22 — queue entity ownership from the generated DAO hierarchy
+
+The r21 host log narrows both remaining playback failures to one shared boundary. The read-only queue snapshot succeeds with 54 rows and current state resolves through `qr.t -> ur.method:b`, but both Track Auto-DJ isolation and Queue Flip abort because the mutation bridge cannot yet materialize the generated Queue DAO entities. The failure is therefore **not** a Cursor/Room read regression.
+
+New accepted evidence and resolver policy:
+
+- `d85` is the generated Queue DAO implementation. Its no-arg read carriers remain `W1():xp4` and `X1():jm1`.
+- The nearest queue-specific superclass exposes array contracts whose component type is `ww3`; the more distant generic DAO base exposes `pz4[]`. This hierarchy distance is stronger ownership evidence than a callback object's field-count heuristic.
+- r22 derives the expected native entity class from that nearest non-Java, non-`Object[]` array contract. Ambiguity at the nearest hierarchy level fails closed.
+- The reactive reader receives that concrete type witness. It may collect bounded homogeneous partial entity emissions from either `W1` or `X1`; partials are merged only if their structurally deduplicated total matches the already-known Cursor row count.
+- **No writer becomes eligible from type ownership alone.** The existing one-to-one validation against Cursor `queue_id`, `song_id` and `queue_position` remains mandatory, followed by the existing post-write Cursor verification/rollback path.
+- Observer-style void callback terminals are tried before transformation-like reactive operators. This both matches the tested Rx/Room carrier shape and avoids multiplying per-action timeout latency.
+
+Probe status: `gmmp421-r22` adds no broad inventory. It promotes the already logged `y75.*(ww3[])` relationship into a resolver + JVM contract tests. Keep `QUEUE REACTIVE SHAPE` only while the entity reader remains unverified on-device; retire it immediately after a successful mutation mapping.
+
+Manual validation remains one combined host-only check: Track Auto-DJ from a Queue row, then Queue Flip. Previously accepted Playlist selection/color, Smart DJ, folder creation and navigation flows are outside this retest.

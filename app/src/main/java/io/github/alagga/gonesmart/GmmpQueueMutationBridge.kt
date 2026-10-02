@@ -219,6 +219,8 @@ internal class GmmpQueueMutationBridge(
         // class/superclass-only scan. Interface Method.invoke still dispatches
         // on the concrete DAO instance; failed contracts are ignored below.
         val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
+        val entityTypeHint =
+            NativeQueueEntityTypeResolver.resolve(dao.javaClass, methods)
         val listReaders = methods.filter {
             !Modifier.isStatic(it.modifiers) &&
                 it.parameterCount == 0 &&
@@ -270,6 +272,8 @@ internal class GmmpQueueMutationBridge(
                 allReactiveReaders
             }
         val unresolvedCarrierShapes = arrayListOf<String>()
+        val partialReactiveRows =
+            arrayListOf<Pair<String, List<Any>>>()
         reactiveReaders.take(6).forEach { method ->
             val source = runCatching {
                 method.isAccessible = true
@@ -277,12 +281,20 @@ internal class GmmpQueueMutationBridge(
             }.getOrNull() ?: return@forEach
             val snapshot = NativeReactiveListReader.read(
                 source = source,
-                expectedRows = context.items.size
+                expectedRows = context.items.size,
+                timeoutMs = 650L,
+                expectedModelClass = entityTypeHint,
+                allowPartial = entityTypeHint != null
             )
             if (snapshot != null) {
-                listCandidates +=
-                    (method.declaringClass.name + "." + method.name +
-                        "->" + snapshot.boundary) to snapshot.rows
+                val sourceName =
+                    method.declaringClass.name + "." + method.name +
+                        "->" + snapshot.boundary
+                if (snapshot.rows.size == context.items.size) {
+                    listCandidates += sourceName to snapshot.rows
+                } else {
+                    partialReactiveRows += sourceName to snapshot.rows
+                }
             } else {
                 val carrierMethods =
                     GmmpReflectionPolicy.callableMethods(source.javaClass)
@@ -305,6 +317,32 @@ internal class GmmpQueueMutationBridge(
             }
         }
 
+        // W1/X1 may expose different reactive views of the same native
+        // entity stream. Once the nearest queue-specific DAO contract proves
+        // the concrete entity type, combine bounded partial emissions and
+        // deduplicate them by their numeric native-row fingerprint. This is
+        // still discovery only: the queue_id/song_id/queue_position checks
+        // below remain mandatory before a writer becomes eligible.
+        if (entityTypeHint != null && partialReactiveRows.isNotEmpty()) {
+            val compatible = partialReactiveRows
+                .flatMap { it.second }
+                .filter(entityTypeHint::isInstance)
+            val deduped = linkedMapOf<String, Any>()
+            compatible.forEach { row ->
+                deduped.putIfAbsent(
+                    nativeRowFingerprint(listOf(row)),
+                    row
+                )
+            }
+            if (deduped.size == context.items.size) {
+                listCandidates +=
+                    ("reactive-aggregate:" +
+                        partialReactiveRows.joinToString("+") {
+                            it.first + "#" + it.second.size
+                        }) to deduped.values.toList()
+            }
+        }
+
         val distinctCandidates = listCandidates.distinctBy { (_, rows) ->
             nativeRowFingerprint(rows)
         }
@@ -320,6 +358,8 @@ internal class GmmpQueueMutationBridge(
             }
             error(
                 "GMMP native queue entity reader is not unique: " +
+                    "entityHint=" +
+                    (entityTypeHint?.name ?: "none") + "; " +
                     distinctCandidates.joinToString(",") { (source, rows) ->
                         source + "#" + rows.size
                     }.ifBlank {
@@ -438,6 +478,8 @@ internal class GmmpQueueMutationBridge(
             TAG,
             "QUEUE MUTATION MAPPING | dao=" + dao.javaClass.name +
                 " | model=" + modelClass.name +
+                " | entityHint=" +
+                (entityTypeHint?.name ?: "none") +
                 " | readRows=" + rows.size +
                 " | queueId=" + queueId.name +
                 " | trackId=" + trackId.name +

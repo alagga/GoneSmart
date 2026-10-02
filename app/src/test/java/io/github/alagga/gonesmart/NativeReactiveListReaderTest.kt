@@ -113,6 +113,54 @@ class NativeReactiveListReaderTest {
         assertTrue(source.disposable.disposed)
     }
 
+    private data class OpaqueQueueRow(
+        val key: String
+    )
+
+    private class OpaqueItemStreamSource(
+        private val rows: List<OpaqueQueueRow>
+    ) {
+        fun subscribe(receiver: Receiver): Disposable {
+            rows.forEach(receiver::accept)
+            return Disposable()
+        }
+    }
+
+    @Test fun provenEntityTypeOverridesNumericShapeHeuristic() {
+        val result = NativeReactiveListReader.read(
+            source = OpaqueItemStreamSource(
+                listOf(
+                    OpaqueQueueRow("a"),
+                    OpaqueQueueRow("b"),
+                    OpaqueQueueRow("c")
+                )
+            ),
+            expectedRows = 3,
+            timeoutMs = 100,
+            expectedModelClass = OpaqueQueueRow::class.java,
+            allowPartial = true
+        )
+
+        assertEquals(3, result?.rows?.size)
+    }
+
+    @Test fun returnsBoundedPartialEntityStreamForCrossCarrierAggregation() {
+        val result = NativeReactiveListReader.read(
+            source = OpaqueItemStreamSource(
+                listOf(
+                    OpaqueQueueRow("a"),
+                    OpaqueQueueRow("b")
+                )
+            ),
+            expectedRows = 3,
+            timeoutMs = 100,
+            expectedModelClass = OpaqueQueueRow::class.java,
+            allowPartial = true
+        )
+
+        assertEquals(2, result?.rows?.size)
+    }
+
     @Test fun directListStillWorksWithoutReactiveReflection() {
         val result = NativeReactiveListReader.read(
             source = listOf(Any(), Any()),

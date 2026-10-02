@@ -87,3 +87,8 @@ Flip's contextual menu now requires the **actual installed** GMMP `queue` resour
 The 2026-10-02 r17 device log proves that queue reading/current-entry resolution now works through the read-only Cursor before Flip fails. The remaining queue-Flip failure is native generated-DAO entity discovery, so r18 extends discovery to callable inherited interface methods and still requires row-by-row correlation against Cursor `queue_id`, `song_id` and `queue_position` before any GMMP writer is invoked. Direct SQL mutation remains forbidden.
 
 For Playlist Play Flipped, GMMP 4.2.1 no longer satisfies the exact 4.2.0 `MusicService.w1(int,Object,List)` lookup. r18 resolves a unique host playback method by the semantic three-argument shape (one action int + one resolved List), reverses only that List for the pending request, and verifies the resulting queue through the accepted Cursor reader; the legacy `ex3` verifier remains the 4.2.0 fallback.
+
+
+## GMMP 4.2.1 r22 queue-entity note
+
+The r21 device log proves Queue Flip reaches the accepted read-only Cursor snapshot, then fails in the shared native mutation bridge because no full generated-DAO entity set is materialized. r22 derives the queue-specific native entity type from the nearest generated DAO array contract (`y75 -> ww3[]` on the tested build), uses that type to read/merge bounded `d85.W1()/X1()` reactive emissions, and still requires exact Cursor identity correlation before `O0/P0` or any other existing GMMP writer is eligible. This is the same mutation boundary used by Track Auto-DJ; retest the two together once, not as separate probe loops.

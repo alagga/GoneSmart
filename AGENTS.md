@@ -383,3 +383,11 @@ These are not regressions in the accepted 4.2.0 feature flows, but they remain e
 - Prefer the concrete writer owned by the verified generated DAO over inherited legacy method names. The old 4.2.0 `O/O0` names are fast-path hints, not ownership proof after R8 remapping. Keep the existing post-write Cursor verification and rollback/fail-close behavior.
 - r21 adds no broad Recycler/Room inventory. Keep only the existing bounded `QUEUE REACTIVE SHAPE` failure diagnostic until one entity-reader path is device-verified; then retire it. Automated coverage now includes streamed native-entity aggregation and the stable AppCompat ActionMode-close resource contract.
 - The next manual pass is one consolidated host-only check of exactly the still-touched boundaries: normal Playlist selection close/back, Add-picker selection/bar color + close flash, Track Auto-DJ, and Queue Flip. Do not repeat Smart DJ, Smart folders, navigation layouts, creation, or other accepted flows.
+
+
+### GMMP 4.2.1 r22 queue-entity correction (2026-10-02)
+
+- The r21 device pass proves the read-only Queue Cursor and current-entry resolver are working; Track Auto-DJ and Queue Flip now fail at the same remaining boundary: native Queue entity discovery in `GmmpQueueMutationBridge`.
+- Do not infer Queue entities only from a generic “three numeric fields” callback heuristic. The generated `d85` hierarchy itself exposes the concrete queue-specific entity family through the nearest non-generic array contract (r21 runtime: `y75.*(ww3[])`), while the more distant generic base DAO exposes `pz4[]`. Prefer that nearest semantic type witness and fail closed if the nearest level is ambiguous.
+- Repeatedly installing tiny reactive-carrier probes is not acceptable here. Feed the proven entity type into the existing `W1()/X1()` read-only carrier bridge, allow bounded partial emissions from each carrier, combine them only when they are homogeneous and deduplicate structurally, then still require exact one-to-one Cursor correlation of `queue_id + song_id + queue_position` before resolving any writer.
+- Once this entity path verifies on-device, retire the `QUEUE REACTIVE SHAPE` failure diagnostic and keep only the compact accepted mapping. Track Auto-DJ and Queue Flip share this mutation boundary, so they should be retested together in one host-only pass rather than separately.

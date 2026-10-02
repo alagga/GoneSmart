@@ -81,3 +81,8 @@ The action now fails closed when **either** required original GMMP `track` or `a
 ## GMMP 4.2.1 r18 compatibility note
 
 The 2026-10-02 r17 device log shows that native Play does switch to the selected queue entry, but GMMP 4.2.1 continues asynchronously reshaping the rest of the queue. The previous whole-`Snapshot` stability check therefore produced a false `The selected song did not start` timeout even though playback had already changed. r18 treats a stable current queue-entry ID + track ID as the Play postcondition (track-ID fallback for the legacy path), then proceeds to the same guarded native queue-isolation and refill sequence. The identity policy is covered by a JVM regression test; the generated 4.2.1 Queue DAO mutation remains the only native integration boundary needing device confirmation.
+
+
+## GMMP 4.2.1 r22 queue-entity note
+
+The r21 device pass confirms native Play and the current-song postcondition before Track Auto-DJ fails: the selected track becomes current, but queue isolation cannot start because the shared 4.2.1 mutation bridge has no verified generated Queue entity set. r22 resolves the concrete entity family from the nearest queue-specific DAO array contract (`ww3[]` on the tested runtime), feeds that type witness into the bounded `W1()/X1()` reactive reader and permits cross-carrier partial aggregation only before the existing strict `queue_id + song_id + queue_position` correlation. Queue Flip uses the same bridge, so one combined host check covers both remaining features.
