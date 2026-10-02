@@ -3,6 +3,7 @@ package io.github.alagga.gonesmart
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,6 +38,19 @@ class GmmpReadOnlyQueryShapeTest {
         private var capacity: Int = slots
         @Suppress("unused")
         private var argCount: Int = 0
+        @Suppress("unused")
+        private var sql: String? = null
+    }
+
+    private class ZeroArgAmbiguousPooledQuery private constructor(
+        slots: Int
+    ) {
+        @Suppress("unused")
+        private var capacity: Int = slots
+        @Suppress("unused")
+        private var argCount: Int = 0
+        @Suppress("unused")
+        private var scratch: Int = 0
         @Suppress("unused")
         private var sql: String? = null
     }
@@ -115,6 +129,26 @@ class GmmpReadOnlyQueryShapeTest {
             .apply { isAccessible = true }.getInt(query)
         assertEquals("SELECT * FROM queue_table", sql)
         assertEquals(4, count)
+    }
+
+    @Test fun zeroArgDirectCarrierDoesNotGuessBetweenZeroIntFields() {
+        val query = GmmpReadOnlyQueryShape.newDirectCarrier(
+            ZeroArgAmbiguousPooledQuery::class.java,
+            "SELECT * FROM tracks",
+            0
+        )
+        assertNotNull(query)
+        val sql = query!!.javaClass.getDeclaredField("sql")
+            .apply { isAccessible = true }.get(query)
+        assertEquals("SELECT * FROM tracks", sql)
+
+        assertNull(
+            GmmpReadOnlyQueryShape.newDirectCarrier(
+                ZeroArgAmbiguousPooledQuery::class.java,
+                "SELECT * FROM tracks WHERE song_id = ?",
+                1
+            )
+        )
     }
 
     @Test fun keepsLegacyAndInterfaceShapes() {

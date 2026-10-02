@@ -129,6 +129,15 @@ internal object GmmpReadOnlyQueryShape {
         val (sqlField, _) = directFieldLayout(type) ?: return null
         sqlField.isAccessible = true
         sqlField.set(query, sql)
+
+        // All current GoneSmart 4.2.1 Cursor fallbacks are deliberately
+        // parameter-free. Room's pooled carrier starts with argCount=0, so
+        // there is no reason to guess which one of several zero-valued R8 int
+        // fields owns that count. Setting only the uniquely verified SQL
+        // field is both sufficient and safer. Non-zero queries remain
+        // fail-closed until their argument-count ownership is unique.
+        if (argumentCount == 0) return query
+
         val argCount = directArgumentCountField(query, capacity)
             ?: return null
         argCount.isAccessible = true

@@ -38,6 +38,23 @@ class AncestorOwnershipPolicyTest {
         )
     }
 
+    @Test fun syntheticPickerRowCanBeResolvedThroughDeepViewHierarchy() {
+        val row = Node("overlay-row", directRow = true)
+        var node = row
+        repeat(18) { index ->
+            node = Node("nested$index", node)
+        }
+
+        val resolved = AncestorOwnershipPolicy.directOwnedAncestor(
+            start = node,
+            maxDepth = 32,
+            parentOf = { it.parent },
+            isDirectOwnedChild = { it.directRow }
+        )
+
+        assertEquals(row, resolved)
+    }
+
     @Test fun traversalIsBounded() {
         var node = Node("row", directRow = true)
         repeat(20) { index ->

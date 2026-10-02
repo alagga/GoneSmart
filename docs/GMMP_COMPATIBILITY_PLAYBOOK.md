@@ -370,3 +370,26 @@ Before asking for a real-device pass, CI must pass all existing tests plus:
 - ActionMode callback-before-layout does not clear selection; disappearance after an actually visible native bar does.
 
 Only after those contracts, debug APK, unsigned release APK and artifact upload succeed should a device run be requested. The next real-device pass is intended to validate host-only integration: SQL invocation inside GMMP, one Playlist Back teardown, Smart native-shell creation across tabs, Add-picker multi-select dispatch, and the shared queue mutation/read path. Do not repeat unrelated accepted flows.
+
+
+## 4.2.1 r17 device evidence and probe graduation
+
+The latest consolidated log closes four more ambiguities without adding another exploratory inventory:
+
+- **Zero-argument Room carrier:** the unique database boundary is still `f94.q(p94): Cursor`. r16 successfully reached the direct `p94(int)` carrier but failed while trying to distinguish its integer fields. The failing GoneSmart queries are all parameter-free: Queue snapshot, Library snapshot and ampersand Artist catalog pass no bind arguments. For this proven case set only the uniquely owned mutable SQL String after constructing the carrier and preserve Room's default zero argument count. This avoids writing any ambiguous int field. Parameterized direct-carrier queries remain unsupported/fail-closed until a stronger argument-count owner is proven. A JVM regression fixture includes multiple zero-valued int fields to prevent reintroducing the false uniqueness requirement.
+- **Normal Playlist Back presentation:** Logcat reports the native ActionMode ending and the GoneSmart selection mirror clearing, while the maintainer still sees the old row tint until the next scroll. The failure is therefore drawable invalidation/order, not selection state. Restore each captured native foreground, pressed/selected/activated state and drawable state immediately, request one layout, then reapply once on the next animation frame after GMMP's ActionMode teardown transaction.
+- **Add-to-Playlist overlay ancestry:** the picker session is valid (`playlistListRecyclerView + playlistFab`), but the long-click arrives from a deeply nested synthetic TextView. The native direct-row resolver correctly rejects it because the synthetic row is not a child of the hidden native RecyclerView. The overlay path must first walk to the registered GoneSmart row/model; its bounded depth is widened to 32 and covered by a deep-hierarchy JVM test.
+- **Smart creation shell lease:** the normal Playlist top-level menu was discovered through the live `ActionMenuView` path, not the earlier menu-inflation path, so r16 never handed that menu to `NativeGmmpFolderCreator`. The Smart tab consequently fell back to `DialogFileChooserExtKt.showNewFolderCreator`, which explains the red Cancel/cursor/underline. The live ActionMenu capture now also leases the exact native `menuAdd`; Smart creation therefore reuses the same accepted New Playlist shell instead of repainting the legacy prompt.
+- **Smart selection palette:** Smart selection is extension-owned and had fallen to `#ff36a8be`. Normal Playlist selection is GMMP-owned and supplies the authoritative visible ActionMode color. Cache only that explicitly observed native selection color and reuse it for Smart ActionMode/row overlays. If it has not been observed, wait for the real Smart ActionMode bar for several frames before using the final fallback; do not recertify stale `colorAccent` or black `colorPrimary`.
+
+**Probe status:** r17 increments the compatibility revision for traceability but introduces no broad class/Recycler inventory. The supplied log already proves the current failure layer. Playlist/Smart Recycler mappings stay retired. Queue/Rule diagnostics remain bounded until the first successful read-only SQL invocation exposes or clears any deeper queue-current/mutation ambiguity.
+
+### r17 automated gate
+
+Before another device pass, CI must additionally prove:
+- zero-argument direct Room carrier succeeds even with multiple zero-valued int fields;
+- non-zero ambiguous direct carrier still fails closed;
+- synthetic picker overlay target resolves through a deep but bounded hierarchy;
+- existing descendant bound remains fail-closed beyond the configured limit.
+
+The next device check should remain one consolidated run: Playlist Back repaint, Smart selection/native-shell colors, Add-picker multi-select, normal Auto-DJ and Track Auto-DJ. Any queue-current/mutation failure that appears only after SQL succeeds should be handled from that same log rather than by splitting these into separate probe builds.

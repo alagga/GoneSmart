@@ -89,6 +89,7 @@ internal class PlaylistMultiSelectController {
 
     private var active: Session? = null
     @Volatile private var lastVerifiedNativeFabTint: Int? = null
+    @Volatile private var lastVerifiedNativeSelectionTint: Int? = null
     private var folderSelectionChanged: ((ViewGroup) -> Unit)? = null
 
     fun setFolderSelectionChangedListener(listener: (ViewGroup) -> Unit) {
@@ -124,6 +125,24 @@ internal class PlaylistMultiSelectController {
         (findContextBar(list.rootView)?.background as? ColorDrawable)?.color
 
     /**
+     * Normal Playlists multi-select is GMMP-owned and therefore the strongest
+     * available live palette witness for extension-owned Smart selection.
+     * Cache only that explicitly observed native color; Smart ActionMode must
+     * not self-certify its own fallback styling.
+     */
+    fun rememberNativeSelectionAccent(color: Int) {
+        if (isUsableSelectionColor(color)) {
+            lastVerifiedNativeSelectionTint = color
+        }
+    }
+
+    fun verifiedNativeSelectionAccent(): Int? =
+        lastVerifiedNativeSelectionTint?.takeIf(::isUsableSelectionColor)
+
+    fun visibleContextSelectionAccent(list: ViewGroup): Int? =
+        nativeContextBarColor(list)?.takeIf(::isUsableSelectionColor)
+
+    /**
      * Same 50% native-primary overlay used by the accepted playlist
      * multi-selection, but without requiring the Add-picker Session.
      * Resolve it once when a standalone Smart selection starts so the first
@@ -145,7 +164,9 @@ internal class PlaylistMultiSelectController {
             ?.let { themeColor(view, it) }
             ?.takeIf(::isUsableSelectionColor)
 
-        return contextBar
+        return lastVerifiedNativeSelectionTint
+            ?.takeIf(::isUsableSelectionColor)
+            ?: contextBar
             ?: nativeHighlight
             ?: controlHighlight
             ?: lastVerifiedNativeFabTint

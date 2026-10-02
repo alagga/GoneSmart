@@ -14,9 +14,11 @@ import java.lang.reflect.Proxy
  * This intentionally resolves by semantic structure instead of R8 names.
  * GMMP 4.2.0 used a concrete (String,Object[]) query wrapper. GMMP 4.2.1
  * exposes an R8-renamed Room pooled query object (p94) whose visible
- * constructor is only (int); the SQL-aware instance is obtained through
- * Room's static acquire-style (String,int) factory. Some builds may expose
- * the SupportSQLiteQuery contract as an interface. All paths stay read-only.
+ * constructor is only (int). On the tested 4.2.1 build the acquire/init
+ * helpers are inlined/renamed away; for parameter-free read-only queries we
+ * initialize only the uniquely verified mutable SQL field and leave Room's
+ * default argument count at zero. Some builds may expose the
+ * SupportSQLiteQuery contract as an interface. All paths stay read-only.
  */
 internal object GmmpReadOnlySql {
     private const val TAG = "GoneSmart"

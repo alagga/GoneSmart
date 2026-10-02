@@ -2258,6 +2258,9 @@ internal class PlaylistFolderPreviewController(
                         val chromeVisible = nativeChromeColor != null
                         if (chromeVisible) {
                             browser.nativeSelectionChromeSeen = true
+                            nativeChromeColor?.let(
+                                multiSelect::rememberNativeSelectionAccent
+                            )
                             if (browser.liveSelectionAccent !=
                                 nativeChromeColor
                             ) {
@@ -3524,10 +3527,32 @@ internal class PlaylistFolderPreviewController(
         browser.pendingMainSelection.clear()
         browser.mainSelection.clear()
         browser.nativeSelectionChromeSeen = false
-        browser.mainRenderedPlaylistRows.forEach { (_, row) ->
-            if (row.parent === browser.rows) {
+
+        fun restoreRows() {
+            browser.mainRenderedPlaylistRows.forEach { (_, row) ->
+                if (row.parent !== browser.rows) return@forEach
+                clearPressedState(row)
+                row.isSelected = false
+                row.isActivated = false
                 row.foreground = browser.mainOriginalRowForegrounds[row]
+                row.jumpDrawablesToCurrentState()
                 row.invalidate()
+            }
+            browser.rows.invalidate()
+            browser.overlay.invalidate()
+        }
+
+        // Restore immediately and once after GMMP's ActionMode teardown has
+        // committed its own drawable-state transaction. r16 logs proved the
+        // selection state was already cleared while the old foreground stayed
+        // painted until the next scroll/layout.
+        restoreRows()
+        browser.rows.requestLayout()
+        browser.rows.postOnAnimation {
+            if (browsers[browser.list] === browser &&
+                !browser.mainSelection.isSelecting
+            ) {
+                restoreRows()
             }
         }
     }
@@ -3731,21 +3756,19 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun pickerOverlayTarget(view: View?): PickerOverlayTarget? {
-        var current = view
-        repeat(10) {
-            val node = current ?: return null
-            pickerOverlayTargets[node]?.let { target ->
-                val list = target.list.get() ?: return@let
-                if (list.isAttachedToWindow &&
-                    isPicker(list) &&
-                    browsers.containsKey(list)
-                ) {
-                    return target
-                }
-            }
-            current = node.parent as? View
+        val row = AncestorOwnershipPolicy.directOwnedAncestor(
+            start = view,
+            maxDepth = 32,
+            parentOf = { it.parent as? View },
+            isDirectOwnedChild = { pickerOverlayTargets.containsKey(it) }
+        ) ?: return null
+        val target = pickerOverlayTargets[row] ?: return null
+        val list = target.list.get() ?: return null
+        return target.takeIf {
+            list.isAttachedToWindow &&
+                isPicker(list) &&
+                browsers.containsKey(list)
         }
-        return null
     }
 
     fun interceptPickerOverlayLongClick(view: View?): Boolean {
@@ -4557,6 +4580,14 @@ internal class PlaylistFolderPreviewController(
             val menu = best?.menu
             if (menu != null) {
                 playlistTabMenu = WeakReference(menu)
+                // 4.2.1 often exposes the real top-level menu only through
+                // the live ActionMenuView path, bypassing onMenuInflated().
+                // Lease this exact native menuAdd for Smart-folder creation
+                // so it can reuse the visually correct New Playlist shell.
+                NativeGmmpFolderCreator.observeMainPlaylistMenu(
+                    list.context,
+                    menu
+                )
                 installNativeNewFolderMenu(menu, list.context)
                 updatePlaylistMenu()
                 Log.i(

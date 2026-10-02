@@ -2358,8 +2358,12 @@ internal class SmartPlaylistFolderController(
         browser.selectionOverlayColor = null
     }
 
-    private fun smartSelectionOverlayColor(browser: Browser): Int {
-        val accent = multiSelect.standaloneSelectionAccent(browser.list)
+    private fun smartSelectionOverlayColor(
+        browser: Browser,
+        accentOverride: Int? = null
+    ): Int {
+        val accent = accentOverride
+            ?: multiSelect.standaloneSelectionAccent(browser.list)
         Log.i(
             TAG,
             "SMART MULTI STYLE | resolved native selection=#" +
@@ -2371,6 +2375,47 @@ internal class SmartPlaylistFolderController(
             Color.green(accent),
             Color.blue(accent)
         )
+    }
+
+    private fun resolveSmartSelectionAccent(
+        browser: Browser,
+        attempt: Int = 0
+    ) {
+        val list = browser.list
+        list.postOnAnimation {
+            if (browsers[list] !== browser ||
+                browser.selectionActionMode == null ||
+                browser.selectedSmartPaths.isEmpty()
+            ) return@postOnAnimation
+
+            val verified = multiSelect.verifiedNativeSelectionAccent()
+            val accent = verified
+                ?: multiSelect.visibleContextSelectionAccent(list)
+            if (accent != null) {
+                if (verified != null) {
+                    // Smart selection is extension-owned. Reuse the exact
+                    // native Playlists ActionMode color when that stronger
+                    // witness has already been observed in this GMMP process.
+                    multiSelect.tintNativeContextBar(list, verified)
+                }
+                val overlay = smartSelectionOverlayColor(browser, accent)
+                if (browser.selectionOverlayColor != overlay) {
+                    browser.selectionOverlayColor = overlay
+                    syncVisibleSmartRowInteractions(browser)
+                }
+                return@postOnAnimation
+            }
+
+            if (attempt < 5) {
+                resolveSmartSelectionAccent(browser, attempt + 1)
+            } else {
+                // Final fail-open visual fallback only after giving the real
+                // ActionMode several frames to become visible.
+                browser.selectionOverlayColor =
+                    smartSelectionOverlayColor(browser)
+                syncVisibleSmartRowInteractions(browser)
+            }
+        }
     }
 
     private fun selectionTitle(
@@ -2430,8 +2475,12 @@ internal class SmartPlaylistFolderController(
         browser.selectionActionMode?.let {
             it.title = selectionTitle(browser, browser.selectedSmartPaths.size)
             if (browser.selectionOverlayColor == null) {
-                browser.selectionOverlayColor =
-                    smartSelectionOverlayColor(browser)
+                multiSelect.verifiedNativeSelectionAccent()?.let { accent ->
+                    browser.selectionOverlayColor =
+                        smartSelectionOverlayColor(browser, accent)
+                    multiSelect.tintNativeContextBar(browser.list, accent)
+                }
+                resolveSmartSelectionAccent(browser)
             }
             return
         }
@@ -2492,8 +2541,12 @@ internal class SmartPlaylistFolderController(
             browser.suppressSelectionUpPath = null
             browser.selectionOverlayColor = null
         } else if (browser.selectionOverlayColor == null) {
-            browser.selectionOverlayColor =
-                smartSelectionOverlayColor(browser)
+            multiSelect.verifiedNativeSelectionAccent()?.let { accent ->
+                browser.selectionOverlayColor =
+                    smartSelectionOverlayColor(browser, accent)
+                multiSelect.tintNativeContextBar(browser.list, accent)
+            }
+            resolveSmartSelectionAccent(browser)
         }
     }
 
@@ -2583,17 +2636,17 @@ internal class SmartPlaylistFolderController(
             val selected = path in browser.selectedSmartPaths
             if (selected) {
                 val color = browser.selectionOverlayColor
-                    ?: smartSelectionOverlayColor(browser)
-                        .also { browser.selectionOverlayColor = it }
-                var overlay = browser.selectionOverlays[row]
-                if (overlay == null) {
-                    overlay = ColorDrawable(color)
-                    browser.selectionOverlays[row] = overlay
-                    row.overlay.add(overlay)
-                } else if (overlay.color != color) {
-                    overlay.color = color
+                if (color != null) {
+                    var overlay = browser.selectionOverlays[row]
+                    if (overlay == null) {
+                        overlay = ColorDrawable(color)
+                        browser.selectionOverlays[row] = overlay
+                        row.overlay.add(overlay)
+                    } else if (overlay.color != color) {
+                        overlay.color = color
+                    }
+                    overlay.setBounds(0, 0, row.width, row.height)
                 }
-                overlay.setBounds(0, 0, row.width, row.height)
             } else {
                 browser.selectionOverlays.remove(row)?.let {
                     row.overlay.remove(it)
