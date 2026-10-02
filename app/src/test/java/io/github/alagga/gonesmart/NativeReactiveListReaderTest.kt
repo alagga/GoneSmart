@@ -161,6 +161,32 @@ class NativeReactiveListReaderTest {
         assertEquals(2, result?.rows?.size)
     }
 
+    @Test fun exactBlockingListCanUseItsRuntimeEntityTypeInsteadOfHint() {
+        val source = BlockingCarrier(
+            listOf(
+                QueueRow(1L, 11L, 1),
+                QueueRow(2L, 22L, 2),
+                QueueRow(3L, 33L, 3)
+            )
+        )
+        assertNull(
+            NativeReactiveListReader.read(
+                source = source,
+                expectedRows = 3,
+                timeoutMs = 100,
+                expectedModelClass = OpaqueQueueRow::class.java
+            )
+        )
+        val exact = NativeReactiveListReader.read(
+            source = source,
+            expectedRows = 3,
+            timeoutMs = 100,
+            expectedModelClass = null
+        )
+        assertEquals(3, exact?.rows?.size)
+        assertTrue(exact?.rows?.all { it is QueueRow } == true)
+    }
+
     @Test fun directListStillWorksWithoutReactiveReflection() {
         val result = NativeReactiveListReader.read(
             source = listOf(Any(), Any()),

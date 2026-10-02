@@ -146,3 +146,10 @@ The maintainer confirmed on 30 September 2026 that the atomic first-frame/detail
 - CI verifies source/build behavior; real injected UI still requires device testing after relevant changes.
 
 See [Playlist folders](PLAYLIST_FOLDERS.md), [Playlist Link](SMART_PLAYLIST_LINKS.md), [native audit](NATIVE_GMMP_AUDIT.md), [design system](DESIGN_SYSTEM.md), and [AGENTS.md](../AGENTS.md).
+
+
+## GMMP 4.2.1 r24 detail-return projection guard
+
+The r23 device log proves the nested Smart-folder projection is restored correctly first, then GMMP replaces the live `is4.x` differ with the full physical root a few hundred milliseconds later. The old count-drift repair therefore runs too late to prevent a visible one-frame flash.
+
+r24 keeps the accepted native Smart rows and adds a narrow direct guard at the verified live AsyncListDiffer instance. An external GMMP list submit is suppressed only after GoneSmart's current-folder projection is already committed and only when the incoming model paths differ from that projection. GoneSmart's own submit is explicitly reentrant and always proceeds. Background Smart lists are never alpha-hidden; a suppressed root submit simply preserves the current projection and triggers a current-folder refresh, so real file changes still propagate without exposing all Smart Playlists on Back.

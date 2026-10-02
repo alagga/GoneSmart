@@ -91,3 +91,10 @@ The r21 device pass confirms native Play and the current-song postcondition befo
 ## GMMP 4.2.1 r23 generated-entity fallback
 
 The r22 host log shows Track Auto-DJ now passes native Play/current-song verification: the requested Queue track is already reported as Current before isolation begins. The remaining failure is identical to Queue Flip: the 4.2.1 generated Queue DAO entities cannot be materialized from `W1()/X1()`. r23 uses the same generated Room fake-binder proof to reconstruct only fully validated `ww3` entities from the already-verified Cursor snapshot, then keeps the original native delete/update + Cursor-verification isolation sequence. No direct SQL mutation is introduced, and this remains one shared Track Auto-DJ/Queue Flip device boundary.
+
+
+## GMMP 4.2.1 r24 queue entity correction
+
+The latest host log verifies native Play and Current-song detection before Track Auto-DJ isolation fails. The remaining failure is the same generated Queue DAO entity boundary as Queue Flip: `ww3` is queue-specific but is not proven to be the writable Room row.
+
+r24 reads the actual runtime list materialized by `d85.W1()/X1()` without imposing `ww3`, then requires exact Cursor identity correlation before invoking any native writer. The existing isolation semantics remain unchanged: keep the selected current queue entry, remove only the other entries through GMMP's DAO, normalize the current position, verify the resulting one-row queue, and only then allow Auto-DJ refill.

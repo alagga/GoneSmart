@@ -46,6 +46,31 @@ internal object SmartNativeSubmissionPolicy {
             )
 
     /**
+     * Direct AsyncListDiffer interception happens after a GoneSmart projection
+     * is already committed. At that point a mismatching external GMMP submit
+     * is exactly the transient root replacement that causes a one-frame flash.
+     * Unlike first-attach masking this may also protect an attached background
+     * Smart list because no alpha/lifecycle state is changed: the committed
+     * projection stays visible and the controller refreshes that same folder.
+     */
+    fun shouldSuppressExternalDifferSubmit(
+        projectionPrepared: Boolean,
+        nativeContentReady: Boolean,
+        currentIsRoot: Boolean,
+        otherLocations: Boolean,
+        groupRootPlaylists: Boolean,
+        incomingMatchesProjection: Boolean
+    ): Boolean =
+        !incomingMatchesProjection &&
+            shouldSuppressNativeRootRefresh(
+                projectionPrepared = projectionPrepared,
+                nativeContentReady = nativeContentReady,
+                currentIsRoot = currentIsRoot,
+                otherLocations = otherLocations,
+                groupRootPlaylists = groupRootPlaylists
+            )
+
+    /**
      * The native RecyclerView may be revealed only after AsyncListDiffer has
      * committed the expected item count and no currently bound native holder
      * belongs to a stale dataset.

@@ -97,3 +97,10 @@ The r21 device log proves Queue Flip reaches the accepted read-only Cursor snaps
 ## GMMP 4.2.1 r23 generated-entity fallback
 
 The r22 device run confirms Queue Flip reads the complete 54-row queue and current entry correctly, then fails only because `W1()/X1()` do not expose the generated `ww3` entity set through the bounded reactive readers. r23 therefore stops treating more Rx probing as the next step. It structurally validates a `ww3` constructor with GMMP's own generated Room INSERT binder executed against a fake statement: queue ID, track ID, queue position and shuffle position must all bind to the verified Cursor values. No SQL is executed during discovery. If that proof succeeds, Queue Flip still uses GMMP's original DAO update path and the existing post-write Cursor verification/rollback. If it cannot be proved uniquely, Flip remains fail-closed and emits one compact entity-factory shape diagnostic.
+
+
+## GMMP 4.2.1 r24 queue entity correction
+
+The r23 host log confirms Queue Flip reaches the verified 54-row Cursor snapshot but fails before mutation because `ww3` was forced as the generated Room entity type. The same log shows `ww3(pw3,String,Object)` and no matching four-column Queue binder adapter, so that assumption is retired.
+
+r24 lets the verified `d85.W1()/X1()` carrier expose its real runtime row class first. A full candidate set is accepted only after unique row-by-row correlation to the Cursor's queue ID, song ID and queue position. Only then may GMMP's original generated update/delete writers run, followed by the existing Cursor verification and rollback. Queue Flip and Track Auto-DJ still share this one native mutation boundary.

@@ -528,3 +528,28 @@ The r22 host log closes two more questions without another broad remap.
 | Reactive Queue carriers | fallback only | existing bounded shape log | retire after entity factory success |
 
 The next real-device pass is intentionally only three short actions: open a Smart Playlist from the folder view and Back, run Track Auto-DJ from a Queue row, then Queue Flip. Do not repeat Smart DJ, Playlist selection/colors, folder creation or navigation-layout tests unless this commit touches those boundaries.
+
+
+## GMMP 4.2.1 r24 — direct Smart differ guard + runtime Queue entity materialization
+
+The r23 host pass resolves two previously ambiguous behaviors without reopening broad discovery.
+
+- **Smart detail→Back flash is a late direct differ overwrite:** the nested projection is already correct (for example expected/current folder count 1), then roughly 350–400 ms later the same live adapter reports `actual=84` and r23's pre-draw repair restores the nested folder. That proves the full-root frame is committed *after* the correct projection, which is why a reactive repair can still visibly blink.
+- r24 therefore guards the verified `is4.x` AsyncListDiffer itself. The hook is installed only on one-List/void AndroidX differ boundaries reachable from `is4`; the controller suppresses only when the runtime differ object is exactly the one owned by an attached verified Smart browser, a GoneSmart projection is already committed, and the incoming model paths differ from that projection. GoneSmart's own differ submit is marked by a thread-local reentrancy guard and always proceeds.
+- Unlike the superseded r23 background rule, this direct guard does **not** hide the background RecyclerView, alter alpha or block first construction. It simply preserves the already-visible current-folder projection and refreshes that same folder from disk. This is safe behind a detail fragment and prevents Back from revealing the physical root for one frame. The old `os4.j2` suppression remains a higher-level fast path; the direct differ guard covers 4.2.1 submits that bypass it.
+- **Queue/Track read-side is graduated:** the same log again shows `f94.q(p94):Cursor`, 54 queue rows and Current through `qr.t -> ur.method:b`. Do not add more Cursor/Current probes.
+- **r23 disproves `ww3` as a forced writer entity:** the failure diagnostic reports only `ww3(pw3, String, Object)` and no queue INSERT/binder adapter for that class. The nearest `y75.*(ww3[])` contract remains useful as a queue-specific API witness, but it is not writer-entity ownership.
+- r24 lets the already-owned `d85.W1()/X1()` read carrier first materialize its actual runtime list with no forced model class. A candidate is accepted only when one numeric field maps uniquely to all Cursor queue IDs and, keyed by that field, unique separate fields map every row to the Cursor song ID and queue position. This is still read-only discovery. Only a fully correlated set may reach GMMP's original generated update/delete writers, after which the existing Cursor verification/rollback remains mandatory.
+- The `ww3`-typed partial-stream aggregation and generated fake-binder reconstruction remain secondary fail-closed fallbacks. No direct database mutation is introduced.
+
+### r24 probe / regression lifecycle
+
+| Boundary | r24 state | Evidence / guard | Retirement |
+| --- | --- | --- | --- |
+| Smart physical-root overwrite after detail | semantic direct-differ guard | compact `SMART FOLDERS ROOT SUBMIT | suppressed at differ`; pure suppression-policy test | keep as functional guard, not exploratory probe |
+| Smart pre-draw projection drift | fallback only | existing count mismatch repair | keep only as defensive fallback; it should no longer be visible |
+| Queue runtime entity materialization | active shared boundary | exact runtime carrier list + strict Cursor identity correlation | graduate after one successful Track Auto-DJ + Queue Flip host pass |
+| `QUEUE ENTITY FACTORY | unresolved` | failure-only fallback diagnostic | retire once runtime entity materialization is device-verified |
+| `QUEUE REACTIVE SHAPE` | failure-only final diagnostic | only emitted when no exact/correlated carrier set exists | retire after successful mutation mapping |
+
+Manual validation stays intentionally small: open a Smart Playlist from a nested Smart folder and Back once, run Track Auto-DJ once, then Queue Flip once. That single pass covers all code changed by r24.

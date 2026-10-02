@@ -101,6 +101,39 @@ class SmartNativeSubmissionPolicyTest {
         )
     }
 
+    @Test fun committedNestedProjectionSuppressesMismatchingDifferSubmit() {
+        assertTrue(
+            SmartNativeSubmissionPolicy.shouldSuppressExternalDifferSubmit(
+                projectionPrepared = true,
+                nativeContentReady = true,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false,
+                incomingMatchesProjection = false
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldSuppressExternalDifferSubmit(
+                projectionPrepared = true,
+                nativeContentReady = true,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false,
+                incomingMatchesProjection = true
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.shouldSuppressExternalDifferSubmit(
+                projectionPrepared = false,
+                nativeContentReady = true,
+                currentIsRoot = false,
+                otherLocations = false,
+                groupRootPlaylists = false,
+                incomingMatchesProjection = false
+            )
+        )
+    }
+
     @Test fun waitsForCommittedNativeProjectionBeforeReveal() {
         val expected = setOf("/folder/a.spl", "/folder/b.spl")
         assertFalse(

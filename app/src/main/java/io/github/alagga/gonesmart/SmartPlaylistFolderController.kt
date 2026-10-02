@@ -318,6 +318,9 @@ internal class SmartPlaylistFolderController(
         Thread(task, "GoneSmartSmartFolders").apply { isDaemon = true }
     }
     private val refreshGeneration = AtomicLong(0L)
+    // Distinguish GoneSmart's own verified current-folder differ submit from
+    // a later GMMP physical-root submit hitting the same live AsyncListDiffer.
+    private val ownDifferSubmitDepth = ThreadLocal.withInitial { 0 }
     private val knownLists = WeakHashMap<ViewGroup, Boolean>()
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
@@ -1014,6 +1017,87 @@ internal class SmartPlaylistFolderController(
                     groupRootPlaylists = groupRootPlaylists
                 )
             }
+    }
+
+    /**
+     * GMMP 4.2.1 can bypass os4.j2 and submit the physical Smart root
+     * directly to the already-bound is4.x AsyncListDiffer while returning
+     * from a Smart-Playlist detail screen. Intercept only that exact live
+     * differ instance. GoneSmart's own submit is marked by ThreadLocal depth
+     * and always proceeds.
+     */
+    fun shouldSuppressNativeSmartDifferSubmission(
+        differ: Any?,
+        submitted: List<*>?
+    ): Boolean {
+        if (!enabled || differ == null || submitted == null ||
+            ownDifferSubmitDepth.get() > 0
+        ) return false
+        val native = bindings ?: return false
+        val field = native.adapterDiffer ?: return false
+
+        val browser = browsers.values.toList().firstOrNull { candidate ->
+            candidate.list.isAttachedToWindow &&
+                runCatching {
+                    field.isAccessible = true
+                    field.get(candidate.nativeAdapter) === differ
+                }.getOrDefault(false)
+        } ?: return false
+
+        val submittedPaths = submitted.mapNotNull { model ->
+            if (!native.modelClass.isInstance(model)) {
+                null
+            } else {
+                modelPath(model)
+            }
+        }
+        if (submittedPaths.size != submitted.size) return false
+
+        return SmartNativeSubmissionPolicy.shouldSuppressExternalDifferSubmit(
+            projectionPrepared = browser.projectionPrepared,
+            nativeContentReady = browser.nativeContentReady,
+            currentIsRoot = sameFile(browser.current, browser.root),
+            otherLocations = browser.otherLocations,
+            groupRootPlaylists = groupRootPlaylists,
+            incomingMatchesProjection = submittedPaths == browser.nativeOrder
+        )
+    }
+
+    fun onNativeSmartDifferSubmissionSuppressed(
+        differ: Any?,
+        incomingCount: Int
+    ) {
+        if (!enabled || differ == null) return
+        val native = bindings ?: return
+        val field = native.adapterDiffer ?: return
+        val refreshMatching = {
+            browsers.values.toList()
+                .filter { browser ->
+                    browser.list.isAttachedToWindow &&
+                        runCatching {
+                            field.isAccessible = true
+                            field.get(browser.nativeAdapter) === differ
+                        }.getOrDefault(false)
+                }
+                .forEach { browser ->
+                    Log.i(
+                        TAG,
+                        "SMART FOLDERS ROOT SUBMIT | suppressed at differ" +
+                            " | incoming=" + incomingCount +
+                            " | expected=" + browser.nativeOrder.size +
+                            " | front=" + isFrontFragmentView(browser.list)
+                    )
+                    // Preserve the already-committed current-folder rows.
+                    // Refresh from disk so a real file change still reaches
+                    // the same projection without ever exposing root rows.
+                    refresh(browser)
+                }
+        }
+        if (Looper.myLooper() === Looper.getMainLooper()) {
+            refreshMatching()
+        } else {
+            main.post { refreshMatching() }
+        }
     }
 
     fun onNativeSmartRootSubmissionSuppressed() {
@@ -1850,10 +1934,17 @@ internal class SmartPlaylistFolderController(
         }.onFailure {
             Log.e(TAG, "SMART FOLDERS DIFFER | native differ unavailable", it)
         }.getOrNull() ?: return
-        runCatching {
-            native.differSubmit.invoke(differ, models)
-        }.onFailure {
-            Log.e(TAG, "SMART FOLDERS DIFFER | native ts4 submit failed", it)
+
+        val previousDepth = ownDifferSubmitDepth.get()
+        ownDifferSubmitDepth.set(previousDepth + 1)
+        try {
+            runCatching {
+                native.differSubmit.invoke(differ, models)
+            }.onFailure {
+                Log.e(TAG, "SMART FOLDERS DIFFER | native ts4 submit failed", it)
+            }
+        } finally {
+            ownDifferSubmitDepth.set(previousDepth)
         }
     }
 

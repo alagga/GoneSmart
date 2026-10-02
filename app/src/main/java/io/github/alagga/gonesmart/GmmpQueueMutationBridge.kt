@@ -247,44 +247,6 @@ internal class GmmpQueueMutationBridge(
             }
         }
 
-        // r22 proved that W1/X1 do not materialize the generated ww3 entity
-        // set on this GMMP build. Before attempting reactive carrier guesses,
-        // ask GMMP's own generated Room INSERT binder to prove a constructor
-        // mapping against a fake statement. No SQL is executed here. If the
-        // mapping is unique, fresh native entity objects can be reconstructed
-        // from the already-verified read-only Cursor snapshot and then passed
-        // through the original DAO writers below.
-        if (listCandidates.isEmpty() && entityTypeHint != null) {
-            val reconstructed = NativeQueueEntityReconstructor.reconstruct(
-                dao = dao,
-                modelClass = entityTypeHint,
-                context = context
-            )
-            if (reconstructed != null) {
-                listCandidates +=
-                    reconstructed.boundary to reconstructed.rows
-                Log.i(
-                    TAG,
-                    "QUEUE ENTITY FACTORY | model=" +
-                        entityTypeHint.name +
-                        " | rows=" + reconstructed.rows.size +
-                        " | proof=" + reconstructed.boundary
-                )
-            } else {
-                val key = dao.javaClass.name + "|" + entityTypeHint.name
-                if (reportedEntityFactoryShapes.add(key)) {
-                    Log.w(
-                        TAG,
-                        "QUEUE ENTITY FACTORY | unresolved | " +
-                            NativeQueueEntityReconstructor.diagnosticShape(
-                                dao,
-                                entityTypeHint
-                            )
-                    )
-                }
-            }
-        }
-
         // GMMP 4.2.1 d85 no longer exposes the native Queue entity snapshot
         // as a direct List. Its no-arg W1/X1 boundaries return R8-renamed
         // reactive carriers. Subscribe read-only and accept an emission only
@@ -323,20 +285,52 @@ internal class GmmpQueueMutationBridge(
                 method.isAccessible = true
                 method.invoke(dao)
             }.getOrNull() ?: return@forEach
-            val snapshot = NativeReactiveListReader.read(
+
+            // r23 disproved that the nearest queue-specific array type (ww3)
+            // is necessarily the generated Room writer entity. First let the
+            // verified read carrier materialize its real runtime List without
+            // forcing that type. It becomes eligible only after strict
+            // Cursor identity correlation below.
+            val exact = NativeReactiveListReader.read(
                 source = source,
                 expectedRows = context.items.size,
                 timeoutMs = 650L,
-                expectedModelClass = entityTypeHint,
-                allowPartial = entityTypeHint != null
+                expectedModelClass = null,
+                allowPartial = false
             )
+            if (exact != null &&
+                cursorCorrelates(exact.rows, context)
+            ) {
+                val sourceName =
+                    method.declaringClass.name + "." + method.name +
+                        "->" + exact.boundary + ":cursor-correlated"
+                listCandidates += sourceName to exact.rows
+                return@forEach
+            }
+
+            // Keep the queue-specific ww3 witness only for bounded partial
+            // stream aggregation. It is no longer treated as writer-entity
+            // ownership proof.
+            val snapshot = if (entityTypeHint != null) {
+                NativeReactiveListReader.read(
+                    source = source,
+                    expectedRows = context.items.size,
+                    timeoutMs = 650L,
+                    expectedModelClass = entityTypeHint,
+                    allowPartial = true
+                )
+            } else {
+                null
+            }
             if (snapshot != null) {
                 val sourceName =
                     method.declaringClass.name + "." + method.name +
                         "->" + snapshot.boundary
-                if (snapshot.rows.size == context.items.size) {
+                if (snapshot.rows.size == context.items.size &&
+                    cursorCorrelates(snapshot.rows, context)
+                ) {
                     listCandidates += sourceName to snapshot.rows
-                } else {
+                } else if (snapshot.rows.size < context.items.size) {
                     partialReactiveRows += sourceName to snapshot.rows
                 }
             } else {
@@ -358,6 +352,43 @@ internal class GmmpQueueMutationBridge(
                 unresolvedCarrierShapes +=
                     method.name + "->" + source.javaClass.name +
                         "{" + carrierMethods + "}"
+            }
+        }
+
+        // Generated fake-binder reconstruction remains a secondary fallback,
+        // but only after the real read carrier did not expose a fully
+        // Cursor-correlated entity set. r23 showed ww3 itself is not directly
+        // constructible as the four-column queue row on this runtime.
+        if (listCandidates.isEmpty() && entityTypeHint != null) {
+            val reconstructed = NativeQueueEntityReconstructor.reconstruct(
+                dao = dao,
+                modelClass = entityTypeHint,
+                context = context
+            )
+            if (reconstructed != null &&
+                cursorCorrelates(reconstructed.rows, context)
+            ) {
+                listCandidates +=
+                    reconstructed.boundary to reconstructed.rows
+                Log.i(
+                    TAG,
+                    "QUEUE ENTITY FACTORY | model=" +
+                        entityTypeHint.name +
+                        " | rows=" + reconstructed.rows.size +
+                        " | proof=" + reconstructed.boundary
+                )
+            } else {
+                val key = dao.javaClass.name + "|" + entityTypeHint.name
+                if (reportedEntityFactoryShapes.add(key)) {
+                    Log.w(
+                        TAG,
+                        "QUEUE ENTITY FACTORY | unresolved | " +
+                            NativeQueueEntityReconstructor.diagnosticShape(
+                                dao,
+                                entityTypeHint
+                            )
+                    )
+                }
             }
         }
 
@@ -387,9 +418,11 @@ internal class GmmpQueueMutationBridge(
             }
         }
 
-        val distinctCandidates = listCandidates.distinctBy { (_, rows) ->
-            nativeRowFingerprint(rows)
-        }
+        val distinctCandidates = listCandidates
+            .filter { (_, rows) -> cursorCorrelates(rows, context) }
+            .distinctBy { (_, rows) ->
+                nativeRowFingerprint(rows)
+            }
         val chosenRows = distinctCandidates.singleOrNull()
         if (chosenRows == null) {
             reportMutationShape(dao, methods, context.items.size)
@@ -775,6 +808,72 @@ internal class GmmpQueueMutationBridge(
                 " | noArg=" + noArg.ifBlank { "none" } +
                 " | writers=" + listWrites.ifBlank { "none" }
         )
+    }
+
+    private fun cursorCorrelates(
+        rows: List<Any>,
+        context: QueueContext
+    ): Boolean {
+        if (rows.size != context.items.size || rows.isEmpty()) return false
+        val model = rows.first().javaClass
+        if (!rows.all(model::isInstance)) return false
+
+        val fields = hierarchyFields(model).filter {
+            it.type == Integer.TYPE ||
+                it.type == Integer::class.java ||
+                it.type == java.lang.Long.TYPE ||
+                it.type == java.lang.Long::class.java
+        }.onEach { it.isAccessible = true }
+        if (fields.size < 3) return false
+
+        val expectedQueueIds = context.items
+            .map { it.queueEntryId }
+            .sorted()
+        val queueIdCandidates = fields.filter { field ->
+            rows.mapNotNull { row ->
+                runCatching {
+                    (field.get(row) as? Number)?.toLong()
+                }.getOrNull()
+            }.sorted() == expectedQueueIds
+        }
+        if (queueIdCandidates.isEmpty()) return false
+
+        val byQueueId = context.items.associateBy { it.queueEntryId }
+        val mappings = arrayListOf<Triple<Field, Field, Field>>()
+        queueIdCandidates.forEach { queueId ->
+            val trackIds = fields.filter { field ->
+                field != queueId && rows.all { row ->
+                    val id = runCatching {
+                        (queueId.get(row) as? Number)?.toLong()
+                    }.getOrNull() ?: return@all false
+                    val item = byQueueId[id] ?: return@all false
+                    runCatching {
+                        (field.get(row) as? Number)?.toLong()
+                    }.getOrNull() == item.track.id
+                }
+            }
+            val positions = fields.filter { field ->
+                field != queueId && rows.all { row ->
+                    val id = runCatching {
+                        (queueId.get(row) as? Number)?.toLong()
+                    }.getOrNull() ?: return@all false
+                    val item = byQueueId[id] ?: return@all false
+                    runCatching {
+                        (field.get(row) as? Number)?.toLong()
+                    }.getOrNull() == item.queuePosition.toLong()
+                }
+            }
+            trackIds.forEach { track ->
+                positions.forEach { position ->
+                    if (track != position) {
+                        mappings += Triple(queueId, track, position)
+                    }
+                }
+            }
+        }
+        return mappings.distinctBy {
+            it.first.name + "|" + it.second.name + "|" + it.third.name
+        }.size == 1
     }
 
     private fun nativeRowFingerprint(rows: List<Any>): String {

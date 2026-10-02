@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r23"
+            "gmmp421-r24"
 
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
@@ -1591,13 +1591,18 @@ class GoneSmartModule : XposedModule() {
                         it.declaringClass == dao
                 }
                 require(direct || reactive)
-                val entityType =
+                val queueSpecificHint =
                     NativeQueueEntityTypeResolver.resolve(dao, daoMethods)
-                require(entityType != null)
                 if (direct) {
-                    "READY_CALLABLE_RUNTIME_DAO:" + entityType.name
+                    "READY_CALLABLE_RUNTIME_DAO" +
+                        (queueSpecificHint?.let {
+                            ":hint=" + it.name
+                        } ?: "")
                 } else {
-                    "READY_REACTIVE_RUNTIME_DAO:" + entityType.name
+                    "READY_REACTIVE_RUNTIME_DAO" +
+                        (queueSpecificHint?.let {
+                            ":hint=" + it.name
+                        } ?: "")
                 }
             }
         }
@@ -2940,6 +2945,74 @@ class GoneSmartModule : XposedModule() {
             Log.w(
                 "GoneSmartSmartFolders",
                 "SMART FOLDERS HOOK MISSING | os4.j2",
+                it
+            )
+        }
+
+        runCatching {
+            // r24: GMMP 4.2.1 can bypass os4.j2 on detail->Back and write its
+            // physical Smart root straight into is4.x's AsyncListDiffer.
+            // Hook only List->void boundaries owned by the AndroidX differ
+            // field types of is4; runtime identity filtering in the controller
+            // means unrelated AsyncListDiffer instances always proceed.
+            val adapter = loader.loadClass("is4")
+            val differTypes =
+                generateSequence<Class<*>>(adapter) { it.superclass }
+                    .flatMap { it.declaredFields.asSequence() }
+                    .map { it.type }
+                    .filter {
+                        it.name.startsWith("androidx.recyclerview.widget.")
+                    }
+                    .distinct()
+                    .toList()
+            val submitMethods = differTypes.flatMap { type ->
+                GmmpReflectionPolicy.callableMethods(type).filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+            }.distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" +
+                    it.parameterTypes[0].name
+            }
+            require(submitMethods.isNotEmpty()) {
+                "Smart AsyncListDiffer submit boundary unavailable"
+            }
+            submitMethods.forEach { submit ->
+                submit.isAccessible = true
+                hook(submit).intercept { chain ->
+                    val incoming = chain.getArg(0) as? java.util.List<*>
+                    if (incoming != null &&
+                        smartPlaylistFolderController
+                            .shouldSuppressNativeSmartDifferSubmission(
+                                chain.getThisObject(),
+                                incoming
+                            )
+                    ) {
+                        smartPlaylistFolderController
+                            .onNativeSmartDifferSubmissionSuppressed(
+                                chain.getThisObject(),
+                                incoming.size
+                            )
+                        null
+                    } else {
+                        chain.proceed()
+                    }
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | direct differ submit guard=" +
+                    submitMethods.joinToString(",") {
+                        it.declaringClass.name + "." + it.name
+                    }
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | direct differ submit guard",
                 it
             )
         }
