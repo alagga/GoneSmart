@@ -7,11 +7,12 @@ import java.lang.reflect.Modifier
  * Derives the concrete queue entity type from GMMP's generated DAO hierarchy.
  *
  * R8 erases the generated implementation writer to Object[], while the nearest
- * queue-specific superclass still exposes an array contract. GMMP 4.2.1 r25
- * proves that this nearest type can itself be a relation/wrapper (ww3) rather
- * than the queue_table writer entity. A wrapper may be unwrapped only when it
- * contains exactly one custom constructor type and that nested type has the
- * numeric shape of the four-column queue_table entity.
+ * queue-specific superclass can still expose a relation/wrapper array contract.
+ * The wrapper is only a type witness: when it has exactly one non-platform
+ * constructor component, that nested type can be nominated for read-carrier
+ * unwrapping even when R8 has obscured its field/constructor shape. The caller
+ * still requires exact live Cursor correlation of queue_id, song_id and
+ * queue_position before any writer becomes eligible.
  */
 internal object NativeQueueEntityTypeResolver {
     fun resolve(
@@ -45,10 +46,18 @@ internal object NativeQueueEntityTypeResolver {
     }
 
     /**
-     * The observed 4.2.1 queue-specific array witness is ww3[], while ww3 has
-     * constructor (pw3,String,Object). Do not pin either R8 name. Unwrap only
-     * the unique non-platform constructor type when the wrapper itself is not
-     * a four-number entity and the nested type is.
+     * The observed 4.2.1 queue-specific array witness is a relation wrapper.
+     * Do not pin its R8 name or the nested model name. If the wrapper itself
+     * already has a direct Queue-entity numeric shape, keep it. Otherwise a
+     * unique custom constructor component is a safe *read-only nomination*:
+     * NativeReactiveListReader must find exactly one such nested instance in
+     * each emitted relation row, and GmmpQueueMutationBridge must then prove
+     * the complete set one-to-one against the live Queue Cursor before any
+     * mutation method can be selected or invoked.
+     *
+     * Requiring the embedded type to expose four obvious numeric fields here
+     * was too strict after R8: the r24 host pass consequently stopped at the
+     * wrapper witness and never exercised the stronger runtime correlation.
      */
     internal fun embeddedQueueEntity(witness: Class<*>): Class<*>? {
         if (looksLikeQueueEntity(witness)) return null
@@ -57,8 +66,7 @@ internal object NativeQueueEntityTypeResolver {
             .filter(::usable)
             .filter { it != witness }
             .distinct()
-        val candidate = embedded.singleOrNull() ?: return null
-        return candidate.takeIf(::looksLikeQueueEntity)
+        return embedded.singleOrNull()
     }
 
     private fun looksLikeQueueEntity(type: Class<*>): Boolean {
