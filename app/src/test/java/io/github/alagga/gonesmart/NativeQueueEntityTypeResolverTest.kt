@@ -64,6 +64,69 @@ class NativeQueueEntityTypeResolverTest {
         )
     }
 
+    // R8 can obscure the embedded model enough that its queue identity is not
+    // obvious from static constructor/field counts. It is still safe to
+    // nominate the one custom relation component because the mutation bridge
+    // performs exact live Cursor correlation before selecting any writer.
+    private class OpaqueEmbeddedEntity(
+        val payload: String
+    )
+
+    private class OpaqueRelationWrapper(
+        val entity: OpaqueEmbeddedEntity,
+        val label: String,
+        val extra: Any
+    )
+
+    private open class OpaqueWrappedQueueDaoBase {
+        fun queueSpecific(values: Array<OpaqueRelationWrapper>) = values.size
+    }
+
+    private class OpaqueWrappedQueueDao : OpaqueWrappedQueueDaoBase()
+
+    @Test fun uniqueCustomRelationComponentCanBeNominatedBeforeRuntimeCorrelation() {
+        val methods = GmmpReflectionPolicy.callableMethods(
+            OpaqueWrappedQueueDao::class.java
+        )
+        assertEquals(
+            OpaqueEmbeddedEntity::class.java,
+            NativeQueueEntityTypeResolver.resolve(
+                OpaqueWrappedQueueDao::class.java,
+                methods
+            )
+        )
+    }
+
+    private class AmbiguousNestedA
+    private class AmbiguousNestedB
+
+    private class AmbiguousRelationWrapper(
+        val first: AmbiguousNestedA,
+        val second: AmbiguousNestedB,
+        val label: String
+    )
+
+    private open class AmbiguousRelationDaoBase {
+        fun queueSpecific(values: Array<AmbiguousRelationWrapper>) = values.size
+    }
+
+    private class AmbiguousRelationDao : AmbiguousRelationDaoBase()
+
+    @Test fun multipleCustomRelationComponentsFailClosed() {
+        val methods = GmmpReflectionPolicy.callableMethods(
+            AmbiguousRelationDao::class.java
+        )
+        // No unique embedded component can be nominated, so the nearest
+        // wrapper witness itself remains the only safe type witness.
+        assertEquals(
+            AmbiguousRelationWrapper::class.java,
+            NativeQueueEntityTypeResolver.resolve(
+                AmbiguousRelationDao::class.java,
+                methods
+            )
+        )
+    }
+
     private open class AmbiguousBase {
         fun first(values: Array<QueueEntity>) = values.size
         fun second(values: Array<OtherEntity>) = values.size
@@ -72,12 +135,12 @@ class NativeQueueEntityTypeResolverTest {
     private class AmbiguousDao : AmbiguousBase()
 
     @Test fun ambiguousNearestEntityTypesFailClosed() {
-        val methods =
-            GmmpReflectionPolicy.callableMethods(AmbiguousDao::class.java)
         assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 AmbiguousDao::class.java,
-                methods
+                GmmpReflectionPolicy.callableMethods(
+                    AmbiguousDao::class.java
+                )
             )
         )
     }
