@@ -30,7 +30,10 @@ internal object NativeQueueEntityAdapterTypeResolver {
             field.isAccessible = true
             val adapter = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            resolveAdapter(adapter)?.let { result ->
+            resolveAdapter(
+                adapter = adapter,
+                directlyOwnedByDao = field.declaringClass == dao.javaClass
+            )?.let { result ->
                 field.name to result
             }
         }
@@ -47,24 +50,33 @@ internal object NativeQueueEntityAdapterTypeResolver {
         return Result(model, evidence)
     }
 
-    private fun resolveAdapter(adapter: Any): Result? {
+    private fun resolveAdapter(
+        adapter: Any,
+        directlyOwnedByDao: Boolean
+    ): Result? {
         val methods = GmmpReflectionPolicy.callableMethods(adapter.javaClass)
             .filter { !Modifier.isStatic(it.modifiers) }
-        val sql = methods.asSequence()
-            .filter {
-                it.parameterCount == 0 &&
-                    it.returnType == String::class.java
-            }
-            .mapNotNull { method ->
-                val value = runCatching {
-                    method.isAccessible = true
-                    method.invoke(adapter) as? String
-                }.getOrNull() ?: return@mapNotNull null
-                value.takeIf {
-                    it.contains("queue_table", ignoreCase = true)
-                }?.let { method to it }
-            }
-            .firstOrNull() ?: return null
+        val stringMethods = methods.filter {
+            it.parameterCount == 0 &&
+                it.returnType == String::class.java &&
+                it.declaringClass != Any::class.java
+        }
+        val sqlValues = stringMethods.mapNotNull { method ->
+            runCatching {
+                method.isAccessible = true
+                (method.invoke(adapter) as? String)
+                    ?.let { method to it }
+            }.getOrNull()
+        }
+        val queueSql = sqlValues.firstOrNull { (_, value) ->
+            value.contains("queue_table", ignoreCase = true)
+        }
+        val dmlSql = sqlValues.firstOrNull { (_, value) ->
+            val normalized = value.trimStart().uppercase()
+            normalized.startsWith("INSERT") ||
+                normalized.startsWith("UPDATE") ||
+                normalized.startsWith("DELETE")
+        }
 
         val binders = methods.filter {
             it.parameterCount == 2 &&
@@ -74,13 +86,31 @@ internal object NativeQueueEntityAdapterTypeResolver {
         }
         val binder = binders.singleOrNull() ?: return null
 
+        // The SQL text is the strongest proof. r24 also showed that its
+        // diagnostic could not parse/name these adapters, so keep a second
+        // structural proof: an adapter-shaped object directly owned by the
+        // already-verified d85 generated Queue DAO. Multiple such adapters
+        // still have to agree on one entity class in resolve().
+        val ownership = when {
+            queueSql != null -> "queue-sql"
+            directlyOwnedByDao && dmlSql != null -> "owned-dml"
+            directlyOwnedByDao &&
+                stringMethods.size == 1 &&
+                stringMethods.single().declaringClass == adapter.javaClass ->
+                "owned-adapter-shape"
+            else -> return null
+        }
+        val sqlMethodName =
+            (queueSql ?: dmlSql)?.first?.name
+                ?: stringMethods.single().name
+
         val loader = adapter.javaClass.classLoader
         inferGenericEntity(adapter.javaClass)?.let { type ->
             if (usable(type)) {
                 return Result(
                     type,
-                    adapter.javaClass.name + "." + sql.first.name +
-                        ":generic"
+                    adapter.javaClass.name + "." + sqlMethodName +
+                        ":generic:" + ownership
                 )
             }
         }
@@ -107,8 +137,8 @@ internal object NativeQueueEntityAdapterTypeResolver {
         if (!usable(target)) return null
         return Result(
             target,
-            adapter.javaClass.name + "." + sql.first.name +
-                ":binder-cast"
+            adapter.javaClass.name + "." + sqlMethodName +
+                ":binder-cast:" + ownership
         )
     }
 

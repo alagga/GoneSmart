@@ -22,7 +22,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class QueueAdapter {
         fun M(): String =
-            "INSERT OR REPLACE INTO queue_table " +
+            "INSERT OR REPLACE INTO q " +
                 "(queue_id, queue_track_id, queue_position, " +
                 "queue_shuffle_position) VALUES (?,?,?,?)"
 
@@ -37,7 +37,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
     private class OtherQueueAdapter {
         fun M(): String =
-            "DELETE FROM queue_table WHERE queue_id = ?"
+            "DELETE FROM q WHERE queue_id = ?"
 
         fun G(binder: Binder, value: Any) {
             val row = value as OtherRow
@@ -75,6 +75,7 @@ class NativeQueueEntityAdapterTypeResolverTest {
 
         assertEquals(QueueRow::class.java, result?.modelClass)
         assertEquals(true, result?.evidence?.contains("binder-cast"))
+        assertEquals(true, result?.evidence?.contains("owned-dml"))
     }
 
     @Test fun differentQueueAdapterEntityTypesFailClosed() {
