@@ -393,3 +393,33 @@ Before another device pass, CI must additionally prove:
 - existing descendant bound remains fail-closed beyond the configured limit.
 
 The next device check should remain one consolidated run: Playlist Back repaint, Smart selection/native-shell colors, Add-picker multi-select, normal Auto-DJ and Track Auto-DJ. Any queue-current/mutation failure that appears only after SQL succeeds should be handled from that same log rather than by splitting these into separate probe builds.
+
+
+## GMMP 4.2.1 r18 — graduated read boundaries, narrowed mutation probes
+
+The r17 device pass materially narrows the remaining compatibility surface:
+
+- **Graduated / accepted in this pass:** the read-only Room bridge (`GMDatabase_Impl -> f94.q(p94): Cursor`), library loading through that Cursor, queue snapshot/current-entry reading, Smart DJ refill/selection, and the Smart-Playlist New Folder dialog. These no longer justify broad static carrier or deep Recycler inventories. Re-open them only on a direct regression.
+- **Playlist selection teardown:** Logcat records the native contextual mode ending and GoneSmart clearing its mirror before the maintainer still sees the old row tint. This is a render/presentation residual, not a selection-state failure. r18 performs one local synthetic-row rebuild after teardown; no additional native reflection probe is added.
+- **Add picker:** the picker session itself is valid. The failure is `performLongClick` landing on an inner synthetic `TextView` and missing the row-owned target. r18 maps the already-verified target onto every descendant while the synthetic row is created. No new native class mapping is required.
+- **Track Auto-DJ:** the selected song is observed playing immediately after native Play, while GMMP continues changing the surrounding queue. Playback stabilization now keys on current queue-entry ID + track ID (track ID fallback on legacy 4.2.0), not whole-queue snapshot equality. A JVM regression test covers the fact that current-index/queue-shape changes do not invalidate the current-entry identity.
+- **Queue Flip mutation:** queue read succeeds first; failure moves to the native generated DAO entity reader. r18 changes entity-reader/update/delete discovery from class/superclass-only methods to `GmmpReflectionPolicy.callableMethods`, allowing inherited interface contracts exactly as required by the accepted Room read boundary. Returned native entities still must correlate one-to-one to live Cursor `queue_id`, `song_id` and `queue_position` before any writer becomes eligible.
+- **Queue mutation diagnostic:** if entity discovery remains unresolved, emit one bounded `QUEUE MUTATION SHAPE` record containing only DAO class, expected row count, no-arg method signatures and List/array writer signatures. Do not restore broad queue inventories. A subsequent pointer failure must be diagnosed separately; the observed current resolver can move between `dx3` state and `ur` accessor state, so no setter is guessed.
+- **Playlist Play Flipped:** the old exact `MusicService.w1(int,Object,List)` mapping is demoted to a fast path. r18 accepts only a unique host callable boundary with exactly one action `int`, one `List`, and three parameters, then re-enters that same method with only the resolved track List reversed for the one pending Flip token. Resolved track rows are validated structurally by numeric song ID rather than the 4.2.0 obfuscated class name.
+- **Play-Flipped verification:** GMMP 4.2.1 verification prefers the already-accepted read-only queue Cursor and preserves the 4.2.0 `ex3/H1/D` verifier as fallback.
+
+### r18 probe lifecycle
+
+| Boundary | r18 status | Diagnostic policy |
+| --- | --- | --- |
+| Room query / library read | graduated | retire broad discovery; failure-only logs only |
+| Smart DJ queue read/current entry | graduated | normal concise mapping log only |
+| Smart folder creation dialog | graduated | no compatibility probe |
+| Playlist Back visual teardown | presentation fix | no native probe; one local rebuild |
+| Add-picker row ownership | synthetic mapping fix | no native inventory |
+| Track Auto-DJ playback detection | automated identity contract + device integration | no whole-queue stability probe |
+| Queue native entity/write mapping | active | one bounded `QUEUE MUTATION SHAPE` only on failure |
+| Queue playback-pointer writer | unresolved only if reached | fail closed; add a targeted probe only after a concrete pointer failure |
+| Playlist native playback List boundary | active structural self-test | exact/unique callable signature, failure-specific method inventory only |
+
+The next real-device request is intentionally one five-action smoke pass: Playlist Back visual cleanup, Add picker multi-select, Track Auto-DJ, Queue Flip, and ordinary Playlist Play Flipped. Smart DJ and Smart-folder creation are excluded because this device pass already accepted them.

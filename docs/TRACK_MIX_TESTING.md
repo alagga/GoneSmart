@@ -76,3 +76,8 @@ are necessary: if either case fails, send the filtered log once.
 ## 28 September 2026 localization/native reuse source audit
 
 The action now fails closed when **either** required original GMMP `track` or `auto_dj` resource cannot be resolved. The one verified-success Toast uses native `started` or the original native composed action followed by a neutral checkmark; errors inside GMMP use original `error` and the action, with English diagnostic detail retained in the companion/Logcat. Original native track Play dispatch, native Room queue isolation (`ex3.c`, `xx3.O`, `xx3.O0`) and native Auto-DJ/refill remain unchanged. See [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). These new locale-source changes require a brief on-device locale smoke test; previous queue-isolation acceptance does not prove multilingual wording.
+
+
+## GMMP 4.2.1 r18 compatibility note
+
+The 2026-10-02 r17 device log shows that native Play does switch to the selected queue entry, but GMMP 4.2.1 continues asynchronously reshaping the rest of the queue. The previous whole-`Snapshot` stability check therefore produced a false `The selected song did not start` timeout even though playback had already changed. r18 treats a stable current queue-entry ID + track ID as the Play postcondition (track-ID fallback for the legacy path), then proceeds to the same guarded native queue-isolation and refill sequence. The identity policy is covered by a JVM regression test; the generated 4.2.1 Queue DAO mutation remains the only native integration boundary needing device confirmation.

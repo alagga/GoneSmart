@@ -56,9 +56,11 @@ internal class TrackMixController(
 
     private data class Snapshot(
         val ids: List<Long>,
-        val currentIndex: Int
+        val currentIndex: Int,
+        val entryIds: List<Long> = emptyList()
     ) {
         val currentId: Long? get() = ids.getOrNull(currentIndex)
+        val currentEntryId: Long? get() = entryIds.getOrNull(currentIndex)
     }
 
     private data class Pending(
@@ -485,7 +487,10 @@ internal class TrackMixController(
                     )
                 }.getOrDefault(false)
                 return if (isolated) {
-                    Snapshot(listOf(selectedTrackId), 0)
+                    queueSnapshot()?.takeIf {
+                        it.ids.size == 1 &&
+                            it.currentId == selectedTrackId
+                    } ?: Snapshot(listOf(selectedTrackId), 0)
                 } else null
             }
         }
@@ -527,7 +532,11 @@ internal class TrackMixController(
         )
         if (plan.removeEntryIds.isEmpty()) {
             Log.i(TAG, "MIX ISOLATE | selected queue entry already alone")
-            return Snapshot(listOf(selectedTrackId), 0)
+            return Snapshot(
+                listOf(selectedTrackId),
+                0,
+                listOf(plan.selectedEntryId)
+            )
         }
 
         val entryType = originals.first().javaClass
@@ -630,33 +639,62 @@ internal class TrackMixController(
                 "oldPosition=$originalPosition | newPosition=1 | " +
                 "verified=true"
         )
-        return Snapshot(listOf(selectedTrackId), 0)
+        return Snapshot(
+            listOf(selectedTrackId),
+            0,
+            listOf(plan.selectedEntryId)
+        )
     }
 
     private fun waitForSelectedSong(request: Pending): Snapshot? {
-        var stable: Snapshot? = null
+        var stableIdentity:
+            TrackMixPlaybackIdentityPolicy.Identity? = null
+        var stableSnapshot: Snapshot? = null
         var stableAt = 0L
         val deadline = SystemClock.elapsedRealtime() + 9_000L
         while (isCurrent(request) && SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(160)
             val current = queueSnapshot() ?: continue
-            if (current.currentId == null) continue
-            val changed = request.before == null ||
-                current.ids != request.before.ids ||
-                current.currentIndex != request.before.currentIndex
+            val currentTrack = current.currentId ?: continue
+            val identity = TrackMixPlaybackIdentityPolicy.Identity(
+                queueEntryId = current.currentEntryId,
+                trackId = currentTrack,
+                currentIndex = current.currentIndex
+            )
+            val before = request.before?.currentId?.let { beforeTrack ->
+                TrackMixPlaybackIdentityPolicy.Identity(
+                    queueEntryId = request.before?.currentEntryId,
+                    trackId = beforeTrack,
+                    currentIndex = request.before?.currentIndex ?: -1
+                )
+            }
+            val changed =
+                TrackMixPlaybackIdentityPolicy.changed(before, identity)
             val nativeReady = request.nativePlaySignal || changed
             if (!nativeReady) continue
-            if (stable == current) {
+
+            if (TrackMixPlaybackIdentityPolicy.sameCurrent(
+                    stableIdentity,
+                    identity
+                )
+            ) {
                 val age = SystemClock.elapsedRealtime() - stableAt
+                val actionAge =
+                    SystemClock.elapsedRealtime() - request.createdAt
+                // GMMP 4.2.1 can keep asynchronously reshaping the rest of
+                // the queue after the selected native row is already playing.
+                // Full Snapshot equality therefore never settles. The exact
+                // current queue-entry identity (or track ID on the legacy
+                // path) is the playback postcondition.
                 if (age >= 350 && (
                         changed ||
-                            (request.source == "menu_gm_context_queue" &&
-                                request.nativeSource == "ex3.b2") ||
-                            SystemClock.elapsedRealtime() - request.createdAt > 4_000L
+                            request.nativePlaySignal ||
+                            actionAge > 4_000L
                         )
-                ) return current
+                ) return stableSnapshot ?: current
             } else {
-                stable = current
+                stableIdentity = identity
+                stableSnapshot = current
                 stableAt = SystemClock.elapsedRealtime()
             }
         }
@@ -689,7 +727,8 @@ internal class TrackMixController(
                 if (currentIndex >= 0) {
                     return@runCatching Snapshot(
                         context.items.map { it.track.id },
-                        currentIndex
+                        currentIndex,
+                        context.items.map { it.queueEntryId }
                     )
                 }
             }
@@ -708,13 +747,16 @@ internal class TrackMixController(
         val ids = sorted.map {
             (field(it, "b") as Number).toLong()
         }
+        val entryIds = sorted.map {
+            (field(it, "d") as Number).toLong()
+        }
         val current = queue.javaClass.getDeclaredMethod("D")
             .apply { isAccessible = true }
             .invoke(queue) as? Int ?: return@runCatching null
         val currentIndex = sorted.indexOfFirst {
             (field(it, "a") as Number).toInt() == current
         }
-        Snapshot(ids, currentIndex)
+        Snapshot(ids, currentIndex, entryIds)
     }.onFailure {
         Log.w(TAG, "Cannot read native queue for Track Mix", it)
     }.getOrNull()

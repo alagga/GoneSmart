@@ -3233,9 +3233,12 @@ internal class PlaylistFolderPreviewController(
                     }
                 }
             if (isPicker(list) && model != null) {
-                pickerOverlayTargets[item] = PickerOverlayTarget(
-                    WeakReference(list),
-                    model
+                registerPickerOverlayTarget(
+                    item,
+                    PickerOverlayTarget(
+                        WeakReference(list),
+                        model
+                    )
                 )
             } else if (!isPicker(list)) {
                 browser.mainRenderedPlaylistRows[playlist.path] = item
@@ -3543,9 +3546,11 @@ internal class PlaylistFolderPreviewController(
         }
 
         // Restore immediately and once after GMMP's ActionMode teardown has
-        // committed its own drawable-state transaction. r16 logs proved the
-        // selection state was already cleared while the old foreground stayed
-        // painted until the next scroll/layout.
+        // committed its own drawable-state transaction. r17 device evidence
+        // shows that the old foreground can still remain in the render node
+        // until a row is recycled by scrolling. Rebuild only this synthetic
+        // presentation once on selection teardown; this does not rescan the
+        // native adapter or run on every selection click.
         restoreRows()
         browser.rows.requestLayout()
         browser.rows.postOnAnimation {
@@ -3553,6 +3558,12 @@ internal class PlaylistFolderPreviewController(
                 !browser.mainSelection.isSelecting
             ) {
                 restoreRows()
+                browser.lastRenderedOrder = null
+                safeRender(browser)
+                Log.i(
+                    TAG,
+                    "FOLDER MAIN SELECT | unselected rows rebuilt after teardown"
+                )
             }
         }
     }
@@ -3752,6 +3763,21 @@ internal class PlaylistFolderPreviewController(
                 attempt + 1,
                 onComplete
             )
+        }
+    }
+
+    private fun registerPickerOverlayTarget(
+        root: View,
+        target: PickerOverlayTarget
+    ) {
+        // View.performLongClick may be dispatched on the inner TextView rather
+        // than on GoneSmart's synthetic outer row. Register the verified row
+        // target on every descendant when the row is built instead of trying
+        // to rediscover ownership from an arbitrary runtime parent chain.
+        pickerOverlayTargets[root] = target
+        val group = root as? ViewGroup ?: return
+        for (index in 0 until group.childCount) {
+            registerPickerOverlayTarget(group.getChildAt(index), target)
         }
     }
 

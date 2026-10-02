@@ -19,6 +19,8 @@ internal class GmmpQueueMutationBridge(
 ) {
     companion object {
         private const val TAG = "GoneSmartQueue"
+        private val reportedMutationShapes =
+            java.util.Collections.synchronizedSet(mutableSetOf<String>())
     }
 
     private data class Resolved(
@@ -170,9 +172,15 @@ internal class GmmpQueueMutationBridge(
             ?: error("GMMP queue Cursor mapping unavailable")
         val dao = objectField(autoDj, "q")
             ?: error("GMMP 4.2.1 Queue DAO unavailable")
-        val methods = concreteMethods(dao.javaClass)
+        // GMMP 4.2.1 exposes generated Room DAO boundaries through
+        // inherited interfaces as well as concrete class methods. This is the
+        // same reflection shape that moved f94.q(p94) out of a
+        // class/superclass-only scan. Interface Method.invoke still dispatches
+        // on the concrete DAO instance; failed contracts are ignored below.
+        val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
         val listReaders = methods.filter {
-            it.parameterCount == 0 &&
+            !Modifier.isStatic(it.modifiers) &&
+                it.parameterCount == 0 &&
                 java.util.List::class.java
                     .isAssignableFrom(it.returnType)
         }
@@ -182,16 +190,30 @@ internal class GmmpQueueMutationBridge(
                 @Suppress("UNCHECKED_CAST")
                 (method.invoke(dao) as? List<Any?>)
                     ?.filterNotNull()
-            }.getOrNull()
-        }.filter {
-            it.size == context.items.size &&
-                it.isNotEmpty()
+            }.getOrNull()?.let { rows ->
+                method to rows
+            }
+        }.filter { (_, rows) ->
+            rows.size == context.items.size &&
+                rows.isNotEmpty()
         }
-        val rows = listCandidates.singleOrNull()
-            ?: error(
+        val chosenRows = listCandidates.singleOrNull()
+        if (chosenRows == null) {
+            reportMutationShape(dao, methods, context.items.size)
+            error(
                 "GMMP native queue entity reader is not unique: " +
-                    listReaders.joinToString(",") { it.name }
+                    listCandidates.joinToString(",") { (method, rows) ->
+                        method.declaringClass.name + "." + method.name +
+                            "#" + rows.size
+                    }.ifBlank {
+                        "none; callableReaders=" +
+                            listReaders.joinToString(",") {
+                                it.declaringClass.name + "." + it.name
+                            }.ifBlank { "none" }
+                    }
             )
+        }
+        val rows = chosenRows.second
         val modelClass = rows.first().javaClass
         require(rows.all(modelClass::isInstance))
 
@@ -319,6 +341,42 @@ internal class GmmpQueueMutationBridge(
         )
     }
 
+    private fun reportMutationShape(
+        dao: Any,
+        methods: List<Method>,
+        expectedRows: Int
+    ) {
+        val key = dao.javaClass.name + "|" + expectedRows
+        if (!reportedMutationShapes.add(key)) return
+        val noArg = methods.filter {
+            !Modifier.isStatic(it.modifiers) && it.parameterCount == 0
+        }.take(40).joinToString(",") {
+            it.declaringClass.name + "." + it.name +
+                "():" + it.returnType.name
+        }
+        val listWrites = methods.filter {
+            !Modifier.isStatic(it.modifiers) &&
+                it.parameterCount == 1 &&
+                (
+                    java.util.List::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    ) ||
+                    it.parameterTypes[0].isArray
+                )
+        }.take(40).joinToString(",") {
+            it.declaringClass.name + "." + it.name +
+                "(" + it.parameterTypes[0].name + "):" +
+                it.returnType.name
+        }
+        Log.w(
+            TAG,
+            "QUEUE MUTATION SHAPE | dao=" + dao.javaClass.name +
+                " | expectedRows=" + expectedRows +
+                " | noArg=" + noArg.ifBlank { "none" } +
+                " | writers=" + listWrites.ifBlank { "none" }
+        )
+    }
+
     private fun objectField(target: Any, name: String): Any? =
         generateSequence<Class<*>>(target.javaClass) { it.superclass }
             .mapNotNull { owner ->
@@ -354,16 +412,4 @@ internal class GmmpQueueMutationBridge(
             }
             .toList()
 
-    private fun concreteMethods(type: Class<*>): List<Method> =
-        generateSequence<Class<*>>(type) { it.superclass }
-            .flatMap { it.declaredMethods.asSequence() }
-            .filter {
-                !Modifier.isAbstract(it.modifiers) && !it.isSynthetic
-            }
-            .distinctBy {
-                it.name + "|" +
-                    it.parameterTypes.joinToString(",") { p -> p.name } +
-                    "|" + it.returnType.name
-            }
-            .toList()
 }

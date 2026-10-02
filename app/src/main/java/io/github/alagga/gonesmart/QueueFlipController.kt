@@ -350,13 +350,19 @@ internal class QueueFlipController {
             }
             if (action != 0 || source.isEmpty()) return@synchronized null
             val first = source.firstOrNull() ?: return@synchronized null
-            val nativeSong = runCatching {
-                first.javaClass.classLoader
-                    ?.loadClass("rm3")
-                    ?.isInstance(first) == true
-            }.getOrDefault(false)
-            if (!nativeSong || source.any { it == null }) {
-                Log.w(TAG, "FLIP PLAY | unsupported native playback list")
+            val nativeClass = first.javaClass
+            val structurallyNative = source.all {
+                it != null &&
+                    nativeClass.isInstance(it) &&
+                    runCatching { firstSongId(it) is Number }
+                        .getOrDefault(false)
+            }
+            if (!structurallyNative) {
+                Log.w(
+                    TAG,
+                    "FLIP PLAY | unsupported native playback list" +
+                        " | model=" + nativeClass.name
+                )
                 return@synchronized null
             }
             pendingPlayback = null
@@ -373,7 +379,7 @@ internal class QueueFlipController {
                 runCatching { firstSongId(source.first()!!) }.getOrNull() +
                 " | newFirstId=" +
                 runCatching { firstSongId(reversed.first()) }.getOrNull() +
-                " | action=0 | nativeQueueWriter=MusicService.w1"
+                " | action=0 | nativeQueueWriter=structural-MusicService-playback"
         )
         return ReversedPlayback(
             tracks = reversed,
@@ -383,8 +389,8 @@ internal class QueueFlipController {
 
     /**
      * Verify the newly inserted native queue AFTER GMMP's asynchronous
-     * w1 -> ex3.w transaction has had time to complete. This makes one
-     * combined on-device test enough to diagnose all three actions.
+     * native playlist-playback transaction has had time to complete. Prefer
+     * the 4.2.1 read-only Cursor verifier; preserve ex3 as the 4.2.0 fallback.
      */
     fun verifyNativePlaylistPlayback(
         expectedTracks: List<*>,
@@ -393,69 +399,71 @@ internal class QueueFlipController {
         val expectedIds = expectedTracks.filterNotNull().mapNotNull {
             runCatching { (firstSongId(it) as Number).toLong() }.getOrNull()
         }
-        if (expectedIds.size != expectedTracks.size) {
-            Log.w(TAG, "FLIP PLAY VERIFY | native track IDs unavailable")
-            eventReporter.reportEvent(
-                GoneSmartRuntimeContract.CATEGORY_FLIP,
-                "Could not verify reverse $sourceKind playback: track IDs unavailable."
-            )
-            return
-        }
+        if (expectedIds.size != expectedTracks.size) return
         diagnosticsExecutor.execute {
-            val queue = nativeQueue?.get()
-            if (queue == null) {
-                Log.w(TAG, "FLIP PLAY VERIFY | queue not captured")
-                eventReporter.reportEvent(
-                    GoneSmartRuntimeContract.CATEGORY_FLIP,
-                    "Could not verify reverse $sourceKind playback: queue unavailable."
-                )
-                return@execute
-            }
             repeat(12) { attempt ->
                 Thread.sleep(250)
-                val actualIds = runCatching {
-                    val dao = field(queue, "r")!!
-                    val raw = dao.javaClass.getMethod("H1")
-                        .invoke(dao) as List<*>
-                    raw.filterNotNull().sortedBy {
-                        (field(it, "a") as Number).toInt()
-                    }.map { (field(it, "b") as Number).toLong() }
-                }.getOrNull()
-                if (actualIds != null &&
-                    actualIds.size >= expectedIds.size &&
-                    actualIds.take(expectedIds.size) == expectedIds) {
-                    val position = runCatching {
-                        queue.javaClass.getDeclaredMethod("D")
-                            .apply { isAccessible = true }
-                            .invoke(queue)
-                    }.getOrNull()
-                    if (position == 1) {
+                val cursor = nativeAutoDj?.get()?.let {
+                    GmmpQueueReader().read(it)
+                }
+                if (cursor != null) {
+                    val ordered = cursor.items.sortedBy { it.queuePosition }
+                    val ids = ordered.map { it.track.id }
+                    val current = cursor.items.singleOrNull {
+                        it.state == QueueItemState.CURRENT
+                    }
+                    if (ids.size >= expectedIds.size &&
+                        ids.take(expectedIds.size) == expectedIds &&
+                        current?.queueEntryId ==
+                            ordered.firstOrNull()?.queueEntryId
+                    ) {
                         Log.i(
                             TAG,
-                            "FLIP PLAY VERIFIED | kind=$sourceKind | " +
-                                "expected=${expectedIds.size} | " +
-                                "queueSize=${actualIds.size} | " +
-                                "first=${actualIds.firstOrNull()} | " +
-                                "last=${actualIds[expectedIds.size - 1]} | " +
-                                "currentPosition=$position | checks=${attempt + 1}"
+                            "FLIP PLAY VERIFIED | kind=" + sourceKind +
+                                " | source=cursor | expected=" +
+                                expectedIds.size + " | queueSize=" + ids.size +
+                                " | currentPosition=" + current.queuePosition +
+                                " | checks=" + (attempt + 1)
                         )
                         eventReporter.reportEvent(
                             GoneSmartRuntimeContract.CATEGORY_FLIP,
-                            "Playing $sourceKind in reverse: " +
-                                "${expectedIds.size} tracks, starting with the original last."
+                            "Playing " + sourceKind + " in reverse: " +
+                                expectedIds.size + " tracks."
                         )
                         return@execute
                     }
                 }
+                val queue = nativeQueue?.get()
+                val legacy = queue?.let {
+                    runCatching {
+                        val dao = field(it, "r")!!
+                        val raw = dao.javaClass.getMethod("H1")
+                            .invoke(dao) as List<*>
+                        val ids = raw.filterNotNull().sortedBy { row ->
+                            (field(row, "a") as Number).toInt()
+                        }.map { row ->
+                            (field(row, "b") as Number).toLong()
+                        }
+                        val position = it.javaClass.getDeclaredMethod("D")
+                            .apply { isAccessible = true }.invoke(it)
+                        ids.size >= expectedIds.size &&
+                            ids.take(expectedIds.size) == expectedIds &&
+                            position == 1
+                    }.getOrDefault(false)
+                } == true
+                if (legacy) {
+                    Log.i(
+                        TAG,
+                        "FLIP PLAY VERIFIED | kind=" + sourceKind +
+                            " | source=legacy | checks=" + (attempt + 1)
+                    )
+                    return@execute
+                }
             }
             Log.e(
                 TAG,
-                "FLIP PLAY VERIFY | $sourceKind playback did not match " +
-                    "reversed playlist after 3 seconds"
-            )
-            eventReporter.reportEvent(
-                GoneSmartRuntimeContract.CATEGORY_FLIP,
-                "Reverse $sourceKind playback could not be verified."
+                "FLIP PLAY VERIFY | " + sourceKind +
+                    " playback did not match reversed playlist after 3 seconds"
             )
         }
     }

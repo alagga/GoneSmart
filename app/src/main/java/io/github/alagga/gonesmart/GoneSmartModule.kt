@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r17"
+            "gmmp421-r18"
 
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
@@ -1192,41 +1192,60 @@ class GoneSmartModule : XposedModule() {
             val serviceClass = param.classLoader.loadClass(
                 "gonemad.gmmp.playback.service.MusicService"
             )
-            val playListMethod = serviceClass.getDeclaredMethod(
-                "w1",
-                Int::class.javaPrimitiveType,
-                Any::class.java,
-                List::class.java
-            ).apply { isAccessible = true }
+            val candidates = GmmpReflectionPolicy
+                .callableMethods(serviceClass)
+                .filter { method ->
+                    val p = method.parameterTypes
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.returnType == java.lang.Void.TYPE &&
+                        p.size == 3 &&
+                        p.count { it == Int::class.javaPrimitiveType } == 1 &&
+                        p.count {
+                            java.util.List::class.java.isAssignableFrom(it)
+                        } == 1 &&
+                        p.count { !it.isPrimitive } == 2
+                }
+            val playListMethod = candidates.singleOrNull {
+                it.name == "w1"
+            } ?: candidates.singleOrNull()
+                ?: error(
+                    "GMMP playlist playback boundary is not unique: " +
+                        candidates.joinToString(",") { it.name }
+                )
+            playListMethod.isAccessible = true
+            val actionIndex = playListMethod.parameterTypes.indexOfFirst {
+                it == Int::class.javaPrimitiveType
+            }
+            val listIndex = playListMethod.parameterTypes.indexOfFirst {
+                java.util.List::class.java.isAssignableFrom(it)
+            }
             hook(playListMethod).intercept { chain ->
-                val originalList = chain.getArg(2) as? List<*>
+                val action = chain.getArg(actionIndex) as? Int
+                val originalList = chain.getArg(listIndex) as? List<*>
                 val reversed = queueFlipController
                     .consumeReversePlaylistForNativePlay(
-                        chain.getArg(0) as? Int,
+                        action,
                         originalList
                     )
                 if (reversed == null) {
                     val result = chain.proceed()
-                    trackMixController.onNativePlaybackMethodFinished(
-                        chain.getArg(0) as? Int
-                    )
+                    trackMixController.onNativePlaybackMethodFinished(action)
                     result
                 } else {
-                    // The hook framework does not expose an argument
-                    // setter. Re-enter the original native method with a
-                    // new List while our pending request is already
-                    // consumed; the nested hook proceeds normally.
+                    val args = Array<Any?>(playListMethod.parameterCount) {
+                        chain.getArg(it)
+                    }
+                    args[listIndex] = reversed.tracks
                     Log.i(
                         "GoneSmartFlip",
-                        "FLIP SERVICE | native action=0 | " +
-                            "originalCount=${originalList?.size} | " +
-                            "reversedCount=${reversed.tracks.size}"
+                        "FLIP SERVICE | method=" + playListMethod.name +
+                            " | action=" + action +
+                            " | originalCount=" + originalList?.size +
+                            " | reversedCount=" + reversed.tracks.size
                     )
                     val result = playListMethod.invoke(
                         chain.getThisObject(),
-                        chain.getArg(0),
-                        chain.getArg(1),
-                        reversed.tracks
+                        *args
                     )
                     queueFlipController.verifyNativePlaylistPlayback(
                         reversed.tracks,
@@ -1550,7 +1569,7 @@ class GoneSmartModule : XposedModule() {
                 "READY_LEGACY"
             } else {
                 val dao = loader.loadClass("d85")
-                val daoMethods = methods(dao)
+                val daoMethods = GmmpReflectionPolicy.callableMethods(dao)
                 require(daoMethods.any {
                     it.parameterCount == 1 &&
                         java.util.List::class.java
@@ -1562,8 +1581,31 @@ class GoneSmartModule : XposedModule() {
                         java.util.List::class.java
                             .isAssignableFrom(it.returnType)
                 })
-                "READY_RUNTIME_DAO"
+                "READY_CALLABLE_RUNTIME_DAO"
             }
+        }
+
+        checks["playlistPlayback"] = result {
+            val service = loader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val candidates = GmmpReflectionPolicy.callableMethods(service)
+                .filter { method ->
+                    val p = method.parameterTypes
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.returnType == java.lang.Void.TYPE &&
+                        p.size == 3 &&
+                        p.count { it == Integer.TYPE } == 1 &&
+                        p.count {
+                            java.util.List::class.java.isAssignableFrom(it)
+                        } == 1 &&
+                        p.count { !it.isPrimitive } == 2
+                }
+            require(
+                candidates.count { it.name == "w1" } == 1 ||
+                    candidates.size == 1
+            )
+            "READY_STRUCTURAL"
         }
 
         checks["trackMix"] = result {
@@ -3988,6 +4030,9 @@ class GoneSmartModule : XposedModule() {
                 ?.let { autoDjInstance ->
                     trackMixAutoDj = WeakReference(autoDjInstance)
                     trackMixController.captureNativeAutoDj(
+                        autoDjInstance
+                    )
+                    queueFlipController.captureNativeAutoDj(
                         autoDjInstance
                     )
                     scheduleCompatibilityRuntimeInstance(

@@ -80,3 +80,10 @@ because CI is green; review and use the normal project release process.
 ## 28 September 2026 GMMP language / API source audit
 
 Flip's contextual menu now requires the **actual installed** GMMP `queue` resource or the current native `Play` item / `play` resource. There is no hardcoded English Queue/Play fallback in a foreign-language GMMP menu. The reverse arrow and lilac two-star branding are language-neutral. Queue success uses the original translated Queue noun plus a checkmark; generic failures use original `error` and the relevant translated noun or a neutral warning symbol. More detailed English explanations stay in companion Logs/Logcat. Existing native `tx3.H1`, `xx3.O0`, `ex3.b2` queue writer/pointer and original selected-playlist Play callback are preserved; the reversal ordering itself remains GoneSmart's necessary extension. See [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). Alternate-language device verification remains separate.
+
+
+## GMMP 4.2.1 r18 compatibility note
+
+The 2026-10-02 r17 device log proves that queue reading/current-entry resolution now works through the read-only Cursor before Flip fails. The remaining queue-Flip failure is native generated-DAO entity discovery, so r18 extends discovery to callable inherited interface methods and still requires row-by-row correlation against Cursor `queue_id`, `song_id` and `queue_position` before any GMMP writer is invoked. Direct SQL mutation remains forbidden.
+
+For Playlist Play Flipped, GMMP 4.2.1 no longer satisfies the exact 4.2.0 `MusicService.w1(int,Object,List)` lookup. r18 resolves a unique host playback method by the semantic three-argument shape (one action int + one resolved List), reverses only that List for the pending request, and verifies the resulting queue through the accepted Cursor reader; the legacy `ex3` verifier remains the 4.2.0 fallback.
