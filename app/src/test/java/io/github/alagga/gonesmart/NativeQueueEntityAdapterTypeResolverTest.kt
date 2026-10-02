@@ -14,6 +14,8 @@ class NativeQueueEntityAdapterTypeResolverTest {
         fun ignore(value: Long)
     }
 
+    private interface GenericNoise<T>
+
     private class ConcreteStatement {
         fun bindLong(index: Int, value: Long) = Unit
     }
@@ -61,6 +63,17 @@ class NativeQueueEntityAdapterTypeResolverTest {
     }
 
     private class SyntheticBridgeQueueAdapter : GenericAdapter<QueueRow>() {
+        override fun M(): String =
+            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+
+        override fun G(statement: ConcreteStatement?, value: QueueRow) {
+            statement?.bindLong(1, value.position.toLong())
+            statement?.bindLong(2, value.queueId)
+        }
+    }
+
+    private class SyntheticBridgeQueueAdapterWithGenericNoise :
+        GenericAdapter<QueueRow>(), GenericNoise<OtherRow> {
         override fun M(): String =
             "UPDATE q SET queue_position = ? WHERE queue_id = ?"
 
@@ -126,6 +139,11 @@ class NativeQueueEntityAdapterTypeResolverTest {
         private val update = SyntheticBridgeQueueAdapter()
     }
 
+    private class SyntheticBridgeWithGenericNoiseQueueDao {
+        @Suppress("unused")
+        private val update = SyntheticBridgeQueueAdapterWithGenericNoise()
+    }
+
     private class InheritedBinderNoiseQueueDao {
         @Suppress("unused")
         private val update = QueueAdapterWithInheritedBinder()
@@ -175,6 +193,15 @@ class NativeQueueEntityAdapterTypeResolverTest {
             SyntheticBridgeQueueDao()
         )
         assertEquals(QueueRow::class.java, result?.modelClass)
+    }
+
+    @Test fun genericSuperclassEntityBeatsUnrelatedGenericInterfaceNoise() {
+        val result = NativeQueueEntityAdapterTypeResolver.resolve(
+            SyntheticBridgeWithGenericNoiseQueueDao()
+        )
+
+        assertEquals(QueueRow::class.java, result?.modelClass)
+        assertEquals(true, result?.evidence?.contains(":generic:"))
     }
 
     @Test fun adapterDeclaredBinderBeatsInheritedBinderNoise() {

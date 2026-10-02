@@ -16,27 +16,33 @@ The 2026-10-03 device log keeps the already-graduated read/playback boundaries g
 
 This means Room/Cursor/current-entry mapping, selected-track playback verification and the menu/UI hook are not the cause of the current failures.
 
-## r27 code defect found without another device probe
+## r27 code defects found without another device probe
 
 The r26 generated-adapter resolver intentionally included synthetic/bridge methods from the complete adapter hierarchy. It then required the resulting erased `bind(statement,Object)` candidate set to contain exactly one method.
 
 That uniqueness check was too broad: an already-owned generated adapter may declare its own erased entity bind while inheriting additional erased helper/binder methods from a Room/R8 base class. Such inherited methods are not competing ownership evidence for the adapter's entity and can make the old `singleOrNull()` reject the adapter before the direct bind bridge is even invoked.
 
-r27 narrows the boundary instead of adding another obfuscated-name mapping:
+A second false-ambiguity path existed in preserved generic metadata. The old resolver merged type arguments from the generated adapter's generic superclass and every implemented generic interface. Room's entity ownership is expressed by the adapter superclass contract; an unrelated auxiliary generic interface could therefore hide an otherwise unique entity type and force the weaker binder-cast fallback. r27 now prefers a unique usable generic-superclass entity and only consults generic interfaces when the superclass carries none.
+
+r27 narrows these boundaries instead of adding another obfuscated-name mapping:
 
 1. collect the same structural two-argument erased bind candidates;
 2. if the already-owned generated adapter declares one itself, use only directly declared candidates for uniqueness;
 3. consult inherited binders only when the adapter declares no matching binder;
-4. retain the existing SQL/DAO-ownership proof, generic-metadata path, wrong-marker ClassCast proof, all-adapters-agree requirement, Cursor correlation and fail-closed behavior;
-5. do not construct a concrete `yb4`, execute SQL or call a queue writer during discovery.
+4. prefer a unique usable generic-superclass entity over unrelated generic-interface metadata, using interfaces only as fallback;
+5. retain the existing SQL/DAO-ownership proof, wrong-marker ClassCast proof, all-adapters-agree requirement, Cursor correlation and fail-closed behavior;
+6. do not construct a concrete `yb4`, execute SQL or call a queue writer during discovery.
 
 This is intentionally independent of the names `d85`, `d85$a`, `G` and `yb4`; those remain evidence from the tested host, not compatibility keys.
 
 ## Automated gate
 
-`NativeQueueEntityAdapterTypeResolverTest` now includes an adapter whose superclass deliberately contributes a second erased binder with another entity type. The resolver must choose the directly declared adapter binder and recover the Queue entity, while the existing ambiguous-two-owned-adapters test must still fail closed.
+`NativeQueueEntityAdapterTypeResolverTest` now covers both false-ambiguity modes before another device build is requested:
 
-All previous synthetic bridge, concrete-statement, generated binding, Queue Flip planning and Track Mix tests remain in the suite.
+- an adapter whose superclass deliberately contributes a second erased binder with another entity type; the resolver must use the directly declared adapter binder;
+- a generated-style adapter whose generic superclass owns the Queue entity while an auxiliary generic interface carries a different unrelated type; the superclass entity must remain authoritative.
+
+The existing ambiguous-two-owned-adapters test still fails closed. All previous synthetic bridge, concrete-statement, generated binding, Queue Flip planning and Track Mix tests remain in the suite.
 
 ## Probe lifecycle and next device check
 

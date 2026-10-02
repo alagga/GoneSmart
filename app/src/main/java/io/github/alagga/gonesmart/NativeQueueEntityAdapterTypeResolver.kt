@@ -193,14 +193,24 @@ internal object NativeQueueEntityAdapterTypeResolver {
             .toList()
 
     private fun inferGenericEntity(type: Class<*>): Class<*>? {
-        val types = buildList<Type> {
-            add(type.genericSuperclass)
-            addAll(type.genericInterfaces)
-        }
-        val classes = types.flatMap(::classesFromType)
+        // Room's generated entity adapter is represented by the adapter's
+        // generic superclass contract. Auxiliary interfaces may also retain
+        // unrelated generic metadata after R8; merging all type arguments can
+        // therefore create false ambiguity. Prefer a unique usable superclass
+        // entity and consult interfaces only when the superclass carries none.
+        val superclassCandidates = classesFromType(type.genericSuperclass)
             .filter(::usable)
             .distinct()
-        return classes.singleOrNull()
+        when (superclassCandidates.size) {
+            1 -> return superclassCandidates.single()
+            in 2..Int.MAX_VALUE -> return null
+        }
+
+        val interfaceCandidates = type.genericInterfaces
+            .flatMap(::classesFromType)
+            .filter(::usable)
+            .distinct()
+        return interfaceCandidates.singleOrNull()
     }
 
     private fun classesFromType(type: Type?): List<Class<*>> = when (type) {
