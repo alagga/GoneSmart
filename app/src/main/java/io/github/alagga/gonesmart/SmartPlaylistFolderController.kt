@@ -2348,44 +2348,23 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun subscribeSmartSelectionAccent(browser: Browser) {
-        browser.liveSelectionAccent =
-            NativeGmmpAccent.currentPrimary(browser.list)
+        // r14 proved Aesthetic colorPrimary is opaque black on this GMMP
+        // skin and is not the Smart selection accent. Do not subscribe to
+        // that misleading slot. Resolve from actual native GMMP selection
+        // chrome/FAB/highlight resources when selection starts.
         browser.selectionAccentSubscription?.dispose()
-        browser.selectionAccentSubscription = NativeGmmpAccent.observePrimary(
-            browser.list,
-            onColor = { color ->
-                if (browsers[browser.list] !== browser) return@observePrimary
-                if (browser.liveSelectionAccent == color) return@observePrimary
-                browser.liveSelectionAccent = color
-                browser.selectionOverlayColor = null
-                syncVisibleSmartRowInteractions(browser)
-                Log.i(
-                    TAG,
-                    "SMART MULTI STYLE | native primary=#" +
-                        Integer.toHexString(color)
-                )
-            },
-            onError = {
-                Log.w(
-                    TAG,
-                    "SMART MULTI STYLE | live primary unavailable",
-                    it
-                )
-            }
-        )
+        browser.selectionAccentSubscription = null
+        browser.liveSelectionAccent = null
+        browser.selectionOverlayColor = null
     }
 
     private fun smartSelectionOverlayColor(browser: Browser): Int {
-        val accent = multiSelect.nativeContextBarColor(browser.list)
-            ?: browser.liveSelectionAccent
-            ?: NativeGmmpAccent.currentPrimary(browser.list)
-            ?: multiSelect.standaloneSelectionAccent(browser.list)
-            ?: browser.style?.accentColor
-            ?: resolveColor(
-                browser.list,
-                android.R.attr.colorPrimary,
-                0xFFA39AFF.toInt()
-            )
+        val accent = multiSelect.standaloneSelectionAccent(browser.list)
+        Log.i(
+            TAG,
+            "SMART MULTI STYLE | resolved native selection=#" +
+                Integer.toHexString(accent)
+        )
         return Color.argb(
             0x80,
             Color.red(accent),

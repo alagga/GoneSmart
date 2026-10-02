@@ -1141,6 +1141,7 @@ internal class PlaylistFolderPreviewController(
             PlaylistMenuIdentityPolicy.isMainPlaylistMenu(name)
         if (playlistListMenu) {
             playlistTabMenu = WeakReference(menu)
+            NativeGmmpFolderCreator.observeMainPlaylistMenu(context, menu)
             installNativeNewFolderMenu(menu, context)
             updatePlaylistMenu()
         } else if (name == "menu_gm_context_playlist_list") {
@@ -1970,7 +1971,25 @@ internal class PlaylistFolderPreviewController(
             browser.mainSelection.clear()
             browser.nativeSelectionChromeSeen = false
             syncMainSelectionVisuals(browser)
-            return false
+
+            val nativeMode = activeNativePlaylistMode?.get()
+            val finished = nativeMode?.let { mode ->
+                runCatching {
+                    mode.javaClass.methods.firstOrNull {
+                        it.name == "finish" && it.parameterCount == 0
+                    }?.invoke(mode)
+                        ?: error("native ActionMode.finish unavailable")
+                    true
+                }.getOrDefault(false)
+            } == true
+            if (finished) {
+                activeNativePlaylistMode = null
+                Log.i(
+                    TAG,
+                    "FOLDER MAIN SELECT | Back cleared + native ActionMode finished"
+                )
+            }
+            return finished
         }
         if (browser.currentFolderId == null) return false
         val folder = findFolder(browser.index, browser.currentFolderId)
@@ -3477,6 +3496,15 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    private fun syncMainSelectionPath(
+        browser: Browser,
+        path: String
+    ) {
+        browser.mainRenderedPlaylistRows[path]
+            ?.takeIf { it.parent === browser.rows }
+            ?.let { applyMainSelectionVisual(browser, path, it) }
+    }
+
     private fun syncMainSelectionVisuals(browser: Browser) {
         browser.mainRenderedPlaylistRows.forEach { (path, row) ->
             if (row.parent === browser.rows) {
@@ -3541,13 +3569,13 @@ internal class PlaylistFolderPreviewController(
         } else null
         if (optimisticSelection != null) {
             browser.pendingMainSelection[path] = optimisticSelection
-            syncMainSelectionVisuals(browser)
+            syncMainSelectionPath(browser, path)
         }
         val complete: (Boolean) -> Unit = { handled ->
             if (optimisticSelection != null) {
                 browser.pendingMainSelection.remove(path)
                 if (browsers[list] === browser) {
-                    syncMainSelectionVisuals(browser)
+                    syncMainSelectionPath(browser, path)
                 }
             }
             onComplete?.invoke(handled)
@@ -3797,7 +3825,7 @@ internal class PlaylistFolderPreviewController(
                             if (browsers[list] === current &&
                                 list.isAttachedToWindow &&
                                 !current.nativeNavigationInProgress
-                            ) syncMainSelectionVisuals(current)
+                            ) syncMainSelectionPath(current, targetPath)
                         }
                         Log.i(TAG, "FOLDER MAIN SELECT | selected=" +
                             current.mainSelection.selectedCount)

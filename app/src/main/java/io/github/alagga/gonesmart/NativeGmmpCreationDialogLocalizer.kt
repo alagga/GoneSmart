@@ -4,6 +4,7 @@ import android.app.Dialog
 import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -513,6 +514,7 @@ internal object NativeGmmpCreationDialogLocalizer {
         if (accentSubscriptions.containsKey(dialog)) return
         val decor = dialog.window?.decorView ?: return
         val initial = NativeGmmpAccent.currentPrimary(decor)
+            ?.takeIf(::isUsableInputAccent)
         if (initial != null) {
             accentColors[dialog] = initial
             applyInputAccent(decor, initial)
@@ -544,11 +546,14 @@ internal object NativeGmmpCreationDialogLocalizer {
         val subscription = NativeGmmpAccent.observePrimary(
             decor,
             onColor = { color ->
-                val previous = accentColors.put(dialog, color)
-                applyInputAccent(decor, color)
                 pendingRevealAlpha.remove(dialog)?.let { alpha ->
                     decor.alpha = alpha
                 }
+                if (!isUsableInputAccent(color)) {
+                    return@observePrimary
+                }
+                val previous = accentColors.put(dialog, color)
+                applyInputAccent(decor, color)
                 if (previous != color) {
                     Log.i(
                         TAG,
@@ -617,12 +622,26 @@ internal object NativeGmmpCreationDialogLocalizer {
                 focusedColors(accent, normal)
             )
         }
+        // Action buttons intentionally remain 100% native. In particular,
+        // GMMP's OK/Cancel buttons are not the same palette role as the
+        // focused input cursor/underline; recoloring them caused the r14
+        // Add-picker/Smart-folder mismatch reported on-device.
         // Floating input captions are intentionally disabled. Aesthetic's
         // TextInputLayout box APIs still receive the native accent through the
         // input-view loop above.
-        applyActionAccent(root, accent)
     }
 
+    private fun isUsableInputAccent(color: Int): Boolean {
+        if (Color.alpha(color) < 200) return false
+        // On the tested 4.2.1 skin colorPrimary resolves to opaque black,
+        // while the native dialog uses a separate Aesthetic input palette.
+        // Never overwrite a correctly styled native field with that sentinel.
+        return Color.red(color) >= 12 ||
+            Color.green(color) >= 12 ||
+            Color.blue(color) >= 12
+    }
+
+    @Suppress("unused")
     private fun applyActionAccent(root: View, accent: Int) {
         val context = root.context
         listOf("md_button_positive", "md_button_negative").forEach { name ->

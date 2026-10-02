@@ -12,8 +12,11 @@ import java.lang.reflect.Proxy
  * Read-only SQL bridge through GMMP's already-open Room database.
  *
  * This intentionally resolves by semantic structure instead of R8 names.
- * GMMP 4.2.0 used a concrete query wrapper, while 4.2.1 exposes Room's
- * query contract as an R8-renamed interface. Both paths stay read-only.
+ * GMMP 4.2.0 used a concrete (String,Object[]) query wrapper. GMMP 4.2.1
+ * exposes an R8-renamed Room pooled query object (p94) whose visible
+ * constructor is only (int); the SQL-aware instance is obtained through
+ * Room's static acquire-style (String,int) factory. Some builds may expose
+ * the SupportSQLiteQuery contract as an interface. All paths stay read-only.
  */
 internal object GmmpReadOnlySql {
     private const val TAG = "GoneSmart"
@@ -30,7 +33,8 @@ internal object GmmpReadOnlySql {
         val databaseField: Field,
         val queryMethod: Method,
         val queryType: Class<*>,
-        val queryConstructor: Constructor<*>?
+        val queryConstructor: Constructor<*>?,
+        val queryFactory: Method?
     )
 
     fun <T> query(
@@ -65,10 +69,10 @@ internal object GmmpReadOnlySql {
                     "(" + binding.queryType.name + "):Cursor" +
                     " | wrapper=" + binding.queryType.name +
                     " | factory=" +
-                    if (binding.queryConstructor != null) {
-                        "constructor"
-                    } else {
-                        "interface-proxy"
+                    when {
+                        binding.queryConstructor != null -> "constructor"
+                        binding.queryFactory != null -> "static-query-factory"
+                        else -> "interface-proxy"
                     }
             )
         }
@@ -109,7 +113,8 @@ internal object GmmpReadOnlySql {
         data class Candidate(
             val method: Method,
             val queryType: Class<*>,
-            val constructor: Constructor<*>?
+            val constructor: Constructor<*>?,
+            val factory: Method?
         )
 
         // Android framework classes normally share the boot class loader,
@@ -128,7 +133,8 @@ internal object GmmpReadOnlySql {
                     Candidate(
                         method,
                         queryType,
-                        resolveQueryConstructor(queryType)
+                        GmmpReadOnlyQueryShape.legacyConstructor(queryType),
+                        GmmpReadOnlyQueryShape.pooledFactory(queryType)
                     )
                 }
 
@@ -140,7 +146,10 @@ internal object GmmpReadOnlySql {
                 }.ifBlank { "none" }
         )
 
-        if (chosen.constructor == null && !chosen.queryType.isInterface) {
+        if (chosen.constructor == null &&
+            chosen.factory == null &&
+            !chosen.queryType.isInterface
+        ) {
             error(
                 "GMMP Cursor query type has no safe factory: " +
                     chosen.queryType.name +
@@ -149,20 +158,34 @@ internal object GmmpReadOnlySql {
                         it.parameterTypes.joinToString(
                             prefix = "(", postfix = ")"
                         ) { p -> p.name }
-                    }
+                    } +
+                    " | staticMethods=" +
+                    chosen.queryType.declaredMethods
+                        .filter { Modifier.isStatic(it.modifiers) }
+                        .take(24)
+                        .joinToString(",") { method ->
+                            method.name +
+                                method.parameterTypes.joinToString(
+                                    prefix = "(", postfix = ")"
+                                ) { it.name } +
+                                ":" + method.returnType.name
+                        }
+                        .ifBlank { "none" }
             )
         }
 
         databaseField.isAccessible = true
         chosen.method.isAccessible = true
         chosen.constructor?.isAccessible = true
+        chosen.factory?.isAccessible = true
 
         val resolved = Binding(
             database = database,
             databaseField = databaseField,
             queryMethod = chosen.method,
             queryType = chosen.queryType,
-            queryConstructor = chosen.constructor
+            queryConstructor = chosen.constructor,
+            queryFactory = chosen.factory
         )
         synchronized(bindingCache) {
             bindingCache[autoDjInstance] = resolved
@@ -173,19 +196,6 @@ internal object GmmpReadOnlySql {
     private fun isCursorType(type: Class<*>): Boolean =
         Cursor::class.java.isAssignableFrom(type) ||
             type.name == "android.database.Cursor"
-
-    private fun resolveQueryConstructor(
-        queryType: Class<*>
-    ): Constructor<*>? {
-        val candidates = queryType.declaredConstructors.filter {
-            val p = it.parameterTypes
-            p.size == 2 &&
-                p[0] == String::class.java &&
-                p[1].isArray &&
-                !p[1].componentType.isPrimitive
-        }
-        return candidates.singleOrNull()
-    }
 
     private fun supportsQueryInterface(queryType: Class<*>): Boolean {
         // The Cursor-returning Room boundary is already unique on the
@@ -234,7 +244,20 @@ internal object GmmpReadOnlySql {
             return constructor.newInstance(sql, nativeArgs)
         }
 
+        binding.queryFactory?.let { factory ->
+            val query = factory.invoke(null, sql, args.size)
+                ?: error("GMMP pooled query factory returned null")
+            require(binding.queryType.isInstance(query)) {
+                "GMMP pooled query factory returned unexpected type"
+            }
+            bindArguments(query, args)
+            return query
+        }
+
         val queryType = binding.queryType
+        require(queryType.isInterface) {
+            "GMMP query type is neither constructible, pooled nor interface"
+        }
         val loader = queryType.classLoader
             ?: binding.database.javaClass.classLoader
         return Proxy.newProxyInstance(

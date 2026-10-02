@@ -45,6 +45,8 @@ internal class NativeGmmpFolderCreator(
         private val lock = Any()
         private val main = Handler(Looper.getMainLooper())
         private var presenterRef = WeakReference<Any>(null)
+        private var playlistMenuRef =
+            WeakReference<android.view.Menu>(null)
         private var pending: PendingShell? = null
         private val shellDialogs = WeakHashMap<Dialog, Boolean>()
         private val legacyDialogs = WeakHashMap<Dialog, Boolean>()
@@ -58,6 +60,20 @@ internal class NativeGmmpFolderCreator(
             val onCreated: () -> Unit,
             var dialog: WeakReference<Dialog>? = null
         )
+
+        fun observeMainPlaylistMenu(
+            context: Context,
+            menu: android.view.Menu?
+        ) {
+            if (menuAddId(context, menu) == null || menu == null) return
+            synchronized(lock) {
+                playlistMenuRef = WeakReference(menu)
+            }
+            Log.i(
+                TAG,
+                "FOLDER CREATE SHELL | live playlist menuAdd captured"
+            )
+        }
 
         fun observeMainPlaylistPresenter(presenter: Any?) {
             if (presenter?.javaClass?.name != "tp3") return
@@ -310,10 +326,12 @@ internal class NativeGmmpFolderCreator(
             )
         }
 
-        val nativeMenuAddId = menuAddId(context, nativePlaylistMenu)
+        val dispatchMenu = nativePlaylistMenu
+            ?: synchronized(lock) { playlistMenuRef.get() }
+        val nativeMenuAddId = menuAddId(context, dispatchMenu)
         val invoked = if (nativeMenuAddId != null) {
             runCatching {
-                val handled = nativePlaylistMenu
+                val handled = dispatchMenu
                     ?.performIdentifierAction(nativeMenuAddId, 0) == true
                 require(handled) {
                     "GMMP native menuAdd action was not handled"

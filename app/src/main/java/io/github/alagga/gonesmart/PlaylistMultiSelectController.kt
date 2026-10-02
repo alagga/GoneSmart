@@ -88,6 +88,7 @@ internal class PlaylistMultiSelectController {
     }
 
     private var active: Session? = null
+    @Volatile private var lastVerifiedNativeFabTint: Int? = null
     private var folderSelectionChanged: ((ViewGroup) -> Unit)? = null
 
     fun setFolderSelectionChangedListener(listener: (ViewGroup) -> Unit) {
@@ -129,24 +130,80 @@ internal class PlaylistMultiSelectController {
      * long-pressed row cannot differ from rows selected afterwards.
      */
     fun standaloneSelectionAccent(view: View): Int {
+        semanticNativeFabTint(view)?.let { return it }
+
         val contextBar = (findContextBar(view.rootView)?.background
-            as? ColorDrawable)?.color?.takeIf {
-                Color.alpha(it) >= 200 && it != Color.TRANSPARENT
-            }
-        val primaryAttr = view.resources.getIdentifier(
-            "colorPrimary", "attr", view.context.packageName
+            as? ColorDrawable)?.color?.takeIf(::isUsableSelectionColor)
+
+        val highlightAttr = view.resources.getIdentifier(
+            "rvHighlightOverlay", "attr", view.context.packageName
         )
-        val accentAttr = view.resources.getIdentifier(
-            "colorAccent", "attr", view.context.packageName
-        )
+        val controlHighlight = themeColor(
+            view, android.R.attr.colorControlHighlight
+        )?.takeIf(::isUsableSelectionColor)
+        val nativeHighlight = highlightAttr.takeIf { it != 0 }
+            ?.let { themeColor(view, it) }
+            ?.takeIf(::isUsableSelectionColor)
+
         return contextBar
-            ?: NativeGmmpAccent.currentPrimary(view)
-            ?: primaryAttr.takeIf { it != 0 }
-                ?.let { themeColor(view, it) }
+            ?: nativeHighlight
+            ?: controlHighlight
+            ?: lastVerifiedNativeFabTint
             ?: NativeGmmpAccent.lastObserved()
-            ?: accentAttr.takeIf { it != 0 }
-                ?.let { themeColor(view, it) }
+                ?.takeIf(::isUsableSelectionColor)
             ?: 0xFF36A8BE.toInt()
+    }
+
+    /**
+     * Theme attributes are misleading on the tested GMMP 4.2.1 skin
+     * (colorPrimary=black, colorAccent=stale red). Prefer an actual native
+     * Material FAB tint. First use the semantic playlistFab id; otherwise
+     * accept a unique visible FAB color from the same GMMP window.
+     */
+    private fun semanticNativeFabTint(view: View): Int? {
+        val root = view.rootView
+        val playlistFabId = view.resources.getIdentifier(
+            "playlistFab", "id", view.context.packageName
+        )
+        if (playlistFabId != 0) {
+            val exact = root.findViewById<View>(playlistFabId)
+            materialFabTint(exact)?.let {
+                lastVerifiedNativeFabTint = it
+                return it
+            }
+        }
+
+        val colors = linkedSetOf<Int>()
+        fun walk(node: View, depth: Int, budget: IntArray) {
+            if (depth > 12 || budget[0]-- <= 0) return
+            materialFabTint(node)?.let(colors::add)
+            val group = node as? ViewGroup ?: return
+            for (index in 0 until group.childCount) {
+                walk(group.getChildAt(index), depth + 1, budget)
+            }
+        }
+        walk(root, 0, intArrayOf(256))
+        return colors.singleOrNull()?.also {
+            lastVerifiedNativeFabTint = it
+        }
+    }
+
+    private fun materialFabTint(view: View?): Int? {
+        val fab = view as?
+            com.google.android.material.floatingactionbutton.FloatingActionButton
+            ?: return null
+        return fab.backgroundTintList?.let { tint ->
+            tint.getColorForState(fab.drawableState, tint.defaultColor)
+        }?.takeIf(::isUsableSelectionColor)
+    }
+
+    private fun isUsableSelectionColor(color: Int): Boolean {
+        if (Color.alpha(color) < 200 || color == Color.TRANSPARENT) return false
+        // Opaque near-black is colorPrimary on this 4.2.1 skin, not the
+        // playlist selection accent.
+        return Color.red(color) >= 12 ||
+            Color.green(color) >= 12 ||
+            Color.blue(color) >= 12
     }
 
     fun standaloneSelectionOverlayColor(view: View): Int {
@@ -1629,12 +1686,9 @@ internal class PlaylistMultiSelectController {
             ?: gmmpAccent(session, view)
 
     private fun nativeFabTint(session: Session): Int? {
-        val fab = session.fab as?
-            com.google.android.material.floatingactionbutton.FloatingActionButton
-            ?: return null
-        return fab.backgroundTintList?.let { tint ->
-            tint.getColorForState(fab.drawableState, tint.defaultColor)
-        }?.takeIf { Color.alpha(it) >= 200 }
+        val color = materialFabTint(session.fab) ?: return null
+        lastVerifiedNativeFabTint = color
+        return color
     }
 
     private fun gmmpSelectionAccent(

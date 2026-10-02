@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r14"
+            "gmmp421-r15"
 
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
@@ -1369,6 +1369,9 @@ class GoneSmartModule : XposedModule() {
                     )
             }
 
+        fun hasReadOnlyQueryFactory(query: Class<*>): Boolean =
+            GmmpReadOnlyQueryShape.supported(query)
+
         val checks = linkedMapOf<String, String>()
 
         checks["autoDjRefill"] = result {
@@ -1395,16 +1398,7 @@ class GoneSmartModule : XposedModule() {
                 val cursorMethods = cursorBoundaries(db)
                 require(cursorMethods.size == 1)
                 val query = cursorMethods.single().parameterTypes.single()
-                require(
-                    query.isInterface ||
-                        query.declaredConstructors.any {
-                            val p = it.parameterTypes
-                            p.size == 2 &&
-                                p[0] == String::class.java &&
-                                p[1].isArray &&
-                                !p[1].componentType.isPrimitive
-                        }
-                )
+                require(hasReadOnlyQueryFactory(query))
                 "READY_CURSOR_RUNTIME_POINTER"
             }
         }
@@ -1430,18 +1424,7 @@ class GoneSmartModule : XposedModule() {
                 val cursorMethods = cursorBoundaries(db)
                 require(cursorMethods.size == 1)
                 val query = cursorMethods.single().parameterTypes.single()
-                val queryCtor = query.declaredConstructors.any {
-                    val p = it.parameterTypes
-                    p.size == 2 &&
-                        p[0] == String::class.java &&
-                        p[1].isArray &&
-                        !p[1].componentType.isPrimitive
-                }
-                // The unique verified f94 Cursor boundary is the ownership
-                // proof. R8 may rename/default/bridge the SupportSQLiteQuery
-                // contract; the runtime proxy itself still fails closed if
-                // GMMP invokes an unsupported interface operation.
-                require(queryCtor || query.isInterface)
+                require(hasReadOnlyQueryFactory(query))
                 "READY_CURSOR_STRUCTURAL"
             }
         }

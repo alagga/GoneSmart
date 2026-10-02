@@ -335,3 +335,15 @@ Compatibility development should converge from **logs → semantic resolver → 
 4. Bundle the remaining unresolved native questions into one bounded build whenever safe. Increment the revision only when diagnostic meaning/coverage changes and record additions **and retirements** here.
 5. Real-device testing is reserved for LSPosed/GMMP host behavior that CI cannot prove: actual hook execution, proprietary fragment/menu lifecycle, live theme values, gesture/animation appearance and end-to-end native mutations.
 6. Never request an already accepted flow again unless its native boundary or a shared dependency changed. Keep each requested device pass short and focused on the current unresolved matrix.
+
+
+## 4.2.1 r15 device evidence
+
+The r14 device pass narrows the remaining failures further:
+
+- **Room pooled query:** the unique verified database boundary remains `f94.q(p94): android.database.Cursor`, but `p94` is concrete and reports constructor `(int)`. This matches Room's pooled query shape rather than an interface. Runtime resolution now requires exactly one static acquire-style `(String,int) -> p94` factory when neither the old `(String,Object[])` constructor nor an interface is available. The resulting object is populated only through structurally resolved bindNull/bindLong/bindDouble/bindString/bindBlob operations. A failure reports bounded constructor/static-method inventory so one device pass is sufficient.
+- **Shared Auto-DJ root cause:** startup library/artist loading and queue reading all stopped at the same `p94` factory failure, so Track Auto-DJ and normal Smart Auto-DJ must not be debugged as separate recommendation problems until this shared read-only SQL boundary succeeds.
+- **Normal Playlist selection performance:** r14 still repainted every rendered synthetic playlist row multiple times around one accepted native click. r15 changes that hot path to update only the target row before/after native confirmation. Full selection sweeps remain only for bulk teardown/palette changes.
+- **Normal Playlist Back:** r14 could observe native ActionMode disappearance and clear the mirror later, but the presentation could remain visible during the native lifecycle gap. r15 clears immediately and explicitly calls the already-observed native ActionMode `finish()` when available; only then is Back consumed.
+- **Smart colors:** the legacy Smart New Folder path logged `colorPrimary=#ff000000`; that value is not a selection/input accent. The normal Playlist native New Playlist shell is the accepted visual reference, so Smart creation reuses the captured top-level Playlist `menuAdd` shell when possible. Legacy native prompts keep their original Material button styling and are not overwritten with black primary.
+- **Picker color evidence:** the Add-to-Playlist surface can look correct even while Aesthetic reports primary black and accent red because the live Material FAB tint is a stronger native palette source. Standalone Smart selection now prefers semantic/unique live native FAB tint and native highlight resources; black primary is rejected.
