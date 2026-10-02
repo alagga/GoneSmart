@@ -250,24 +250,27 @@ internal object NativeQueueEntityReconstructor {
             arrayOf(binderType)
         ) { proxyObject, method, args ->
             when (method.name) {
-                "toString" -> return@newProxyInstance "GoneSmart queue bind probe"
-                "hashCode" -> return@newProxyInstance
-                    System.identityHashCode(proxyObject)
-                "equals" -> return@newProxyInstance
-                    (proxyObject === args?.firstOrNull())
-            }
-            val index = (args?.firstOrNull() as? Number)?.toInt()
-            if (index != null) {
-                if ((args?.size ?: 0) >= 2) {
-                    val value = args?.get(1)
-                    if (value is Number) {
-                        values[index] = value.toLong()
+                "toString" -> "GoneSmart queue bind probe"
+                "hashCode" -> System.identityHashCode(proxyObject)
+                "equals" -> proxyObject === args?.firstOrNull()
+                else -> {
+                    val index =
+                        (args?.firstOrNull() as? Number)?.toInt()
+                    if (index != null) {
+                        if ((args?.size ?: 0) >= 2) {
+                            val value = args?.get(1)
+                            if (value is Number) {
+                                values[index] = value.toLong()
+                            }
+                        } else if (
+                            method.returnType == java.lang.Void.TYPE
+                        ) {
+                            values.putIfAbsent(index, null)
+                        }
                     }
-                } else if (method.returnType == java.lang.Void.TYPE) {
-                    values.putIfAbsent(index, null)
+                    primitiveDefault(method.returnType)
                 }
             }
-            primitiveDefault(method.returnType)
         }
         runCatching {
             adapter.bindMethod.invoke(adapter.owner, proxy, entity)
