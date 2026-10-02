@@ -553,3 +553,21 @@ The r23 host pass resolves two previously ambiguous behaviors without reopening 
 | `QUEUE REACTIVE SHAPE` | failure-only final diagnostic | only emitted when no exact/correlated carrier set exists | retire after successful mutation mapping |
 
 Manual validation stays intentionally small: open a Smart Playlist from a nested Smart folder and Back once, run Track Auto-DJ once, then Queue Flip once. That single pass covers all code changed by r24.
+
+
+## GMMP 4.2.1 r25 — generated Room adapter entity-type ownership
+
+The r24 host pass graduates the Smart-folder detail→Back fix and leaves only one shared playback boundary.
+
+- **Smart folders are accepted for this pass.** The maintainer reports the Smart-Playlist issue is fixed. No Smart-folder code is changed in r25 and it is removed from the next manual smoke test.
+- **Track Auto-DJ and Queue Flip share the same remaining failure.** Both first resolve the read-only Queue through `f94.q(p94):Cursor` and Current through `qr.t -> ur.method:b`, then abort inside `GmmpQueueMutationBridge.resolve` because no native Queue entity set is available. Track Auto-DJ reports this during seed isolation; Queue Flip reports the same failure before any write. This is one mapping problem, not two independent feature bugs.
+- **`ww3` is not writer-entity ownership.** The failure-scoped factory diagnostic shows only `ww3(pw3,String,Object)` and no queue-table adapter for that model. Keep `y75.*(ww3[])` only as a queue-related API witness/fallback.
+- **r25 ownership proof:** inspect only the generated adapter fields already owned by the verified `d85` DAO. An adapter participates when a no-arg String method returns SQL containing `queue_table` and one erased two-argument binder callback accepts a binder interface plus `Object`. The real entity type is resolved from unique preserved generic metadata when available; otherwise GoneSmart invokes the binder against a fake binder and a deliberately wrong local marker object and reads the ClassCastException target. No SQLite statement is created or executed.
+- **Mutation remains fail-closed.** The recovered class is only a type witness. The existing carrier/reconstructor must still produce exactly the live Cursor row count and every row must correlate uniquely by `queue_id + song_id + queue_position`. Only then may the original generated update/delete methods run, followed by the existing Cursor verification and rollback.
+- **Diagnostic retirement:** `QUEUE ENTITY TYPE | source=generated-room-adapter` is a compact success mapping. `QUEUE ENTITY FACTORY | unresolved` and `QUEUE REACTIVE SHAPE` remain failure-only until the first successful Track Auto-DJ + Queue Flip pass, then should be retired.
+
+### r25 automated and manual gate
+
+CI adds a fake generated Room adapter whose erased `bind(Binder,Object)` performs the same runtime cast expected from Room-generated bridges. The test proves the model class can be recovered without SQL execution and that conflicting queue adapters fail closed.
+
+The next real-device pass is intentionally only two actions: run Track Auto-DJ once from a Queue row, then Queue Flip once. Do not repeat Smart DJ, Smart folders, Playlist folders, Add picker, selection colors, creation or navigation tests unless a later commit actually touches those boundaries.

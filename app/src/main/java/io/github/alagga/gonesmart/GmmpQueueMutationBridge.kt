@@ -23,6 +23,8 @@ internal class GmmpQueueMutationBridge(
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
         private val reportedEntityFactoryShapes =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        private val reportedEntityTypeMappings =
+            java.util.Collections.synchronizedSet(mutableSetOf<String>())
     }
 
     private interface StatePositionBinding {
@@ -221,8 +223,30 @@ internal class GmmpQueueMutationBridge(
         // class/superclass-only scan. Interface Method.invoke still dispatches
         // on the concrete DAO instance; failed contracts are ignored below.
         val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
+        // r24 proved that the nearest queue-specific API array type (ww3)
+        // is not the queue_table writer entity. Prefer the generated Room
+        // adapter itself: its queue_table SQL + erased bind(Object) bridge
+        // can reveal the actual model class without executing SQL.
+        val adapterEntity =
+            NativeQueueEntityAdapterTypeResolver.resolve(dao)
         val entityTypeHint =
-            NativeQueueEntityTypeResolver.resolve(dao.javaClass, methods)
+            adapterEntity?.modelClass
+                ?: NativeQueueEntityTypeResolver.resolve(
+                    dao.javaClass,
+                    methods
+                )
+        if (adapterEntity != null) {
+            val key = dao.javaClass.name + "|" +
+                adapterEntity.modelClass.name
+            if (reportedEntityTypeMappings.add(key)) {
+                Log.i(
+                    TAG,
+                    "QUEUE ENTITY TYPE | source=generated-room-adapter" +
+                        " | model=" + adapterEntity.modelClass.name +
+                        " | evidence=" + adapterEntity.evidence
+                )
+            }
+        }
         val listReaders = methods.filter {
             !Modifier.isStatic(it.modifiers) &&
                 it.parameterCount == 0 &&
@@ -357,8 +381,10 @@ internal class GmmpQueueMutationBridge(
 
         // Generated fake-binder reconstruction remains a secondary fallback,
         // but only after the real read carrier did not expose a fully
-        // Cursor-correlated entity set. r23 showed ww3 itself is not directly
-        // constructible as the four-column queue row on this runtime.
+        // Cursor-correlated entity set. When r25 resolves the actual entity
+        // from d85's queue_table adapter, this path can safely reconstruct
+        // that model from the already-verified Cursor values. The old ww3
+        // API witness remains only a final compatibility fallback.
         if (listCandidates.isEmpty() && entityTypeHint != null) {
             val reconstructed = NativeQueueEntityReconstructor.reconstruct(
                 dao = dao,
