@@ -144,6 +144,60 @@ class NativeReactiveListReaderTest {
         assertEquals(3, result?.rows?.size)
     }
 
+    private data class EmbeddedQueueRow(
+        val queueId: Long,
+        val songId: Long,
+        val position: Int,
+        val shuffle: Int
+    )
+
+    private data class RelationRow(
+        val entity: EmbeddedQueueRow,
+        val title: String,
+        val extra: Any
+    )
+
+    @Test fun unwrapsExactlyOneProvenEntityFromRelationRows() {
+        val entities = listOf(
+            EmbeddedQueueRow(1L, 11L, 1, 3),
+            EmbeddedQueueRow(2L, 22L, 2, 1),
+            EmbeddedQueueRow(3L, 33L, 3, 2)
+        )
+        val source = BlockingCarrier(
+            entities.mapIndexed { index, entity ->
+                RelationRow(entity, "row-$index", Any())
+            }
+        )
+        val result = NativeReactiveListReader.read(
+            source = source,
+            expectedRows = 3,
+            timeoutMs = 100,
+            expectedModelClass = EmbeddedQueueRow::class.java
+        )
+
+        assertEquals(entities, result?.rows)
+    }
+
+    private data class AmbiguousRelationRow(
+        val first: EmbeddedQueueRow,
+        val second: EmbeddedQueueRow
+    )
+
+    @Test fun multipleEmbeddedEntitiesFailClosed() {
+        val first = EmbeddedQueueRow(1L, 11L, 1, 1)
+        val second = EmbeddedQueueRow(2L, 22L, 2, 2)
+        assertNull(
+            NativeReactiveListReader.read(
+                source = BlockingCarrier(
+                    listOf(AmbiguousRelationRow(first, second))
+                ),
+                expectedRows = 1,
+                timeoutMs = 100,
+                expectedModelClass = EmbeddedQueueRow::class.java
+            )
+        )
+    }
+
     @Test fun returnsBoundedPartialEntityStreamForCrossCarrierAggregation() {
         val result = NativeReactiveListReader.read(
             source = OpaqueItemStreamSource(

@@ -40,9 +40,7 @@ internal object NativeReactiveListReader {
         var bestPartial: Result? = null
         fun keepPartial(rows: List<Any>, boundary: String) {
             if (!allowPartial || rows.isEmpty()) return
-            if (bestPartial == null ||
-                rows.size > bestPartial!!.rows.size
-            ) {
+            if (bestPartial == null || rows.size > bestPartial!!.rows.size) {
                 bestPartial = Result(rows, boundary)
             }
         }
@@ -323,10 +321,17 @@ internal object NativeReactiveListReader {
                         }
 
                         // If DAO ownership already proved the concrete entity
-                        // class (r21: queue-specific ww3[] contracts), that
-                        // type is stronger evidence than the old numeric-field
-                        // heuristic. Keep the heuristic only as a legacy
-                        // fallback when no type witness is available.
+                        // class, that type is stronger evidence than the old
+                        // numeric-field heuristic. A one-level relation/wrapper
+                        // is unwrapped only when it owns exactly one field of
+                        // that proven entity type.
+                        expectedModelClass?.let { model ->
+                            embeddedExpectedEntity(value, model)?.let {
+                                acceptRows(listOf(it))
+                                return@forEach
+                            }
+                        }
+
                         val entityShape =
                             expectedModelClass?.isInstance(value) == true ||
                                 queueEntityShapeCache.computeIfAbsent(
@@ -378,7 +383,7 @@ internal object NativeReactiveListReader {
         allowPartial: Boolean
     ): List<Any>? {
         if (value == null) return null
-        val rows: List<Any> = when {
+        val rawRows: List<Any> = when {
             expectedModelClass?.isInstance(value) == true ->
                 listOf(value)
             value is Iterable<*> ->
@@ -389,7 +394,26 @@ internal object NativeReactiveListReader {
                     java.lang.reflect.Array.get(value, index)
                 }
             }
+            expectedModelClass != null ->
+                embeddedExpectedEntity(value, expectedModelClass)
+                    ?.let(::listOf)
+                    ?: return null
             else -> return null
+        }
+        if (rawRows.isEmpty()) return null
+
+        val rows = if (expectedModelClass == null) {
+            rawRows
+        } else {
+            rawRows.map { row ->
+                when {
+                    expectedModelClass.isInstance(row) -> row
+                    else -> embeddedExpectedEntity(
+                        row,
+                        expectedModelClass
+                    ) ?: return null
+                }
+            }
         }
         if (rows.isEmpty()) return null
         if (expectedModelClass != null &&
@@ -400,6 +424,37 @@ internal object NativeReactiveListReader {
             allowPartial && rows.size < expectedRows -> rows
             else -> null
         }
+    }
+
+    /**
+     * GMMP 4.2.1's queue query may expose relation rows (observed API witness
+     * ww3(pw3,String,Object)) while the generated DAO writer owns the embedded
+     * queue entity. Once that entity class is independently proven by the
+     * generated Room adapter bridge, returning the exact existing nested
+     * object is safer than reconstructing it. Reject zero or multiple matches.
+     */
+    private fun embeddedExpectedEntity(
+        wrapper: Any,
+        expectedModelClass: Class<*>
+    ): Any? {
+        if (expectedModelClass.isInstance(wrapper)) return wrapper
+        val matches = generateSequence<Class<*>>(
+            wrapper.javaClass
+        ) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter {
+                !Modifier.isStatic(it.modifiers) && !it.isSynthetic
+            }
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(wrapper)
+                }.getOrNull()
+            }
+            .filter(expectedModelClass::isInstance)
+            .distinctBy(System::identityHashCode)
+            .toList()
+        return matches.singleOrNull()
     }
 
     private fun observerScore(type: Class<*>): Int {

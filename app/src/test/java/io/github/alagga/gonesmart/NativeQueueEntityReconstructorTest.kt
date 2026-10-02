@@ -37,8 +37,6 @@ class NativeQueueEntityReconstructorTest {
         private val insertAdapter = InsertAdapter()
     }
 
-    private class NoProxyableAdapterDao
-
     private fun context(): QueueContext = QueueContext(
         currentQueuePosition = 2,
         items = listOf(
@@ -83,38 +81,6 @@ class NativeQueueEntityReconstructorTest {
         assertEquals(1, current.shufflePosition)
         assertEquals(2, current.queuePosition)
         assertTrue(result.boundary.startsWith("generated-binding:"))
-    }
-
-    @Test fun numericShapeReconstructsEntityWhenStatementCannotBeProxied() {
-        val result = NativeQueueEntityReconstructor.reconstruct(
-            dao = NoProxyableAdapterDao(),
-            modelClass = NativeRow::class.java,
-            context = context()
-        )
-
-        assertEquals(3, result?.rows?.size)
-        val current = result?.rows?.get(1) as NativeRow
-        assertEquals(502L, current.trackId)
-        assertEquals(1002L, current.queueId)
-        assertEquals(1, current.shufflePosition)
-        assertEquals(2, current.queuePosition)
-        assertEquals("numeric-shape:${NativeRow::class.java.name}", result.boundary)
-    }
-
-    @Test fun numericShapeFailsClosedWithoutFourDistinctQueueFields() {
-        data class IncompleteRow(
-            val queueId: Long,
-            val trackId: Long,
-            val position: Int,
-            val unrelated: String
-        )
-        assertNull(
-            NativeQueueEntityReconstructor.reconstruct(
-                dao = NoProxyableAdapterDao(),
-                modelClass = IncompleteRow::class.java,
-                context = context()
-            )
-        )
     }
 
     @Test fun insertSqlMustExposeAllQueueColumnsInBindOrder() {

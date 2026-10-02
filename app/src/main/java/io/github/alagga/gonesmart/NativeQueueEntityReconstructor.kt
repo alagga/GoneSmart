@@ -8,14 +8,14 @@ import java.lang.reflect.Proxy
 /**
  * Read-only structural fallback for generated Room queue entities.
  *
- * Some GMMP 4.2.1 DAO query carriers no longer expose their writer entities as
- * a materialized List. Reconstruct an entity only when either GMMP's generated
- * Room binding adapter proves the constructor argument mapping or, for a
- * concrete R8 statement contract that cannot be proxied, one unique numeric
- * constructor/field shape reproduces the already-verified Cursor identities.
+ * Some GMMP 4.2.1 DAO query carriers no longer expose their ww3 entities as a
+ * materialized List. We can still reconstruct an entity only when GMMP's own
+ * generated Room binding adapter proves the constructor argument mapping.
  *
- * No SQL is executed here. The caller still correlates every reconstructed row
- * against the read-only Cursor before any native DAO writer is eligible.
+ * The adapter's SQL text and bind callback are invoked against a fake binder;
+ * no database statement is executed. The caller must still correlate every
+ * reconstructed row against the read-only Cursor before any native DAO writer
+ * is eligible.
  */
 internal object NativeQueueEntityReconstructor {
     data class Result(
@@ -46,41 +46,32 @@ internal object NativeQueueEntityReconstructor {
         context: QueueContext
     ): Result? {
         if (context.items.isEmpty()) return null
+        val adapter = findBindingAdapter(dao, modelClass) ?: return null
+        val probeItem = chooseProbeItem(context.items) ?: return null
+        val mapping = resolveConstructorMapping(
+            modelClass = modelClass,
+            adapter = adapter,
+            probe = probeItem
+        ) ?: return null
 
-        // Preferred path: a proxyable generated Room INSERT adapter proves
-        // the exact bind-column order without executing a statement.
-        findBindingAdapter(dao, modelClass)?.let { adapter ->
-            val probeItem = chooseProbeItem(context.items) ?: return@let
-            val mapping = resolveConstructorMapping(
-                modelClass = modelClass,
-                adapter = adapter,
-                probe = probeItem
-            ) ?: return@let
-            val rows = context.items.map { item ->
-                instantiate(mapping, item) ?: return@let
-            }
-            if (!rows.all(modelClass::isInstance)) return@let
-            if (!rows.zip(context.items).all { (row, item) ->
-                    boundColumns(adapter, row)?.let {
-                        matchesExpected(it, item)
-                    } == true
-                }
-            ) return@let
-            return Result(
-                rows = rows,
-                boundary = "generated-binding:" +
-                    adapter.owner.javaClass.name + "." +
-                    adapter.sqlMethod.name
-            )
+        val rows = context.items.map { item ->
+            instantiate(mapping, item) ?: return null
         }
+        if (!rows.all(modelClass::isInstance)) return null
 
-        // GMMP 4.2.1 r25 exposes the generated adapter binder as
-        // G(yb4,Object), where yb4 is a concrete host statement class. We
-        // deliberately do not instantiate that SQLite statement. Once entity
-        // ownership is independently proven (adapter bridge or unique embedded
-        // queue wrapper), recover only a constructor whose resulting numeric
-        // fields reproduce all four live Cursor columns exactly.
-        return reconstructFromNumericShape(modelClass, context)
+        if (!rows.zip(context.items).all { (row, item) ->
+                boundColumns(adapter, row)?.let {
+                    matchesExpected(it, item)
+                } == true
+            }
+        ) return null
+
+        return Result(
+            rows = rows,
+            boundary = "generated-binding:" +
+                adapter.owner.javaClass.name + "." +
+                adapter.sqlMethod.name
+        )
     }
 
     fun diagnosticShape(
@@ -97,7 +88,7 @@ internal object NativeQueueEntityReconstructor {
             field.isAccessible = true
             val owner = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            val methods = generatedAdapterMethods(owner.javaClass)
+            val methods = GmmpReflectionPolicy.callableMethods(owner.javaClass)
                 .filter { !Modifier.isStatic(it.modifiers) }
             val sql = methods.filter {
                 it.parameterCount == 0 &&
@@ -126,8 +117,7 @@ internal object NativeQueueEntityReconstructor {
             }.joinToString(",") {
                 it.name + "(" +
                     it.parameterTypes.joinToString(",") { p -> p.name } +
-                    ")" +
-                    (if (it.isSynthetic || it.isBridge) "[bridge]" else "")
+                    ")"
             }.ifBlank { "none" }
             field.name + "->" + owner.javaClass.name +
                 "{sql=" + sql.joinToString(",") +
@@ -154,7 +144,7 @@ internal object NativeQueueEntityReconstructor {
             field.isAccessible = true
             val owner = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            val methods = generatedAdapterMethods(owner.javaClass)
+            val methods = GmmpReflectionPolicy.callableMethods(owner.javaClass)
                 .filter { !Modifier.isStatic(it.modifiers) }
             val sqlMethods = methods.filter {
                 it.parameterCount == 0 &&
@@ -174,8 +164,6 @@ internal object NativeQueueEntityReconstructor {
                     sqlMethod.invoke(owner) as? String
                 }.getOrNull() ?: continue
                 val columns = bindColumns(sql) ?: continue
-                // Capturing bind values requires a no-op proxy. Concrete yb4
-                // adapters are handled by the numeric-shape path instead.
                 val bind = bindMethods.singleOrNull {
                     it.parameterTypes[0].isInterface
                 } ?: continue
@@ -234,134 +222,6 @@ internal object NativeQueueEntityReconstructor {
             it.constructor.toGenericString() + "|" +
                 it.argumentNames.joinToString(",")
         }.singleOrNull()
-    }
-
-    private fun reconstructFromNumericShape(
-        modelClass: Class<*>,
-        context: QueueContext
-    ): Result? {
-        val constructors = modelClass.declaredConstructors.filter { ctor ->
-            ctor.parameterCount == 4 &&
-                ctor.parameterTypes.all(::isNumericType)
-        }
-        if (constructors.isEmpty()) return null
-
-        // A handful of spread-out rows is enough to reject wrong permutations
-        // before allocating the full (possibly thousands-row) native model set.
-        val witnesses = witnessItems(context.items)
-        val candidates = arrayListOf<Pair<ConstructorMapping, String>>()
-        constructors.forEach { ctor ->
-            ctor.isAccessible = true
-            val probeSpecs = specs(witnesses.first())
-            permutationsFor(ctor.parameterTypes, probeSpecs)
-                .forEach { ordered ->
-                    val mapping = ConstructorMapping(
-                        ctor,
-                        ordered.map { it.name }
-                    )
-                    val rows = witnesses.map { item ->
-                        instantiate(mapping, item) ?: return@forEach
-                    }
-                    val fingerprint = verifiedNumericFingerprint(
-                        rows,
-                        witnesses
-                    ) ?: return@forEach
-                    candidates += mapping to fingerprint
-                }
-        }
-        if (candidates.isEmpty()) return null
-
-        // Different constructor permutations can be semantically equivalent
-        // when queue_position == shuffle_position in a tiny queue. Collapse
-        // only those that produce exactly the same native numeric field values.
-        val byFingerprint = candidates.groupBy { it.second }
-        if (byFingerprint.size != 1) return null
-        val mapping = byFingerprint.values.single().first().first
-        val rows = context.items.map { item ->
-            instantiate(mapping, item) ?: return null
-        }
-        if (verifiedNumericFingerprint(rows, context.items) == null) return null
-        return Result(
-            rows = rows,
-            boundary = "numeric-shape:" + modelClass.name
-        )
-    }
-
-    private fun witnessItems(items: List<QueueItemInfo>): List<QueueItemInfo> {
-        if (items.size <= 12) return items
-        val indexes = linkedSetOf(
-            0,
-            1,
-            items.size / 4,
-            items.size / 2,
-            (items.size * 3) / 4,
-            items.size - 2,
-            items.size - 1
-        ).filter { it in items.indices }
-        return indexes.map(items::get)
-    }
-
-    /**
-     * Returns a fingerprint only when four distinct numeric fields can explain
-     * queue_id, song_id, queue_position and shuffle_position for every row.
-     */
-    private fun verifiedNumericFingerprint(
-        rows: List<Any>,
-        items: List<QueueItemInfo>
-    ): String? {
-        if (rows.size != items.size || rows.isEmpty()) return null
-        val model = rows.first().javaClass
-        if (!rows.all(model::isInstance)) return null
-        val fields = hierarchyFields(model).filter {
-            isNumericType(it.type)
-        }.onEach { it.isAccessible = true }
-        if (fields.size < 4) return null
-
-        fun matches(field: java.lang.reflect.Field, expected: (QueueItemInfo) -> Long): Boolean =
-            rows.indices.all { index ->
-                val actual = runCatching {
-                    (field.get(rows[index]) as? Number)?.toLong()
-                }.getOrNull() ?: return@all false
-                actual == expected(items[index])
-            }
-
-        val queueIds = fields.filter { matches(it) { item -> item.queueEntryId } }
-        val trackIds = fields.filter { matches(it) { item -> item.track.id } }
-        val positions = fields.filter {
-            matches(it) { item -> item.queuePosition.toLong() }
-        }
-        val shuffles = fields.filter {
-            matches(it) { item -> item.shufflePosition.toLong() }
-        }
-        val tuples = arrayListOf<List<java.lang.reflect.Field>>()
-        queueIds.forEach { queueId ->
-            trackIds.forEach { trackId ->
-                positions.forEach { position ->
-                    shuffles.forEach { shuffle ->
-                        val tuple = listOf(queueId, trackId, position, shuffle)
-                        if (tuple.distinct().size == 4) tuples += tuple
-                    }
-                }
-            }
-        }
-        if (tuples.isEmpty()) return null
-
-        val numeric = fields.sortedBy {
-            it.declaringClass.name + "|" + it.name
-        }
-        return buildString {
-            append(model.name)
-            numeric.forEach { field ->
-                append('|').append(field.name).append('=')
-                rows.forEach { row ->
-                    append(
-                        runCatching {
-                            (field.get(row) as? Number)?.toLong()
-                        }.getOrNull() ?: Long.MIN_VALUE
-                    ).append(',')
-                }
-            }
-        }
     }
 
     private fun instantiate(
@@ -521,17 +381,6 @@ internal object NativeQueueEntityReconstructor {
         type == Integer.TYPE || type == Integer::class.java ||
             type == java.lang.Long.TYPE || type == java.lang.Long::class.java ||
             type == java.lang.Short.TYPE || type == java.lang.Short::class.java
-
-    private fun generatedAdapterMethods(type: Class<*>): List<Method> =
-        generateSequence<Class<*>>(type) { it.superclass }
-            .flatMap { it.declaredMethods.asSequence() }
-            .filter { !Modifier.isAbstract(it.modifiers) }
-            .distinctBy { method ->
-                method.declaringClass.name + "|" + method.name + "|" +
-                    method.parameterTypes.joinToString(",") { it.name } + "|" +
-                    method.returnType.name
-            }
-            .toList()
 
     private fun hierarchyFields(type: Class<*>) =
         generateSequence<Class<*>>(type) { it.superclass }
