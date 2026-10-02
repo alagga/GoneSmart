@@ -93,13 +93,24 @@ internal object NativeQueueEntityAdapterTypeResolver {
         // host/R8 rewriting. GMMP 4.2.1 exposes G(yb4,Object):void on the
         // generated d85 adapter fields. The first parameter is opaque here;
         // only a reference type is required because no statement is executed.
-        val binders = methods.filter {
+        val allBinders = methods.filter {
             it.parameterCount == 2 &&
                 !it.parameterTypes[0].isPrimitive &&
                 it.returnType == java.lang.Void.TYPE &&
                 it.parameterTypes[1] == Any::class.java
         }
-        val binder = binders.singleOrNull() ?: return null
+
+        // A generated adapter can inherit additional erased helper/binder
+        // bridges from a Room/R8 base class. Those inherited methods do not
+        // make the adapter's own entity bind ambiguous. Prefer the one erased
+        // bind boundary declared directly by this already-owned adapter and
+        // only fall back to the full hierarchy if the adapter declares none.
+        // This keeps discovery semantic and avoids pinning d85$a/G names.
+        val directBinders = allBinders.filter {
+            it.declaringClass == adapter.javaClass
+        }
+        val binder = directBinders.ifEmpty { allBinders }
+            .singleOrNull() ?: return null
 
         // The SQL text is the strongest proof. Keep a second structural proof
         // for the already-verified generated d85 fields: one adapter-local

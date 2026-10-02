@@ -10,6 +10,10 @@ class NativeQueueEntityAdapterTypeResolverTest {
         fun bindLong(index: Int, value: Long)
     }
 
+    private interface NoiseBinder {
+        fun ignore(value: Long)
+    }
+
     private class ConcreteStatement {
         fun bindLong(index: Int, value: Long) = Unit
     }
@@ -66,6 +70,25 @@ class NativeQueueEntityAdapterTypeResolverTest {
         }
     }
 
+    private open class InheritedBinderNoise {
+        @Suppress("unused")
+        fun G(binder: NoiseBinder, value: Any) {
+            val row = value as OtherRow
+            binder.ignore(row.id)
+        }
+    }
+
+    private class QueueAdapterWithInheritedBinder : InheritedBinderNoise() {
+        fun M(): String =
+            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+
+        fun G(statement: ConcreteStatement?, value: Any) {
+            val row = value as QueueRow
+            statement?.bindLong(1, row.position.toLong())
+            statement?.bindLong(2, row.queueId)
+        }
+    }
+
     private class OtherQueueAdapter {
         fun M(): String =
             "DELETE FROM q WHERE queue_id = ?"
@@ -101,6 +124,11 @@ class NativeQueueEntityAdapterTypeResolverTest {
     private class SyntheticBridgeQueueDao {
         @Suppress("unused")
         private val update = SyntheticBridgeQueueAdapter()
+    }
+
+    private class InheritedBinderNoiseQueueDao {
+        @Suppress("unused")
+        private val update = QueueAdapterWithInheritedBinder()
     }
 
     private class AmbiguousDao {
@@ -147,6 +175,16 @@ class NativeQueueEntityAdapterTypeResolverTest {
             SyntheticBridgeQueueDao()
         )
         assertEquals(QueueRow::class.java, result?.modelClass)
+    }
+
+    @Test fun adapterDeclaredBinderBeatsInheritedBinderNoise() {
+        val result = NativeQueueEntityAdapterTypeResolver.resolve(
+            InheritedBinderNoiseQueueDao()
+        )
+
+        assertEquals(QueueRow::class.java, result?.modelClass)
+        assertEquals(true, result?.evidence?.contains("binder-cast"))
+        assertEquals(true, result?.evidence?.contains("null-statement"))
     }
 
     @Test fun differentQueueAdapterEntityTypesFailClosed() {
