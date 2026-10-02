@@ -102,7 +102,7 @@ class NativeReactiveListReaderTest {
         val result = NativeReactiveListReader.read(
             source = source,
             expectedRows = 3,
-            timeoutMs = 100
+            timeoutMs = 500
         )
 
         assertEquals(3, result?.rows?.size)

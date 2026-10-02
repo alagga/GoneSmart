@@ -175,6 +175,8 @@ internal object NativeReactiveListReader {
             arrayListOf<Any>()
         )
         val streamedRowClass = AtomicReference<Class<*>?>(null)
+        val queueEntityShapeCache =
+            java.util.concurrent.ConcurrentHashMap<Class<*>, Boolean>()
 
         val callback = Proxy.newProxyInstance(
             callbackType.classLoader ?: source.javaClass.classLoader,
@@ -208,6 +210,7 @@ internal object NativeReactiveListReader {
                             GmmpReflectionPolicy.callableMethods(value.javaClass)
                                 .filter {
                                     !Modifier.isStatic(it.modifiers) &&
+                                        it.declaringClass != Any::class.java &&
                                         it.parameterCount == 1 &&
                                         it.parameterTypes[0] ==
                                             java.lang.Long.TYPE &&
@@ -232,7 +235,11 @@ internal object NativeReactiveListReader {
                         // performs the authoritative queue_id/song_id/
                         // queue_position correlation against the read-only
                         // Cursor before ANY writer is eligible.
-                        if (looksLikeQueueEntity(value)) {
+                        val entityShape =
+                            queueEntityShapeCache.computeIfAbsent(
+                                value.javaClass
+                            ) { looksLikeQueueEntity(value) }
+                        if (entityShape) {
                             val expectedClass = streamedRowClass.get()
                             if (expectedClass == null) {
                                 streamedRowClass.compareAndSet(
