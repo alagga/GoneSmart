@@ -352,12 +352,11 @@ internal class PlaylistFolderPreviewController(
 
     fun observeNativePlaylistActionMode(mode: Any?) {
         if (mode == null) return
+        // Store the real host mode for Back/Move, but do NOT mark its chrome
+        // visible here. 4.2.1 calls this before action_mode_bar is laid out;
+        // treating the callback as visible made selection clear within a few
+        // milliseconds on the tested device.
         activeNativePlaylistMode = WeakReference(mode)
-        browsers.values.toList().forEach { browser ->
-            if (!isPicker(browser.list) && browser.mainSelection.isSelecting) {
-                browser.nativeSelectionChromeSeen = true
-            }
-        }
     }
     // Avoid replacing a native Material FAB's drawable every layout pass.
     private val miniFabBackgroundSource =
@@ -1576,13 +1575,11 @@ internal class PlaylistFolderPreviewController(
                 if (isPicker(browser.list) || !browser.mainSelection.isSelecting) {
                     return@forEach
                 }
-                browser.pendingMainSelection.clear()
-                browser.mainSelection.clear()
-                browser.nativeSelectionChromeSeen = false
-                if (browser.list.isAttachedToWindow &&
-                    browsers[browser.list] === browser
-                ) syncMainSelectionVisuals(browser)
-                Log.i(TAG, "FOLDER MAIN SELECT | original ActionMode destroyed; cleared")
+                clearMainSelectionPresentation(browser)
+                Log.i(
+                    TAG,
+                    "FOLDER MAIN SELECT | original ActionMode destroyed; cleared"
+                )
             }
         }
     }
@@ -1967,10 +1964,7 @@ internal class PlaylistFolderPreviewController(
             // The original GMMP ActionMode still owns Back. Clear only our
             // presentation mirror immediately so no synthetic highlight can
             // survive while the native contextual bar closes.
-            browser.pendingMainSelection.clear()
-            browser.mainSelection.clear()
-            browser.nativeSelectionChromeSeen = false
-            syncMainSelectionVisuals(browser)
+            clearMainSelectionPresentation(browser)
 
             val nativeMode = activeNativePlaylistMode?.get()
             val finished = nativeMode?.let { mode ->
@@ -2261,7 +2255,8 @@ internal class PlaylistFolderPreviewController(
                         lastSelectionChromeProbe = now
                         val nativeChromeColor =
                             multiSelect.nativeContextBarColor(current)
-                        if (nativeChromeColor != null) {
+                        val chromeVisible = nativeChromeColor != null
+                        if (chromeVisible) {
                             browser.nativeSelectionChromeSeen = true
                             if (browser.liveSelectionAccent !=
                                 nativeChromeColor
@@ -2270,14 +2265,20 @@ internal class PlaylistFolderPreviewController(
                                     nativeChromeColor
                                 syncMainSelectionVisuals(browser)
                             }
-                        } else if (browser.nativeSelectionChromeSeen) {
-                            browser.pendingMainSelection.clear()
-                            browser.mainSelection.clear()
-                            browser.nativeSelectionChromeSeen = false
-                            syncMainSelectionVisuals(browser)
+                        } else if (
+                            NativeSelectionChromePolicy.shouldClear(
+                                selectionActive =
+                                    browser.mainSelection.isSelecting,
+                                visibleChromeSeen =
+                                    browser.nativeSelectionChromeSeen,
+                                chromeVisibleNow = false
+                            )
+                        ) {
+                            clearMainSelectionPresentation(browser)
                             Log.i(
                                 TAG,
-                                "FOLDER MAIN SELECT | native ActionMode gone; cleared"
+                                "FOLDER MAIN SELECT | visible native ActionMode " +
+                                    "ended; cleared"
                             )
                         }
                     }
@@ -3509,6 +3510,24 @@ internal class PlaylistFolderPreviewController(
         browser.mainRenderedPlaylistRows.forEach { (path, row) ->
             if (row.parent === browser.rows) {
                 applyMainSelectionVisual(browser, path, row)
+            }
+        }
+    }
+
+    /**
+     * Back/ActionMode teardown must restore the exact foreground captured
+     * before selection. Recomputing an "unselected" foreground after clearing
+     * state can leave a stale ColorDrawable on rows whose presentation was
+     * updated optimistically while the hidden native RecyclerView scrolled.
+     */
+    private fun clearMainSelectionPresentation(browser: Browser) {
+        browser.pendingMainSelection.clear()
+        browser.mainSelection.clear()
+        browser.nativeSelectionChromeSeen = false
+        browser.mainRenderedPlaylistRows.forEach { (_, row) ->
+            if (row.parent === browser.rows) {
+                row.foreground = browser.mainOriginalRowForegrounds[row]
+                row.invalidate()
             }
         }
     }

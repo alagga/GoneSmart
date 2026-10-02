@@ -34,7 +34,9 @@ internal object GmmpReadOnlySql {
         val queryMethod: Method,
         val queryType: Class<*>,
         val queryConstructor: Constructor<*>?,
-        val queryFactory: Method?
+        val queryFactory: Method?,
+        val capacityConstructor: Constructor<*>?,
+        val directInitializer: Method?
     )
 
     fun <T> query(
@@ -72,6 +74,12 @@ internal object GmmpReadOnlySql {
                     when {
                         binding.queryConstructor != null -> "constructor"
                         binding.queryFactory != null -> "static-query-factory"
+                        binding.capacityConstructor != null ->
+                            if (binding.directInitializer != null) {
+                                "direct-capacity+initializer"
+                            } else {
+                                "direct-capacity+fields"
+                            }
                         else -> "interface-proxy"
                     }
             )
@@ -114,7 +122,9 @@ internal object GmmpReadOnlySql {
             val method: Method,
             val queryType: Class<*>,
             val constructor: Constructor<*>?,
-            val factory: Method?
+            val factory: Method?,
+            val capacityConstructor: Constructor<*>?,
+            val directInitializer: Method?
         )
 
         // Android framework classes normally share the boot class loader,
@@ -134,7 +144,9 @@ internal object GmmpReadOnlySql {
                         method,
                         queryType,
                         GmmpReadOnlyQueryShape.legacyConstructor(queryType),
-                        GmmpReadOnlyQueryShape.pooledFactory(queryType)
+                        GmmpReadOnlyQueryShape.pooledFactory(queryType),
+                        GmmpReadOnlyQueryShape.capacityConstructor(queryType),
+                        GmmpReadOnlyQueryShape.directInitializer(queryType)
                     )
                 }
 
@@ -146,8 +158,17 @@ internal object GmmpReadOnlySql {
                 }.ifBlank { "none" }
         )
 
+        val directCarrier =
+            chosen.capacityConstructor != null &&
+                (
+                    chosen.directInitializer != null ||
+                        GmmpReadOnlyQueryShape
+                            .directFieldLayout(chosen.queryType) != null
+                )
+
         if (chosen.constructor == null &&
             chosen.factory == null &&
+            !directCarrier &&
             !chosen.queryType.isInterface
         ) {
             error(
@@ -178,6 +199,8 @@ internal object GmmpReadOnlySql {
         chosen.method.isAccessible = true
         chosen.constructor?.isAccessible = true
         chosen.factory?.isAccessible = true
+        chosen.capacityConstructor?.isAccessible = true
+        chosen.directInitializer?.isAccessible = true
 
         val resolved = Binding(
             database = database,
@@ -185,7 +208,9 @@ internal object GmmpReadOnlySql {
             queryMethod = chosen.method,
             queryType = chosen.queryType,
             queryConstructor = chosen.constructor,
-            queryFactory = chosen.factory
+            queryFactory = chosen.factory,
+            capacityConstructor = chosen.capacityConstructor,
+            directInitializer = chosen.directInitializer
         )
         synchronized(bindingCache) {
             bindingCache[autoDjInstance] = resolved
@@ -249,6 +274,19 @@ internal object GmmpReadOnlySql {
                 ?: error("GMMP pooled query factory returned null")
             require(binding.queryType.isInstance(query)) {
                 "GMMP pooled query factory returned unexpected type"
+            }
+            bindArguments(query, args)
+            return query
+        }
+
+        binding.capacityConstructor?.let {
+            val query = GmmpReadOnlyQueryShape.newDirectCarrier(
+                type = binding.queryType,
+                sql = sql,
+                argumentCount = args.size
+            ) ?: error("GMMP direct query carrier initialization failed")
+            require(binding.queryType.isInstance(query)) {
+                "GMMP direct query constructor returned unexpected type"
             }
             bindArguments(query, args)
             return query

@@ -897,17 +897,28 @@ internal class PlaylistMultiSelectController {
         trace: Boolean = false
     ): Any? {
         val list = session.list ?: return null
-        if (view !is FrameLayout || view.parent !== list) {
-            if (trace) Log.w(TAG, "MULTI LONG STOP | not a picker row")
+        val row = AncestorOwnershipPolicy.directOwnedAncestor(
+            start = view,
+            parentOf = { it.parent as? View },
+            isDirectOwnedChild = { it.parent === list }
+        )
+        if (row == null) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | no owned picker RecyclerView row"
+                )
+            }
             return null
         }
 
-        // bw.i0() returns t23 groups, not jo3 row holders. Ask the
-        // RecyclerView for the real, currently bound view holder.
+        // 4.2.1 dispatches performLongClick from metadataTextEntry (TextView)
+        // inside the native row. Normalize that descendant to RecyclerView's
+        // direct child before asking for the already-bound holder/model.
         val holder = runCatching {
             list.javaClass
                 .getMethod("getChildViewHolder", View::class.java)
-                .invoke(list, view)
+                .invoke(list, row)
         }.onFailure { error ->
             if (trace) Log.w(TAG, "MULTI LONG STOP | holder lookup failed", error)
         }.getOrNull()

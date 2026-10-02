@@ -347,3 +347,26 @@ The r14 device pass narrows the remaining failures further:
 - **Normal Playlist Back:** r14 could observe native ActionMode disappearance and clear the mirror later, but the presentation could remain visible during the native lifecycle gap. r15 clears immediately and explicitly calls the already-observed native ActionMode `finish()` when available; only then is Back consumed.
 - **Smart colors:** the legacy Smart New Folder path logged `colorPrimary=#ff000000`; that value is not a selection/input accent. The normal Playlist native New Playlist shell is the accepted visual reference, so Smart creation reuses the captured top-level Playlist `menuAdd` shell when possible. Legacy native prompts keep their original Material button styling and are not overwritten with black primary.
 - **Picker color evidence:** the Add-to-Playlist surface can look correct even while Aesthetic reports primary black and accent red because the live Material FAB tint is a stronger native palette source. Standalone Smart selection now prefers semantic/unique live native FAB tint and native highlight resources; black primary is rejected.
+
+
+## 4.2.1 r16 device evidence and probe graduation
+
+The r15 device pass resolves the next layer without requiring another exploratory build:
+
+- **Read-only Room carrier:** `f94.q(p94): Cursor` remains the verified database boundary, but `p94` reports only constructor `(int)` and `staticMethods=none`. The r15 static-acquire hypothesis is therefore retired. r16 treats this as the direct pooled Room carrier shape: construct with capacity, initialize through a unique instance `void(String,int)` method when present, or use the strict post-constructor Room field layout when R8 inlined that initializer. The field fallback requires a single mutable String SQL field and a uniquely zero-valued arg-count int alongside at least one capacity-valued int. The complete carrier initialization (including SQL + argument count) is now exercised by JVM fake-runtime tests.
+- **Shared Auto-DJ/Flip boundary remains one problem:** Smart DJ, Track Auto-DJ and Queue Flip all failed before queue/current/entity logic because the same read-only query carrier could not be created. Do not split those into three device investigations until `GMMP READ-ONLY SQL MAPPING` succeeds. Existing queue/current/entity resolvers remain fail-closed and will expose any later independent ambiguity in the same consolidated log.
+- **Playlist selection lifecycle:** the log showed selection accepted and then `native ActionMode gone; cleared` only milliseconds later. The native ActionMode callback can precede contextual-bar layout, so it no longer sets the “visible chrome seen” state. Automatic teardown requires the actual visible native context bar to have been observed first. Back/teardown restores captured original row foregrounds directly. The lifecycle rule is covered by a JVM state-policy test.
+- **Add picker row ownership:** the picker session and `playlistListRecyclerView + playlistFab` pair were valid, but semantic long-clicks arrived from inner `TextView` descendants and were rejected by the old direct-`FrameLayout` predicate. r16 walks bounded ancestors to RecyclerView's direct child before obtaining its native holder/model. The ancestry rule is covered by JVM tests for valid descendant, unrelated tree and depth bound.
+- **Smart folder creation colors:** the log proves the incorrect Smart dialog was the legacy `DialogFileChooserExtKt.showNewFolderCreator` path, while normal Playlist creation in the same process successfully used the original `menuAdd` / New Playlist shell. r16 keeps a bounded strong lease to that verified native menu/presenter across tab switches and prefers it for Smart folders, instead of trying to repaint the legacy dialog's unrelated Material palette.
+- **Probe status:** no new broad r16 inventory was added. Playlist/Smart recycler ownership remains graduated. Room carrier shape, picker ancestry and selection lifecycle moved from device discovery into automated contracts. Queue/Rule diagnostics stay bounded until the first successful r16 SQL/queue run proves whether any deeper native mutation ambiguity remains.
+
+### r16 automated-test gate before a device build
+
+Before asking for a real-device pass, CI must pass all existing tests plus:
+- direct Room query carrier with instance initializer;
+- direct Room query carrier with R8-inlined initializer / strict field layout;
+- rejection of a bare `(int)` constructor without SQL ownership;
+- descendant-to-direct-picker-row ownership and fail-closed depth handling;
+- ActionMode callback-before-layout does not clear selection; disappearance after an actually visible native bar does.
+
+Only after those contracts, debug APK, unsigned release APK and artifact upload succeed should a device run be requested. The next real-device pass is intended to validate host-only integration: SQL invocation inside GMMP, one Playlist Back teardown, Smart native-shell creation across tabs, Add-picker multi-select dispatch, and the shared queue mutation/read path. Do not repeat unrelated accepted flows.

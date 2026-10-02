@@ -42,11 +42,19 @@ internal class NativeGmmpFolderCreator(
     companion object {
         private const val TAG = "GoneSmartPlaylist"
         private const val SHELL_TIMEOUT_MS = 600L
+        // Playlist and Smart Playlist are separate GMMP fragments. Keep the
+        // last verified native creation owner/menu alive briefly across a tab
+        // switch so Smart creation can reuse the exact native New Playlist
+        // shell instead of dropping to MaterialDialogs' differently themed
+        // showNewFolderCreator fallback.
+        private const val SHELL_LEASE_MS = 10 * 60 * 1000L
         private val lock = Any()
         private val main = Handler(Looper.getMainLooper())
         private var presenterRef = WeakReference<Any>(null)
         private var playlistMenuRef =
             WeakReference<android.view.Menu>(null)
+        private var presenterLease: Any? = null
+        private var playlistMenuLease: android.view.Menu? = null
         private var pending: PendingShell? = null
         private val shellDialogs = WeakHashMap<Dialog, Boolean>()
         private val legacyDialogs = WeakHashMap<Dialog, Boolean>()
@@ -68,7 +76,15 @@ internal class NativeGmmpFolderCreator(
             if (menuAddId(context, menu) == null || menu == null) return
             synchronized(lock) {
                 playlistMenuRef = WeakReference(menu)
+                playlistMenuLease = menu
             }
+            main.postDelayed({
+                synchronized(lock) {
+                    if (playlistMenuLease === menu) {
+                        playlistMenuLease = null
+                    }
+                }
+            }, SHELL_LEASE_MS)
             Log.i(
                 TAG,
                 "FOLDER CREATE SHELL | live playlist menuAdd captured"
@@ -80,8 +96,16 @@ internal class NativeGmmpFolderCreator(
             val changed = synchronized(lock) {
                 val previous = presenterRef.get()
                 presenterRef = WeakReference(presenter)
+                presenterLease = presenter
                 previous !== presenter
             }
+            main.postDelayed({
+                synchronized(lock) {
+                    if (presenterLease === presenter) {
+                        presenterLease = null
+                    }
+                }
+            }, SHELL_LEASE_MS)
             if (changed) {
                 Log.i(
                     TAG,
@@ -309,7 +333,9 @@ internal class NativeGmmpFolderCreator(
         nativePlaylistMenu: android.view.Menu?
     ): Boolean {
         if (Looper.myLooper() != Looper.getMainLooper()) return false
-        val presenter = synchronized(lock) { presenterRef.get() } ?: return false
+        val presenter = synchronized(lock) {
+            presenterRef.get() ?: presenterLease
+        } ?: return false
         val canonical = runCatching { directory.canonicalFile }.getOrNull()
             ?: return false
         if (!canonical.isDirectory || !canonical.canWrite()) return false
@@ -327,10 +353,13 @@ internal class NativeGmmpFolderCreator(
         }
 
         val dispatchMenu = nativePlaylistMenu
-            ?: synchronized(lock) { playlistMenuRef.get() }
+            ?: synchronized(lock) {
+                playlistMenuRef.get() ?: playlistMenuLease
+            }
         val nativeMenuAddId = menuAddId(context, dispatchMenu)
-        val invoked = if (nativeMenuAddId != null) {
-            runCatching {
+        var invoked = false
+        if (nativeMenuAddId != null) {
+            invoked = runCatching {
                 val handled = dispatchMenu
                     ?.performIdentifierAction(nativeMenuAddId, 0) == true
                 require(handled) {
@@ -348,18 +377,22 @@ internal class NativeGmmpFolderCreator(
                     it
                 )
             }.getOrDefault(false)
-        } else {
-            // Accepted 4.2.0 fast path. Future builds should normally use the
-            // original live menu action above instead of guessing a renamed
-            // presenter method.
+        }
+        if (!invoked) {
+            // Keep the accepted presenter call only as a native-shell fallback
+            // when a retained menu object stopped dispatching after tab
+            // navigation. Never jump straight to the differently themed
+            // legacy folder prompt while this verified owner is still live.
             val method = presenter.javaClass.declaredMethods.firstOrNull {
                 it.name == "onAddNewPlaylist" && it.parameterCount == 0
             }?.apply { isAccessible = true }
-            if (method == null) {
-                false
-            } else {
-                runCatching {
+            if (method != null) {
+                invoked = runCatching {
                     method.invoke(presenter)
+                    Log.i(
+                        TAG,
+                        "FOLDER CREATE SHELL | retained presenter action dispatched"
+                    )
                     true
                 }.onFailure {
                     Log.w(
