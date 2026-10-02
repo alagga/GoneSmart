@@ -1,6 +1,7 @@
 package io.github.alagga.gonesmart
 
 import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Proxy
@@ -58,7 +59,13 @@ internal object NativeQueueEntityAdapterTypeResolver {
         adapter: Any,
         directlyOwnedByDao: Boolean
     ): Result? {
-        val methods = GmmpReflectionPolicy.callableMethods(adapter.javaClass)
+        // Room's generic EntityInsertion/Deletion/Update adapters expose the
+        // erased bind(statement,Object) boundary as a compiler bridge. On the
+        // tested GMMP 4.2.1 build that bridge is synthetic. The general
+        // GmmpReflectionPolicy deliberately excludes synthetic methods, which
+        // is correct for broad host discovery but wrong at this already-owned
+        // generated Room adapter boundary. Include bridges locally here only.
+        val methods = generatedAdapterMethods(adapter.javaClass)
             .filter { !Modifier.isStatic(it.modifiers) }
         val stringMethods = methods.filter {
             it.parameterCount == 0 &&
@@ -83,8 +90,8 @@ internal object NativeQueueEntityAdapterTypeResolver {
         }
 
         // Do not assume SupportSQLiteStatement remains an interface after
-        // host/R8 rewriting. The r25 device inventory proves the boundary as
-        // G(yb4,Object):void on d85$a/c/d. The first parameter is opaque here;
+        // host/R8 rewriting. GMMP 4.2.1 exposes G(yb4,Object):void on the
+        // generated d85 adapter fields. The first parameter is opaque here;
         // only a reference type is required because no statement is executed.
         val binders = methods.filter {
             it.parameterCount == 2 &&
@@ -153,9 +160,26 @@ internal object NativeQueueEntityAdapterTypeResolver {
             adapter.javaClass.name + "." + sqlMethodName +
                 ":binder-cast:" +
                 (if (statementType.isInterface) "proxy" else "null-statement") +
-                ":" + ownership
+                ":" + ownership +
+                (if (binder.isSynthetic || binder.isBridge) ":synthetic-bridge" else "")
         )
     }
+
+    /**
+     * Narrow exception to the global reflection policy: generated Room
+     * adapters rely on synthetic/bridge methods for erased generic binds.
+     * Abstract contracts are still excluded and signatures are deduplicated.
+     */
+    private fun generatedAdapterMethods(type: Class<*>): List<Method> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredMethods.asSequence() }
+            .filter { !Modifier.isAbstract(it.modifiers) }
+            .distinctBy { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name } + "|" +
+                    method.returnType.name
+            }
+            .toList()
 
     private fun inferGenericEntity(type: Class<*>): Class<*>? {
         val types = buildList<Type> {

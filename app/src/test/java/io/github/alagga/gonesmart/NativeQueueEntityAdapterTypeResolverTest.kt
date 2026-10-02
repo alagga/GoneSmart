@@ -2,6 +2,7 @@ package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeQueueEntityAdapterTypeResolverTest {
@@ -39,12 +40,6 @@ class NativeQueueEntityAdapterTypeResolverTest {
         }
     }
 
-    /**
-     * Mirrors the r25 GMMP shape G(yb4,Object): yb4 is opaque to GoneSmart
-     * and must not be required to be an interface. Nullable here models the
-     * Java-generated Room adapter accepting a null fake statement until the
-     * erased entity bridge performs its cast.
-     */
     private class ConcreteStatementQueueAdapter {
         fun M(): String =
             "UPDATE q SET queue_position = ? WHERE queue_id = ?"
@@ -53,6 +48,25 @@ class NativeQueueEntityAdapterTypeResolverTest {
             val row = value as QueueRow
             statement?.bindLong(1, row.position.toLong())
             statement?.bindLong(2, row.queueId)
+        }
+    }
+
+    /**
+     * Mirrors Room's generic adapter hierarchy. Kotlin/JVM emits an erased
+     * synthetic bridge G(ConcreteStatement,Object) for this typed override.
+     */
+    private abstract class GenericAdapter<T> {
+        abstract fun M(): String
+        abstract fun G(statement: ConcreteStatement?, value: T)
+    }
+
+    private class SyntheticBridgeQueueAdapter : GenericAdapter<QueueRow>() {
+        override fun M(): String =
+            "UPDATE q SET queue_position = ? WHERE queue_id = ?"
+
+        override fun G(statement: ConcreteStatement?, value: QueueRow) {
+            statement?.bindLong(1, value.position.toLong())
+            statement?.bindLong(2, value.queueId)
         }
     }
 
@@ -88,6 +102,11 @@ class NativeQueueEntityAdapterTypeResolverTest {
         private val update = ConcreteStatementQueueAdapter()
     }
 
+    private class SyntheticBridgeQueueDao {
+        @Suppress("unused")
+        private val update = SyntheticBridgeQueueAdapter()
+    }
+
     private class AmbiguousDao {
         @Suppress("unused")
         private val first = QueueAdapter()
@@ -112,6 +131,23 @@ class NativeQueueEntityAdapterTypeResolverTest {
         assertEquals(QueueRow::class.java, result?.modelClass)
         assertEquals(true, result?.evidence?.contains("null-statement"))
         assertEquals(true, result?.evidence?.contains("owned-dml"))
+    }
+
+    @Test fun syntheticRoomBridgeIsVisibleAtOwnedAdapterBoundary() {
+        val bridges = SyntheticBridgeQueueAdapter::class.java.declaredMethods
+            .filter {
+                (it.isSynthetic || it.isBridge) &&
+                    it.name == "G" &&
+                    it.parameterCount == 2 &&
+                    it.parameterTypes[1] == Any::class.java
+            }
+        assertTrue("expected JVM erased bridge", bridges.isNotEmpty())
+
+        val result = NativeQueueEntityAdapterTypeResolver.resolve(
+            SyntheticBridgeQueueDao()
+        )
+        assertEquals(QueueRow::class.java, result?.modelClass)
+        assertTrue(result?.evidence?.contains("synthetic-bridge") == true)
     }
 
     @Test fun differentQueueAdapterEntityTypesFailClosed() {

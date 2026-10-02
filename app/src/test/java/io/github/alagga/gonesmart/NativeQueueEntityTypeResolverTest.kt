@@ -33,6 +33,37 @@ class NativeQueueEntityTypeResolverTest {
         )
     }
 
+    private class EmbeddedQueueEntity(
+        val queueId: Long,
+        val trackId: Long,
+        val position: Int,
+        val shuffle: Int
+    )
+
+    private class QueueRelationWrapper(
+        val entity: EmbeddedQueueEntity,
+        val label: String,
+        val extra: Any
+    )
+
+    private open class WrappedQueueDaoBase {
+        fun queueSpecific(values: Array<QueueRelationWrapper>) = values.size
+    }
+
+    private class WrappedQueueDao : WrappedQueueDaoBase()
+
+    @Test fun uniqueNumericEntityInsideQueueWrapperIsUnwrapped() {
+        val methods =
+            GmmpReflectionPolicy.callableMethods(WrappedQueueDao::class.java)
+        assertEquals(
+            EmbeddedQueueEntity::class.java,
+            NativeQueueEntityTypeResolver.resolve(
+                WrappedQueueDao::class.java,
+                methods
+            )
+        )
+    }
+
     private open class AmbiguousBase {
         fun first(values: Array<QueueEntity>) = values.size
         fun second(values: Array<OtherEntity>) = values.size
