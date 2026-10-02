@@ -11,13 +11,17 @@ import java.lang.reflect.Type
  *
  * GMMP 4.2.1 keeps queue-specific API contracts on y75 that mention ww3, but
  * device evidence proves ww3 is not the queue_table writer entity. The
- * generated d85 adapter fields are a stronger ownership boundary: their SQL
- * names queue_table and their erased bind(Object) bridge must cast that Object
- * to the real entity before it can read fields.
+ * generated d85 adapter fields are a stronger ownership boundary: their
+ * erased bind(statement,Object) bridge must cast that Object to the real
+ * entity before it can read fields.
  *
  * This resolver is read-only. It calls only the adapter SQL-string method and
- * the binder callback against a fake binder with a deliberately wrong marker
- * object. No SQLite statement is created or executed.
+ * the binder callback with a deliberately wrong marker object. For an
+ * interface statement contract it supplies a no-op proxy; for a concrete
+ * host statement contract (GMMP 4.2.1: yb4) it supplies null. Generated Room
+ * bridges cast the entity argument before binding it, so the resulting
+ * ClassCastException exposes the real model class without creating/executing
+ * a SQLite statement.
  */
 internal object NativeQueueEntityAdapterTypeResolver {
     data class Result(
@@ -78,19 +82,22 @@ internal object NativeQueueEntityAdapterTypeResolver {
                 normalized.startsWith("DELETE")
         }
 
+        // Do not assume SupportSQLiteStatement remains an interface after
+        // host/R8 rewriting. The r25 device inventory proves the boundary as
+        // G(yb4,Object):void on d85$a/c/d. The first parameter is opaque here;
+        // only a reference type is required because no statement is executed.
         val binders = methods.filter {
             it.parameterCount == 2 &&
-                it.parameterTypes[0].isInterface &&
+                !it.parameterTypes[0].isPrimitive &&
                 it.returnType == java.lang.Void.TYPE &&
                 it.parameterTypes[1] == Any::class.java
         }
         val binder = binders.singleOrNull() ?: return null
 
-        // The SQL text is the strongest proof. r24 also showed that its
-        // diagnostic could not parse/name these adapters, so keep a second
-        // structural proof: an adapter-shaped object directly owned by the
-        // already-verified d85 generated Queue DAO. Multiple such adapters
-        // still have to agree on one entity class in resolve().
+        // The SQL text is the strongest proof. Keep a second structural proof
+        // for the already-verified generated d85 fields: one adapter-local
+        // String boundary plus one erased bind(statement,Object) bridge. All
+        // participating adapters must still agree on one entity class.
         val ownership = when {
             queueSql != null -> "queue-sql"
             directlyOwnedByDao && dmlSql != null -> "owned-dml"
@@ -115,22 +122,28 @@ internal object NativeQueueEntityAdapterTypeResolver {
             }
         }
 
-        val binderType = binder.parameterTypes[0]
-        val fakeBinder = Proxy.newProxyInstance(
-            binderType.classLoader ?: loader,
-            arrayOf(binderType)
-        ) { proxy, method, args ->
-            when (method.name) {
-                "toString" -> "GoneSmart queue adapter type probe"
-                "hashCode" -> System.identityHashCode(proxy)
-                "equals" -> proxy === args?.firstOrNull()
-                else -> primitiveDefault(method.returnType)
+        val statementType = binder.parameterTypes[0]
+        val statement = if (statementType.isInterface) {
+            Proxy.newProxyInstance(
+                statementType.classLoader ?: loader,
+                arrayOf(statementType)
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "toString" -> "GoneSmart queue adapter type probe"
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "equals" -> proxy === args?.firstOrNull()
+                    else -> primitiveDefault(method.returnType)
+                }
             }
+        } else {
+            // Cast-only discovery path for the concrete yb4 contract. A real
+            // statement must never be constructed just to discover a type.
+            null
         }
 
         val failure = runCatching {
             binder.isAccessible = true
-            binder.invoke(adapter, fakeBinder, TypeProbeMarker)
+            binder.invoke(adapter, statement, TypeProbeMarker)
             null
         }.exceptionOrNull() ?: return null
         val target = classCastTarget(failure, loader) ?: return null
@@ -138,7 +151,9 @@ internal object NativeQueueEntityAdapterTypeResolver {
         return Result(
             target,
             adapter.javaClass.name + "." + sqlMethodName +
-                ":binder-cast:" + ownership
+                ":binder-cast:" +
+                (if (statementType.isInterface) "proxy" else "null-statement") +
+                ":" + ownership
         )
     }
 
@@ -180,7 +195,8 @@ internal object NativeQueueEntityAdapterTypeResolver {
 
         val patterns = listOf(
             Regex("""cannot be cast to class ([A-Za-z0-9_.$]+)"""),
-            Regex("""cannot be cast to ([A-Za-z0-9_.$]+)""")
+            Regex("""cannot be cast to ([A-Za-z0-9_.$]+)"""),
+            Regex("""cannot be cast to type ([A-Za-z0-9_.$]+)""")
         )
         val name = patterns.firstNotNullOfOrNull { regex ->
             regex.find(message)?.groupValues?.getOrNull(1)
