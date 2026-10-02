@@ -23,6 +23,56 @@ internal class GmmpQueueMutationBridge(
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
     }
 
+    private interface StatePositionBinding {
+        val description: String
+        fun read(): Int
+        fun write(value: Int)
+    }
+
+    private class FieldStatePositionBinding(
+        private val host: Any,
+        private val field: Field
+    ) : StatePositionBinding {
+        override val description: String =
+            host.javaClass.name + ".field:" + field.name
+
+        override fun read(): Int =
+            (field.get(host) as? Number)?.toInt()
+                ?: error("GMMP current-position field became unavailable")
+
+        override fun write(value: Int) {
+            if (field.type == Integer.TYPE) {
+                field.setInt(host, value)
+            } else {
+                field.set(host, value)
+            }
+            check(read() == value) {
+                "GMMP current-position field write did not stick"
+            }
+        }
+    }
+
+    private class MethodStatePositionBinding(
+        private val host: Any,
+        private val getter: Method,
+        private val setter: Method
+    ) : StatePositionBinding {
+        override val description: String =
+            host.javaClass.name + ".method:" + getter.name +
+                "->" + setter.name
+
+        override fun read(): Int =
+            (getter.invoke(host) as? Number)?.toInt()
+                ?: error("GMMP current-position getter became unavailable")
+
+        override fun write(value: Int) {
+            setter.invoke(host, value)
+            check(read() == value) {
+                "GMMP current-position setter did not update getter"
+            }
+        }
+    }
+
     private data class Resolved(
         val dao: Any,
         val rows: List<Any>,
@@ -31,8 +81,7 @@ internal class GmmpQueueMutationBridge(
         val position: Field,
         val update: Method,
         val delete: Method?,
-        val stateHost: Any,
-        val statePosition: Field,
+        val statePosition: StatePositionBinding,
         val context: QueueContext
     )
 
@@ -62,7 +111,7 @@ internal class GmmpQueueMutationBridge(
         }
         require(newCurrentIndex >= 0)
         val newCurrentPosition = oldPositions[newCurrentIndex]
-        val oldState = number(resolved.statePosition, resolved.stateHost).toInt()
+        val oldState = resolved.statePosition.read()
 
         try {
             newOrder.forEachIndexed { index, row ->
@@ -72,11 +121,7 @@ internal class GmmpQueueMutationBridge(
                 resolved.dao,
                 ArrayList(newOrder)
             )
-            setInt(
-                resolved.statePosition,
-                resolved.stateHost,
-                newCurrentPosition
-            )
+            resolved.statePosition.write(newCurrentPosition)
             val verified = GmmpQueueReader().read(autoDj)
                 ?: error("Queue verification unavailable")
             val verifyIds = verified.items
@@ -107,11 +152,7 @@ internal class GmmpQueueMutationBridge(
                     resolved.dao,
                     ArrayList(original)
                 )
-                setInt(
-                    resolved.statePosition,
-                    resolved.stateHost,
-                    oldState
-                )
+                resolved.statePosition.write(oldState)
             }.onFailure {
                 failure.addSuppressed(it)
             }
@@ -150,7 +191,7 @@ internal class GmmpQueueMutationBridge(
             resolved.dao,
             arrayListOf(currentModel)
         )
-        setInt(resolved.statePosition, resolved.stateHost, 1)
+        resolved.statePosition.write(1)
 
         val verified = GmmpQueueReader().read(autoDj) ?: return false
         val only = verified.items.singleOrNull() ?: return false
@@ -299,19 +340,8 @@ internal class GmmpQueueMutationBridge(
             )
         }
 
-        val stateHost = objectField(autoDj, "p")
-            ?: error("GMMP queue state unavailable")
-        val stateFields = hierarchyFields(stateHost.javaClass).filter {
-            it.type == Integer.TYPE ||
-                it.type == Integer::class.java
-        }.onEach { it.isAccessible = true }
-        val statePosition = stateFields.filter {
-            runCatching {
-                (it.get(stateHost) as? Number)?.toInt() ==
-                    context.currentQueuePosition
-            }.getOrDefault(false)
-        }.singleOrNull() ?: error(
-            "GMMP current-position state field is not unique"
+        val statePosition = resolveStatePosition(
+            context.currentQueuePosition
         )
 
         Log.i(
@@ -324,8 +354,7 @@ internal class GmmpQueueMutationBridge(
                 " | position=" + position.name +
                 " | update=" + update.name +
                 " | delete=" + (delete?.name ?: "none") +
-                " | state=" + stateHost.javaClass.name + "." +
-                statePosition.name
+                " | state=" + statePosition.description
         )
         return Resolved(
             dao,
@@ -335,9 +364,172 @@ internal class GmmpQueueMutationBridge(
             position,
             update,
             delete,
-            stateHost,
             statePosition,
             context
+        )
+    }
+
+    private fun resolveStatePosition(
+        currentQueuePosition: Int
+    ): StatePositionBinding {
+        fun matchingFields(host: Any): List<Field> =
+            hierarchyFields(host.javaClass).filter {
+                it.type == Integer.TYPE ||
+                    it.type == Integer::class.java
+            }.onEach { it.isAccessible = true }.filter {
+                runCatching {
+                    (it.get(host) as? Number)?.toInt() ==
+                        currentQueuePosition
+                }.getOrDefault(false)
+            }
+
+        // Preserve the previously verified 4.2.1 fast path whenever dx3
+        // still owns the current queue-position field.
+        objectField(autoDj, "p")?.let { fast ->
+            matchingFields(fast).singleOrNull()?.let {
+                return FieldStatePositionBinding(fast, it)
+            }
+        }
+
+        val hosts = hierarchyFields(autoDj.javaClass)
+            .mapNotNull { ownerField ->
+                ownerField.isAccessible = true
+                val host = runCatching {
+                    ownerField.get(autoDj)
+                }.getOrNull() ?: return@mapNotNull null
+                if (!isStateSignalHost(host)) return@mapNotNull null
+                ownerField.name to host
+            }
+            .distinctBy { (_, host) -> System.identityHashCode(host) }
+
+        val fieldBindings = hosts.mapNotNull { (_, host) ->
+            matchingFields(host).singleOrNull()?.let {
+                FieldStatePositionBinding(host, it)
+            }
+        }
+        if (fieldBindings.size == 1) return fieldBindings.single()
+
+        // r17 showed the live pointer move from dx3.field:o to
+        // ur.method:b after native Play. Accept a method-backed pointer only
+        // when the same host has exactly one current-valued int getter and
+        // exactly one int->void writer. The setter is verified by reading the
+        // getter after every write; any mismatch triggers rollback/fail-close.
+        val methodBindings = hosts.mapNotNull { (_, host) ->
+            val methods = GmmpReflectionPolicy.callableMethods(host.javaClass)
+                .filter { !Modifier.isStatic(it.modifiers) }
+            val getters = methods.filter {
+                it.parameterCount == 0 &&
+                    it.name != "hashCode" &&
+                    (
+                        it.returnType == Integer.TYPE ||
+                            it.returnType == Integer::class.java
+                    )
+            }.filter { method ->
+                runCatching {
+                    method.isAccessible = true
+                    (method.invoke(host) as? Number)?.toInt() ==
+                        currentQueuePosition
+                }.getOrDefault(false)
+            }
+            val setters = methods.filter {
+                it.parameterCount == 1 &&
+                    (
+                        it.parameterTypes[0] == Integer.TYPE ||
+                            it.parameterTypes[0] == Integer::class.java
+                    ) &&
+                    it.returnType == java.lang.Void.TYPE
+            }
+            val getter = getters.singleOrNull() ?: return@mapNotNull null
+            val setter = setters.singleOrNull() ?: return@mapNotNull null
+            getter.isAccessible = true
+            setter.isAccessible = true
+            MethodStatePositionBinding(host, getter, setter)
+        }
+        if (methodBindings.size == 1) return methodBindings.single()
+
+        reportStateShape(
+            currentQueuePosition,
+            hosts,
+            fieldBindings,
+            methodBindings
+        )
+        error(
+            "GMMP current-position state binding is not unique" +
+                " | fields=" + fieldBindings.joinToString(",") {
+                    it.description
+                }.ifBlank { "none" } +
+                " | methods=" + methodBindings.joinToString(",") {
+                    it.description
+                }.ifBlank { "none" }
+        )
+    }
+
+    private fun isStateSignalHost(value: Any): Boolean {
+        val name = value.javaClass.name
+        if (name.startsWith("java.") ||
+            name.startsWith("android.") ||
+            name.startsWith("kotlin.") ||
+            value is java.util.Collection<*> ||
+            value is java.util.concurrent.Executor
+        ) return false
+        val fields = hierarchyFields(value.javaClass)
+        return fields.none {
+            it.type.name == "gonemad.gmmp.data.database.GMDatabase" ||
+                generateSequence<Class<*>>(it.type) { c -> c.superclass }
+                    .any { c -> c.name == "androidx.room.RoomDatabase" }
+        }
+    }
+
+    private fun reportStateShape(
+        currentQueuePosition: Int,
+        hosts: List<Pair<String, Any>>,
+        fieldBindings: List<StatePositionBinding>,
+        methodBindings: List<StatePositionBinding>
+    ) {
+        val key = "state|" + autoDj.javaClass.name + "|" +
+            currentQueuePosition
+        if (!reportedMutationShapes.add(key)) return
+        val details = hosts.take(8).joinToString(";") { (ownerField, host) ->
+            val methods = GmmpReflectionPolicy.callableMethods(host.javaClass)
+                .filter { !Modifier.isStatic(it.modifiers) }
+            val readers = methods.filter {
+                it.parameterCount == 0 &&
+                    it.name != "hashCode" &&
+                    (
+                        it.returnType == Integer.TYPE ||
+                            it.returnType == Integer::class.java
+                    )
+            }.mapNotNull { method ->
+                runCatching {
+                    method.isAccessible = true
+                    val value = (method.invoke(host) as? Number)?.toInt()
+                        ?: return@runCatching null
+                    method.name + "=" + value
+                }.getOrNull()
+            }
+            val writers = methods.filter {
+                it.parameterCount == 1 &&
+                    (
+                        it.parameterTypes[0] == Integer.TYPE ||
+                            it.parameterTypes[0] == Integer::class.java
+                    ) &&
+                    it.returnType == java.lang.Void.TYPE
+            }.joinToString(",") { it.name }
+            ownerField + "->" + host.javaClass.name +
+                "{read=" + readers.joinToString(",").ifBlank { "none" } +
+                ";write=" + writers.ifBlank { "none" } + "}"
+        }
+        Log.w(
+            TAG,
+            "QUEUE MUTATION STATE SHAPE | current=" +
+                currentQueuePosition +
+                " | hosts=" + details.ifBlank { "none" } +
+                " | fieldCandidates=" +
+                fieldBindings.joinToString(",") { it.description }
+                    .ifBlank { "none" } +
+                " | methodCandidates=" +
+                methodBindings.joinToString(",") { it.description }
+                    .ifBlank { "none" }
         )
     }
 

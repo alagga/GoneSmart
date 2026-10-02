@@ -422,7 +422,8 @@ internal class QueueFlipController {
                             "FLIP PLAY VERIFIED | kind=" + sourceKind +
                                 " | source=cursor | expected=" +
                                 expectedIds.size + " | queueSize=" + ids.size +
-                                " | currentPosition=" + current.queuePosition +
+                                " | currentPosition=" +
+                                (current?.queuePosition ?: -1) +
                                 " | checks=" + (attempt + 1)
                         )
                         eventReporter.reportEvent(
