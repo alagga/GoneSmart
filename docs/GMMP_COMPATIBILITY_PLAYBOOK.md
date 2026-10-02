@@ -423,3 +423,22 @@ The r17 device pass materially narrows the remaining compatibility surface:
 | Playlist native playback List boundary | active structural self-test | exact/unique callable signature, failure-specific method inventory only |
 
 The next real-device request is intentionally one five-action smoke pass: Playlist Back visual cleanup, Add picker multi-select, Track Auto-DJ, Queue Flip, and ordinary Playlist Play Flipped. Smart DJ and Smart-folder creation are excluded because this device pass already accepted them.
+
+
+## GMMP 4.2.1 r19 — post-r18 device evidence
+
+The r18 consolidated run separates the already-graduated read path from the remaining host-only write/input boundaries:
+
+- **Smart DJ is successful in this run.** `GMMP READ-ONLY SQL MAPPING` resolves `GMDatabase_Impl -> f94.q(p94):Cursor`, the library loads 18,743 tracks, queue read resolves 52/53 rows, Smart DJ selects one candidate, applies the replacement and GMMP adds it to the queue. No additional Smart-DJ probe is justified by this log.
+- **Track Auto-DJ false timeout:** native Play changes GMMP's current artwork/metadata from the pre-click song to the chosen song almost immediately, but `waitForSelectedSong` continues polling until its nine-second timeout. r19 therefore separates *playback changed* from *queue shape stable*: changed current track ID or changed current queue-entry ID is sufficient verified playback evidence; current-index-only motion is ignored. The following native seed isolation remains fail-closed and is still verified through the queue reader.
+- **Queue Flip deeper boundary:** queue Cursor/current resolution succeeds first. Mutation then fails because `d85` has no direct no-arg `List` reader. The bounded r18 shape reports two no-arg reference-return readers (`W1():xp4`, `X1():jm1`) and existing native List/array writer families. r19 adds a read-only structural reactive snapshot bridge: terminal callback boundaries may emit a candidate List, but the candidate is accepted only at the expected live row count and still must pass exact queue_id/song_id/queue_position correlation before mutation. Multiple equivalent emissions are deduplicated by native numeric row fingerprint; ambiguity still fails closed.
+- **Add-to-Playlist:** the picker surface/session is valid and the folder overlay renders, but semantic long-clicks arrive on an inner synthetic `TextView` and fall through to the native Recycler row resolver. r19 keeps strong identity ownership only for the current synthetic render (explicitly cleared on rerender/teardown) and removes the unnecessary native-holder prerequisite from selection. Confirm remains the point where a native holder is resolved and GMMP's original add path is dispatched.
+- **Playlist Back/up:** the r18 log again records eventual ActionMode disappearance and mirror cleanup only after the user has already seen stale highlights. r19 observes completion of the original click inside GMMP's visible `action_mode_bar`; if the bar disappears within a bounded post-click window, the synthetic presentation is cleared/rebuilt immediately. Original GMMP click behavior is never intercepted.
+
+### r19 automated gate and probe lifecycle
+
+CI must cover the new playback-change policy and a fake R8-style reactive List source before another device pass. The reactive bridge test proves that transformation-style same-source methods are rejected, the callback terminal emits exactly the expected row count, and a uniquely identifiable disposable is cleaned up. Existing selection/menu/Room tests remain required.
+
+No broad Recycler/Room inventory is reintroduced. Smart DJ remains graduated. Queue entity mutation remains the only active structural compatibility mapping; if r19 cannot unwrap `xp4/jm1`, the single failure log should report only the bounded native queue mutation shape required to refine that one boundary.
+
+The next real-device pass remains one consolidated four-action check: normal Playlist ActionMode close/back visual cleanup, Add-picker multi-select, Track Auto-DJ, and Queue Flip.

@@ -19,6 +19,19 @@ internal object TrackMixPlaybackIdentityPolicy {
             current.trackId != before.trackId ||
             current.currentIndex != before.currentIndex
 
+    /**
+     * Native Play is complete for Track Auto-DJ once GMMP's actual current
+     * track/queue entry changes. A mere currentIndex shift can happen while
+     * 4.2.1 reshapes history/upcoming rows and is not playback evidence.
+     */
+    fun playbackChanged(before: Identity?, current: Identity): Boolean {
+        if (before == null) return true
+        if (current.trackId != before.trackId) return true
+        return before.queueEntryId != null &&
+            current.queueEntryId != null &&
+            current.queueEntryId != before.queueEntryId
+    }
+
     fun sameCurrent(first: Identity?, second: Identity): Boolean {
         if (first == null) return false
         return if (first.queueEntryId != null && second.queueEntryId != null) {

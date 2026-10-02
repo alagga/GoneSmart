@@ -5,6 +5,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackMixPlaybackIdentityPolicyTest {
+    @Test fun playbackChangeIgnoresQueueIndexOnlyMotion() {
+        val before = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 100L,
+            trackId = 20L,
+            currentIndex = 50
+        )
+        assertFalse(
+            TrackMixPlaybackIdentityPolicy.playbackChanged(
+                before,
+                before.copy(currentIndex = 49)
+            )
+        )
+        assertTrue(
+            TrackMixPlaybackIdentityPolicy.playbackChanged(
+                before,
+                before.copy(trackId = 21L, queueEntryId = 101L)
+            )
+        )
+        assertTrue(
+            TrackMixPlaybackIdentityPolicy.playbackChanged(
+                before,
+                before.copy(queueEntryId = 101L)
+            )
+        )
+    }
+
     @Test fun sameCurrentEntryStaysStableWhileQueueAroundItMayChange() {
         val first = TrackMixPlaybackIdentityPolicy.Identity(
             queueEntryId = 9001L,

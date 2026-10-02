@@ -303,8 +303,13 @@ internal class PlaylistFolderPreviewController(
         val list: WeakReference<ViewGroup>,
         val model: Any
     )
+    // Current synthetic picker rows only. Strong identity is intentional:
+    // r18 proved the semantic long-click can arrive on a deeply nested
+    // TextView while WeakHashMap descendant ownership was not available at
+    // dispatch time. Entries are explicitly removed on every picker render
+    // and browser teardown, so this cannot retain old fragments.
     private val pickerOverlayTargets =
-        WeakHashMap<View, PickerOverlayTarget>()
+        java.util.IdentityHashMap<View, PickerOverlayTarget>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
@@ -1941,6 +1946,62 @@ internal class PlaylistFolderPreviewController(
         return false
     }
 
+    /**
+     * The ActionMode close/up button is a normal View.performClick and can
+     * bypass OnBackPressedDispatcher. After GMMP handles any click inside its
+     * visible contextual bar, watch a few bounded frames. If that exact bar
+     * disappears, clear the synthetic Playlist selection presentation in the
+     * same interaction instead of waiting for a later unrelated redraw.
+     */
+    fun onNativeActionModeClickCompleted(clicked: View?) {
+        val view = clicked ?: return
+        val browser = currentBrowser(picker = false) ?: return
+        if (!browser.mainSelection.isSelecting) return
+
+        var node: View? = view
+        var insideActionMode = false
+        repeat(12) {
+            val current = node ?: return@repeat
+            if (resourceName(current) == "action_mode_bar") {
+                insideActionMode = true
+                return@repeat
+            }
+            node = current.parent as? View
+        }
+        if (!insideActionMode) return
+
+        val root = view.rootView
+        val checks = longArrayOf(0L, 32L, 96L)
+        checks.forEach { delay ->
+            mainHandler.postDelayed({
+                if (browsers[browser.list] !== browser ||
+                    !browser.mainSelection.isSelecting
+                ) return@postDelayed
+                if (findVisibleActionModeBar(root) == null) {
+                    activeNativePlaylistMode = null
+                    clearMainSelectionPresentation(browser)
+                    Log.i(
+                        TAG,
+                        "FOLDER MAIN SELECT | ActionMode click teardown; cleared"
+                    )
+                }
+            }, delay)
+        }
+    }
+
+    private fun findVisibleActionModeBar(root: View): View? {
+        if (resourceName(root) == "action_mode_bar" &&
+            root.visibility == View.VISIBLE
+        ) return root
+        val group = root as? ViewGroup ?: return null
+        for (index in 0 until group.childCount) {
+            findVisibleActionModeBar(group.getChildAt(index))?.let {
+                return it
+            }
+        }
+        return null
+    }
+
     fun consumeBack(): Boolean {
         if (!settings.enabled) return false
         val list = activeBrowser.get()
@@ -2681,6 +2742,7 @@ internal class PlaylistFolderPreviewController(
         preserveNativeAlpha: Boolean = false
     ) {
         val browser = browsers.remove(list) ?: return
+        clearPickerOverlayTargets(list)
         browser.moveSources = null
         endMoveChrome(browser)
         closePickerAddOptions(browser)
@@ -3105,6 +3167,7 @@ internal class PlaylistFolderPreviewController(
             moveChromeUi.syncPalette(browser.moveChrome, browser.list)
             positionMoveFab(browser)
         }
+        clearPickerOverlayTargets(list)
         browser.rows.removeAllViews()
         browser.mainRenderedPlaylistRows.clear()
         browser.mainOriginalRowForegrounds.clear()
@@ -3766,6 +3829,16 @@ internal class PlaylistFolderPreviewController(
         }
     }
 
+    private fun clearPickerOverlayTargets(list: ViewGroup) {
+        val iterator = pickerOverlayTargets.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.value.list.get() === list) {
+                iterator.remove()
+            }
+        }
+    }
+
     private fun registerPickerOverlayTarget(
         root: View,
         target: PickerOverlayTarget
@@ -3782,19 +3855,20 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun pickerOverlayTarget(view: View?): PickerOverlayTarget? {
-        val row = AncestorOwnershipPolicy.directOwnedAncestor(
-            start = view,
-            maxDepth = 32,
-            parentOf = { it.parent as? View },
-            isDirectOwnedChild = { pickerOverlayTargets.containsKey(it) }
-        ) ?: return null
-        val target = pickerOverlayTargets[row] ?: return null
-        val list = target.list.get() ?: return null
-        return target.takeIf {
-            list.isAttachedToWindow &&
-                isPicker(list) &&
-                browsers.containsKey(list)
+        var node = view ?: return null
+        repeat(48) {
+            val target = pickerOverlayTargets[node]
+            if (target != null) {
+                val list = target.list.get() ?: return null
+                return target.takeIf {
+                    list.isAttachedToWindow &&
+                        isPicker(list) &&
+                        browsers.containsKey(list)
+                }
+            }
+            node = node.parent as? View ?: return null
         }
+        return null
     }
 
     fun interceptPickerOverlayLongClick(view: View?): Boolean {

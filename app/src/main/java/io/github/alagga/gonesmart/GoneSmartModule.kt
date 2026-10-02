@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r18"
+            "gmmp421-r19"
 
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
@@ -3683,7 +3683,22 @@ class GoneSmartModule : XposedModule() {
                     )
                     false
                 }
-                if (intercepted) true else chain.proceed()
+                if (intercepted) {
+                    true
+                } else {
+                    val result = chain.proceed()
+                    runCatching {
+                        playlistFolderPreview
+                            .onNativeActionModeClickCompleted(view)
+                    }.onFailure { error ->
+                        Log.w(
+                            TAG,
+                            "Playlist ActionMode click teardown failed",
+                            error
+                        )
+                    }
+                    result
+                }
             }
 
             val performLongClick = android.view.View::class.java

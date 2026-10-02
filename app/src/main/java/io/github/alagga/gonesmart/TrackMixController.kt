@@ -670,6 +670,27 @@ internal class TrackMixController(
             }
             val changed =
                 TrackMixPlaybackIdentityPolicy.changed(before, identity)
+            val playbackChanged =
+                TrackMixPlaybackIdentityPolicy.playbackChanged(
+                    before,
+                    identity
+                )
+            // r18 device evidence: GMMP's Now Playing metadata changed to the
+            // selected song immediately, while the queue entry/shape kept
+            // settling and our old two-snapshot stability gate timed out.
+            // The verified queue Cursor is already current-playback aware;
+            // a changed track/entry is therefore the postcondition we need
+            // before native isolation. Do not wait for unrelated queue shape.
+            if (playbackChanged) {
+                Log.i(
+                    TAG,
+                    "MIX PLAY VERIFIED | source=queue-current-change" +
+                        " | entry=" + (identity.queueEntryId ?: -1L) +
+                        " | track=" + identity.trackId
+                )
+                return current
+            }
+
             val nativeReady = request.nativePlaySignal || changed
             if (!nativeReady) continue
 

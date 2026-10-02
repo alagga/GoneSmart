@@ -225,32 +225,87 @@ internal class GmmpQueueMutationBridge(
                 java.util.List::class.java
                     .isAssignableFrom(it.returnType)
         }
-        val listCandidates = listReaders.mapNotNull { method ->
+        val listCandidates =
+            arrayListOf<Pair<String, List<Any>>>()
+        listReaders.forEach { method ->
             runCatching {
                 method.isAccessible = true
                 @Suppress("UNCHECKED_CAST")
                 (method.invoke(dao) as? List<Any?>)
                     ?.filterNotNull()
-            }.getOrNull()?.let { rows ->
-                method to rows
+                    ?.map { it }
+            }.getOrNull()?.takeIf {
+                it.size == context.items.size && it.isNotEmpty()
+            }?.let { rows ->
+                listCandidates +=
+                    (method.declaringClass.name + "." + method.name +
+                        ":direct") to rows
             }
-        }.filter { (_, rows) ->
-            rows.size == context.items.size &&
-                rows.isNotEmpty()
         }
-        val chosenRows = listCandidates.singleOrNull()
+
+        // GMMP 4.2.1 d85 no longer exposes the native Queue entity snapshot
+        // as a direct List. Its no-arg W1/X1 boundaries return R8-renamed
+        // reactive carriers. Subscribe read-only and accept an emission only
+        // when its row count matches the already-verified Cursor snapshot.
+        // queue_id/song_id/queue_position correlation below remains the real
+        // ownership proof before any writer is eligible.
+        val allReactiveReaders = methods.filter {
+            !Modifier.isStatic(it.modifiers) &&
+                it.parameterCount == 0 &&
+                it.returnType != java.lang.Void.TYPE &&
+                !it.returnType.isPrimitive &&
+                !java.util.List::class.java
+                    .isAssignableFrom(it.returnType) &&
+                it.declaringClass != Any::class.java &&
+                it.returnType != String::class.java &&
+                it.returnType != Class::class.java
+        }
+        // Prefer generated DAO implementation boundaries. In the r18 shape
+        // these are exactly d85.W1()/X1(); inherited ys3 helpers are not
+        // query ownership evidence and must not be invoked speculatively.
+        val reactiveReaders =
+            allReactiveReaders.filter {
+                it.declaringClass == dao.javaClass
+            }.ifEmpty {
+                allReactiveReaders
+            }
+        reactiveReaders.take(6).forEach { method ->
+            val source = runCatching {
+                method.isAccessible = true
+                method.invoke(dao)
+            }.getOrNull() ?: return@forEach
+            NativeReactiveListReader.read(
+                source = source,
+                expectedRows = context.items.size
+            )?.let { snapshot ->
+                listCandidates +=
+                    (method.declaringClass.name + "." + method.name +
+                        "->" + snapshot.boundary) to snapshot.rows
+            }
+        }
+
+        val distinctCandidates = listCandidates.distinctBy { (_, rows) ->
+            nativeRowFingerprint(rows)
+        }
+        val chosenRows = distinctCandidates.singleOrNull()
         if (chosenRows == null) {
             reportMutationShape(dao, methods, context.items.size)
             error(
                 "GMMP native queue entity reader is not unique: " +
-                    listCandidates.joinToString(",") { (method, rows) ->
-                        method.declaringClass.name + "." + method.name +
-                            "#" + rows.size
+                    distinctCandidates.joinToString(",") { (source, rows) ->
+                        source + "#" + rows.size
                     }.ifBlank {
                         "none; callableReaders=" +
-                            listReaders.joinToString(",") {
-                                it.declaringClass.name + "." + it.name
-                            }.ifBlank { "none" }
+                            (
+                                listReaders.map {
+                                    it.declaringClass.name + "." + it.name
+                                } +
+                                    reactiveReaders.take(8).map {
+                                        it.declaringClass.name + "." +
+                                            it.name + "->" +
+                                            it.returnType.name
+                                    }
+                                ).joinToString(",").ifBlank { "none" }
                     }
             )
         }
@@ -354,7 +409,8 @@ internal class GmmpQueueMutationBridge(
                 " | position=" + position.name +
                 " | update=" + update.name +
                 " | delete=" + (delete?.name ?: "none") +
-                " | state=" + statePosition.description
+                " | state=" + statePosition.description +
+                " | reader=" + chosenRows.first
         )
         return Resolved(
             dao,
@@ -567,6 +623,34 @@ internal class GmmpQueueMutationBridge(
                 " | noArg=" + noArg.ifBlank { "none" } +
                 " | writers=" + listWrites.ifBlank { "none" }
         )
+    }
+
+    private fun nativeRowFingerprint(rows: List<Any>): String {
+        val first = rows.firstOrNull() ?: return "empty"
+        val model = first.javaClass
+        if (!rows.all(model::isInstance)) {
+            return rows.joinToString("|") { it.javaClass.name }
+        }
+        val numeric = hierarchyFields(model).filter {
+            it.type == Integer.TYPE ||
+                it.type == Integer::class.java ||
+                it.type == java.lang.Long.TYPE ||
+                it.type == java.lang.Long::class.java
+        }.onEach { it.isAccessible = true }
+            .sortedBy { it.declaringClass.name + "|" + it.name }
+        return buildString {
+            append(model.name)
+            numeric.forEach { field ->
+                append('|').append(field.name).append('=')
+                rows.forEach { row ->
+                    append(
+                        runCatching {
+                            (field.get(row) as? Number)?.toLong()
+                        }.getOrNull() ?: Long.MIN_VALUE
+                    ).append(',')
+                }
+            }
+        }
     }
 
     private fun objectField(target: Any, name: String): Any? =

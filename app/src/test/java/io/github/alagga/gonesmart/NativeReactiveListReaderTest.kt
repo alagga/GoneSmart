@@ -1,0 +1,68 @@
+package io.github.alagga.gonesmart
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class NativeReactiveListReaderTest {
+    private fun interface Receiver {
+        fun accept(value: Any?)
+    }
+
+    private class Disposable {
+        var disposed = false
+        fun dispose() {
+            disposed = true
+        }
+    }
+
+    private class ReactiveSource(
+        private val rows: List<Any>
+    ) {
+        val disposable = Disposable()
+
+        fun subscribe(receiver: Receiver): Disposable {
+            receiver.accept(rows)
+            return disposable
+        }
+
+        // Transformation-like boundary: same source family must not be
+        // mistaken for a terminal subscription.
+        fun map(receiver: Receiver): ReactiveSource = this
+    }
+
+    @Test fun readsOneMatchingListFromCallbackTerminal() {
+        val source = ReactiveSource(listOf(Any(), Any(), Any()))
+        val result = NativeReactiveListReader.read(
+            source = source,
+            expectedRows = 3,
+            timeoutMs = 100
+        )
+
+        assertEquals(3, result?.rows?.size)
+        assertTrue(result?.boundary?.contains("subscribe") == true)
+        assertTrue(source.disposable.disposed)
+    }
+
+    @Test fun rejectsEmissionWithUnexpectedRowCount() {
+        val source = ReactiveSource(listOf(Any(), Any()))
+        assertNull(
+            NativeReactiveListReader.read(
+                source = source,
+                expectedRows = 3,
+                timeoutMs = 50
+            )
+        )
+    }
+
+    @Test fun directListStillWorksWithoutReactiveReflection() {
+        val result = NativeReactiveListReader.read(
+            source = listOf(Any(), Any()),
+            expectedRows = 2,
+            timeoutMs = 50
+        )
+        assertEquals(2, result?.rows?.size)
+        assertEquals("direct", result?.boundary)
+    }
+}

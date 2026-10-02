@@ -786,9 +786,14 @@ internal class PlaylistMultiSelectController {
         val session = visibleSession() ?: return false
         if (session.list !== list) return false
         val path = modelPath(model) ?: return false
-        val holder = findDispatchHolder(list) ?: return false
 
-        session.dispatchHolder = holder
+        // Selection itself is extension-owned and must not depend on a
+        // currently visible hidden native RecyclerView holder. The original
+        // holder is needed only when Confirm dispatches GMMP's real row click.
+        // Resolve/capture one opportunistically here and again at confirm.
+        findDispatchHolder(list)?.let {
+            session.dispatchHolder = it
+        }
         session.selectedModels[path] = model
         session.selectedPaths.add(path)
         enableFab(session)
@@ -809,8 +814,9 @@ internal class PlaylistMultiSelectController {
             return false
         }
         val path = modelPath(model) ?: return false
-        val holder = findDispatchHolder(list) ?: return false
-        session.dispatchHolder = holder
+        findDispatchHolder(list)?.let {
+            session.dispatchHolder = it
+        }
 
         if (!session.selectedPaths.add(path)) {
             session.selectedPaths.remove(path)
@@ -1269,12 +1275,19 @@ internal class PlaylistMultiSelectController {
             // The obfuscated utility oy0.h(theme, rawAttr, fallback)
             // is precisely the path used by AestheticFab.onAttachedToWindow.
             val utility = loader.loadClass("oy0")
-            val observableMethod = utility.declaredMethods.first {
+            val observableMethod = utility.declaredMethods.firstOrNull {
                 it.name == "h" &&
                     it.parameterCount == 3 &&
                     it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
                     it.parameterTypes[1] == String::class.java
-            }.apply { isAccessible = true }
+            }?.apply { isAccessible = true } ?: run {
+                Log.i(
+                    TAG,
+                    "MULTI PALETTE | dynamic FAB resolver unavailable; " +
+                        "following verified native palette fallbacks"
+                )
+                return
+            }
             val observable = observableMethod.invoke(
                 null,
                 theme,
