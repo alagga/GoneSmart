@@ -265,12 +265,43 @@ internal object NativeGmmpCreationDialogLocalizer {
         var changed = 0
         val textViews = arrayListOf<TextView>()
         collectTextViews(root, textViews)
+
+        // This method is called only while GoneSmart owns the scoped ORIGINAL
+        // GMMP "New Playlist" shell. 4.2.1's German title is an instruction
+        // ("Wähle einen Playlist-Namen") rather than the old short resource,
+        // so exact text matching cannot identify it. Prefer MaterialDialogs'
+        // title ID and fall back to the top-most visible non-input label.
+        val titleView = listOf(
+            "md_text_title",
+            "md_title"
+        ).firstNotNullOfOrNull { name ->
+            val id = dialog.context.resources.getIdentifier(
+                name, "id", dialog.context.packageName
+            )
+            if (id != 0) root.findViewById<TextView>(id) else null
+        } ?: textViews
+            .filter {
+                it !is EditText &&
+                    it.visibility == View.VISIBLE &&
+                    !it.text.isNullOrBlank()
+            }
+            .minByOrNull { view ->
+                IntArray(2).also(view::getLocationOnScreen)[1]
+            }
+        if (titleView != null && titleView.text?.toString() != folderTitle) {
+            titleView.text = folderTitle
+            changed++
+        }
+
         textViews.forEach { view ->
             val text = view.text?.toString()?.takeUnless(String::isBlank)
-            if (text != null && key(text) in playlistTitleKeys) {
+            if (view !== titleView &&
+                text != null && key(text) in playlistTitleKeys
+            ) {
                 view.text = folderTitle
                 changed++
             } else if (
+                view !== titleView &&
                 text != null &&
                 key(text) in playlistNameKeys &&
                 view !is EditText
@@ -481,13 +512,13 @@ internal object NativeGmmpCreationDialogLocalizer {
     private fun ensureInputAccent(dialog: Dialog) {
         if (accentSubscriptions.containsKey(dialog)) return
         val decor = dialog.window?.decorView ?: return
-        val initial = NativeGmmpAccent.lastObserved()
+        val initial = NativeGmmpAccent.currentPrimary(decor)
         if (initial != null) {
             accentColors[dialog] = initial
             applyInputAccent(decor, initial)
             Log.i(
                 TAG,
-                "CREATION DIALOG ACCENT | cached !mainColorAccent=#" +
+                "CREATION DIALOG ACCENT | native primary=#" +
                     Integer.toHexString(initial)
             )
         } else {
@@ -510,7 +541,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 }
             decor.viewTreeObserver.addOnPreDrawListener(firstDrawGuard)
         }
-        val subscription = NativeGmmpAccent.observe(
+        val subscription = NativeGmmpAccent.observePrimary(
             decor,
             onColor = { color ->
                 val previous = accentColors.put(dialog, color)
@@ -521,7 +552,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 if (previous != color) {
                     Log.i(
                         TAG,
-                        "CREATION DIALOG ACCENT | !mainColorAccent=#" +
+                        "CREATION DIALOG ACCENT | native primary=#" +
                             Integer.toHexString(color)
                     )
                 }
@@ -532,7 +563,7 @@ internal object NativeGmmpCreationDialogLocalizer {
                 }
                 Log.w(
                     TAG,
-                    "CREATION DIALOG ACCENT | live GMMP accent unavailable",
+                    "CREATION DIALOG ACCENT | live GMMP primary unavailable",
                     it
                 )
             }

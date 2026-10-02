@@ -161,6 +161,9 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbAdapter: NativeFolderBreadcrumbAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
             NativeMainPlaylistSelectionMirror(),
+        val pendingMainSelection: MutableMap<String, Boolean> =
+            linkedMapOf(),
+        var nativeSelectionChromeSeen: Boolean = false,
         val mainRenderedPlaylistRows: MutableMap<String, View> =
             linkedMapOf(),
         val mainOriginalRowForegrounds: WeakHashMap<View, Drawable?> =
@@ -348,7 +351,13 @@ internal class PlaylistFolderPreviewController(
     }
 
     fun observeNativePlaylistActionMode(mode: Any?) {
-        if (mode != null) activeNativePlaylistMode = WeakReference(mode)
+        if (mode == null) return
+        activeNativePlaylistMode = WeakReference(mode)
+        browsers.values.toList().forEach { browser ->
+            if (!isPicker(browser.list) && browser.mainSelection.isSelecting) {
+                browser.nativeSelectionChromeSeen = true
+            }
+        }
     }
     // Avoid replacing a native Material FAB's drawable every layout pass.
     private val miniFabBackgroundSource =
@@ -1123,24 +1132,14 @@ internal class PlaylistFolderPreviewController(
                 menu.getItem(index).itemId
             ) == "menuAdd"
         }
+        // Only the real top-level Playlists menu may become playlistTabMenu.
+        // r13 proved that menu_gm_sort_playlist_list also matches broad
+        // "playlist"+"list" heuristics; caching that submenu makes New Folder
+        // disappear/reappear depending on which menu inflated last. Unknown
+        // future names are recovered from the live ActionMenuView instead.
         val playlistListMenu =
-            name == "menu_gm_playlist_list" ||
-                (name.contains("playlist", ignoreCase = true) &&
-                    name.contains("list", ignoreCase = true) &&
-                    !name.contains("smart", ignoreCase = true) &&
-                    !name.contains("context", ignoreCase = true) &&
-                    !name.contains("action", ignoreCase = true))
-        // GMMP 4.2.1 may no longer expose menuAdd in the already-inflated
-        // Playlists toolbar. The toolbar/menu identity itself is enough to
-        // install GoneSmart's folder action; menuAdd is only needed when we
-        // want to forward the ORIGINAL New Playlist action.
+            PlaylistMenuIdentityPolicy.isMainPlaylistMenu(name)
         if (playlistListMenu) {
-            if (BuildConfig.DEBUG && name != "menu_gm_playlist_list") {
-                Log.i(
-                    TAG,
-                    "FOLDER NAV COMPAT | alternate playlist menu=$name"
-                )
-            }
             playlistTabMenu = WeakReference(menu)
             installNativeNewFolderMenu(menu, context)
             updatePlaylistMenu()
@@ -1576,7 +1575,9 @@ internal class PlaylistFolderPreviewController(
                 if (isPicker(browser.list) || !browser.mainSelection.isSelecting) {
                     return@forEach
                 }
+                browser.pendingMainSelection.clear()
                 browser.mainSelection.clear()
+                browser.nativeSelectionChromeSeen = false
                 if (browser.list.isAttachedToWindow &&
                     browsers[browser.list] === browser
                 ) syncMainSelectionVisuals(browser)
@@ -1962,12 +1963,13 @@ internal class PlaylistFolderPreviewController(
             return true
         }
         if (!isPicker(browser.list) && browser.mainSelection.isSelecting) {
-            // The original GMMP ActionMode handles Back; our synthetic
-            // selection tint is only a visual mirror of its accepted clicks.
+            // The original GMMP ActionMode still owns Back. Clear only our
+            // presentation mirror immediately so no synthetic highlight can
+            // survive while the native contextual bar closes.
+            browser.pendingMainSelection.clear()
             browser.mainSelection.clear()
-            mainHandler.post {
-                if (browsers[browser.list] === browser) safeRender(browser)
-            }
+            browser.nativeSelectionChromeSeen = false
+            syncMainSelectionVisuals(browser)
             return false
         }
         if (browser.currentFolderId == null) return false
@@ -2220,14 +2222,48 @@ internal class PlaylistFolderPreviewController(
             }
         }
         var lastThemeProbe = 0L
+        var lastSelectionChromeProbe = 0L
         // Aesthetic can change color values from album artwork without
         // triggering a new layout. Probe the actual native row on redraw,
         // throttled so scrolling and cover animations remain lightweight.
         val themeListener = android.view.ViewTreeObserver.OnPreDrawListener {
-            weakList.get()?.let { current ->
-                browsers[current]?.let(::syncPagerOverlayVisibility)
-            }
             val now = android.os.SystemClock.uptimeMillis()
+            weakList.get()?.let { current ->
+                browsers[current]?.let { browser ->
+                    syncPagerOverlayVisibility(browser)
+                    // 4.2.1 renamed the native playlist ActionMode callback,
+                    // so the old yn3->n3 destroy hook is only a fast path.
+                    // The actual contextual bar is a stable UI postcondition:
+                    // once seen, its disappearance means GMMP ended selection.
+                    if (!isPicker(current) &&
+                        browser.mainSelection.isSelecting &&
+                        now - lastSelectionChromeProbe >= 80L
+                    ) {
+                        lastSelectionChromeProbe = now
+                        val nativeChromeColor =
+                            multiSelect.nativeContextBarColor(current)
+                        if (nativeChromeColor != null) {
+                            browser.nativeSelectionChromeSeen = true
+                            if (browser.liveSelectionAccent !=
+                                nativeChromeColor
+                            ) {
+                                browser.liveSelectionAccent =
+                                    nativeChromeColor
+                                syncMainSelectionVisuals(browser)
+                            }
+                        } else if (browser.nativeSelectionChromeSeen) {
+                            browser.pendingMainSelection.clear()
+                            browser.mainSelection.clear()
+                            browser.nativeSelectionChromeSeen = false
+                            syncMainSelectionVisuals(browser)
+                            Log.i(
+                                TAG,
+                                "FOLDER MAIN SELECT | native ActionMode gone; cleared"
+                            )
+                        }
+                    }
+                }
+            }
             if (now - lastThemeProbe >= 400L) {
                 lastThemeProbe = now
                 weakList.get()?.let { current ->
@@ -3388,25 +3424,26 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun subscribeMainSelectionAccent(browser: Browser) {
-        browser.liveSelectionAccent = NativeGmmpAccent.lastObserved()
+        browser.liveSelectionAccent =
+            NativeGmmpAccent.currentPrimary(browser.list)
         browser.selectionAccentSubscription?.dispose()
-        browser.selectionAccentSubscription = NativeGmmpAccent.observe(
+        browser.selectionAccentSubscription = NativeGmmpAccent.observePrimary(
             browser.list,
             onColor = { color ->
-                if (browsers[browser.list] !== browser) return@observe
-                if (browser.liveSelectionAccent == color) return@observe
+                if (browsers[browser.list] !== browser) return@observePrimary
+                if (browser.liveSelectionAccent == color) return@observePrimary
                 browser.liveSelectionAccent = color
                 syncMainSelectionVisuals(browser)
                 Log.i(
                     TAG,
-                    "FOLDER MAIN SELECTION ACCENT | !mainColorAccent=#" +
+                    "FOLDER MAIN SELECTION ACCENT | native primary=#" +
                         Integer.toHexString(color)
                 )
             },
             onError = {
                 Log.w(
                     TAG,
-                    "FOLDER MAIN SELECTION ACCENT | live accent unavailable",
+                    "FOLDER MAIN SELECTION ACCENT | live primary unavailable",
                     it
                 )
             }
@@ -3414,10 +3451,10 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun mainSelectionAccent(browser: Browser): Int =
-        browser.liveSelectionAccent
-            ?: NativeGmmpAccent.lastObserved()
-            ?: multiSelect.nativeContextBarColor(browser.list)
-            ?: NativeGmmpAccent.current(browser.list)
+        multiSelect.nativeContextBarColor(browser.list)
+            ?: browser.liveSelectionAccent
+            ?: NativeGmmpAccent.currentPrimary(browser.list)
+            ?: multiSelect.standaloneSelectionAccent(browser.list)
             ?: styles[browser.list]?.accentColor
             ?: resolveAccent(browser.list)
 
@@ -3429,7 +3466,9 @@ internal class PlaylistFolderPreviewController(
         if (!browser.mainOriginalRowForegrounds.containsKey(row)) {
             browser.mainOriginalRowForegrounds[row] = row.foreground
         }
-        row.foreground = if (browser.mainSelection.isSelected(path)) {
+        val selected = browser.pendingMainSelection[path]
+            ?: browser.mainSelection.isSelected(path)
+        row.foreground = if (selected) {
             ColorDrawable(
                 withAlpha(mainSelectionAccent(browser), 0x80)
             )
@@ -3497,11 +3536,28 @@ internal class PlaylistFolderPreviewController(
         val list = browser.list
         if (browser.actionPending || !list.isAttachedToWindow) return false
 
+        val optimisticSelection = if (!isPicker(list) && !contextMenu) {
+            browser.mainSelection.previewSelected(path, longClick)
+        } else null
+        if (optimisticSelection != null) {
+            browser.pendingMainSelection[path] = optimisticSelection
+            syncMainSelectionVisuals(browser)
+        }
+        val complete: (Boolean) -> Unit = { handled ->
+            if (optimisticSelection != null) {
+                browser.pendingMainSelection.remove(path)
+                if (browsers[list] === browser) {
+                    syncMainSelectionVisuals(browser)
+                }
+            }
+            onComplete?.invoke(handled)
+        }
+
         if (performMatchingNativeAction(
                 list, path, longClick, contextMenu
             )
         ) {
-            onComplete?.invoke(true)
+            complete(true)
             return true
         }
 
@@ -3509,7 +3565,7 @@ internal class PlaylistFolderPreviewController(
         if (expectedPosition < 0) {
             Log.w(TAG, "FOLDER INLINE ACTION | path absent from native snapshot")
             warn(list, "Playlist no longer available")
-            onComplete?.invoke(false)
+            complete(false)
             return false
         }
 
@@ -3538,7 +3594,7 @@ internal class PlaylistFolderPreviewController(
             browser.actionPending = false
             Log.w(TAG, "FOLDER INLINE ACTION | native scroll unavailable")
             warn(list, "Native playlist action unavailable")
-            onComplete?.invoke(false)
+            complete(false)
             return false
         }
 
@@ -3549,7 +3605,7 @@ internal class PlaylistFolderPreviewController(
             longClick = longClick,
             contextMenu = contextMenu,
             attempt = 0,
-            onComplete = onComplete
+            onComplete = complete
         )
         return true
     }

@@ -11,6 +11,19 @@ internal class NativeMainPlaylistSelectionMirror {
     fun isSelected(path: String): Boolean = path in selected
     fun selectedPaths(): List<String> = selected.toList()
 
+    /**
+     * Visual prediction only. Used to paint the synthetic folder row
+     * immediately while GoneSmart scrolls the hidden native RecyclerView to
+     * dispatch GMMP's real click/long-click. The mirror is committed only
+     * after the original native action reports handled.
+     */
+    fun previewSelected(path: String, longClick: Boolean): Boolean? {
+        if (path.isBlank()) return null
+        if (longClick) return true
+        if (!isSelecting) return null
+        return !isSelected(path)
+    }
+
     fun onNativeAction(path: String, longClick: Boolean): Boolean {
         if (path.isBlank()) return false
         if (longClick) return selected.add(path)

@@ -20,6 +20,11 @@ internal object GmmpReadOnlySql {
     private val reportedBindings =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    // Successful structural discovery is process-stable for one live GMMP
+    // Auto-DJ/service object. Re-running the full hierarchy scan for every
+    // queue poll was visible as UI jank in the 4.2.1 device log.
+    private val bindingCache = java.util.WeakHashMap<Any, Binding>()
+
     private data class Binding(
         val database: Any,
         val databaseField: Field,
@@ -75,6 +80,10 @@ internal object GmmpReadOnlySql {
         runCatching { resolve(autoDjInstance) }.isSuccess
 
     private fun resolve(autoDjInstance: Any): Binding {
+        synchronized(bindingCache) {
+            bindingCache[autoDjInstance]
+        }?.let { return it }
+
         val databases = hierarchyFields(autoDjInstance.javaClass)
             .mapNotNull { field ->
                 field.isAccessible = true
@@ -103,31 +112,25 @@ internal object GmmpReadOnlySql {
             val constructor: Constructor<*>?
         )
 
+        // Android framework classes normally share the boot class loader,
+        // but Xposed/host reflection can still make Class identity checks too
+        // strict. The r13 device inventory proves the real boundary as
+        // f94.q(p94):android.database.Cursor, so accept the exact framework
+        // type name as the compatibility-safe fallback.
         val cursorCandidates =
             GmmpReflectionPolicy.callableMethods(database.javaClass)
-            .filter {
-                it.parameterCount == 1 &&
-                    Cursor::class.java.isAssignableFrom(it.returnType)
-            }
-            .mapNotNull { method ->
-                val queryType = method.parameterTypes.single()
-                val constructor = resolveQueryConstructor(queryType)
-                when {
-                    constructor != null ->
-                        Candidate(method, queryType, constructor)
-                    // GMMP 4.2.1 exposes Room's query contract as p94.
-                    // The UNIQUE one-argument Cursor boundary on the verified
-                    // GMDatabase implementation is the semantic ownership
-                    // proof. R8 may rename/bridge every method of the query
-                    // interface, so pre-filtering it by method names/counts
-                    // incorrectly rejected f94.q(p94): Cursor.
-                    queryType.isInterface ->
-                        Candidate(method, queryType, null)
-                    supportsQueryInterface(queryType) ->
-                        Candidate(method, queryType, null)
-                    else -> null
+                .filter {
+                    it.parameterCount == 1 &&
+                        isCursorType(it.returnType)
                 }
-            }
+                .map { method ->
+                    val queryType = method.parameterTypes.single()
+                    Candidate(
+                        method,
+                        queryType,
+                        resolveQueryConstructor(queryType)
+                    )
+                }
 
         val chosen = cursorCandidates.singleOrNull() ?: error(
             "GMMP Cursor query boundary is not structurally unique: " +
@@ -137,18 +140,39 @@ internal object GmmpReadOnlySql {
                 }.ifBlank { "none" }
         )
 
+        if (chosen.constructor == null && !chosen.queryType.isInterface) {
+            error(
+                "GMMP Cursor query type has no safe factory: " +
+                    chosen.queryType.name +
+                    " | constructors=" +
+                    chosen.queryType.declaredConstructors.joinToString(",") {
+                        it.parameterTypes.joinToString(
+                            prefix = "(", postfix = ")"
+                        ) { p -> p.name }
+                    }
+            )
+        }
+
         databaseField.isAccessible = true
         chosen.method.isAccessible = true
         chosen.constructor?.isAccessible = true
 
-        return Binding(
+        val resolved = Binding(
             database = database,
             databaseField = databaseField,
             queryMethod = chosen.method,
             queryType = chosen.queryType,
             queryConstructor = chosen.constructor
         )
+        synchronized(bindingCache) {
+            bindingCache[autoDjInstance] = resolved
+        }
+        return resolved
     }
+
+    private fun isCursorType(type: Class<*>): Boolean =
+        Cursor::class.java.isAssignableFrom(type) ||
+            type.name == "android.database.Cursor"
 
     private fun resolveQueryConstructor(
         queryType: Class<*>

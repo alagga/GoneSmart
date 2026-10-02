@@ -33,12 +33,15 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r13"
+            "gmmp421-r14"
 
+        // r14 retires the deep Playlist/Smart-list inventories: their
+        // 4.2.1 adapter/holder/model ownership is device-proven and encoded
+        // in semantic resolvers/tests. Keep only still-open boundaries here;
+        // the normal runtime surface hooks below remain installed regardless
+        // of this diagnostic allow-list.
         private val COMPAT_RELEVANT_RECYCLER_IDS =
             setOf(
-                "playlistListRecyclerView",
-                "smartListRecyclerView",
                 "smartRuleListRecyclerView",
                 "queueRecyclerView"
             )
@@ -1356,6 +1359,16 @@ class GoneSmartModule : XposedModule() {
                 fs.count { it.type == String::class.java } == 1
         }
 
+        fun cursorBoundaries(type: Class<*>): List<java.lang.reflect.Method> =
+            GmmpReflectionPolicy.callableMethods(type).filter {
+                it.parameterCount == 1 &&
+                    (
+                        android.database.Cursor::class.java
+                            .isAssignableFrom(it.returnType) ||
+                            it.returnType.name == "android.database.Cursor"
+                    )
+            }
+
         val checks = linkedMapOf<String, String>()
 
         checks["autoDjRefill"] = result {
@@ -1379,13 +1392,19 @@ class GoneSmartModule : XposedModule() {
                 "READY_LEGACY"
             } else {
                 val db = loader.loadClass("f94")
-                val cursorMethods =
-                    GmmpReflectionPolicy.concreteMethods(db).filter {
-                        it.parameterCount == 1 &&
-                            android.database.Cursor::class.java
-                                .isAssignableFrom(it.returnType)
-                    }
+                val cursorMethods = cursorBoundaries(db)
                 require(cursorMethods.size == 1)
+                val query = cursorMethods.single().parameterTypes.single()
+                require(
+                    query.isInterface ||
+                        query.declaredConstructors.any {
+                            val p = it.parameterTypes
+                            p.size == 2 &&
+                                p[0] == String::class.java &&
+                                p[1].isArray &&
+                                !p[1].componentType.isPrimitive
+                        }
+                )
                 "READY_CURSOR_RUNTIME_POINTER"
             }
         }
@@ -1408,31 +1427,21 @@ class GoneSmartModule : XposedModule() {
                 "READY_STRUCTURAL"
             } else {
                 val db = loader.loadClass("f94")
-                val cursorMethods = GmmpReflectionPolicy.concreteMethods(db)
-                    .filter {
-                        it.parameterCount == 1 &&
-                            android.database.Cursor::class.java
-                                .isAssignableFrom(it.returnType)
-                    }
+                val cursorMethods = cursorBoundaries(db)
                 require(cursorMethods.size == 1)
                 val query = cursorMethods.single().parameterTypes.single()
                 val queryCtor = query.declaredConstructors.any {
                     val p = it.parameterTypes
                     p.size == 2 &&
                         p[0] == String::class.java &&
-                        p[1].isArray
+                        p[1].isArray &&
+                        !p[1].componentType.isPrimitive
                 }
-                val queryInterface = query.isInterface &&
-                    query.methods.any {
-                        it.parameterCount == 0 &&
-                            it.returnType == String::class.java
-                    } &&
-                    query.methods.any {
-                        it.parameterCount == 1 &&
-                            it.returnType == java.lang.Void.TYPE &&
-                            !it.parameterTypes[0].isPrimitive
-                    }
-                require(queryCtor || queryInterface)
+                // The unique verified f94 Cursor boundary is the ownership
+                // proof. R8 may rename/default/bridge the SupportSQLiteQuery
+                // contract; the runtime proxy itself still fails closed if
+                // GMMP invokes an unsupported interface operation.
+                require(queryCtor || query.isInterface)
                 "READY_CURSOR_STRUCTURAL"
             }
         }

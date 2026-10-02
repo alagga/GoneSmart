@@ -128,20 +128,29 @@ internal class PlaylistMultiSelectController {
      * Resolve it once when a standalone Smart selection starts so the first
      * long-pressed row cannot differ from rows selected afterwards.
      */
-    fun standaloneSelectionOverlayColor(view: View): Int {
+    fun standaloneSelectionAccent(view: View): Int {
         val contextBar = (findContextBar(view.rootView)?.background
             as? ColorDrawable)?.color?.takeIf {
-                Color.alpha(it) >= 200
+                Color.alpha(it) >= 200 && it != Color.TRANSPARENT
             }
-        val nativeAccentAttr = view.resources.getIdentifier(
+        val primaryAttr = view.resources.getIdentifier(
+            "colorPrimary", "attr", view.context.packageName
+        )
+        val accentAttr = view.resources.getIdentifier(
             "colorAccent", "attr", view.context.packageName
         )
-        val accent = NativeGmmpAccent.lastObserved()
-            ?.takeIf { Color.alpha(it) >= 200 }
-            ?: contextBar
-            ?: nativeAccentAttr.takeIf { it != 0 }
+        return contextBar
+            ?: NativeGmmpAccent.currentPrimary(view)
+            ?: primaryAttr.takeIf { it != 0 }
+                ?.let { themeColor(view, it) }
+            ?: NativeGmmpAccent.lastObserved()
+            ?: accentAttr.takeIf { it != 0 }
                 ?.let { themeColor(view, it) }
             ?: 0xFF36A8BE.toInt()
+    }
+
+    fun standaloneSelectionOverlayColor(view: View): Int {
+        val accent = standaloneSelectionAccent(view)
         return Color.argb(
             128,
             Color.red(accent),
@@ -1633,10 +1642,11 @@ internal class PlaylistMultiSelectController {
         view: View
     ): Int =
         nativeFabTint(session)
-            ?: session.liveAccent
-            ?: NativeGmmpAccent.lastObserved()
             ?: session.liveFabAccent
             ?: session.livePrimary
+            ?: NativeGmmpAccent.currentPrimary(view)
+            ?: session.liveAccent
+            ?: NativeGmmpAccent.lastObserved()
             ?: gmmpAccent(session, view)
 
     private fun gmmpAccent(session: Session, view: View): Int {

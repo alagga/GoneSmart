@@ -276,6 +276,8 @@ internal class SmartPlaylistFolderController(
         var nativeSignature: List<String> = emptyList(),
         var nativeSubmitted: Boolean = false,
         var projectionPrepared: Boolean = false,
+        var projectionRepairPending: Boolean = false,
+        var lastProjectionGuardAt: Long = 0L,
         var renderedLocationKey: String? = null,
         var renderedHeaderSignature: String? = null,
         var moveSources: List<String>? = null,
@@ -1422,6 +1424,33 @@ internal class SmartPlaylistFolderController(
                                     browser.projectionFailOpenAllowed
                             )
                         }
+                    } else if (browser.nativeContentReady &&
+                        browser.projectionPrepared &&
+                        isFrontFragmentView(list)
+                    ) {
+                        // GMMP may submit its physical Smart root again after
+                        // GoneSmart has already committed a nested/virtual
+                        // projection. Repair only an observed item-count drift
+                        // and throttle the check; no reload occurs per frame.
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (!browser.projectionRepairPending &&
+                            now - browser.lastProjectionGuardAt >= 350L
+                        ) {
+                            browser.lastProjectionGuardAt = now
+                            val actual = nativeAdapterItemCount(browser)
+                            val expected = browser.nativeOrder.size
+                            if (actual != null && actual != expected) {
+                                browser.projectionRepairPending = true
+                                browser.nativeSubmitted = false
+                                Log.i(
+                                    TAG,
+                                    "SMART FOLDERS PROJECTION DRIFT | expected=" +
+                                        expected + " | actual=" + actual +
+                                        " | repairing current folder"
+                                )
+                                refresh(browser)
+                            }
+                        }
                     }
                     // Normal scrolling stays driven only by native consumed
                     // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
@@ -1660,6 +1689,7 @@ internal class SmartPlaylistFolderController(
                 browser.style = sampleNativeStyle(browser.list) ?: browser.style
                 render(browser, snapshot, models.size)
                 browser.projectionPrepared = true
+                browser.projectionRepairPending = false
                 settleFolderScrollAfterRefresh(browser, generation)
                 positionOverlay(browser)
             }
@@ -2318,26 +2348,27 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun subscribeSmartSelectionAccent(browser: Browser) {
-        browser.liveSelectionAccent = NativeGmmpAccent.lastObserved()
+        browser.liveSelectionAccent =
+            NativeGmmpAccent.currentPrimary(browser.list)
         browser.selectionAccentSubscription?.dispose()
-        browser.selectionAccentSubscription = NativeGmmpAccent.observe(
+        browser.selectionAccentSubscription = NativeGmmpAccent.observePrimary(
             browser.list,
             onColor = { color ->
-                if (browsers[browser.list] !== browser) return@observe
-                if (browser.liveSelectionAccent == color) return@observe
+                if (browsers[browser.list] !== browser) return@observePrimary
+                if (browser.liveSelectionAccent == color) return@observePrimary
                 browser.liveSelectionAccent = color
                 browser.selectionOverlayColor = null
                 syncVisibleSmartRowInteractions(browser)
                 Log.i(
                     TAG,
-                    "SMART MULTI STYLE | !mainColorAccent=#" +
+                    "SMART MULTI STYLE | native primary=#" +
                         Integer.toHexString(color)
                 )
             },
             onError = {
                 Log.w(
                     TAG,
-                    "SMART MULTI STYLE | live accent unavailable",
+                    "SMART MULTI STYLE | live primary unavailable",
                     it
                 )
             }
@@ -2345,14 +2376,14 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun smartSelectionOverlayColor(browser: Browser): Int {
-        val accent = browser.liveSelectionAccent
-            ?: NativeGmmpAccent.lastObserved()
-            ?: multiSelect.nativeContextBarColor(browser.list)
-            ?: NativeGmmpAccent.current(browser.list)
+        val accent = multiSelect.nativeContextBarColor(browser.list)
+            ?: browser.liveSelectionAccent
+            ?: NativeGmmpAccent.currentPrimary(browser.list)
+            ?: multiSelect.standaloneSelectionAccent(browser.list)
             ?: browser.style?.accentColor
             ?: resolveColor(
                 browser.list,
-                android.R.attr.colorAccent,
+                android.R.attr.colorPrimary,
                 0xFFA39AFF.toInt()
             )
         return Color.argb(

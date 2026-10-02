@@ -28,6 +28,17 @@ class NativeMainPlaylistSelectionMirrorTest {
         assertFalse(mirror.onNativeAction("c", false))
     }
 
+    @Test fun visualPreviewDoesNotCommitBeforeNativeAction() {
+        val mirror = NativeMainPlaylistSelectionMirror()
+        assertEquals(true, mirror.previewSelected("a", true))
+        assertFalse(mirror.isSelecting)
+
+        mirror.onNativeAction("a", true)
+        assertEquals(false, mirror.previewSelected("a", false))
+        assertTrue(mirror.isSelected("a"))
+        assertEquals(1, mirror.selectedCount)
+    }
+
     @Test fun theSameNameInDifferentFoldersIsNotTheSamePlaylist() {
         val mirror = NativeMainPlaylistSelectionMirror()
         assertTrue(mirror.onNativeAction("/root/House/Set.m3u", true))
