@@ -571,3 +571,36 @@ The r24 host pass graduates the Smart-folder detail→Back fix and leaves only o
 CI adds a fake generated Room adapter whose erased `bind(Binder,Object)` performs the same runtime cast expected from Room-generated bridges. The test proves the model class can be recovered without SQL execution and that conflicting queue adapters fail closed.
 
 The next real-device pass is intentionally only two actions: run Track Auto-DJ once from a Queue row, then Queue Flip once. Do not repeat Smart DJ, Smart folders, Playlist folders, Add picker, selection colors, creation or navigation tests unless a later commit actually touches those boundaries.
+
+
+## GMMP 4.2.1 r26 — generated adapter bridge discovery
+
+The r25/r26 host evidence keeps the already-graduated Queue Cursor/current mapping intact and narrows the remaining shared Track Auto-DJ / Queue Flip failure to the generated writer-entity type.
+
+- The runtime Queue DAO is `d85`. Its direct generated adapter fields are `d85.v -> d85$a`, `d85.w -> d85$c` and `d85.x -> d85$d`.
+- Each observed direct adapter exposes a local SQL-string boundary `M():String` plus an erased `G(yb4,Object):void` binder. The concrete `yb4` statement contract means the discovery path must not assume the first binder parameter remains a Java interface after R8.
+- r26 therefore includes compiler synthetic/bridge methods **only inside this already-owned generated adapter boundary**. For an interface statement parameter it uses a no-op proxy; for a concrete statement type it passes `null` and a deliberately wrong local marker object. The Room bridge must cast the entity before field binding, allowing a `ClassCastException` target to identify the model without constructing or executing a SQLite statement.
+- Existing queue-specific API references to `ww3` remain witnesses only. `ww3(pw3,String,Object)` is not promoted to writer ownership.
+- If the entity class is recovered, every existing safety gate still applies: exact live Cursor row count, one-to-one `queue_id + song_id + queue_position` correlation, original generated DAO update/delete writers, post-write Cursor verification and rollback.
+
+No broad r26 compatibility inventory is added. Existing failure-only `QUEUE MUTATION SHAPE`, `QUEUE REACTIVE SHAPE` and `QUEUE ENTITY FACTORY` are retained only until the generated entity mapping is device-verified.
+
+
+## GMMP 4.2.1 r27 — owned Room binder and generic-superclass precedence
+
+The 2026-10-03 r26 device log reaches the same shared boundary from both affected actions: Queue Flip obtains the read-only four-row Queue snapshot, and Track Auto-DJ first reaches `MIX PLAY VERIFIED` for the selected native queue entry. Both then fail in `GmmpQueueMutationBridge.resolve`; no `QUEUE ENTITY TYPE` or `QUEUE MUTATION MAPPING` success marker is emitted. Playlist / Smart-Playlist `Play Flipped` was not exercised in that submitted log, so it is not conflated with this Queue DAO failure.
+
+Two false-ambiguity paths were found in GoneSmart's r26 resolver without adding another device probe:
+
+1. `generatedAdapterMethods` intentionally walks the adapter hierarchy to retain synthetic Room bridges, but the old resolver then required **all** erased `bind(statement,Object)` methods across that hierarchy to be unique. A directly owned generated adapter can legitimately inherit unrelated binder helpers. r27 first requires uniqueness among methods declared by the already-owned adapter itself and consults inherited binders only when no direct candidate exists.
+2. Preserved generic metadata previously merged the generated adapter's generic superclass arguments with every generic interface argument. Room entity ownership is expressed by the adapter superclass contract; unrelated auxiliary interfaces can retain another generic type after R8. r27 therefore accepts a unique usable generic-superclass entity first and consults generic interfaces only when the superclass carries none.
+
+These rules are semantic ownership rules, not GMMP-name mappings: `d85`, `d85$a`, `G` and `yb4` remain observed evidence only. Ambiguous direct binders, ambiguous owned adapters, or conflicting entity classes still fail closed. Discovery remains read-only: no real `yb4` is constructed, no SQL is executed and no queue writer is invoked until the existing correlation gates succeed.
+
+### r27 automated gate and next host pass
+
+`NativeQueueEntityAdapterTypeResolverTest` now covers both false-ambiguity modes: inherited erased-binder noise and unrelated generic-interface noise. The existing conflicting-owned-adapters fixture still fails closed. All earlier queue correlation/reconstruction, Queue Flip and Track Auto-DJ tests remain required.
+
+r27 changes no broad runtime probe, so the compatibility revision marker does not need to advance solely for this resolver hardening. If resolution still fails, the existing failure-only Queue diagnostics remain sufficient for the next refinement. On success, `QUEUE ENTITY TYPE` should precede `QUEUE MUTATION MAPPING`; after both Track Auto-DJ and Queue Flip are device-verified, the broad factory/reactive failure diagnostics should be retired.
+
+The next real-device pass remains one consolidated pass: Track Auto-DJ once, Queue Flip once, and—only because the user also reports it as broken and the supplied r26 log did not exercise it—one representative Playlist or Smart-Playlist `Play Flipped` action in the same run. Do not repeat Smart DJ, Smart folders, normal Playlist folders, creation, Add picker, selection-color or navigation tests unless a touched shared boundary regresses.
