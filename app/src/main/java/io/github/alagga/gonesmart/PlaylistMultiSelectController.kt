@@ -219,12 +219,27 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun materialFabTint(view: View?): Int? {
-        val fab = view as?
-            com.google.android.material.floatingactionbutton.FloatingActionButton
-            ?: return null
-        return fab.backgroundTintList?.let { tint ->
-            tint.getColorForState(fab.drawableState, tint.defaultColor)
-        }?.takeIf(::isUsableSelectionColor)
+        val target = view ?: return null
+
+        // Never cast a GMMP-owned Material view to the module-side Material
+        // class. LSPosed can give host and module separate AndroidX/Material
+        // class loaders. The tint itself is a framework ColorStateList, so
+        // cross the boundary through View/reflection only.
+        val tint = runCatching {
+            target.backgroundTintList
+        }.getOrNull() ?: runCatching {
+            target.javaClass.methods.firstOrNull {
+                it.name == "getBackgroundTintList" &&
+                    it.parameterCount == 0 &&
+                    ColorStateList::class.java.isAssignableFrom(it.returnType)
+            }?.apply { isAccessible = true }
+                ?.invoke(target) as? ColorStateList
+        }.getOrNull() ?: return null
+
+        return tint.getColorForState(
+            target.drawableState,
+            tint.defaultColor
+        ).takeIf(::isUsableSelectionColor)
     }
 
     private fun isUsableSelectionColor(color: Int): Boolean {
@@ -621,8 +636,10 @@ internal class PlaylistMultiSelectController {
             active = Session(list)
             Log.i(TAG, "MULTI PICKER | runtime surface adopted")
         }
-        onListFound(list)
+        // Capture the actually rendered host FAB color before Aesthetic's
+        // static primary/accent attributes can seed stale fallback values.
         onFabFound(fab)
+        onListFound(list)
     }
 
     fun onFabFound(fab: View) {
@@ -632,6 +649,16 @@ internal class PlaylistMultiSelectController {
         if (session.fab === fab) return
 
         session.fab = fab
+        materialFabTint(fab)?.let { nativeColor ->
+            session.liveFabAccent = nativeColor
+            session.resolvedSelectionAccent = nativeColor
+            lastVerifiedNativeFabTint = nativeColor
+            Log.i(
+                TAG,
+                "MULTI PALETTE | native playlistFab=#" +
+                    Integer.toHexString(nativeColor)
+            )
+        }
         Log.i(TAG, "MULTI FAB | attached")
         if (session.nativeTheme != null) {
             observeNativeFabColor(session)
@@ -1551,20 +1578,15 @@ internal class PlaylistMultiSelectController {
             session.barView = bar
             session.originalBarBackground = bar.background
             session.barBackgroundSaved = true
-            // Never let the picker certify/overwrite an already verified
-            // native Playlist selection witness.
-            if (verifiedNativeSelectionAccent() == null) {
-                (bar.background as? ColorDrawable)?.color
-                    ?.takeIf(::isUsableSelectionColor)
-                    ?.let { native ->
-                        session.resolvedSelectionAccent = native
-                        rememberNativeSelectionAccent(native)
-                    }
-            }
+            // This picker ActionMode is GoneSmart-owned. Its first background
+            // can still be GMMP's stale colorAccent (r20: #ff8e0e00), so it
+            // is NOT a native Playlist selection witness and must never be
+            // promoted into the process-wide verified selection cache.
         }
 
-        val accent = verifiedNativeSelectionAccent()
+        val accent = nativeFabTint(session)
             ?: session.resolvedSelectionAccent
+            ?: verifiedNativeSelectionAccent()
             ?: standaloneSelectionAccent(bar)
         session.resolvedSelectionAccent = accent
         if (session.lastBarColor != accent ||
@@ -1759,24 +1781,24 @@ internal class PlaylistMultiSelectController {
     private fun gmmpSelectionAccent(
         session: Session,
         view: View
-    ): Int =
-        session.resolvedSelectionAccent
+    ): Int {
+        nativeFabTint(session)?.let { native ->
+            session.resolvedSelectionAccent = native
+            return native
+        }
+        return session.resolvedSelectionAccent
             ?: verifiedNativeSelectionAccent()
             ?: standaloneSelectionAccent(view).also {
                 session.resolvedSelectionAccent = it
             }
+    }
 
     private fun gmmpAccent(session: Session, view: View): Int {
         // Aesthetic's observable value is the real GMMP accent, even
         // when a new cover updates it while this picker remains open.
+        nativeFabTint(session)?.let { return it }
         session.liveFabAccent?.let { return it }
         session.liveAccent?.let { return it }
-        val fab = session.fab as? com.google.android.material.floatingactionbutton.FloatingActionButton
-        val liveFabColor = fab?.backgroundTintList?.let { tint ->
-            tint.getColorForState(fab.drawableState, tint.defaultColor)
-        }?.takeIf { Color.alpha(it) >= 200 }
-
-        if (liveFabColor != null) return liveFabColor
 
         val resources = view.context.resources
         val packageName = view.context.packageName

@@ -241,6 +241,18 @@ class GmmpQueueReader {
             return markerFromSignals(signals, rows, source)
         }
 
+        // r20 device evidence repeatedly resolves the actual 4.2.1
+        // playback pointer from qr.t -> ur.method:b. Prefer that verified
+        // state host before generic integer correlation; qr.r is the Track
+        // DAO and happened to expose an unrelated integer with the same value.
+        readObjectField(autoDjInstance, "t")?.let { state ->
+            fromHost(
+                state,
+                "field:t->" + state.javaClass.name
+            )?.let { return it }
+        }
+
+        // Earlier 4.2.1 builds exposed the pointer through qr.p/dx3.
         readObjectField(autoDjInstance, "p")?.let { fast ->
             fromHost(fast, "direct-state:" + fast.javaClass.name)
                 ?.let { return it }
@@ -352,11 +364,35 @@ class GmmpQueueReader {
             value is java.util.concurrent.Executor
         ) return false
         val fields = hierarchyFields(value.javaClass)
-        if (fields.any {
-                it.type.name ==
-                    "gonemad.gmmp.data.database.GMDatabase" ||
-                    generateSequence<Class<*>>(it.type) { c -> c.superclass }
-                        .any { c -> c.name == "androidx.room.RoomDatabase" }
+        if (fields.any { field ->
+                val declaredDatabase =
+                    field.type.name ==
+                        "gonemad.gmmp.data.database.GMDatabase" ||
+                        generateSequence<Class<*>>(field.type) { c -> c.superclass }
+                            .any { c -> c.name == "androidx.room.RoomDatabase" }
+                if (declaredDatabase) {
+                    true
+                } else {
+                    // 4.2.1 generated DAOs declare their database field as
+                    // obfuscated f94, so declared-type checks alone let d85
+                    // and kr leak into current-position discovery. Inspect
+                    // only the runtime TYPE of an already-owned field; no
+                    // values/rows are read or mutated here.
+                    val nested = runCatching {
+                        field.isAccessible = true
+                        field.get(value)
+                    }.getOrNull()
+                    nested != null &&
+                        (
+                            nested.javaClass.name ==
+                                "gonemad.gmmp.data.database.GMDatabase_Impl" ||
+                                generateSequence<Class<*>>(
+                                    nested.javaClass
+                                ) { c -> c.superclass }.any { c ->
+                                    c.name == "androidx.room.RoomDatabase"
+                                }
+                        )
+                }
             }
         ) return false
         return true

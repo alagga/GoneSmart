@@ -412,8 +412,15 @@ internal class GmmpQueueMutationBridge(
                     .isAssignableFrom(modelClass) &&
                 it.returnType == java.lang.Void.TYPE
         }
+        val ownedDeleteCandidates = deleteCandidates.filter {
+            it.declaringClass == dao.javaClass
+        }
         val delete = (
-            deleteCandidates.singleOrNull { it.name == "O" }
+            // In 4.2.1 the generated d85 implementation owns one concrete
+            // array writer (P0 in the observed build). Prefer exact DAO
+            // ownership over the old inherited 4.2.0 name "O".
+            ownedDeleteCandidates.singleOrNull()
+                ?: deleteCandidates.singleOrNull { it.name == "O" }
                 ?: deleteCandidates.singleOrNull()
             )?.apply { isAccessible = true }
         if (requireDelete && delete == null) {
@@ -467,38 +474,7 @@ internal class GmmpQueueMutationBridge(
                 }.getOrDefault(false)
             }
 
-        // Preserve the previously verified 4.2.1 fast path whenever dx3
-        // still owns the current queue-position field.
-        objectField(autoDj, "p")?.let { fast ->
-            matchingFields(fast).singleOrNull()?.let {
-                return FieldStatePositionBinding(fast, it)
-            }
-        }
-
-        val hosts = hierarchyFields(autoDj.javaClass)
-            .mapNotNull { ownerField ->
-                ownerField.isAccessible = true
-                val host = runCatching {
-                    ownerField.get(autoDj)
-                }.getOrNull() ?: return@mapNotNull null
-                if (!isStateSignalHost(host)) return@mapNotNull null
-                ownerField.name to host
-            }
-            .distinctBy { (_, host) -> System.identityHashCode(host) }
-
-        val fieldBindings = hosts.mapNotNull { (_, host) ->
-            matchingFields(host).singleOrNull()?.let {
-                FieldStatePositionBinding(host, it)
-            }
-        }
-        if (fieldBindings.size == 1) return fieldBindings.single()
-
-        // r17 showed the live pointer move from dx3.field:o to
-        // ur.method:b after native Play. Accept a method-backed pointer only
-        // when the same host has exactly one current-valued int getter and
-        // exactly one int->void writer. The setter is verified by reading the
-        // getter after every write; any mismatch triggers rollback/fail-close.
-        val methodBindings = hosts.mapNotNull { (_, host) ->
+        fun matchingMethod(host: Any): MethodStatePositionBinding? {
             val methods = GmmpReflectionPolicy.callableMethods(host.javaClass)
                 .filter { !Modifier.isStatic(it.modifiers) }
             val getters = methods.filter {
@@ -523,11 +499,53 @@ internal class GmmpQueueMutationBridge(
                     ) &&
                     it.returnType == java.lang.Void.TYPE
             }
-            val getter = getters.singleOrNull() ?: return@mapNotNull null
-            val setter = setters.singleOrNull() ?: return@mapNotNull null
+            val getter = getters.singleOrNull() ?: return null
+            val setter = setters.singleOrNull() ?: return null
             getter.isAccessible = true
             setter.isAccessible = true
-            MethodStatePositionBinding(host, getter, setter)
+            return MethodStatePositionBinding(host, getter, setter)
+        }
+
+        // r20 device evidence repeatedly proves qr.t -> ur.method:b as the
+        // 4.2.1 current queue-position pointer. Resolve that state host first,
+        // before generic correlation can confuse TrackDao kr.G1 with a queue
+        // position that happens to have the same integer value.
+        objectField(autoDj, "t")?.let { state ->
+            matchingFields(state).singleOrNull()?.let {
+                return FieldStatePositionBinding(state, it)
+            }
+            matchingMethod(state)?.let { return it }
+        }
+
+        // Preserve the earlier 4.2.1 dx3 field path as fallback.
+        objectField(autoDj, "p")?.let { fast ->
+            matchingFields(fast).singleOrNull()?.let {
+                return FieldStatePositionBinding(fast, it)
+            }
+            matchingMethod(fast)?.let { return it }
+        }
+
+        val hosts = hierarchyFields(autoDj.javaClass)
+            .mapNotNull { ownerField ->
+                ownerField.isAccessible = true
+                val host = runCatching {
+                    ownerField.get(autoDj)
+                }.getOrNull() ?: return@mapNotNull null
+                if (!isStateSignalHost(host)) return@mapNotNull null
+                ownerField.name to host
+            }
+            .distinctBy { (_, host) -> System.identityHashCode(host) }
+
+        val fieldBindings = hosts.mapNotNull { (_, host) ->
+            matchingFields(host).singleOrNull()?.let {
+                FieldStatePositionBinding(host, it)
+            }
+        }
+        if (fieldBindings.size == 1) return fieldBindings.single()
+
+        // Generic fallback only after the proven t/p state hosts failed.
+        val methodBindings = hosts.mapNotNull { (_, host) ->
+            matchingMethod(host)
         }
         if (methodBindings.size == 1) return methodBindings.single()
 
@@ -557,10 +575,30 @@ internal class GmmpQueueMutationBridge(
             value is java.util.concurrent.Executor
         ) return false
         val fields = hierarchyFields(value.javaClass)
-        return fields.none {
-            it.type.name == "gonemad.gmmp.data.database.GMDatabase" ||
-                generateSequence<Class<*>>(it.type) { c -> c.superclass }
-                    .any { c -> c.name == "androidx.room.RoomDatabase" }
+        return fields.none { field ->
+            val declaredDatabase =
+                field.type.name ==
+                    "gonemad.gmmp.data.database.GMDatabase" ||
+                    generateSequence<Class<*>>(field.type) { c -> c.superclass }
+                        .any { c -> c.name == "androidx.room.RoomDatabase" }
+            if (declaredDatabase) {
+                true
+            } else {
+                val nested = runCatching {
+                    field.isAccessible = true
+                    field.get(value)
+                }.getOrNull()
+                nested != null &&
+                    (
+                        nested.javaClass.name ==
+                            "gonemad.gmmp.data.database.GMDatabase_Impl" ||
+                            generateSequence<Class<*>>(
+                                nested.javaClass
+                            ) { c -> c.superclass }.any { c ->
+                                c.name == "androidx.room.RoomDatabase"
+                            }
+                    )
+            }
         }
     }
 

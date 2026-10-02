@@ -171,6 +171,10 @@ internal object NativeReactiveListReader {
         val failure = AtomicReference<Throwable?>(null)
         val latch = CountDownLatch(1)
         val cancellation = AtomicReference<Any?>(null)
+        val streamedRows = java.util.Collections.synchronizedList(
+            arrayListOf<Any>()
+        )
+        val streamedRowClass = AtomicReference<Class<*>?>(null)
 
         val callback = Proxy.newProxyInstance(
             callbackType.classLoader ?: source.javaClass.classLoader,
@@ -198,9 +202,8 @@ internal object NativeReactiveListReader {
                     null -> Unit
                     else -> {
                         // Reactive Streams Subscriber requires request(n)
-                        // before onNext. Detect only the exact semantic shape
-                        // (one long argument, void return) on the callback's
-                        // onSubscribe object and request an unbounded snapshot.
+                        // before onNext. A subscription/control object must
+                        // never be mistaken for a queue entity.
                         val requesters =
                             GmmpReflectionPolicy.callableMethods(value.javaClass)
                                 .filter {
@@ -216,8 +219,43 @@ internal object NativeReactiveListReader {
                                     isAccessible = true
                                 }.invoke(value, Long.MAX_VALUE)
                             }
+                            cancellation.compareAndSet(null, value)
+                            return@newProxyInstance primitiveDefault(
+                                invoked.returnType
+                            )
                         }
-                        cancellation.compareAndSet(null, value)
+
+                        // GMMP 4.2.1 d85.W1()/X1() can expose the queue as a
+                        // stream of native entity rows rather than one
+                        // List<row>. Accumulate only homogeneous objects with
+                        // a queue-entity-like numeric shape. The caller still
+                        // performs the authoritative queue_id/song_id/
+                        // queue_position correlation against the read-only
+                        // Cursor before ANY writer is eligible.
+                        if (looksLikeQueueEntity(value)) {
+                            val expectedClass = streamedRowClass.get()
+                            if (expectedClass == null) {
+                                streamedRowClass.compareAndSet(
+                                    null, value.javaClass
+                                )
+                            }
+                            if (streamedRowClass.get() == value.javaClass) {
+                                synchronized(streamedRows) {
+                                    if (streamedRows.none { it === value }) {
+                                        streamedRows.add(value)
+                                    }
+                                    if (streamedRows.size == expectedRows) {
+                                        result.compareAndSet(
+                                            null,
+                                            streamedRows.toList()
+                                        )
+                                        latch.countDown()
+                                    }
+                                }
+                            }
+                        } else {
+                            cancellation.compareAndSet(null, value)
+                        }
                     }
                 }
             }
@@ -242,6 +280,32 @@ internal object NativeReactiveListReader {
 
         cancelIfUnambiguous(cancellation.get())
         return result.get()
+    }
+
+    private fun looksLikeQueueEntity(value: Any): Boolean {
+        val name = value.javaClass.name
+        if (name.startsWith("java.") ||
+            name.startsWith("android.") ||
+            name.startsWith("kotlin.")
+        ) return false
+
+        val numericFields =
+            generateSequence<Class<*>>(value.javaClass) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !Modifier.isStatic(it.modifiers) &&
+                        !it.isSynthetic &&
+                        (
+                            it.type == Integer.TYPE ||
+                                it.type == Integer::class.java ||
+                                it.type == java.lang.Long.TYPE ||
+                                it.type == java.lang.Long::class.java
+                        )
+                }
+                .take(6)
+                .count()
+        // queue_id + song_id + queue_position are the minimum identity shape.
+        return numericFields >= 3
     }
 
     private fun cancelIfUnambiguous(handle: Any?) {

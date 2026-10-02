@@ -461,3 +461,28 @@ The r19 device log confirms that the shared read-only Room/queue foundation is n
 ### r20 automated gate
 
 CI must cover the erased Object-returning blocking carrier path and the Track Auto-DJ same-current Queue-row guard, in addition to the existing reactive callback, playback-identity, selection lifecycle and Room contracts. The next device check stays consolidated to only the still host-dependent behaviors: Playlist Back visual cleanup, Add-picker selection/bar colors, Track Auto-DJ and Queue Flip.
+
+
+## GMMP 4.2.1 r21 — restore accepted behavior, remap only moved boundaries
+
+The r20 device log disproves two assumptions and narrows the remaining Queue boundary again.
+
+- **4.2.0 is the behavioral oracle for accepted flows.** When a 4.2.1 regression affects a flow that worked on the accepted 4.2.0 branch, first diff the last accepted implementation and preserve its lifecycle/state-machine semantics. Compatibility work should replace the moved native boundary, not redesign the behavior around polling or theme guesses.
+- **Playlist ActionMode close:** r20 selection begins normally and native row actions are handled, but the mirror is not cleared until the later `visible native ActionMode ended` poll. The toolbar close/up click can leave `action_mode_bar` visible during its exit animation, so 0/32/96 ms visibility checks do not reproduce the old `onDestroyActionMode` timing. r21 uses AppCompat's stable `action_mode_close_button` at the already-installed `View.performClick` boundary. GMMP's original click runs first; GoneSmart then clears only its synthetic overlay/mirror immediately. The old exact 4.2.0 callback remains a fast path.
+- **Picker palette:** the same process again reports `colorPrimary=#ff000000` and `colorAccent=#ff8e0e00` before the native `playlistFab` is attached. The extension-owned picker ActionMode must not certify its initial background as native selection chrome. r21 captures the actually rendered `playlistFab` tint first and reads it through framework `View.getBackgroundTintList()/ColorStateList` (reflection fallback), avoiding host/module Material class casts. This live native control color wins over stale Aesthetic fallbacks for picker row/bar tint and teardown.
+- **Queue read/current is already graduated:** the latest log repeatedly resolves Queue snapshots through the read-only Cursor and reports `currentResolver=field:t->ur.method:b`. A later generic scan can also find an unrelated TrackDao integer `kr.G1` with the same value; that coincidence is not playback state. r21 resolves `qr.t` first and excludes objects that own the live Room database from generic state-signal discovery.
+- **Queue native entity acquisition is the shared Auto-DJ/Flip blocker:** `d85.W1():xp4` and `d85.X1():jm1` still yield no whole List through callback/blocking terminals. Their carrier signatures are now known and no broader probe is needed. r21 extends the read-only carrier bridge to accept an item stream only when every emitted candidate is the same runtime class with at least the numeric identity shape required for `queue_id/song_id/queue_position`, and exactly the known Cursor row count is collected. The mutation bridge then performs its existing exact Cursor correlation before any DAO writer can run.
+- **Generated DAO writers:** when an array delete candidate is required, prefer the unique concrete method declared by the verified `d85` instance over an inherited 4.2.0 obfuscated name. Update/delete still run only on correlated native entities, and Queue Flip retains post-write Cursor verification + rollback. Direct SQL mutation remains forbidden.
+
+### r21 probe/test lifecycle
+
+| Boundary | r21 status | Evidence / automated gate | Next diagnostic |
+| --- | --- | --- | --- |
+| Room SQL / library / Queue Cursor read | graduated | `f94.q(p94)` works; 18,743-track library and repeated Queue snapshots succeed | none unless direct regression |
+| Queue Current read | graduated mapping | repeated `qr.t -> ur.method:b`; DAO false-candidate explicitly excluded | failure-only state-shape |
+| Playlist toolbar ActionMode close | semantic compatibility fix | JVM resource-policy test + old 4.2.0 lifecycle contract | no broad hook inventory |
+| Add-picker color source | host-only integration | actual `playlistFab` ColorStateList captured before theme fallback | one concise native-FAB color log |
+| Queue native entity reader | active narrow boundary | JVM item-stream + whole-List/blocking carrier tests; final Cursor correlation remains mandatory | existing bounded `QUEUE REACTIVE SHAPE` only if unresolved |
+| Track Auto-DJ / Queue Flip write path | downstream of entity reader | same native entity/update/delete bridge, verified/rolled back by Cursor | only the first downstream unique failure |
+
+Do not request separate probe builds for these items. CI must pass the full unit suite, debug APK and unsigned release smoke build first. The next real-device pass is one consolidated four-boundary check: Playlist contextual close, Add-picker selection/Back colors, Track Auto-DJ, Queue Flip.

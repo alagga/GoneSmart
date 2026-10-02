@@ -74,6 +74,45 @@ class NativeReactiveListReaderTest {
         assertTrue(result?.boundary?.contains("blocking-object") == true)
     }
 
+    private data class QueueRow(
+        val queueId: Long,
+        val songId: Long,
+        val position: Int
+    )
+
+    private class ItemStreamSource(
+        private val rows: List<QueueRow>
+    ) {
+        val disposable = Disposable()
+
+        fun subscribe(receiver: Receiver): Disposable {
+            rows.forEach(receiver::accept)
+            return disposable
+        }
+    }
+
+    @Test fun aggregatesHomogeneousQueueEntityStream() {
+        val source = ItemStreamSource(
+            listOf(
+                QueueRow(1L, 11L, 1),
+                QueueRow(2L, 22L, 2),
+                QueueRow(3L, 33L, 3)
+            )
+        )
+        val result = NativeReactiveListReader.read(
+            source = source,
+            expectedRows = 3,
+            timeoutMs = 100
+        )
+
+        assertEquals(3, result?.rows?.size)
+        assertEquals(
+            listOf(1L, 2L, 3L),
+            result?.rows?.map { (it as QueueRow).queueId }
+        )
+        assertTrue(source.disposable.disposed)
+    }
+
     @Test fun directListStillWorksWithoutReactiveReflection() {
         val result = NativeReactiveListReader.read(
             source = listOf(Any(), Any()),

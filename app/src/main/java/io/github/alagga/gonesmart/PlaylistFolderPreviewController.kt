@@ -1958,18 +1958,40 @@ internal class PlaylistFolderPreviewController(
         val browser = currentBrowser(picker = false) ?: return
         if (!browser.mainSelection.isSelecting) return
 
+        // Restore the accepted 4.2.0 lifecycle contract at a semantic UI
+        // boundary. AppCompat's close/up control keeps this stable resource
+        // id even when GMMP's yn3/n3 callback class is R8-remapped. The
+        // performClick hook invokes us only AFTER GMMP handled the click, so
+        // clearing here mirrors the old onDestroyActionMode-after-original
+        // behavior without consuming or replacing the native close action.
         var node: View? = view
         var insideActionMode = false
+        var closeControl = false
         repeat(12) {
             val current = node ?: return@repeat
-            if (resourceName(current) == "action_mode_bar") {
+            val name = resourceName(current)
+            if (NativeActionModeClosePolicy.isCloseResource(name)) {
+                closeControl = true
+            }
+            if (NativeActionModeClosePolicy.isContextBarResource(name)) {
                 insideActionMode = true
-                return@repeat
             }
             node = current.parent as? View
         }
+        if (closeControl) {
+            activeNativePlaylistMode = null
+            clearMainSelectionPresentation(browser)
+            Log.i(
+                TAG,
+                "FOLDER MAIN SELECT | native close click completed; cleared"
+            )
+            return
+        }
         if (!insideActionMode) return
 
+        // Other ActionMode actions can also finish native selection. Keep a
+        // bounded postcondition check for those actions, but do not use it as
+        // the primary Back/close lifecycle anymore.
         val root = view.rootView
         val checks = longArrayOf(0L, 32L, 96L)
         checks.forEach { delay ->
