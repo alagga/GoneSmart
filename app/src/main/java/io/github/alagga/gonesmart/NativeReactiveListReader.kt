@@ -39,6 +39,15 @@ internal object NativeReactiveListReader {
             return Result(it, "direct")
         }
 
+        // Room/Rx 4.2.1 can expose a generated DAO read as a Single/Maybe/
+        // Observable-like carrier whose terminal value method erases T to
+        // Object. Invoking a verified read carrier's no-arg Object-returning
+        // terminal is still read-only; accept it only when the runtime result
+        // is exactly a List with the already-known Cursor row count.
+        blockingList(source, expectedRows, timeoutMs)?.let { (rows, boundary) ->
+            return Result(rows, boundary)
+        }
+
         val methods = GmmpReflectionPolicy.callableMethods(source.javaClass)
             .asSequence()
             .filter { !Modifier.isStatic(it.modifiers) }
@@ -66,6 +75,53 @@ internal object NativeReactiveListReader {
                         "(" + method.parameterTypes.single().name + ")"
                 )
             }
+        }
+        return null
+    }
+
+    private fun blockingList(
+        source: Any,
+        expectedRows: Int,
+        timeoutMs: Long
+    ): Pair<List<Any>, String>? {
+        val methods = GmmpReflectionPolicy.callableMethods(source.javaClass)
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 0 &&
+                    it.returnType == Any::class.java &&
+                    it.declaringClass != Any::class.java &&
+                    it.name != "toString" &&
+                    it.name != "clone"
+            }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" +
+                    it.returnType.name
+            }
+            .take(12)
+
+        for (method in methods) {
+            val future = executor.submit<Any?> {
+                method.isAccessible = true
+                method.invoke(source)
+            }
+            val returned = runCatching {
+                future.get(
+                    timeoutMs.coerceAtMost(650L).coerceAtLeast(50L),
+                    TimeUnit.MILLISECONDS
+                )
+            }.getOrElse {
+                future.cancel(true)
+                null
+            }
+            val rows = (returned as? List<*>)
+                ?.filterNotNull()
+                ?.map { it }
+                ?.takeIf { it.size == expectedRows }
+                ?: continue
+            return rows to (
+                source.javaClass.name + "." + method.name +
+                    "():blocking-object"
+                )
         }
         return null
     }

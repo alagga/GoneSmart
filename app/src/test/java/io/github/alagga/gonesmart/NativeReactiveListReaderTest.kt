@@ -56,6 +56,24 @@ class NativeReactiveListReaderTest {
         )
     }
 
+    private class BlockingCarrier(
+        private val rows: List<Any>
+    ) {
+        fun value(): Any = rows
+        fun sourceAgain(): BlockingCarrier = this
+    }
+
+    @Test fun readsErasedObjectBlockingTerminal() {
+        val result = NativeReactiveListReader.read(
+            source = BlockingCarrier(listOf(Any(), Any(), Any())),
+            expectedRows = 3,
+            timeoutMs = 100
+        )
+
+        assertEquals(3, result?.rows?.size)
+        assertTrue(result?.boundary?.contains("blocking-object") == true)
+    }
+
     @Test fun directListStillWorksWithoutReactiveReflection() {
         val result = NativeReactiveListReader.read(
             source = listOf(Any(), Any()),

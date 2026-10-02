@@ -8,6 +8,23 @@ package io.github.alagga.gonesmart
  * later disappear and prove that native selection ended.
  */
 internal object NativeSelectionChromePolicy {
+    fun chooseSelectionColor(
+        verifiedNativeSelection: Int?,
+        nativeBar: Int?,
+        nativeHighlight: Int?,
+        controlHighlight: Int?,
+        nativeFab: Int?,
+        observedAccent: Int?,
+        fallback: Int
+    ): Int =
+        verifiedNativeSelection
+            ?: nativeBar
+            ?: nativeHighlight
+            ?: controlHighlight
+            ?: nativeFab
+            ?: observedAccent
+            ?: fallback
+
     fun shouldClear(
         selectionActive: Boolean,
         visibleChromeSeen: Boolean,

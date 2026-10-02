@@ -73,6 +73,7 @@ internal class TrackMixController(
         val createdAt: Long
     ) {
         @Volatile var nativePlaySignal = false
+        @Volatile var nativePlayAccepted = false
         @Volatile var refillObserved = false
         @Volatile var stage = "WAIT_PLAY"
         @Volatile var nativeSource = ""
@@ -336,6 +337,7 @@ internal class TrackMixController(
             return
         }
 
+        request.nativePlayAccepted = true
         Log.i(TAG, "MIX START | menu=$source | nativePlay=dispatched")
         work.execute { runTrackMix(request) }
     }
@@ -692,7 +694,6 @@ internal class TrackMixController(
             }
 
             val nativeReady = request.nativePlaySignal || changed
-            if (!nativeReady) continue
 
             if (TrackMixPlaybackIdentityPolicy.sameCurrent(
                     stableIdentity,
@@ -702,17 +703,40 @@ internal class TrackMixController(
                 val age = SystemClock.elapsedRealtime() - stableAt
                 val actionAge =
                     SystemClock.elapsedRealtime() - request.createdAt
-                // GMMP 4.2.1 can keep asynchronously reshaping the rest of
-                // the queue after the selected native row is already playing.
-                // Full Snapshot equality therefore never settles. The exact
-                // current queue-entry identity (or track ID on the legacy
-                // path) is the playback postcondition.
-                if (age >= 350 && (
-                        changed ||
-                            request.nativePlaySignal ||
-                            actionAge > 4_000L
-                        )
-                ) return stableSnapshot ?: current
+
+                if (nativeReady && age >= 350) {
+                    return stableSnapshot ?: current
+                }
+
+                // Queue-context Play on the ALREADY current row is a valid
+                // Track Auto-DJ seed operation. In that case the native Play
+                // handler restarts/continues the same track, so neither track
+                // ID nor queue-entry ID can change. r19 Logcat proves GMMP
+                // accepted Play and restarted decoding/scrobbling while our
+                // old identity-change gate waited until timeout.
+                //
+                // Restrict this fallback to GMMP's queue context, require the
+                // original Play handler to have returned handled, and give a
+                // non-current target 1.5 s to publish its normal identity
+                // change first. We still isolate the verified CURRENT Cursor
+                // entry, never a menu-model guess.
+                if (TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                        source = request.source,
+                        nativePlayAccepted = request.nativePlayAccepted,
+                        before = before,
+                        current = identity,
+                        stableMs = age,
+                        actionAgeMs = actionAge
+                    )
+                ) {
+                    Log.i(
+                        TAG,
+                        "MIX PLAY VERIFIED | source=current-queue-replay" +
+                            " | entry=" + (identity.queueEntryId ?: -1L) +
+                            " | track=" + identity.trackId
+                    )
+                    return stableSnapshot ?: current
+                }
             } else {
                 stableIdentity = identity
                 stableSnapshot = current

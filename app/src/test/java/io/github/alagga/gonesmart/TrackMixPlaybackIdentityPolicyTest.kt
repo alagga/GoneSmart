@@ -63,6 +63,44 @@ class TrackMixPlaybackIdentityPolicyTest {
         )
     }
 
+    @Test fun acceptedQueuePlayMayReuseAlreadyCurrentEntryAfterGuardDelay() {
+        val current = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 100L,
+            trackId = 20L,
+            currentIndex = 50
+        )
+        assertTrue(
+            TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                source = "menu_gm_context_queue",
+                nativePlayAccepted = true,
+                before = current,
+                current = current,
+                stableMs = 400L,
+                actionAgeMs = 1_600L
+            )
+        )
+        assertFalse(
+            TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                source = "menu_gm_context_track",
+                nativePlayAccepted = true,
+                before = current,
+                current = current,
+                stableMs = 400L,
+                actionAgeMs = 1_600L
+            )
+        )
+        assertFalse(
+            TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                source = "menu_gm_context_queue",
+                nativePlayAccepted = true,
+                before = current,
+                current = current,
+                stableMs = 400L,
+                actionAgeMs = 500L
+            )
+        )
+    }
+
     @Test fun legacyPathFallsBackToTrackIdentityWithoutQueueEntryId() {
         val first = TrackMixPlaybackIdentityPolicy.Identity(
             queueEntryId = null,

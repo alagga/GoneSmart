@@ -166,7 +166,7 @@ internal class PlaylistFolderPreviewController(
         var nativeSelectionChromeSeen: Boolean = false,
         val mainRenderedPlaylistRows: MutableMap<String, View> =
             linkedMapOf(),
-        val mainOriginalRowForegrounds: WeakHashMap<View, Drawable?> =
+        val mainSelectionOverlays: WeakHashMap<View, ColorDrawable> =
             WeakHashMap(),
         var liveSelectionAccent: Int? = null,
         var selectionAccentSubscription: NativeGmmpAccent.Subscription? = null,
@@ -3168,9 +3168,12 @@ internal class PlaylistFolderPreviewController(
             positionMoveFab(browser)
         }
         clearPickerOverlayTargets(list)
+        browser.mainSelectionOverlays.forEach { (row, overlay) ->
+            row.overlay.remove(overlay)
+        }
+        browser.mainSelectionOverlays.clear()
         browser.rows.removeAllViews()
         browser.mainRenderedPlaylistRows.clear()
-        browser.mainOriginalRowForegrounds.clear()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
         val renderedRows = arrayListOf<View>()
@@ -3305,7 +3308,6 @@ internal class PlaylistFolderPreviewController(
                 )
             } else if (!isPicker(list)) {
                 browser.mainRenderedPlaylistRows[playlist.path] = item
-                browser.mainOriginalRowForegrounds[item] = item.foreground
                 applyMainSelectionVisual(browser, playlist.path, item)
             }
             browser.rows.addView(item)
@@ -3552,18 +3554,25 @@ internal class PlaylistFolderPreviewController(
         path: String,
         row: View
     ) {
-        if (!browser.mainOriginalRowForegrounds.containsKey(row)) {
-            browser.mainOriginalRowForegrounds[row] = row.foreground
-        }
         val selected = browser.pendingMainSelection[path]
             ?: browser.mainSelection.isSelected(path)
-        row.foreground = if (selected) {
-            ColorDrawable(
-                withAlpha(mainSelectionAccent(browser), 0x80)
-            )
+        if (selected) {
+            val color = withAlpha(mainSelectionAccent(browser), 0x80)
+            var overlay = browser.mainSelectionOverlays[row]
+            if (overlay == null) {
+                overlay = ColorDrawable(color)
+                browser.mainSelectionOverlays[row] = overlay
+                row.overlay.add(overlay)
+            } else if (overlay.color != color) {
+                overlay.color = color
+            }
+            overlay.setBounds(0, 0, row.width, row.height)
         } else {
-            browser.mainOriginalRowForegrounds[row]
+            browser.mainSelectionOverlays.remove(row)?.let {
+                row.overlay.remove(it)
+            }
         }
+        row.invalidate()
     }
 
     private fun syncMainSelectionPath(
@@ -3584,10 +3593,10 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
-     * Back/ActionMode teardown must restore the exact foreground captured
-     * before selection. Recomputing an "unselected" foreground after clearing
-     * state can leave a stale ColorDrawable on rows whose presentation was
-     * updated optimistically while the hidden native RecyclerView scrolled.
+     * Main Playlist selection is drawn in ViewOverlay rather than mutating
+     * the row foreground. Android can retain a replaced foreground in the
+     * render node after ActionMode teardown; removing a dedicated overlay is
+     * identity-based and leaves GMMP's original ripple/foreground untouched.
      */
     private fun clearMainSelectionPresentation(browser: Browser) {
         browser.pendingMainSelection.clear()
@@ -3600,10 +3609,13 @@ internal class PlaylistFolderPreviewController(
                 clearPressedState(row)
                 row.isSelected = false
                 row.isActivated = false
-                row.foreground = browser.mainOriginalRowForegrounds[row]
+                browser.mainSelectionOverlays.remove(row)?.let {
+                    row.overlay.remove(it)
+                }
                 row.jumpDrawablesToCurrentState()
                 row.invalidate()
             }
+            browser.mainSelectionOverlays.clear()
             browser.rows.invalidate()
             browser.overlay.invalidate()
         }

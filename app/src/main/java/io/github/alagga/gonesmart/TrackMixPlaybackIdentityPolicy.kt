@@ -32,6 +32,21 @@ internal object TrackMixPlaybackIdentityPolicy {
             current.queueEntryId != before.queueEntryId
     }
 
+    fun acceptSameCurrentQueuePlay(
+        source: String,
+        nativePlayAccepted: Boolean,
+        before: Identity?,
+        current: Identity,
+        stableMs: Long,
+        actionAgeMs: Long
+    ): Boolean =
+        source == "menu_gm_context_queue" &&
+            nativePlayAccepted &&
+            before != null &&
+            sameCurrent(before, current) &&
+            stableMs >= 350L &&
+            actionAgeMs >= 1_500L
+
     fun sameCurrent(first: Identity?, second: Identity): Boolean {
         if (first == null) return false
         return if (first.queueEntryId != null && second.queueEntryId != null) {

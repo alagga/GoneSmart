@@ -269,18 +269,39 @@ internal class GmmpQueueMutationBridge(
             }.ifEmpty {
                 allReactiveReaders
             }
+        val unresolvedCarrierShapes = arrayListOf<String>()
         reactiveReaders.take(6).forEach { method ->
             val source = runCatching {
                 method.isAccessible = true
                 method.invoke(dao)
             }.getOrNull() ?: return@forEach
-            NativeReactiveListReader.read(
+            val snapshot = NativeReactiveListReader.read(
                 source = source,
                 expectedRows = context.items.size
-            )?.let { snapshot ->
+            )
+            if (snapshot != null) {
                 listCandidates +=
                     (method.declaringClass.name + "." + method.name +
                         "->" + snapshot.boundary) to snapshot.rows
+            } else {
+                val carrierMethods =
+                    GmmpReflectionPolicy.callableMethods(source.javaClass)
+                        .filter {
+                            !Modifier.isStatic(it.modifiers) &&
+                                it.parameterCount <= 1 &&
+                                it.declaringClass != Any::class.java
+                        }
+                        .take(24)
+                        .joinToString(",") {
+                            it.name + "(" +
+                                it.parameterTypes.joinToString(",") { p ->
+                                    p.name
+                                } +
+                                "):" + it.returnType.name
+                        }
+                unresolvedCarrierShapes +=
+                    method.name + "->" + source.javaClass.name +
+                        "{" + carrierMethods + "}"
             }
         }
 
@@ -290,6 +311,13 @@ internal class GmmpQueueMutationBridge(
         val chosenRows = distinctCandidates.singleOrNull()
         if (chosenRows == null) {
             reportMutationShape(dao, methods, context.items.size)
+            if (unresolvedCarrierShapes.isNotEmpty()) {
+                Log.w(
+                    TAG,
+                    "QUEUE REACTIVE SHAPE | " +
+                        unresolvedCarrierShapes.joinToString(";")
+                )
+            }
             error(
                 "GMMP native queue entity reader is not unique: " +
                     distinctCandidates.joinToString(",") { (source, rows) ->

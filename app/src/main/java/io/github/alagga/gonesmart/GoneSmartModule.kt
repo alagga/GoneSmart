@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r19"
+            "gmmp421-r20"
 
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
@@ -1576,12 +1576,26 @@ class GoneSmartModule : XposedModule() {
                             .isAssignableFrom(it.parameterTypes[0]) &&
                         it.returnType == java.lang.Void.TYPE
                 })
-                require(daoMethods.any {
+                val direct = daoMethods.any {
                     it.parameterCount == 0 &&
                         java.util.List::class.java
                             .isAssignableFrom(it.returnType)
-                })
-                "READY_CALLABLE_RUNTIME_DAO"
+                }
+                val reactive = daoMethods.any {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        it.parameterCount == 0 &&
+                        it.returnType != java.lang.Void.TYPE &&
+                        !it.returnType.isPrimitive &&
+                        !java.util.List::class.java
+                            .isAssignableFrom(it.returnType) &&
+                        it.declaringClass == dao
+                }
+                require(direct || reactive)
+                if (direct) {
+                    "READY_CALLABLE_RUNTIME_DAO"
+                } else {
+                    "READY_REACTIVE_RUNTIME_DAO"
+                }
             }
         }
 

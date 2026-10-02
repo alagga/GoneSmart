@@ -80,6 +80,7 @@ internal class PlaylistMultiSelectController {
         var originalBarBackground: Drawable? = null
         var barBackgroundSaved = false
         var lastBarColor: Int? = null
+        var resolvedSelectionAccent: Int? = null
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
@@ -149,7 +150,9 @@ internal class PlaylistMultiSelectController {
      * long-pressed row cannot differ from rows selected afterwards.
      */
     fun standaloneSelectionAccent(view: View): Int {
-        semanticNativeFabTint(view)?.let { return it }
+        lastVerifiedNativeSelectionTint
+            ?.takeIf(::isUsableSelectionColor)
+            ?.let { return it }
 
         val contextBar = (findContextBar(view.rootView)?.background
             as? ColorDrawable)?.color?.takeIf(::isUsableSelectionColor)
@@ -164,15 +167,21 @@ internal class PlaylistMultiSelectController {
             ?.let { themeColor(view, it) }
             ?.takeIf(::isUsableSelectionColor)
 
-        return lastVerifiedNativeSelectionTint
-            ?.takeIf(::isUsableSelectionColor)
-            ?: contextBar
-            ?: nativeHighlight
-            ?: controlHighlight
-            ?: lastVerifiedNativeFabTint
-            ?: NativeGmmpAccent.lastObserved()
-                ?.takeIf(::isUsableSelectionColor)
-            ?: 0xFF36A8BE.toInt()
+        return NativeSelectionChromePolicy.chooseSelectionColor(
+            verifiedNativeSelection =
+                lastVerifiedNativeSelectionTint
+                    ?.takeIf(::isUsableSelectionColor),
+            nativeBar = contextBar,
+            nativeHighlight = nativeHighlight,
+            controlHighlight = controlHighlight,
+            nativeFab =
+                semanticNativeFabTint(view)
+                    ?: lastVerifiedNativeFabTint,
+            observedAccent =
+                NativeGmmpAccent.lastObserved()
+                    ?.takeIf(::isUsableSelectionColor),
+            fallback = 0xFF36A8BE.toInt()
+        )
     }
 
     /**
@@ -1542,11 +1551,18 @@ internal class PlaylistMultiSelectController {
             session.barView = bar
             session.originalBarBackground = bar.background
             session.barBackgroundSaved = true
+            (bar.background as? ColorDrawable)?.color
+                ?.takeIf(::isUsableSelectionColor)
+                ?.let { native ->
+                    session.resolvedSelectionAccent = native
+                    rememberNativeSelectionAccent(native)
+                }
         }
 
-        // Native queue ActionMode uses the live colorPrimary, not a
-        // one-time snapshot of the playlist FAB's background tint.
-        val accent = gmmpPrimary(session, bar)
+        val accent = session.resolvedSelectionAccent
+            ?: verifiedNativeSelectionAccent()
+            ?: standaloneSelectionAccent(bar)
+        session.resolvedSelectionAccent = accent
         if (session.lastBarColor != accent ||
             (bar.background as? ColorDrawable)?.color != accent
         ) {
@@ -1740,13 +1756,11 @@ internal class PlaylistMultiSelectController {
         session: Session,
         view: View
     ): Int =
-        nativeFabTint(session)
-            ?: session.liveFabAccent
-            ?: session.livePrimary
-            ?: NativeGmmpAccent.currentPrimary(view)
-            ?: session.liveAccent
-            ?: NativeGmmpAccent.lastObserved()
-            ?: gmmpAccent(session, view)
+        session.resolvedSelectionAccent
+            ?: verifiedNativeSelectionAccent()
+            ?: standaloneSelectionAccent(view).also {
+                session.resolvedSelectionAccent = it
+            }
 
     private fun gmmpAccent(session: Session, view: View): Int {
         // Aesthetic's observable value is the real GMMP accent, even
