@@ -8,21 +8,22 @@ import java.lang.reflect.Proxy
 import java.lang.reflect.Type
 
 /**
- * Resolves the actual Room queue entity from GMMP's generated DAO adapters.
+ * Resolves a Room queue entity only from a generated DAO adapter whose own
+ * SQL proves that it writes queue_table.
  *
- * GMMP 4.2.1 keeps queue-specific API contracts on y75 that mention ww3, but
- * device evidence proves ww3 is not the queue_table writer entity. The
- * generated d85 adapter fields are a stronger ownership boundary: their
- * erased bind(statement,Object) bridge must cast that Object to the real
- * entity before it can read fields.
+ * A generated DAO may own several insertion/update/delete adapters for models
+ * that are related to the DAO but are not the queue_table writer entity. Mere
+ * field ownership or a generic DML string is therefore not enough. The
+ * adapter's no-arg SQL boundary must name queue_table before its erased
+ * bind(statement,Object) bridge or preserved generic metadata can be used as
+ * entity-type evidence.
  *
  * This resolver is read-only. It calls only the adapter SQL-string method and
  * the binder callback with a deliberately wrong marker object. For an
  * interface statement contract it supplies a no-op proxy; for a concrete
- * host statement contract (GMMP 4.2.1: yb4) it supplies null. Generated Room
- * bridges cast the entity argument before binding it, so the resulting
- * ClassCastException exposes the real model class without creating/executing
- * a SQLite statement.
+ * host statement contract it supplies null. Generated Room bridges cast the
+ * entity argument before binding it, so the resulting ClassCastException can
+ * expose the model class without creating/executing a SQLite statement.
  */
 internal object NativeQueueEntityAdapterTypeResolver {
     data class Result(
@@ -35,10 +36,7 @@ internal object NativeQueueEntityAdapterTypeResolver {
             field.isAccessible = true
             val adapter = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            resolveAdapter(
-                adapter = adapter,
-                directlyOwnedByDao = field.declaringClass == dao.javaClass
-            )?.let { result ->
+            resolveAdapter(adapter)?.let { result ->
                 field.name to result
             }
         }
@@ -55,10 +53,7 @@ internal object NativeQueueEntityAdapterTypeResolver {
         return Result(model, evidence)
     }
 
-    private fun resolveAdapter(
-        adapter: Any,
-        directlyOwnedByDao: Boolean
-    ): Result? {
+    private fun resolveAdapter(adapter: Any): Result? {
         // Room's generic EntityInsertion/Deletion/Update adapters expose the
         // erased bind(statement,Object) boundary as a compiler bridge. On the
         // tested GMMP 4.2.1 build that bridge is synthetic. The general
@@ -79,20 +74,13 @@ internal object NativeQueueEntityAdapterTypeResolver {
                     ?.let { method to it }
             }.getOrNull()
         }
-        val queueSql = sqlValues.firstOrNull { (_, value) ->
+        val queueSql = sqlValues.filter { (_, value) ->
             value.contains("queue_table", ignoreCase = true)
-        }
-        val dmlSql = sqlValues.firstOrNull { (_, value) ->
-            val normalized = value.trimStart().uppercase()
-            normalized.startsWith("INSERT") ||
-                normalized.startsWith("UPDATE") ||
-                normalized.startsWith("DELETE")
-        }
+        }.singleOrNull() ?: return null
 
         // Do not assume SupportSQLiteStatement remains an interface after
-        // host/R8 rewriting. GMMP 4.2.1 exposes G(yb4,Object):void on the
-        // generated d85 adapter fields. The first parameter is opaque here;
-        // only a reference type is required because no statement is executed.
+        // host/R8 rewriting. The first parameter is opaque here; only a
+        // reference type is required because no statement is executed.
         val allBinders = methods.filter {
             it.parameterCount == 2 &&
                 !it.parameterTypes[0].isPrimitive &&
@@ -105,37 +93,20 @@ internal object NativeQueueEntityAdapterTypeResolver {
         // make the adapter's own entity bind ambiguous. Prefer the one erased
         // bind boundary declared directly by this already-owned adapter and
         // only fall back to the full hierarchy if the adapter declares none.
-        // This keeps discovery semantic and avoids pinning d85$a/G names.
         val directBinders = allBinders.filter {
             it.declaringClass == adapter.javaClass
         }
         val binder = directBinders.ifEmpty { allBinders }
             .singleOrNull() ?: return null
 
-        // The SQL text is the strongest proof. Keep a second structural proof
-        // for the already-verified generated d85 fields: one adapter-local
-        // String boundary plus one erased bind(statement,Object) bridge. All
-        // participating adapters must still agree on one entity class.
-        val ownership = when {
-            queueSql != null -> "queue-sql"
-            directlyOwnedByDao && dmlSql != null -> "owned-dml"
-            directlyOwnedByDao &&
-                stringMethods.size == 1 &&
-                stringMethods.single().declaringClass == adapter.javaClass ->
-                "owned-adapter-shape"
-            else -> return null
-        }
-        val sqlMethodName =
-            (queueSql ?: dmlSql)?.first?.name
-                ?: stringMethods.single().name
-
+        val sqlMethodName = queueSql.first.name
         val loader = adapter.javaClass.classLoader
         inferGenericEntity(adapter.javaClass)?.let { type ->
             if (usable(type)) {
                 return Result(
                     type,
                     adapter.javaClass.name + "." + sqlMethodName +
-                        ":generic:" + ownership
+                        ":generic:queue-sql"
                 )
             }
         }
@@ -154,8 +125,8 @@ internal object NativeQueueEntityAdapterTypeResolver {
                 }
             }
         } else {
-            // Cast-only discovery path for the concrete yb4 contract. A real
-            // statement must never be constructed just to discover a type.
+            // Cast-only discovery path for a concrete statement contract. A
+            // real statement must never be constructed just to discover type.
             null
         }
 
@@ -171,7 +142,7 @@ internal object NativeQueueEntityAdapterTypeResolver {
             adapter.javaClass.name + "." + sqlMethodName +
                 ":binder-cast:" +
                 (if (statementType.isInterface) "proxy" else "null-statement") +
-                ":" + ownership +
+                ":queue-sql" +
                 (if (binder.isSynthetic || binder.isBridge) ":synthetic-bridge" else "")
         )
     }
