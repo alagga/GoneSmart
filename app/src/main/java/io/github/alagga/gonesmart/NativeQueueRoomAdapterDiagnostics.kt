@@ -3,26 +3,25 @@ package io.github.alagga.gonesmart
 import java.lang.reflect.Modifier
 
 /**
- * Failure-only, read-only diagnostics for generated Room adapters owned
- * directly by the runtime Queue DAO.
+ * Failure-only, read-only diagnostics for generated Room adapters owned by a
+ * runtime DAO and its generated DAO superclass hierarchy.
  *
- * Only nested adapter objects owned by the concrete DAO that expose the
- * generated erased two-argument binder shape are inspected. Their no-arg
- * String methods are Room SQL-description boundaries; no DAO query, reactive
- * source, SQLite statement, binder or writer is invoked here.
+ * Only nested adapter objects owned by the class that declares the field and
+ * exposing the generated two-argument erased binder shape are inspected.
+ * Their no-arg String methods are Room SQL-description boundaries; no DAO
+ * query, reactive source, SQLite statement, binder or writer is invoked here.
  */
 internal object NativeQueueRoomAdapterDiagnostics {
     fun describe(dao: Any): String {
-        val daoType = dao.javaClass
-        val adapters = hierarchyFields(daoType).mapNotNull { field ->
-            if (field.declaringClass != daoType) return@mapNotNull null
+        val adapters = hierarchyFields(dao.javaClass).mapNotNull { field ->
             field.isAccessible = true
             val value = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
             val type = value.javaClass
+            val owner = field.declaringClass
             val nestedOwner = type.enclosingClass
-            if (nestedOwner != daoType &&
-                !type.name.startsWith(daoType.name + "$")
+            if (nestedOwner != owner &&
+                !type.name.startsWith(owner.name + "$")
             ) return@mapNotNull null
 
             val methods = generateSequence<Class<*>>(type) { it.superclass }
@@ -35,11 +34,11 @@ internal object NativeQueueRoomAdapterDiagnostics {
                 }
                 .toList()
 
-            // A direct nested field alone is not enough: unrelated helper or
-            // database-state objects may also be nested. Mirror the erased
-            // Room binder boundary used by NativeQueueEntityAdapterTypeResolver:
-            // (reference statement, Object entity) -> void. In particular,
-            // java.lang.Object.wait(long,int) must never qualify as a binder.
+            // A nested field alone is not enough: unrelated helper or
+            // database-state objects may also be nested. Generated Room
+            // adapters expose an erased binder (statement,Object)->void.
+            // Require that metadata-only shape BEFORE invoking any String
+            // method on the object.
             val binderMethods = methods.filter {
                 it.declaringClass != Any::class.java &&
                     it.parameterCount == 2 &&
@@ -76,7 +75,7 @@ internal object NativeQueueRoomAdapterDiagnostics {
                 type.genericInterfaces.joinToString(",") { it.typeName }
             }.getOrDefault("none").ifBlank { "none" }
 
-            field.name + "->" + type.name +
+            owner.name + "." + field.name + "->" + type.name +
                 "{sql=" + sql.joinToString(";") +
                 ";genericSuper=" + genericSuper +
                 ";genericInterfaces=" + genericInterfaces +
