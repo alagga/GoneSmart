@@ -18,12 +18,11 @@ import java.lang.reflect.Type
  * bind(statement,Object) bridge or preserved generic metadata can be used as
  * entity-type evidence.
  *
- * This resolver is read-only. It calls only the adapter SQL-string method and
- * the binder callback with a deliberately wrong marker object. For an
- * interface statement contract it supplies a no-op proxy; for a concrete
- * host statement contract it supplies null. Generated Room bridges cast the
- * entity argument before binding it, so the resulting ClassCastException can
- * expose the model class without creating/executing a SQLite statement.
+ * This resolver is read-only. It calls only generated-adapter SQL-description
+ * methods after the erased binder shape has already proved that the field is
+ * adapter-like. The binder callback itself is then invoked only with a fake
+ * statement / deliberately wrong marker object. No SQLite statement is
+ * created or executed.
  */
 internal object NativeQueueEntityAdapterTypeResolver {
     data class Result(
@@ -37,7 +36,7 @@ internal object NativeQueueEntityAdapterTypeResolver {
             val adapter = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
             resolveAdapter(adapter)?.let { result ->
-                field.name to result
+                field.declaringClass.name + "." + field.name to result
             }
         }
         if (candidates.isEmpty()) return null
@@ -62,6 +61,24 @@ internal object NativeQueueEntityAdapterTypeResolver {
         // generated Room adapter boundary. Include bridges locally here only.
         val methods = generatedAdapterMethods(adapter.javaClass)
             .filter { !Modifier.isStatic(it.modifiers) }
+
+        // Prove the object is adapter-like before invoking any no-arg String
+        // method on it. This prevents arbitrary DAO/database helper objects
+        // from becoming executable diagnostics merely because R8 gave them a
+        // String-returning method.
+        val allBinders = methods.filter {
+            it.declaringClass != Any::class.java &&
+                it.parameterCount == 2 &&
+                !it.parameterTypes[0].isPrimitive &&
+                it.returnType == java.lang.Void.TYPE &&
+                it.parameterTypes[1] == Any::class.java
+        }
+        val directBinders = allBinders.filter {
+            it.declaringClass == adapter.javaClass
+        }
+        val binder = directBinders.ifEmpty { allBinders }
+            .singleOrNull() ?: return null
+
         val stringMethods = methods.filter {
             it.parameterCount == 0 &&
                 it.returnType == String::class.java &&
@@ -74,30 +91,23 @@ internal object NativeQueueEntityAdapterTypeResolver {
                     ?.let { method to it }
             }.getOrNull()
         }
-        val queueSql = sqlValues.filter { (_, value) ->
-            value.contains("queue_table", ignoreCase = true)
-        }.singleOrNull() ?: return null
+        val queueSqlGroups = sqlValues
+            .filter { (_, value) ->
+                value.contains("queue_table", ignoreCase = true)
+            }
+            .groupBy { (_, value) -> normalizeSql(value) }
 
-        // Do not assume SupportSQLiteStatement remains an interface after
-        // host/R8 rewriting. The first parameter is opaque here; only a
-        // reference type is required because no statement is executed.
-        val allBinders = methods.filter {
-            it.parameterCount == 2 &&
-                !it.parameterTypes[0].isPrimitive &&
-                it.returnType == java.lang.Void.TYPE &&
-                it.parameterTypes[1] == Any::class.java
-        }
-
-        // A generated adapter can inherit additional erased helper/binder
-        // bridges from a Room/R8 base class. Those inherited methods do not
-        // make the adapter's own entity bind ambiguous. Prefer the one erased
-        // bind boundary declared directly by this already-owned adapter and
-        // only fall back to the full hierarchy if the adapter declares none.
-        val directBinders = allBinders.filter {
-            it.declaringClass == adapter.javaClass
-        }
-        val binder = directBinders.ifEmpty { allBinders }
-            .singleOrNull() ?: return null
+        // Java reflection may expose both an adapter override and the same
+        // inherited virtual SQL boundary. Invoking either on the runtime
+        // adapter yields the same SQL, which is one semantic proof rather
+        // than two ambiguous candidates. Different queue_table SQL strings
+        // on the same adapter remain ambiguous and fail closed.
+        if (queueSqlGroups.size != 1) return null
+        val queueSql = queueSqlGroups.values.single()
+            .sortedByDescending { (method, _) ->
+                method.declaringClass == adapter.javaClass
+            }
+            .first()
 
         val sqlMethodName = queueSql.first.name
         val loader = adapter.javaClass.classLoader
@@ -111,6 +121,9 @@ internal object NativeQueueEntityAdapterTypeResolver {
             }
         }
 
+        // Do not assume SupportSQLiteStatement remains an interface after
+        // host/R8 rewriting. The first parameter is opaque here; only a
+        // reference type is required because no statement is executed.
         val statementType = binder.parameterTypes[0]
         val statement = if (statementType.isInterface) {
             Proxy.newProxyInstance(
@@ -221,6 +234,11 @@ internal object NativeQueueEntityAdapterTypeResolver {
             (loader ?: ClassLoader.getSystemClassLoader()).loadClass(name)
         }.getOrNull()
     }
+
+    private fun normalizeSql(sql: String): String =
+        sql.replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
 
     private fun usable(type: Class<*>): Boolean {
         val name = type.name
