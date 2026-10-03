@@ -6,17 +6,19 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 /**
- * Read-only structural fallback for generated Room queue entities.
+ * Native-first queue entity provider for a DAO whose generated Room adapter
+ * has already proved queue_table ownership.
  *
- * Reconstruction is allowed only when GMMP's own generated Room adapter proves
- * queue_table ownership through its SQL text and bind callback. The adapter is
- * invoked only against a fake binder; no database statement is created or
- * executed. The caller must still correlate every reconstructed row against
- * the live read-only Cursor before any native DAO writer becomes eligible.
+ * Prefer GMMP's own synchronous no-arg List reader when that boundary is
+ * unique. The returned native entities are accepted only when the generated
+ * INSERT binder reproduces the complete live Cursor identity for every row.
+ * This avoids rebuilding obfuscated Room entities when GMMP can supply them
+ * directly.
  *
- * GMMP 4.2.1 device evidence disproved the older Predicate[] -> List fallback:
- * the observed inherited method queried the tracks table, not queue_table.
- * Predicate contracts therefore have no role in entity reconstruction.
+ * Constructor reconstruction remains a bounded fallback for DAO shapes that
+ * expose no synchronous List reader. Predicate[] / reactive query fallbacks
+ * are intentionally excluded: device evidence showed those structural
+ * families can belong to tracks rather than queue_table.
  */
 internal object NativeQueueEntityReconstructor {
     data class Result(
@@ -29,6 +31,13 @@ internal object NativeQueueEntityReconstructor {
         val sqlMethod: Method,
         val bindMethod: Method,
         val columns: List<String>
+    )
+
+    private data class BoundKey(
+        val queueId: Long,
+        val trackId: Long,
+        val position: Long,
+        val shufflePosition: Long
     )
 
     private data class ValueSpec(
@@ -48,6 +57,24 @@ internal object NativeQueueEntityReconstructor {
     ): Result? {
         if (context.items.isEmpty()) return null
         val adapter = findBindingAdapter(dao, modelClass) ?: return null
+
+        // Once queue_table ownership and entity type are proven, a unique
+        // synchronous no-arg List-returning method is a much stronger native
+        // source than manufacturing entities from an obfuscated constructor.
+        // If such a boundary exists but does not correlate with the accepted
+        // Cursor snapshot, fail closed instead of silently falling back.
+        val nativeReaders = nativeListReaders(dao)
+        if (nativeReaders.isNotEmpty()) {
+            val reader = nativeReaders.singleOrNull() ?: return null
+            return readNativeRows(
+                dao = dao,
+                reader = reader,
+                modelClass = modelClass,
+                adapter = adapter,
+                context = context
+            )
+        }
+
         val probeItem = chooseProbeItem(context.items) ?: return null
         val mapping = resolveConstructorMapping(
             modelClass = modelClass,
@@ -59,13 +86,7 @@ internal object NativeQueueEntityReconstructor {
             instantiate(mapping, item) ?: return null
         }
         if (!rows.all(modelClass::isInstance)) return null
-
-        if (!rows.zip(context.items).all { (row, item) ->
-                boundColumns(adapter, row)?.let {
-                    matchesExpected(it, item)
-                } == true
-            }
-        ) return null
+        if (!rowsCorrelate(adapter, rows, context)) return null
 
         return Result(
             rows = rows,
@@ -85,11 +106,15 @@ internal object NativeQueueEntityReconstructor {
                 postfix = ")"
             ) { type -> type.name }
         }.ifBlank { "none" }
+        val readers = nativeListReaders(dao).joinToString(",") {
+            it.declaringClass.name + "." + it.name +
+                "():" + it.returnType.name
+        }.ifBlank { "none" }
         val adapters = hierarchyFields(dao.javaClass).mapNotNull { field ->
             field.isAccessible = true
             val owner = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            val methods = GmmpReflectionPolicy.callableMethods(owner.javaClass)
+            val methods = generatedAdapterMethods(owner.javaClass)
                 .filter { !Modifier.isStatic(it.modifiers) }
             val sql = methods.filter {
                 it.parameterCount == 0 &&
@@ -114,11 +139,13 @@ internal object NativeQueueEntityReconstructor {
             if (sql.isEmpty()) return@mapNotNull null
             val bind = methods.filter {
                 it.parameterCount == 2 &&
-                    it.returnType == java.lang.Void.TYPE
+                    it.returnType == java.lang.Void.TYPE &&
+                    it.parameterTypes[1] == Any::class.java
             }.joinToString(",") {
                 it.name + "(" +
                     it.parameterTypes.joinToString(",") { p -> p.name } +
-                    ")"
+                    ")" +
+                    if (it.isSynthetic || it.isBridge) "[bridge]" else ""
             }.ifBlank { "none" }
             field.name + "->" + owner.javaClass.name +
                 "{sql=" + sql.joinToString(",") +
@@ -126,7 +153,68 @@ internal object NativeQueueEntityReconstructor {
         }.joinToString(";").ifBlank { "none" }
         return "model=" + modelClass.name +
             " | ctors=" + constructors +
+            " | nativeReaders=" + readers +
             " | adapters=" + adapters
+    }
+
+    private fun readNativeRows(
+        dao: Any,
+        reader: Method,
+        modelClass: Class<*>,
+        adapter: AdapterBinding,
+        context: QueueContext
+    ): Result? {
+        val raw = runCatching {
+            reader.isAccessible = true
+            reader.invoke(dao) as? List<*>
+        }.getOrNull() ?: return null
+        if (raw.size != context.items.size || raw.any { it == null }) return null
+        val rows = raw.filterNotNull()
+        if (!rows.all(modelClass::isInstance)) return null
+        if (!rowsCorrelate(adapter, rows, context)) return null
+        return Result(
+            rows = rows,
+            boundary = "native-list:" +
+                reader.declaringClass.name + "." + reader.name
+        )
+    }
+
+    private fun nativeListReaders(dao: Any): List<Method> =
+        GmmpReflectionPolicy.callableMethods(dao.javaClass)
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 0 &&
+                    java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+            .distinctBy {
+                it.name + "|" + it.returnType.name
+            }
+
+    private fun rowsCorrelate(
+        adapter: AdapterBinding,
+        rows: List<Any>,
+        context: QueueContext
+    ): Boolean {
+        if (rows.size != context.items.size) return false
+        val actual = rows.map { row ->
+            val bound = boundColumns(adapter, row) ?: return false
+            BoundKey(
+                queueId = bound["queue_id"] ?: return false,
+                trackId = bound["queue_track_id"] ?: return false,
+                position = bound["queue_position"] ?: return false,
+                shufflePosition = bound["queue_shuffle_position"]
+                    ?: return false
+            )
+        }.sortedBy { it.queueId }
+        val expected = context.items.map { item ->
+            BoundKey(
+                queueId = item.queueEntryId,
+                trackId = item.track.id,
+                position = item.queuePosition.toLong(),
+                shufflePosition = item.shufflePosition.toLong()
+            )
+        }.sortedBy { it.queueId }
+        return actual == expected
     }
 
     private fun chooseProbeItem(items: List<QueueItemInfo>): QueueItemInfo? =
@@ -145,43 +233,68 @@ internal object NativeQueueEntityReconstructor {
             field.isAccessible = true
             val owner = runCatching { field.get(dao) }.getOrNull()
                 ?: return@mapNotNull null
-            val methods = GmmpReflectionPolicy.callableMethods(owner.javaClass)
+            val methods = generatedAdapterMethods(owner.javaClass)
                 .filter { !Modifier.isStatic(it.modifiers) }
-            val sqlMethods = methods.filter {
-                it.parameterCount == 0 &&
-                    it.returnType == String::class.java
-            }
-            val bindMethods = methods.filter {
-                it.parameterCount == 2 &&
+
+            // Match the same erased generated-Room binder proof used by the
+            // queue entity-type resolver. Prefer a binder declared directly
+            // by the runtime adapter so inherited helper binders (for example
+            // a second statement contract) do not create false ambiguity.
+            val allBinders = methods.filter {
+                it.declaringClass != Any::class.java &&
+                    it.parameterCount == 2 &&
+                    !it.parameterTypes[0].isPrimitive &&
                     it.returnType == java.lang.Void.TYPE &&
-                    (
-                        it.parameterTypes[1] == Any::class.java ||
-                            it.parameterTypes[1].isAssignableFrom(modelClass)
-                    )
+                    it.parameterTypes[1] == Any::class.java
             }
-            for (sqlMethod in sqlMethods) {
-                val sql = runCatching {
-                    sqlMethod.isAccessible = true
-                    sqlMethod.invoke(owner) as? String
-                }.getOrNull() ?: continue
-                val columns = bindColumns(sql) ?: continue
-                val bind = bindMethods.singleOrNull {
-                    it.parameterTypes[0].isInterface
-                } ?: continue
-                bind.isAccessible = true
-                return@mapNotNull AdapterBinding(
-                    owner = owner,
-                    sqlMethod = sqlMethod,
-                    bindMethod = bind,
-                    columns = columns
-                )
+            val directBinders = allBinders.filter {
+                it.declaringClass == owner.javaClass
             }
-            null
+            val bind = directBinders.ifEmpty { allBinders }
+                .singleOrNull() ?: return@mapNotNull null
+            if (!bind.parameterTypes[0].isInterface) return@mapNotNull null
+            bind.isAccessible = true
+
+            val sqlValues = methods.filter {
+                it.parameterCount == 0 &&
+                    it.returnType == String::class.java &&
+                    it.declaringClass != Any::class.java
+            }.mapNotNull { method ->
+                runCatching {
+                    method.isAccessible = true
+                    val sql = method.invoke(owner) as? String
+                        ?: return@runCatching null
+                    val columns = bindColumns(sql)
+                        ?: return@runCatching null
+                    Triple(method, sql, columns)
+                }.getOrNull()
+            }
+            val sqlGroups = sqlValues.groupBy { (_, sql, _) ->
+                normalizeSql(sql)
+            }
+            if (sqlGroups.size != 1) return@mapNotNull null
+            val selected = sqlGroups.values.single()
+                .sortedByDescending { (method, _, _) ->
+                    method.declaringClass == owner.javaClass
+                }
+                .first()
+
+            AdapterBinding(
+                owner = owner,
+                sqlMethod = selected.first,
+                bindMethod = bind,
+                columns = selected.third
+            )
         }
         return candidates
             .distinctBy {
                 it.owner.javaClass.name + "|" +
-                    it.sqlMethod.name + "|" +
+                    normalizeSql(
+                        runCatching {
+                            it.sqlMethod.isAccessible = true
+                            it.sqlMethod.invoke(it.owner) as String
+                        }.getOrDefault("")
+                    ) + "|" +
                     it.columns.joinToString(",")
             }
             .singleOrNull()
@@ -325,6 +438,11 @@ internal object NativeQueueEntityReconstructor {
         return columns
     }
 
+    private fun normalizeSql(sql: String): String =
+        sql.replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+
     private fun specs(item: QueueItemInfo): List<ValueSpec> = listOf(
         ValueSpec("queue_id", item.queueEntryId),
         ValueSpec("queue_track_id", item.track.id),
@@ -382,6 +500,17 @@ internal object NativeQueueEntityReconstructor {
         type == Integer.TYPE || type == Integer::class.java ||
             type == java.lang.Long.TYPE || type == java.lang.Long::class.java ||
             type == java.lang.Short.TYPE || type == java.lang.Short::class.java
+
+    private fun generatedAdapterMethods(type: Class<*>): List<Method> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredMethods.asSequence() }
+            .filter { !Modifier.isAbstract(it.modifiers) }
+            .distinctBy { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name } + "|" +
+                    method.returnType.name
+            }
+            .toList()
 
     private fun hierarchyFields(type: Class<*>) =
         generateSequence<Class<*>>(type) { it.superclass }
