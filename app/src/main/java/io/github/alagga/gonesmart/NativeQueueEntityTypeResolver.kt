@@ -4,50 +4,45 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
- * Resolves the nearest custom array contract in GMMP's Queue DAO hierarchy.
+ * Historical compatibility guard for GMMP's Queue DAO array contracts.
  *
- * Historical name note: older GoneSmart revisions treated this array component
- * as a possible Queue entity type. GMMP 4.2.1 device evidence now shows that
- * the observed custom array is the native where/predicate family instead. The
- * returned class is therefore only a read-boundary witness used to reach
- * GMMP's own predicate-based List reader. It is never accepted as writer
- * entity ownership. The mutation bridge still requires exact live Cursor
- * correlation of queue_id, song_id and queue_position before any writer runs.
+ * Device evidence from GMMP 4.2.1 proves that the nearest custom array family
+ * (observed as ww3[]) is a native query predicate/where contract, not a
+ * queue_table entity contract. Its constructor component is likewise a column
+ * descriptor rather than an embedded Queue row.
+ *
+ * Therefore an array component can no longer nominate a mutation entity at
+ * all. Real Queue rows must come from a read-only native DAO snapshot and then
+ * pass exact live Cursor correlation, or from a generated Room adapter whose
+ * own SQL explicitly proves queue_table ownership.
  */
 internal object NativeQueueEntityTypeResolver {
     fun resolve(
         daoClass: Class<*>,
         methods: List<Method>
     ): Class<*>? {
+        // Keep the bounded structural scan as a regression guard/documentation
+        // point, but deliberately return no entity hint. A future GMMP build
+        // must earn an entity mapping through stronger ownership evidence.
         val hierarchy = generateSequence<Class<*>>(daoClass) { it.superclass }
             .toList()
-        val candidates = methods.mapNotNull { method ->
-            if (Modifier.isStatic(method.modifiers) ||
-                method.parameterCount != 1
-            ) return@mapNotNull null
-            val array = method.parameterTypes.single()
-            if (!array.isArray) return@mapNotNull null
-            val component = array.componentType ?: return@mapNotNull null
-            if (!usable(component)) return@mapNotNull null
+        methods.asSequence()
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 1 &&
+                    it.parameterTypes.single().isArray
+            }
+            .mapNotNull { method ->
+                val component = method.parameterTypes.single().componentType
+                    ?: return@mapNotNull null
+                if (!usable(component)) return@mapNotNull null
+                val distance = hierarchy.indexOf(method.declaringClass)
+                    .takeIf { it >= 0 } ?: Int.MAX_VALUE
+                component to distance
+            }
+            .minByOrNull { it.second }
 
-            val distance = hierarchy.indexOf(method.declaringClass)
-                .takeIf { it >= 0 } ?: Int.MAX_VALUE
-            Candidate(component, distance)
-        }
-        if (candidates.isEmpty()) return null
-
-        val bestDistance = candidates.minOf { it.distance }
-        val nearest = candidates
-            .filter { it.distance == bestDistance }
-            .map { it.type }
-            .distinct()
-
-        // r29: do not unwrap constructor components of the array type. The
-        // 4.2.1 witness has the shape Predicate(Column, operator, value), so
-        // its custom constructor component is a column descriptor, not a
-        // queue_table entity. The witness itself is enough to identify the
-        // native predicate-list reader structurally.
-        return nearest.singleOrNull()
+        return null
     }
 
     private fun usable(type: Class<*>): Boolean {
@@ -60,9 +55,4 @@ internal object NativeQueueEntityTypeResolver {
             !name.startsWith("android.") &&
             !name.startsWith("kotlin.")
     }
-
-    private data class Candidate(
-        val type: Class<*>,
-        val distance: Int
-    )
 }
