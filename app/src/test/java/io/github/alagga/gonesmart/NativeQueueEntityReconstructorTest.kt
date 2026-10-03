@@ -2,11 +2,16 @@ package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeQueueEntityReconstructorTest {
     private interface Binder {
+        fun bindLong(index: Int, value: Long)
+    }
+
+    private interface AlternateBinder {
         fun bindLong(index: Int, value: Long)
     }
 
@@ -35,6 +40,39 @@ class NativeQueueEntityReconstructorTest {
     private class Dao {
         @Suppress("unused")
         private val insertAdapter = InsertAdapter()
+    }
+
+    private open class GeneratedAdapterBase {
+        @Suppress("unused")
+        fun inheritedBind(binder: AlternateBinder, value: Any) {
+            val row = value as NativeRow
+            binder.bindLong(1, row.queueId)
+        }
+    }
+
+    private class RuntimeInsertAdapter : GeneratedAdapterBase() {
+        fun M(): String =
+            "INSERT OR ABORT INTO `queue_table` " +
+                "(`queue_position`,`queue_track_id`," +
+                "`queue_shuffle_position`,`queue_id`) VALUES (?,?,?,?)"
+
+        fun G(binder: Binder, value: Any) {
+            val row = value as NativeRow
+            binder.bindLong(1, row.queuePosition.toLong())
+            binder.bindLong(2, row.trackId)
+            binder.bindLong(3, row.shufflePosition.toLong())
+            binder.bindLong(4, row.queueId)
+        }
+    }
+
+    private class NativeReaderDao(
+        private val rows: List<NativeRow>
+    ) {
+        @Suppress("unused")
+        private val insertAdapter = RuntimeInsertAdapter()
+
+        @Suppress("unused")
+        fun H1(): ArrayList<NativeRow> = ArrayList(rows)
     }
 
     private fun context(): QueueContext = QueueContext(
@@ -67,6 +105,16 @@ class NativeQueueEntityReconstructorTest {
         )
     )
 
+    private fun nativeRows(context: QueueContext): List<NativeRow> =
+        context.items.map { item ->
+            NativeRow(
+                trackId = item.track.id,
+                queueId = item.queueEntryId,
+                shufflePosition = item.shufflePosition,
+                queuePosition = item.queuePosition
+            )
+        }
+
     @Test fun generatedBinderProvesObfuscatedConstructorOrder() {
         val result = NativeQueueEntityReconstructor.reconstruct(
             dao = Dao(),
@@ -83,6 +131,47 @@ class NativeQueueEntityReconstructorTest {
         assertTrue(result.boundary.startsWith("generated-binding:"))
     }
 
+    @Test fun nativeListReaderWinsAfterQueueAdapterProof() {
+        val context = context()
+        val rows = nativeRows(context)
+        val result = NativeQueueEntityReconstructor.reconstruct(
+            dao = NativeReaderDao(rows),
+            modelClass = NativeRow::class.java,
+            context = context
+        )
+
+        assertEquals(3, result?.rows?.size)
+        assertSame(rows[0], result?.rows?.get(0))
+        assertSame(rows[1], result?.rows?.get(1))
+        assertTrue(result?.boundary?.startsWith("native-list:") == true)
+    }
+
+    @Test fun inheritedAlternateBinderDoesNotMakeRuntimeBinderAmbiguous() {
+        val context = context()
+        val result = NativeQueueEntityReconstructor.reconstruct(
+            dao = NativeReaderDao(nativeRows(context)),
+            modelClass = NativeRow::class.java,
+            context = context
+        )
+
+        assertEquals(3, result?.rows?.size)
+        assertTrue(result?.boundary?.contains("H1") == true)
+    }
+
+    @Test fun nativeReaderMustCorrelateWithCursorOrFailClosed() {
+        val context = context()
+        val badRows = nativeRows(context).toMutableList()
+        badRows[1] = badRows[1].copy(queueId = 9999L)
+
+        assertNull(
+            NativeQueueEntityReconstructor.reconstruct(
+                dao = NativeReaderDao(badRows),
+                modelClass = NativeRow::class.java,
+                context = context
+            )
+        )
+    }
+
     private class NativePredicate
 
     private open class PredicateDaoBase(
@@ -97,14 +186,7 @@ class NativeQueueEntityReconstructorTest {
 
     @Test fun predicateListBoundaryCannotReconstructQueueEntity() {
         val context = context()
-        val nativeRows = context.items.map { item ->
-            NativeRow(
-                trackId = item.track.id,
-                queueId = item.queueEntryId,
-                shufflePosition = item.shufflePosition,
-                queuePosition = item.queuePosition
-            )
-        }
+        val rows = nativeRows(context)
 
         // Device evidence showed this structural family can belong to tracks,
         // even when reached from the Queue DAO hierarchy. Without a generated
@@ -112,7 +194,7 @@ class NativeQueueEntityReconstructorTest {
         // closed instead of invoking Predicate[] -> List.
         assertNull(
             NativeQueueEntityReconstructor.reconstruct(
-                dao = PredicateDao(nativeRows),
+                dao = PredicateDao(rows),
                 modelClass = NativePredicate::class.java,
                 context = context
             )
