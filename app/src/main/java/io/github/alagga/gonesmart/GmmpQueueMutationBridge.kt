@@ -273,10 +273,10 @@ internal class GmmpQueueMutationBridge(
 
         // GMMP 4.2.1 d85 no longer exposes the native Queue entity snapshot
         // as a direct List. Its no-arg W1/X1 boundaries return R8-renamed
-        // reactive carriers. Materialize each carrier read-only and keep
-        // bounded partial row emissions even when no safe obfuscated entity
-        // hint exists. Full queue_id/song_id/queue_position correlation below
-        // remains mandatory before any writer is eligible.
+        // reactive carriers. Subscribe read-only and accept an emission only
+        // when its row count matches the already-verified Cursor snapshot.
+        // queue_id/song_id/queue_position correlation below remains the real
+        // ownership proof before any writer is eligible.
         val allReactiveReaders = if (listCandidates.isEmpty()) {
             methods.filter {
                 !Modifier.isStatic(it.modifiers) &&
@@ -310,19 +310,42 @@ internal class GmmpQueueMutationBridge(
                 method.invoke(dao)
             }.getOrNull() ?: return@forEach
 
-            // r31: r30 intentionally removed the disproven ww3/predicate
-            // entity hint, but the old bridge accidentally disabled partial
-            // aggregation at the same time. Read each carrier once with
-            // allowPartial=true and group native rows later by their actual
-            // runtime model class. Nothing becomes writable until Cursor
-            // identity correlation succeeds.
-            val snapshot = NativeReactiveListReader.read(
+            // r23 disproved that the nearest queue-specific array type (ww3)
+            // is necessarily the generated Room writer entity. First let the
+            // verified read carrier materialize its real runtime List without
+            // forcing that type. It becomes eligible only after strict
+            // Cursor identity correlation below.
+            val exact = NativeReactiveListReader.read(
                 source = source,
                 expectedRows = context.items.size,
                 timeoutMs = 650L,
                 expectedModelClass = null,
-                allowPartial = true
+                allowPartial = false
             )
+            if (exact != null &&
+                cursorCorrelates(exact.rows, context)
+            ) {
+                val sourceName =
+                    method.declaringClass.name + "." + method.name +
+                        "->" + exact.boundary + ":cursor-correlated"
+                listCandidates += sourceName to exact.rows
+                return@forEach
+            }
+
+            // Keep the queue-specific ww3 witness only for bounded partial
+            // stream aggregation. It is no longer treated as writer-entity
+            // ownership proof.
+            val snapshot = if (entityTypeHint != null) {
+                NativeReactiveListReader.read(
+                    source = source,
+                    expectedRows = context.items.size,
+                    timeoutMs = 650L,
+                    expectedModelClass = entityTypeHint,
+                    allowPartial = true
+                )
+            } else {
+                null
+            }
             if (snapshot != null) {
                 val sourceName =
                     method.declaringClass.name + "." + method.name +
@@ -330,16 +353,9 @@ internal class GmmpQueueMutationBridge(
                 if (snapshot.rows.size == context.items.size &&
                     cursorCorrelates(snapshot.rows, context)
                 ) {
-                    listCandidates +=
-                        (sourceName + ":cursor-correlated") to snapshot.rows
+                    listCandidates += sourceName to snapshot.rows
                 } else if (snapshot.rows.size < context.items.size) {
                     partialReactiveRows += sourceName to snapshot.rows
-                } else {
-                    unresolvedCarrierShapes +=
-                        method.name + "->" + source.javaClass.name +
-                            "{rows=" + snapshot.rows.size +
-                            ";model=" + snapshot.rows.firstOrNull()
-                                ?.javaClass?.name.orEmpty() + "}"
                 }
             } else {
                 val carrierMethods =
@@ -402,22 +418,30 @@ internal class GmmpQueueMutationBridge(
             }
         }
 
-        // W1/X1 may expose different partial views of the same native Queue
-        // stream. Aggregate by the emitted runtime model class rather than by
-        // an obfuscated type hint. A candidate is admitted only if the helper
-        // reaches exactly the Cursor row count and cursorCorrelates() proves
-        // queue_id/song_id/queue_position one-to-one for the full set.
-        if (partialReactiveRows.isNotEmpty()) {
-            listCandidates += NativeQueuePartialRowAggregator.aggregate(
-                partials = partialReactiveRows,
-                expectedRows = context.items.size,
-                fingerprint = { row ->
-                    nativeRowFingerprint(listOf(row))
-                },
-                correlates = { rows ->
-                    cursorCorrelates(rows, context)
-                }
-            )
+        // W1/X1 may expose different reactive views of the same native
+        // entity stream. Once the nearest queue-specific DAO contract proves
+        // the concrete entity type, combine bounded partial emissions and
+        // deduplicate them by their numeric native-row fingerprint. This is
+        // still discovery only: the queue_id/song_id/queue_position checks
+        // below remain mandatory before a writer becomes eligible.
+        if (entityTypeHint != null && partialReactiveRows.isNotEmpty()) {
+            val compatible = partialReactiveRows
+                .flatMap { it.second }
+                .filter(entityTypeHint::isInstance)
+            val deduped = linkedMapOf<String, Any>()
+            compatible.forEach { row ->
+                deduped.putIfAbsent(
+                    nativeRowFingerprint(listOf(row)),
+                    row
+                )
+            }
+            if (deduped.size == context.items.size) {
+                listCandidates +=
+                    ("reactive-aggregate:" +
+                        partialReactiveRows.joinToString("+") {
+                            it.first + "#" + it.second.size
+                        }) to deduped.values.toList()
+            }
         }
 
         val distinctCandidates = listCandidates
@@ -428,17 +452,6 @@ internal class GmmpQueueMutationBridge(
         val chosenRows = distinctCandidates.singleOrNull()
         if (chosenRows == null) {
             reportMutationShape(dao, methods, context.items.size)
-            if (partialReactiveRows.isNotEmpty()) {
-                Log.w(
-                    TAG,
-                    "QUEUE REACTIVE PARTIAL | " +
-                        partialReactiveRows.joinToString(";") { (source, rows) ->
-                            source + "#" + rows.size + "[" +
-                                rows.joinToString(",") { it.javaClass.name } +
-                                "]"
-                        }
-                )
-            }
             if (unresolvedCarrierShapes.isNotEmpty()) {
                 Log.w(
                     TAG,
