@@ -1,22 +1,26 @@
 package io.github.alagga.gonesmart
 
 import java.lang.reflect.Field
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.concurrent.Executor
 
 /**
  * Resolves the native DAO that actually owns queue_table mutation adapters.
  *
- * The Auto-DJ object's historical `q` field is not semantic identity: the
- * GMMP 4.2.1 r31 device log proves its runtime `d85` object's direct generated
- * CRUD adapters write `tracks`, not `queue_table`. This resolver therefore
- * treats immediate Auto-DJ objects and already-initialized objects cached by
- * the verified GMDatabase instance only as candidates.
+ * GMMP 4.2.1 stores generated DAO instances behind lazy database accessors.
+ * Runtime fields on GMDatabase_Impl are therefore not sufficient ownership
+ * evidence: the r32 device log showed only r15 lazy holders while the actual
+ * DAO accessors remained visible as no-arg custom-return methods.
  *
- * A candidate becomes the Queue writer DAO only when
- * [NativeQueueEntityAdapterTypeResolver] proves a generated Room adapter whose
- * own SQL names queue_table and yields one unambiguous native entity class.
- * Discovery invokes no DAO accessor/query/reactive method and no writer.
+ * Discovery is still non-mutating. Besides already-live Auto-DJ/database
+ * objects, this resolver may invoke only bounded no-arg methods declared by
+ * the verified generated GMDatabase implementation whose return type is an
+ * interface/abstract custom reference type. Those methods are Room's DAO
+ * accessors: invoking one may instantiate/cache a DAO, but does not execute a
+ * DAO query or writer. A returned object becomes the Queue writer DAO only
+ * when [NativeQueueEntityAdapterTypeResolver] proves a generated Room adapter
+ * whose own SQL names queue_table and yields one unambiguous entity class.
  */
 internal object NativeQueueDaoResolver {
     data class Result(
@@ -59,9 +63,19 @@ internal object NativeQueueDaoResolver {
     }
 
     /**
-     * Failure-only metadata. It never invokes a database DAO accessor; null
-     * cache fields and no-arg custom-return accessors are described by type so
-     * a later revision can target one exact missing lazy boundary if needed.
+     * Test seam for the bounded generated-database accessor policy. Returned
+     * pairs are the same candidates consumed by [resolveCandidates].
+     */
+    internal fun databaseAccessorCandidates(
+        database: Any
+    ): List<Pair<String, Any>> =
+        collectDatabaseAccessorCandidates(database)
+            .map { it.label to it.value }
+
+    /**
+     * Failure-only metadata. DAO accessor invocation is bounded to the same
+     * generated-database accessor policy used by normal resolution. It never
+     * invokes a returned DAO query/reactive method or writer.
      */
     fun diagnosticShape(autoDj: Any): String {
         val candidates = collectCandidates(autoDj)
@@ -72,7 +86,7 @@ internal object NativeQueueDaoResolver {
             if (shape == "none") null
             else candidate.label + "->" +
                 candidate.value.javaClass.name + "{" + shape + "}"
-        }.take(12).joinToString(";").ifBlank { "none" }
+        }.take(20).joinToString(";").ifBlank { "none" }
 
         val database = findDatabase(autoDj)
         val databaseShape = if (database == null) {
@@ -89,13 +103,7 @@ internal object NativeQueueDaoResolver {
                         (runtime?.javaClass?.name ?: "null")
                 }
                 .ifBlank { "none" }
-            val accessors = GmmpReflectionPolicy
-                .callableMethods(database.javaClass)
-                .filter {
-                    !Modifier.isStatic(it.modifiers) &&
-                        it.parameterCount == 0 &&
-                        isCustomReferenceType(it.returnType)
-                }
+            val accessors = databaseAccessorMethods(database)
                 .take(40)
                 .joinToString(",") {
                     it.declaringClass.name + "." + it.name +
@@ -103,7 +111,7 @@ internal object NativeQueueDaoResolver {
                 }
                 .ifBlank { "none" }
             database.javaClass.name +
-                "{fields=" + fields + ";accessors=" + accessors + "}"
+                "{fields=" + fields + ";daoAccessors=" + accessors + "}"
         }
 
         return bound(
@@ -127,18 +135,24 @@ internal object NativeQueueDaoResolver {
         }
 
         findDatabase(autoDj)?.let { database ->
+            // Keep already-live cached objects as cheap evidence.
             hierarchyFields(database.javaClass).forEach { field ->
                 field.isAccessible = true
                 val value = runCatching { field.get(database) }.getOrNull()
                     ?: return@forEach
                 if (isCandidateObject(value)) {
                     result += Candidate(
-                        "database:" + field.declaringClass.name +
+                        "database-field:" + field.declaringClass.name +
                             "." + field.name,
                         value
                     )
                 }
             }
+
+            // GMMP 4.2.1's GMDatabase_Impl caches DAOs behind r15 lazy
+            // holders. Calling a generated DAO accessor is the native Room
+            // way to materialize that DAO and does not execute DAO work.
+            result += collectDatabaseAccessorCandidates(database)
         }
 
         val unique = arrayListOf<Candidate>()
@@ -149,6 +163,43 @@ internal object NativeQueueDaoResolver {
         }
         return unique
     }
+
+    private fun collectDatabaseAccessorCandidates(
+        database: Any
+    ): List<Candidate> =
+        databaseAccessorMethods(database)
+            .take(32)
+            .mapNotNull { method ->
+                val value = runCatching {
+                    method.isAccessible = true
+                    method.invoke(database)
+                }.getOrNull() ?: return@mapNotNull null
+                if (!isCandidateObject(value)) return@mapNotNull null
+                Candidate(
+                    label = "database-accessor:" +
+                        method.declaringClass.name + "." + method.name +
+                        "():" + method.returnType.name,
+                    value = value
+                )
+            }
+
+    /**
+     * Generated Room DAO accessors are concrete no-arg methods declared by
+     * GMDatabase_Impl and return the abstract/interface DAO contract. Requiring
+     * that shape excludes Room lifecycle/open-helper methods and arbitrary
+     * inherited object helpers from invocation.
+     */
+    private fun databaseAccessorMethods(database: Any): List<Method> =
+        GmmpReflectionPolicy.callableMethods(database.javaClass)
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.declaringClass == database.javaClass &&
+                    it.parameterCount == 0 &&
+                    isDaoContractType(it.returnType)
+            }
+            .distinctBy {
+                it.name + "|" + it.returnType.name
+            }
 
     private fun findDatabase(autoDj: Any): Any? {
         val candidates = hierarchyFields(autoDj.javaClass).mapNotNull { field ->
@@ -189,7 +240,15 @@ internal object NativeQueueDaoResolver {
         val name = value.javaClass.name
         return !name.startsWith("java.") &&
             !name.startsWith("android.") &&
+            !name.startsWith("androidx.") &&
             !name.startsWith("kotlin.")
+    }
+
+    private fun isDaoContractType(type: Class<*>): Boolean {
+        if (!isCustomReferenceType(type) || isDatabaseRuntime(type)) {
+            return false
+        }
+        return type.isInterface || Modifier.isAbstract(type.modifiers)
     }
 
     private fun isCustomReferenceType(type: Class<*>): Boolean {
@@ -201,6 +260,7 @@ internal object NativeQueueDaoResolver {
         val name = type.name
         return !name.startsWith("java.") &&
             !name.startsWith("android.") &&
+            !name.startsWith("androidx.") &&
             !name.startsWith("kotlin.")
     }
 
@@ -222,5 +282,5 @@ internal object NativeQueueDaoResolver {
             .toList()
 
     private fun bound(value: String): String =
-        if (value.length <= 5000) value else value.take(4997) + "..."
+        if (value.length <= 7000) value else value.take(6997) + "..."
 }
