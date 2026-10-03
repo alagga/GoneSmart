@@ -35,7 +35,7 @@ class NativeQueueRoomAdapterDiagnosticsTest {
         val shape = NativeQueueRoomAdapterDiagnostics.describe(dao)
 
         assertTrue(shape.contains("queue_table"))
-        assertTrue(shape.contains("NativeQueueRoomAdapterDiagnosticsTest$Dao$Adapter"))
+        assertTrue(shape.contains("NativeQueueRoomAdapterDiagnosticsTest\$Dao\$Adapter"))
         assertFalse(shape.contains("do-not-call"))
         assertTrue(dao.dangerousCalls == 0)
     }
