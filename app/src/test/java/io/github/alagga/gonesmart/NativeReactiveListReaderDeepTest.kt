@@ -83,4 +83,28 @@ class NativeReactiveListReaderDeepTest {
         assertEquals(expected, result?.rows)
         assertTrue(source.disposable.disposed)
     }
+
+    private class RelationListCarrier(
+        private val rows: List<QueueRow>
+    ) {
+        fun value(): Any = rows.mapIndexed { index, row ->
+            RelationRow(row, "row-$index")
+        }
+    }
+
+    @Test fun unwrapsQueueRowsFromRelationListSnapshot() {
+        val expected = listOf(
+            QueueRow(301L, 31L, 1, 3),
+            QueueRow(302L, 32L, 2, 1),
+            QueueRow(303L, 33L, 3, 2)
+        )
+        val result = NativeReactiveListReader.read(
+            source = RelationListCarrier(expected),
+            expectedRows = expected.size,
+            timeoutMs = 100
+        )
+
+        assertEquals(expected, result?.rows)
+        assertTrue(result?.boundary?.contains("blocking-object") == true)
+    }
 }
