@@ -240,12 +240,15 @@ internal object NativeReactiveListReader {
         expectedModelClass: Class<*>?,
         allowPartial: Boolean
     ): List<Any>? {
-        extractRowsDeep(
+        // Only the source value itself may be a direct snapshot. Do not inspect
+        // arbitrary private fields here: doing so bypasses the carrier's native
+        // blocking/callback terminal and can mistake implementation state for
+        // the actual emitted DAO value.
+        extractRowsDirect(
             value = source,
             expectedRows = expectedRows,
             expectedModelClass = expectedModelClass,
-            allowPartial = allowPartial,
-            depth = 1
+            allowPartial = allowPartial
         )?.let { return it }
 
         val candidates = GmmpReflectionPolicy.callableMethods(source.javaClass)
@@ -792,15 +795,19 @@ internal object NativeReactiveListReader {
             source.javaClass.genericSuperclass?.typeName ?: "none"
         }.getOrDefault("none")
 
-        Log.w(
-            TAG,
-            "QUEUE REACTIVE READ FAIL | source=" + source.javaClass.name +
-                " | genericSuper=" + genericSuper +
-                " | genericInterfaces=" + genericInterfaces +
-                " | noArgObjects=" + noArgObjects +
-                " | terminals=" + terminals +
-                " | fields=" + fields
-        )
+        // Local JVM tests do not provide an implementation for android.util.Log.
+        // Diagnostics must never turn a normal fail-closed read into a failure.
+        runCatching {
+            Log.w(
+                TAG,
+                "QUEUE REACTIVE READ FAIL | source=" + source.javaClass.name +
+                    " | genericSuper=" + genericSuper +
+                    " | genericInterfaces=" + genericInterfaces +
+                    " | noArgObjects=" + noArgObjects +
+                    " | terminals=" + terminals +
+                    " | fields=" + fields
+            )
+        }
     }
 
     private fun safeGenericName(method: Method): String =
