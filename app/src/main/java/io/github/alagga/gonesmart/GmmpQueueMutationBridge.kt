@@ -217,25 +217,51 @@ internal class GmmpQueueMutationBridge(
     private fun resolve(requireDelete: Boolean): Resolved {
         val context = GmmpQueueReader().read(autoDj)
             ?: error("GMMP queue Cursor mapping unavailable")
-        val dao = objectField(autoDj, "q")
-            ?: error("GMMP 4.2.1 Queue DAO unavailable")
-        val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
 
-        // r30 device evidence showed that invoking the opaque W1/X1 carriers
-        // during discovery coincides with large native queue changes. They are
-        // therefore untrusted metadata only. A native model is accepted solely
-        // from a generated adapter whose own SQL explicitly names queue_table.
-        val adapterEntity = NativeQueueEntityAdapterTypeResolver.resolve(dao)
-        if (adapterEntity == null) {
-            reportRoomAdapterShape(dao, methods, context.items.size)
+        // r31 device evidence disproved the historical assumption that the
+        // Auto-DJ `q` object is necessarily the queue writer DAO: its direct
+        // generated CRUD adapters all write tracks. Resolve the actual writer
+        // owner only from a generated Room adapter whose SQL proves
+        // queue_table ownership. Candidate discovery reads object fields only;
+        // it does not invoke DAO accessors, queries, reactive carriers or
+        // writers.
+        val daoResolution = NativeQueueDaoResolver.resolve(autoDj)
+        if (daoResolution == null) {
+            objectField(autoDj, "q")?.let { legacyCandidate ->
+                reportRoomAdapterShape(
+                    legacyCandidate,
+                    GmmpReflectionPolicy.callableMethods(
+                        legacyCandidate.javaClass
+                    ),
+                    context.items.size
+                )
+            }
+            val key = "dao-discovery|" + autoDj.javaClass.name
+            if (reportedShapes.add(key)) {
+                Log.w(
+                    TAG,
+                    "QUEUE DAO DISCOVERY SHAPE | " +
+                        NativeQueueDaoResolver.diagnosticShape(autoDj)
+                )
+            }
             error(
-                "GMMP queue_table Room entity adapter is unresolved; " +
-                    "reactive DAO discovery is disabled"
+                "GMMP queue_table writer DAO is unresolved; " +
+                    "reactive/query DAO discovery is disabled"
             )
         }
 
+        val dao = daoResolution.dao
+        val adapterEntity = daoResolution.entity
+        val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
+
         val typeKey = dao.javaClass.name + "|" + adapterEntity.modelClass.name
         if (reportedEntityMappings.add(typeKey)) {
+            Log.i(
+                TAG,
+                "QUEUE DAO MAPPING | dao=" + dao.javaClass.name +
+                    " | proof=queue_table-generated-adapter" +
+                    " | evidence=" + daoResolution.evidence
+            )
             Log.i(
                 TAG,
                 "QUEUE ENTITY TYPE | source=generated-room-adapter" +
