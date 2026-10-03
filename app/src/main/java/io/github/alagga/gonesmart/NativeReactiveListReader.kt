@@ -1,31 +1,51 @@
 package io.github.alagga.gonesmart
 
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Read-only bridge for host reactive DAO return types whose concrete Rx class
- * names/method names are R8-renamed.
+ * Read-only bridge for host reactive DAO return types whose concrete Rx/
+ * observable class names and method names are R8-renamed.
  *
- * It never guesses a writer. A source is eligible only when a no-arg DAO
- * method has already returned it and one callback-style terminal boundary
- * emits a List of the expected live row count. The caller still performs the
- * authoritative queue_id/song_id/queue_position correlation before any
- * mutation method is allowed.
+ * A source is eligible only after the caller has obtained it from a no-arg
+ * method on GMMP's native Queue DAO. This reader may materialize a direct,
+ * blocking, callback or shallow nested snapshot, but it never chooses a
+ * writer. GmmpQueueMutationBridge remains the authority that must correlate
+ * queue_id, song_id and queue_position one-to-one with the live read-only
+ * Cursor before any native mutation method becomes eligible.
  */
 internal object NativeReactiveListReader {
+    private const val TAG = "GoneSmartQueue"
+
     private val executor = Executors.newCachedThreadPool { task ->
         Thread(task, "GoneSmartNativeReactiveRead").apply { isDaemon = true }
     }
 
+    private val reportedFailureShapes =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     data class Result(
         val rows: List<Any>,
         val boundary: String
+    )
+
+    private data class SubscribeAttempt(
+        val rows: List<Any>?,
+        val invocationFailure: Throwable? = null
+    )
+
+    private data class Invocation(
+        val returned: Any?,
+        val failure: Throwable?
     )
 
     fun read(
@@ -46,10 +66,10 @@ internal object NativeReactiveListReader {
         }
 
         directList(
-            source,
-            expectedRows,
-            expectedModelClass,
-            allowPartial
+            source = source,
+            expectedRows = expectedRows,
+            expectedModelClass = expectedModelClass,
+            allowPartial = allowPartial
         )?.let { rows ->
             if (rows.size == expectedRows) {
                 return Result(rows, "direct")
@@ -57,17 +77,12 @@ internal object NativeReactiveListReader {
             keepPartial(rows, "direct")
         }
 
-        // Room/Rx 4.2.1 can expose a generated DAO read as a Single/Maybe/
-        // Observable-like carrier whose terminal value method erases T to
-        // Object. Invoking a verified read carrier's no-arg Object-returning
-        // terminal is still read-only; accept it only when the runtime result
-        // is exactly a List with the already-known Cursor row count.
         blockingList(
-            source,
-            expectedRows,
-            timeoutMs,
-            expectedModelClass,
-            allowPartial
+            source = source,
+            expectedRows = expectedRows,
+            timeoutMs = timeoutMs,
+            expectedModelClass = expectedModelClass,
+            allowPartial = allowPartial
         )?.let { (rows, boundary) ->
             if (rows.size == expectedRows) {
                 return Result(rows, boundary)
@@ -81,22 +96,21 @@ internal object NativeReactiveListReader {
                 .filter { !Modifier.isStatic(it.modifiers) }
                 .filter { it.parameterCount == 1 }
                 .filter { it.parameterTypes.single().isInterface }
-                // Operators such as map/doOnNext generally return the same
-                // reactive source family. A subscribe/observe terminal either
-                // returns void or a different disposable/subscription type.
+                // Transformation operators commonly return the source family
+                // again. A terminal subscription/observation boundary is void
+                // or returns a different disposable/subscription family.
                 .filter {
                     it.returnType == java.lang.Void.TYPE ||
                         !it.returnType.isAssignableFrom(source.javaClass)
                 }
                 .distinctBy {
-                    it.name + "|" + it.parameterTypes.single().name + "|" +
+                    it.declaringClass.name + "|" + it.name + "|" +
+                        it.parameterTypes.single().name + "|" +
                         it.returnType.name
                 }
-                .take(12)
+                .take(16)
                 .toList()
-        // Rx/Room's observer-style terminal is void on the tested 4.2.1
-        // carriers. Prefer those methods so we do not spend multiple timeout
-        // windows speculatively invoking transformation operators.
+
         val voidCandidates = callbackCandidates.filter {
             it.returnType == java.lang.Void.TYPE
         }
@@ -106,28 +120,68 @@ internal object NativeReactiveListReader {
             }
 
         for (method in methods) {
-            subscribeOnce(
-                source,
-                method,
-                expectedRows,
-                timeoutMs,
-                expectedModelClass,
-                allowPartial
-            )?.let { rows ->
-                val boundary =
-                    source.javaClass.name + "." + method.name +
-                        "(" + method.parameterTypes.single().name + ")"
+            val background = subscribeOnce(
+                source = source,
+                method = method,
+                expectedRows = expectedRows,
+                timeoutMs = timeoutMs,
+                expectedModelClass = expectedModelClass,
+                allowPartial = allowPartial,
+                invokeOnMain = false
+            )
+            background.rows?.let { rows ->
+                val boundary = callbackBoundary(source, method, "callback")
                 if (rows.size == expectedRows) {
-                    return Result(
-                        rows = rows,
-                        boundary = boundary
-                    )
+                    return Result(rows, boundary)
                 }
                 keepPartial(rows, boundary)
             }
+
+            // Lifecycle-style observables reject observer registration away
+            // from Android's main thread. Retry only after the first invoke
+            // actually failed; a merely quiet Rx source is never subscribed a
+            // second time speculatively.
+            if (
+                background.rows == null &&
+                background.invocationFailure != null &&
+                method.returnType == java.lang.Void.TYPE
+            ) {
+                val mainThread = subscribeOnce(
+                    source = source,
+                    method = method,
+                    expectedRows = expectedRows,
+                    timeoutMs = timeoutMs,
+                    expectedModelClass = expectedModelClass,
+                    allowPartial = allowPartial,
+                    invokeOnMain = true
+                )
+                mainThread.rows?.let { rows ->
+                    val boundary = callbackBoundary(
+                        source,
+                        method,
+                        "main-callback"
+                    )
+                    if (rows.size == expectedRows) {
+                        return Result(rows, boundary)
+                    }
+                    keepPartial(rows, boundary)
+                }
+            }
+        }
+
+        if (bestPartial == null) {
+            reportFailureShape(source)
         }
         return bestPartial
     }
+
+    private fun callbackBoundary(
+        source: Any,
+        method: Method,
+        mode: String
+    ): String =
+        source.javaClass.name + "." + method.name +
+            "(" + method.parameterTypes.single().name + "):" + mode
 
     private fun blockingList(
         source: Any,
@@ -165,11 +219,12 @@ internal object NativeReactiveListReader {
                 future.cancel(true)
                 null
             }
-            val rows = extractRows(
-                returned,
-                expectedRows,
-                expectedModelClass,
-                allowPartial
+            val rows = extractRowsDeep(
+                value = returned,
+                expectedRows = expectedRows,
+                expectedModelClass = expectedModelClass,
+                allowPartial = allowPartial,
+                depth = 2
             ) ?: continue
             return rows to (
                 source.javaClass.name + "." + method.name +
@@ -185,30 +240,31 @@ internal object NativeReactiveListReader {
         expectedModelClass: Class<*>?,
         allowPartial: Boolean
     ): List<Any>? {
-        extractRows(
-            source,
-            expectedRows,
-            expectedModelClass,
-            allowPartial
+        extractRowsDeep(
+            value = source,
+            expectedRows = expectedRows,
+            expectedModelClass = expectedModelClass,
+            allowPartial = allowPartial,
+            depth = 1
         )?.let { return it }
+
         val candidates = GmmpReflectionPolicy.callableMethods(source.javaClass)
             .filter {
                 !Modifier.isStatic(it.modifiers) &&
                     it.parameterCount == 0 &&
                     List::class.java.isAssignableFrom(it.returnType)
             }
-        for (method in candidates.take(6)) {
-            val rows = runCatching {
+        for (method in candidates.take(8)) {
+            val returned = runCatching {
                 method.isAccessible = true
-                (method.invoke(source) as? List<*>)
-                    ?.filterNotNull()
-                    ?.map { it }
+                method.invoke(source)
             }.getOrNull()
-            val accepted = extractRows(
-                rows,
-                expectedRows,
-                expectedModelClass,
-                allowPartial
+            val accepted = extractRowsDeep(
+                value = returned,
+                expectedRows = expectedRows,
+                expectedModelClass = expectedModelClass,
+                allowPartial = allowPartial,
+                depth = 2
             )
             if (accepted != null) return accepted
         }
@@ -221,15 +277,16 @@ internal object NativeReactiveListReader {
         expectedRows: Int,
         timeoutMs: Long,
         expectedModelClass: Class<*>?,
-        allowPartial: Boolean
-    ): List<Any>? {
+        allowPartial: Boolean,
+        invokeOnMain: Boolean
+    ): SubscribeAttempt {
         val callbackType = method.parameterTypes.single()
         val callbackMethods = callbackType.methods
         val canReceiveValue = callbackMethods.any {
             it.parameterCount == 1 &&
                 !Throwable::class.java.isAssignableFrom(it.parameterTypes[0])
         }
-        if (!canReceiveValue) return null
+        if (!canReceiveValue) return SubscribeAttempt(null)
 
         val result = AtomicReference<List<Any>?>(null)
         val failure = AtomicReference<Throwable?>(null)
@@ -242,39 +299,39 @@ internal object NativeReactiveListReader {
         val queueEntityShapeCache =
             java.util.concurrent.ConcurrentHashMap<Class<*>, Boolean>()
 
+        fun acceptRows(rows: List<Any>) {
+            if (rows.isEmpty()) return
+            val model = expectedModelClass ?: rows.first().javaClass
+            if (!rows.all(model::isInstance)) return
+            val expectedClass = streamedRowClass.get()
+            if (expectedClass == null) {
+                streamedRowClass.compareAndSet(null, model)
+            }
+            if (streamedRowClass.get() != model) return
+            synchronized(streamedRows) {
+                rows.forEach { row ->
+                    if (streamedRows.none { it === row }) {
+                        streamedRows.add(row)
+                    }
+                }
+                if (streamedRows.size == expectedRows) {
+                    result.compareAndSet(null, streamedRows.toList())
+                    latch.countDown()
+                }
+            }
+        }
+
         val callback = Proxy.newProxyInstance(
             callbackType.classLoader ?: source.javaClass.classLoader,
             arrayOf(callbackType)
         ) { proxy, invoked, args ->
             when (invoked.name) {
-                "toString" -> return@newProxyInstance "GoneSmart reactive queue reader"
-                "hashCode" -> return@newProxyInstance System.identityHashCode(proxy)
-                "equals" -> return@newProxyInstance proxy === args?.firstOrNull()
-            }
-
-            fun acceptRows(rows: List<Any>) {
-                if (rows.isEmpty()) return
-                val model = expectedModelClass ?: rows.first().javaClass
-                if (!rows.all(model::isInstance)) return
-                val expectedClass = streamedRowClass.get()
-                if (expectedClass == null) {
-                    streamedRowClass.compareAndSet(null, model)
-                }
-                if (streamedRowClass.get() != model) return
-                synchronized(streamedRows) {
-                    rows.forEach { row ->
-                        if (streamedRows.none { it === row }) {
-                            streamedRows.add(row)
-                        }
-                    }
-                    if (streamedRows.size == expectedRows) {
-                        result.compareAndSet(
-                            null,
-                            streamedRows.toList()
-                        )
-                        latch.countDown()
-                    }
-                }
+                "toString" ->
+                    return@newProxyInstance "GoneSmart reactive queue reader"
+                "hashCode" ->
+                    return@newProxyInstance System.identityHashCode(proxy)
+                "equals" ->
+                    return@newProxyInstance proxy === args?.firstOrNull()
             }
 
             args.orEmpty().forEach { value ->
@@ -285,11 +342,12 @@ internal object NativeReactiveListReader {
                     }
                     null -> Unit
                     else -> {
-                        extractRows(
-                            value,
-                            expectedRows,
-                            expectedModelClass,
-                            allowPartial = true
+                        extractRowsDeep(
+                            value = value,
+                            expectedRows = expectedRows,
+                            expectedModelClass = expectedModelClass,
+                            allowPartial = true,
+                            depth = 2
                         )?.let { rows ->
                             acceptRows(rows)
                             return@forEach
@@ -297,7 +355,7 @@ internal object NativeReactiveListReader {
 
                         // Reactive Streams Subscriber requires request(n)
                         // before onNext. A subscription/control object must
-                        // never be mistaken for a queue entity.
+                        // never be mistaken for a queue row.
                         val requesters =
                             GmmpReflectionPolicy.callableMethods(value.javaClass)
                                 .filter {
@@ -320,11 +378,6 @@ internal object NativeReactiveListReader {
                             )
                         }
 
-                        // If DAO ownership already proved the concrete entity
-                        // class, that type is stronger evidence than the old
-                        // numeric-field heuristic. A one-level relation/wrapper
-                        // is unwrapped only when it owns exactly one field of
-                        // that proven entity type.
                         expectedModelClass?.let { model ->
                             embeddedExpectedEntity(value, model)?.let {
                                 acceptRows(listOf(it))
@@ -332,13 +385,18 @@ internal object NativeReactiveListReader {
                             }
                         }
 
-                        val entityShape =
-                            expectedModelClass?.isInstance(value) == true ||
-                                queueEntityShapeCache.computeIfAbsent(
-                                    value.javaClass
-                                ) { looksLikeQueueEntity(value) }
-                        if (entityShape) {
-                            acceptRows(listOf(value))
+                        val queueRow = when {
+                            expectedModelClass?.isInstance(value) == true -> value
+                            queueEntityShapeCache.computeIfAbsent(
+                                value.javaClass
+                            ) { looksLikeQueueEntity(value) } -> value
+                            else -> uniqueNestedQueueEntity(
+                                value,
+                                queueEntityShapeCache
+                            )
+                        }
+                        if (queueRow != null) {
+                            acceptRows(listOf(queueRow))
                         } else {
                             cancellation.compareAndSet(null, value)
                         }
@@ -348,41 +406,179 @@ internal object NativeReactiveListReader {
             primitiveDefault(invoked.returnType)
         }
 
-        val future = executor.submit<Any?> {
-            method.isAccessible = true
-            method.invoke(source, callback)
+        val invocation = if (invokeOnMain) {
+            invokeOnAndroidMain(
+                source = source,
+                method = method,
+                callback = callback,
+                timeoutMs = timeoutMs
+            )
+        } else {
+            invokeOnWorker(
+                source = source,
+                method = method,
+                callback = callback,
+                timeoutMs = timeoutMs
+            )
         }
-        val returned = runCatching {
-            future.get(timeoutMs, TimeUnit.MILLISECONDS)
-        }.getOrElse {
-            future.cancel(true)
-            return null
+        if (invocation.failure != null) {
+            return SubscribeAttempt(
+                rows = null,
+                invocationFailure = invocation.failure
+            )
         }
-        if (returned != null) cancellation.compareAndSet(null, returned)
+        if (invocation.returned != null) {
+            cancellation.compareAndSet(null, invocation.returned)
+        }
 
         if (result.get() == null && failure.get() == null) {
             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         }
 
         cancelIfUnambiguous(cancellation.get())
-        result.get()?.let { return it }
+        result.get()?.let {
+            return SubscribeAttempt(it)
+        }
         if (allowPartial) {
             synchronized(streamedRows) {
                 if (streamedRows.isNotEmpty()) {
-                    return streamedRows.toList()
+                    return SubscribeAttempt(streamedRows.toList())
                 }
             }
         }
-        return null
+        return SubscribeAttempt(null, failure.get())
     }
 
-    private fun extractRows(
+    private fun invokeOnWorker(
+        source: Any,
+        method: Method,
+        callback: Any,
+        timeoutMs: Long
+    ): Invocation {
+        val future = executor.submit<Any?> {
+            method.isAccessible = true
+            method.invoke(source, callback)
+        }
+        return try {
+            Invocation(
+                returned = future.get(
+                    timeoutMs.coerceAtMost(650L).coerceAtLeast(50L),
+                    TimeUnit.MILLISECONDS
+                ),
+                failure = null
+            )
+        } catch (failure: Throwable) {
+            future.cancel(true)
+            Invocation(null, unwrapInvocationFailure(failure))
+        }
+    }
+
+    private fun invokeOnAndroidMain(
+        source: Any,
+        method: Method,
+        callback: Any,
+        timeoutMs: Long
+    ): Invocation {
+        val mainLooper = runCatching { Looper.getMainLooper() }.getOrNull()
+            ?: return Invocation(
+                null,
+                IllegalStateException("Android main looper unavailable")
+            )
+        if (runCatching { Looper.myLooper() == mainLooper }.getOrDefault(false)) {
+            return runCatching {
+                method.isAccessible = true
+                Invocation(method.invoke(source, callback), null)
+            }.getOrElse {
+                Invocation(null, unwrapInvocationFailure(it))
+            }
+        }
+
+        val returned = AtomicReference<Any?>(null)
+        val failure = AtomicReference<Throwable?>(null)
+        val latch = CountDownLatch(1)
+        val posted = runCatching {
+            Handler(mainLooper).post {
+                runCatching {
+                    method.isAccessible = true
+                    method.invoke(source, callback)
+                }.onSuccess {
+                    returned.set(it)
+                }.onFailure {
+                    failure.set(unwrapInvocationFailure(it))
+                }
+                latch.countDown()
+            }
+        }.getOrDefault(false)
+        if (!posted) {
+            return Invocation(
+                null,
+                IllegalStateException("Could not post observer to main looper")
+            )
+        }
+        if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            return Invocation(
+                null,
+                TimeoutException("Main-thread observer registration timed out")
+            )
+        }
+        return Invocation(returned.get(), failure.get())
+    }
+
+    private fun unwrapInvocationFailure(failure: Throwable): Throwable =
+        when (failure) {
+            is java.util.concurrent.ExecutionException ->
+                failure.cause ?: failure
+            is java.lang.reflect.InvocationTargetException ->
+                failure.targetException ?: failure
+            else -> failure
+        }
+
+    private fun extractRowsDeep(
         value: Any?,
+        expectedRows: Int,
+        expectedModelClass: Class<*>?,
+        allowPartial: Boolean,
+        depth: Int
+    ): List<Any>? {
+        if (value == null) return null
+
+        extractRowsDirect(
+            value = value,
+            expectedRows = expectedRows,
+            expectedModelClass = expectedModelClass,
+            allowPartial = allowPartial
+        )?.let { return it }
+
+        if (depth <= 0 || isPlatformValue(value)) return null
+
+        val nested = hierarchyFields(value.javaClass)
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(value)
+                }.getOrNull()
+            }
+            .filter { it !== value }
+            .mapNotNull { child ->
+                extractRowsDeep(
+                    value = child,
+                    expectedRows = expectedRows,
+                    expectedModelClass = expectedModelClass,
+                    allowPartial = allowPartial,
+                    depth = depth - 1
+                )
+            }
+            .distinctBy(::rowSetFingerprint)
+
+        return nested.singleOrNull()
+    }
+
+    private fun extractRowsDirect(
+        value: Any,
         expectedRows: Int,
         expectedModelClass: Class<*>?,
         allowPartial: Boolean
     ): List<Any>? {
-        if (value == null) return null
         val rawRows: List<Any> = when {
             expectedModelClass?.isInstance(value) == true ->
                 listOf(value)
@@ -403,6 +599,8 @@ internal object NativeReactiveListReader {
         if (rawRows.isEmpty()) return null
 
         val rows = if (expectedModelClass == null) {
+            val model = rawRows.first().javaClass
+            if (!rawRows.all(model::isInstance)) return null
             rawRows
         } else {
             rawRows.map { row ->
@@ -426,25 +624,35 @@ internal object NativeReactiveListReader {
         }
     }
 
-    /**
-     * GMMP 4.2.1's queue query may expose relation rows (observed API witness
-     * ww3(pw3,String,Object)) while the generated DAO writer owns the embedded
-     * queue entity. Once that entity class is independently proven by the
-     * generated Room adapter bridge, returning the exact existing nested
-     * object is safer than reconstructing it. Reject zero or multiple matches.
-     */
+    private fun uniqueNestedQueueEntity(
+        wrapper: Any,
+        cache: java.util.concurrent.ConcurrentHashMap<Class<*>, Boolean>
+    ): Any? {
+        if (isPlatformValue(wrapper)) return null
+        val matches = hierarchyFields(wrapper.javaClass)
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(wrapper)
+                }.getOrNull()
+            }
+            .filter { child ->
+                child !== wrapper &&
+                    !isPlatformValue(child) &&
+                    cache.computeIfAbsent(child.javaClass) {
+                        looksLikeQueueEntity(child)
+                    }
+            }
+            .distinctBy(System::identityHashCode)
+        return matches.singleOrNull()
+    }
+
     private fun embeddedExpectedEntity(
         wrapper: Any,
         expectedModelClass: Class<*>
     ): Any? {
         if (expectedModelClass.isInstance(wrapper)) return wrapper
-        val matches = generateSequence<Class<*>>(
-            wrapper.javaClass
-        ) { it.superclass }
-            .flatMap { it.declaredFields.asSequence() }
-            .filter {
-                !Modifier.isStatic(it.modifiers) && !it.isSynthetic
-            }
+        val matches = hierarchyFields(wrapper.javaClass)
             .mapNotNull { field ->
                 runCatching {
                     field.isAccessible = true
@@ -453,7 +661,6 @@ internal object NativeReactiveListReader {
             }
             .filter(expectedModelClass::isInstance)
             .distinctBy(System::identityHashCode)
-            .toList()
         return matches.singleOrNull()
     }
 
@@ -476,33 +683,45 @@ internal object NativeReactiveListReader {
     }
 
     private fun looksLikeQueueEntity(value: Any): Boolean {
-        val name = value.javaClass.name
-        if (name.startsWith("java.") ||
-            name.startsWith("android.") ||
-            name.startsWith("kotlin.")
-        ) return false
-
-        val numericFields =
-            generateSequence<Class<*>>(value.javaClass) { it.superclass }
-                .flatMap { it.declaredFields.asSequence() }
-                .filter {
-                    !Modifier.isStatic(it.modifiers) &&
-                        !it.isSynthetic &&
-                        (
-                            it.type == Integer.TYPE ||
-                                it.type == Integer::class.java ||
-                                it.type == java.lang.Long.TYPE ||
-                                it.type == java.lang.Long::class.java
-                        )
-                }
-                .take(6)
-                .count()
-        // queue_id + song_id + queue_position are the minimum identity shape.
+        if (isPlatformValue(value)) return false
+        val numericFields = hierarchyFields(value.javaClass)
+            .count {
+                it.type == Integer.TYPE ||
+                    it.type == Integer::class.java ||
+                    it.type == java.lang.Long.TYPE ||
+                    it.type == java.lang.Long::class.java ||
+                    it.type == java.lang.Short.TYPE ||
+                    it.type == java.lang.Short::class.java
+            }
         return numericFields >= 3
     }
 
+    private fun isPlatformValue(value: Any): Boolean {
+        val name = value.javaClass.name
+        return name.startsWith("java.") ||
+            name.startsWith("android.") ||
+            name.startsWith("kotlin.") ||
+            value is Number ||
+            value is CharSequence ||
+            value is Boolean ||
+            value is Enum<*>
+    }
+
+    private fun hierarchyFields(type: Class<*>) =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter {
+                !Modifier.isStatic(it.modifiers) && !it.isSynthetic
+            }
+            .toList()
+
+    private fun rowSetFingerprint(rows: List<Any>): String =
+        rows.joinToString("|") { row ->
+            row.javaClass.name + "@" + System.identityHashCode(row)
+        }
+
     private fun cancelIfUnambiguous(handle: Any?) {
-        if (handle == null) return
+        if (handle == null || isPlatformValue(handle)) return
         val methods = GmmpReflectionPolicy.callableMethods(handle.javaClass)
             .filter {
                 !Modifier.isStatic(it.modifiers) &&
@@ -516,6 +735,77 @@ internal object NativeReactiveListReader {
             }
         }
     }
+
+    private fun reportFailureShape(source: Any) {
+        val key = source.javaClass.name
+        if (!reportedFailureShapes.add(key)) return
+
+        val methods = GmmpReflectionPolicy.callableMethods(source.javaClass)
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.declaringClass != Any::class.java
+            }
+        val terminals = methods
+            .filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes.single().isInterface
+            }
+            .take(12)
+            .joinToString(";") { method ->
+                val callback = method.parameterTypes.single()
+                val callbackShape = callback.methods
+                    .filter { it.declaringClass != Any::class.java }
+                    .take(10)
+                    .joinToString(",") { cb ->
+                        cb.name + "(" +
+                            cb.parameterTypes.joinToString(",") { it.name } +
+                            "):" + cb.returnType.name
+                    }
+                method.name + "(" + callback.name + "):" +
+                    method.returnType.name +
+                    "<" + safeGenericName(method) + ">" +
+                    "{" + callbackShape + "}"
+            }
+            .ifBlank { "none" }
+        val noArgObjects = methods
+            .filter {
+                it.parameterCount == 0 &&
+                    it.returnType == Any::class.java
+            }
+            .take(10)
+            .joinToString(",") {
+                it.name + "():Object<" + safeGenericName(it) + ">"
+            }
+            .ifBlank { "none" }
+        val fields = hierarchyFields(source.javaClass)
+            .take(16)
+            .joinToString(",") {
+                it.name + ":" + it.type.name
+            }
+            .ifBlank { "none" }
+        val genericInterfaces = runCatching {
+            source.javaClass.genericInterfaces.joinToString(",") {
+                it.typeName
+            }
+        }.getOrDefault("none").ifBlank { "none" }
+        val genericSuper = runCatching {
+            source.javaClass.genericSuperclass?.typeName ?: "none"
+        }.getOrDefault("none")
+
+        Log.w(
+            TAG,
+            "QUEUE REACTIVE READ FAIL | source=" + source.javaClass.name +
+                " | genericSuper=" + genericSuper +
+                " | genericInterfaces=" + genericInterfaces +
+                " | noArgObjects=" + noArgObjects +
+                " | terminals=" + terminals +
+                " | fields=" + fields
+        )
+    }
+
+    private fun safeGenericName(method: Method): String =
+        runCatching { method.genericReturnType.typeName }
+            .getOrDefault(method.returnType.name)
 
     private fun primitiveDefault(type: Class<*>): Any? = when (type) {
         java.lang.Boolean.TYPE -> false
