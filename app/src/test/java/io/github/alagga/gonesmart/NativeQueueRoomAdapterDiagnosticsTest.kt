@@ -20,7 +20,10 @@ class NativeQueueRoomAdapterDiagnosticsTest {
             fun M(): String =
                 "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
 
-            fun G(statement: Binder, value: Any) = Unit
+            fun G(statement: Binder, value: Any) {
+                statement.hashCode()
+                value.hashCode()
+            }
         }
 
         private class DatabaseLike {
