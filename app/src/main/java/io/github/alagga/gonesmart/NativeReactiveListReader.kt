@@ -96,9 +96,6 @@ internal object NativeReactiveListReader {
                 .filter { !Modifier.isStatic(it.modifiers) }
                 .filter { it.parameterCount == 1 }
                 .filter { it.parameterTypes.single().isInterface }
-                // Transformation operators commonly return the source family
-                // again. A terminal subscription/observation boundary is void
-                // or returns a different disposable/subscription family.
                 .filter {
                     it.returnType == java.lang.Void.TYPE ||
                         !it.returnType.isAssignableFrom(source.javaClass)
@@ -137,10 +134,6 @@ internal object NativeReactiveListReader {
                 keepPartial(rows, boundary)
             }
 
-            // Lifecycle-style observables reject observer registration away
-            // from Android's main thread. Retry only after the first invoke
-            // actually failed; a merely quiet Rx source is never subscribed a
-            // second time speculatively.
             if (
                 background.rows == null &&
                 background.invocationFailure != null &&
@@ -240,10 +233,6 @@ internal object NativeReactiveListReader {
         expectedModelClass: Class<*>?,
         allowPartial: Boolean
     ): List<Any>? {
-        // Only the source value itself may be a direct snapshot. Do not inspect
-        // arbitrary private fields here: doing so bypasses the carrier's native
-        // blocking/callback terminal and can mistake implementation state for
-        // the actual emitted DAO value.
         extractRowsDirect(
             value = source,
             expectedRows = expectedRows,
@@ -356,9 +345,6 @@ internal object NativeReactiveListReader {
                             return@forEach
                         }
 
-                        // Reactive Streams Subscriber requires request(n)
-                        // before onNext. A subscription/control object must
-                        // never be mistaken for a queue row.
                         val requesters =
                             GmmpReflectionPolicy.callableMethods(value.javaClass)
                                 .filter {
@@ -604,7 +590,7 @@ internal object NativeReactiveListReader {
         val rows = if (expectedModelClass == null) {
             val model = rawRows.first().javaClass
             if (!rawRows.all(model::isInstance)) return null
-            rawRows
+            unwrapHomogeneousRelationRows(rawRows) ?: rawRows
         } else {
             rawRows.map { row ->
                 when {
@@ -625,6 +611,17 @@ internal object NativeReactiveListReader {
             allowPartial && rows.size < expectedRows -> rows
             else -> null
         }
+    }
+
+    private fun unwrapHomogeneousRelationRows(rows: List<Any>): List<Any>? {
+        if (rows.isEmpty()) return null
+        val cache = java.util.concurrent.ConcurrentHashMap<Class<*>, Boolean>()
+        val nested = rows.map { row ->
+            if (looksLikeQueueEntity(row)) return null
+            uniqueNestedQueueEntity(row, cache) ?: return null
+        }
+        val model = nested.first().javaClass
+        return nested.takeIf { values -> values.all(model::isInstance) }
     }
 
     private fun uniqueNestedQueueEntity(
@@ -795,8 +792,6 @@ internal object NativeReactiveListReader {
             source.javaClass.genericSuperclass?.typeName ?: "none"
         }.getOrDefault("none")
 
-        // Local JVM tests do not provide an implementation for android.util.Log.
-        // Diagnostics must never turn a normal fail-closed read into a failure.
         runCatching {
             Log.w(
                 TAG,
