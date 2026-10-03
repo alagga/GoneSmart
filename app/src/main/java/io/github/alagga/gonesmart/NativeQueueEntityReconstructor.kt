@@ -6,19 +6,17 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 /**
- * Read-only structural fallback for GMMP's generated Room queue DAO.
+ * Read-only structural fallback for generated Room queue entities.
  *
- * GMMP 4.2.1 exposes one inherited List reader that accepts an array of its
- * native where/predicate objects. An empty typed predicate array asks GMMP for
- * the unfiltered native queue rows and is preferable to reconstructing rows.
- * The returned objects are accepted here only when their numeric fields prove
- * queue_id, song_id and queue_position one-to-one against the already-verified
- * read-only Cursor snapshot. The caller repeats that correlation before any
- * native DAO writer can become eligible.
+ * Reconstruction is allowed only when GMMP's own generated Room adapter proves
+ * queue_table ownership through its SQL text and bind callback. The adapter is
+ * invoked only against a fake binder; no database statement is created or
+ * executed. The caller must still correlate every reconstructed row against
+ * the live read-only Cursor before any native DAO writer becomes eligible.
  *
- * If that native list boundary is unavailable, the older generated-binding
- * reconstruction remains as a secondary fallback. Its SQL text and bind
- * callback are invoked against a fake binder; no database statement executes.
+ * GMMP 4.2.1 device evidence disproved the older Predicate[] -> List fallback:
+ * the observed inherited method queried the tracks table, not queue_table.
+ * Predicate contracts therefore have no role in entity reconstruction.
  */
 internal object NativeQueueEntityReconstructor {
     data class Result(
@@ -49,14 +47,6 @@ internal object NativeQueueEntityReconstructor {
         context: QueueContext
     ): Result? {
         if (context.items.isEmpty()) return null
-
-        // r29: the nearest custom array contract on d85/y75 is a query
-        // predicate family, not a Queue entity family. Prefer GMMP's own
-        // unfiltered native List reader before attempting any synthetic model
-        // construction. This is read-only and still requires full Cursor
-        // identity correlation both here and again in the mutation bridge.
-        readNativePredicateList(dao, context)?.let { return it }
-
         val adapter = findBindingAdapter(dao, modelClass) ?: return null
         val probeItem = chooseProbeItem(context.items) ?: return null
         val mapping = resolveConstructorMapping(
@@ -85,94 +75,6 @@ internal object NativeQueueEntityReconstructor {
         )
     }
 
-    private fun readNativePredicateList(
-        dao: Any,
-        context: QueueContext
-    ): Result? {
-        val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
-            .filter {
-                !Modifier.isStatic(it.modifiers) &&
-                    it.parameterCount == 1 &&
-                    it.parameterTypes[0].isArray &&
-                    !it.parameterTypes[0].componentType.isPrimitive &&
-                    it.parameterTypes[0].componentType != Any::class.java &&
-                    java.util.List::class.java.isAssignableFrom(it.returnType)
-            }
-
-        val correlated = methods.mapNotNull { method ->
-            val component = method.parameterTypes[0].componentType
-                ?: return@mapNotNull null
-            val emptyPredicates: Any =
-                java.lang.reflect.Array.newInstance(component, 0)
-            val rows = runCatching {
-                method.isAccessible = true
-                @Suppress("UNCHECKED_CAST")
-                (method.invoke(dao, emptyPredicates) as? List<Any?>)
-                    ?.filterNotNull()
-                    ?.map { it }
-            }.getOrNull()
-                ?.takeIf {
-                    it.size == context.items.size && it.isNotEmpty()
-                }
-                ?: return@mapNotNull null
-            if (!cursorCorrelates(rows, context)) return@mapNotNull null
-            Result(
-                rows = rows,
-                boundary = "native-predicate-list:" +
-                    method.declaringClass.name + "." + method.name +
-                    "(" + component.name + "[])"
-            )
-        }
-
-        // Multiple independently correlated readers are unnecessary and could
-        // indicate that a future GMMP build changed this contract. Fail closed
-        // instead of selecting one by an R8 name.
-        return correlated.singleOrNull()
-    }
-
-    private fun cursorCorrelates(
-        rows: List<Any>,
-        context: QueueContext
-    ): Boolean {
-        if (rows.size != context.items.size || rows.isEmpty()) return false
-        val model = rows.first().javaClass
-        if (!rows.all(model::isInstance)) return false
-        val fields = hierarchyFields(model).filter {
-            isNumericType(it.type)
-        }.onEach { it.isAccessible = true }
-        if (fields.size < 3) return false
-
-        val queueIds = context.items.map { it.queueEntryId }.sorted()
-        val queueIdCandidates = fields.filter { field ->
-            rows.mapNotNull { row ->
-                runCatching {
-                    (field.get(row) as? Number)?.toLong()
-                }.getOrNull()
-            }.sorted() == queueIds
-        }
-        val queueId = queueIdCandidates.singleOrNull() ?: return false
-        val byQueueId = context.items.associateBy { it.queueEntryId }
-
-        fun aligned(expected: (QueueItemInfo) -> Long): List<java.lang.reflect.Field> =
-            fields.filter { field ->
-                field != queueId && rows.all { row ->
-                    val id = runCatching {
-                        (queueId.get(row) as? Number)?.toLong()
-                    }.getOrNull() ?: return@all false
-                    val item = byQueueId[id] ?: return@all false
-                    val value = runCatching {
-                        (field.get(row) as? Number)?.toLong()
-                    }.getOrNull() ?: return@all false
-                    value == expected(item)
-                }
-            }
-
-        val track = aligned { it.track.id }.singleOrNull() ?: return false
-        val position = aligned { it.queuePosition.toLong() }
-            .singleOrNull() ?: return false
-        return track != position
-    }
-
     fun diagnosticShape(
         dao: Any,
         modelClass: Class<*>
@@ -183,17 +85,6 @@ internal object NativeQueueEntityReconstructor {
                 postfix = ")"
             ) { type -> type.name }
         }.ifBlank { "none" }
-        val predicateReaders = GmmpReflectionPolicy.callableMethods(dao.javaClass)
-            .filter {
-                !Modifier.isStatic(it.modifiers) &&
-                    it.parameterCount == 1 &&
-                    it.parameterTypes[0].isArray &&
-                    java.util.List::class.java.isAssignableFrom(it.returnType)
-            }
-            .joinToString(",") {
-                it.declaringClass.name + "." + it.name + "(" +
-                    it.parameterTypes[0].componentType.name + "[]):List"
-            }.ifBlank { "none" }
         val adapters = hierarchyFields(dao.javaClass).mapNotNull { field ->
             field.isAccessible = true
             val owner = runCatching { field.get(dao) }.getOrNull()
@@ -235,7 +126,6 @@ internal object NativeQueueEntityReconstructor {
         }.joinToString(";").ifBlank { "none" }
         return "model=" + modelClass.name +
             " | ctors=" + constructors +
-            " | predicateReaders=" + predicateReaders +
             " | adapters=" + adapters
     }
 
