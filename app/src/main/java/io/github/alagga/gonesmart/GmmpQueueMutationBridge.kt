@@ -28,6 +28,23 @@ internal class GmmpQueueMutationBridge(
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
         private val reportedEntityMappings =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        internal fun typedEntityArray(
+            modelClass: Class<*>,
+            values: List<Any>
+        ): Any {
+            require(values.all(modelClass::isInstance)) {
+                "Native queue delete rows do not share the verified entity type"
+            }
+            val result = java.lang.reflect.Array.newInstance(
+                modelClass,
+                values.size
+            )
+            values.forEachIndexed { index, value ->
+                java.lang.reflect.Array.set(result, index, value)
+            }
+            return result
+        }
     }
 
     private interface StatePositionBinding {
@@ -182,14 +199,16 @@ internal class GmmpQueueMutationBridge(
         } ?: return false
         val stale = resolved.rows.filter { it !== currentModel }
         val delete = resolved.delete ?: return false
-        val component = delete.parameterTypes.single().componentType
-        val staleArray = java.lang.reflect.Array.newInstance(
-            component,
-            stale.size
+        val declaredComponent = delete.parameterTypes.single().componentType
+        val runtimeComponent = currentModel.javaClass
+        val staleArray = typedEntityArray(runtimeComponent, stale)
+        Log.i(
+            TAG,
+            "QUEUE DELETE ARRAY | writer=" + delete.name +
+                " | declared=" + declaredComponent.name +
+                " | runtime=" + runtimeComponent.name +
+                " | rows=" + stale.size
         )
-        stale.forEachIndexed { index, value ->
-            java.lang.reflect.Array.set(staleArray, index, value)
-        }
 
         delete.invoke(resolved.dao, staleArray)
         setInt(resolved.position, currentModel, 1)
