@@ -6,9 +6,10 @@ import java.lang.reflect.Modifier
  * Failure-only, read-only diagnostics for generated Room adapters owned
  * directly by the runtime Queue DAO.
  *
- * Only nested adapter objects owned by the concrete DAO are inspected. Their
- * no-arg String methods are Room SQL-description boundaries; no DAO query,
- * reactive source, SQLite statement, binder or writer is invoked here.
+ * Only nested adapter objects owned by the concrete DAO that expose the
+ * generated two-argument void binder shape are inspected. Their no-arg String
+ * methods are Room SQL-description boundaries; no DAO query, reactive source,
+ * SQLite statement, binder or writer is invoked here.
  */
 internal object NativeQueueRoomAdapterDiagnostics {
     fun describe(dao: Any): String {
@@ -34,6 +35,17 @@ internal object NativeQueueRoomAdapterDiagnostics {
                 }
                 .toList()
 
+            // A direct nested field alone is not enough: unrelated helper or
+            // database-state objects may also be nested. Generated Room
+            // adapters expose the binder boundary (statement, entity)->void.
+            // Require that metadata-only shape BEFORE invoking any String
+            // method on the object.
+            val binderMethods = methods.filter {
+                it.parameterCount == 2 &&
+                    it.returnType == java.lang.Void.TYPE
+            }
+            if (binderMethods.isEmpty()) return@mapNotNull null
+
             val sql = methods.filter {
                 it.parameterCount == 0 &&
                     it.returnType == String::class.java &&
@@ -47,15 +59,12 @@ internal object NativeQueueRoomAdapterDiagnostics {
                 }.getOrNull()
             }.ifEmpty { listOf("none") }
 
-            val binders = methods.filter {
-                it.parameterCount == 2 &&
-                    it.returnType == java.lang.Void.TYPE
-            }.take(8).joinToString(",") { method ->
+            val binders = binderMethods.take(8).joinToString(",") { method ->
                 method.name + "(" +
                     method.parameterTypes.joinToString(",") { it.name } +
                     ")" +
                     if (method.isSynthetic || method.isBridge) "[bridge]" else ""
-            }.ifBlank { "none" }
+            }
 
             val genericSuper = runCatching {
                 type.genericSuperclass?.typeName ?: "none"
