@@ -1,6 +1,5 @@
 package io.github.alagga.gonesmart
 
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -21,11 +20,10 @@ class NativeQueueEntityTypeResolverTest {
         fun erased(values: Array<Any>) = values.size
     }
 
-    @Test fun nearestQueueSpecificArrayContractBeatsGenericBaseContract() {
+    @Test fun nearestCustomArrayContractDoesNotNominateMutationEntity() {
         val methods =
             GmmpReflectionPolicy.callableMethods(GeneratedQueueDao::class.java)
-        assertEquals(
-            QueueEntity::class.java,
+        assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 GeneratedQueueDao::class.java,
                 methods
@@ -52,11 +50,10 @@ class NativeQueueEntityTypeResolverTest {
 
     private class WrappedQueueDao : WrappedQueueDaoBase()
 
-    @Test fun constructorComponentsAreNotReinterpretedAsQueueEntities() {
+    @Test fun constructorComponentsCannotReintroduceAnEntityHint() {
         val methods =
             GmmpReflectionPolicy.callableMethods(WrappedQueueDao::class.java)
-        assertEquals(
-            QueueRelationWrapper::class.java,
+        assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 WrappedQueueDao::class.java,
                 methods
@@ -64,10 +61,8 @@ class NativeQueueEntityTypeResolverTest {
         )
     }
 
-    // Mirrors the 4.2.1 predicate shape: Predicate(Column, operator, value).
-    // The unique custom constructor component is a column descriptor, not an
-    // embedded queue_table row and must therefore never replace the array
-    // witness itself.
+    // Mirrors the proven 4.2.1 shape Predicate(Column, operator, value).
+    // Neither the predicate nor its custom column component is a Queue row.
     private class ColumnDescriptor
 
     private class PredicateWitness(
@@ -82,12 +77,11 @@ class NativeQueueEntityTypeResolverTest {
 
     private class PredicateDao : PredicateDaoBase()
 
-    @Test fun predicateColumnDescriptorIsNotNominatedAsEntity() {
+    @Test fun predicateWitnessReturnsNoEntityHint() {
         val methods = GmmpReflectionPolicy.callableMethods(
             PredicateDao::class.java
         )
-        assertEquals(
-            PredicateWitness::class.java,
+        assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 PredicateDao::class.java,
                 methods
@@ -102,7 +96,7 @@ class NativeQueueEntityTypeResolverTest {
 
     private class AmbiguousDao : AmbiguousBase()
 
-    @Test fun ambiguousNearestArrayContractsFailClosed() {
+    @Test fun ambiguousArrayContractsAlsoFailClosed() {
         assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 AmbiguousDao::class.java,
