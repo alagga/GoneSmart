@@ -6,24 +6,27 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
- * GMMP 4.2.1 native queue mutation bridge.
+ * Native queue mutation bridge for GMMP 4.2.1.
  *
- * Read identity/order from the verified read-only Cursor bridge, then
- * correlate those values to GMMP's actual generated Queue DAO entity objects.
- * No obfuscated entity field is accepted until queue_id, song_id and
- * queue_position agree with the live database rows. Writes still go through
- * GMMP's generated DAO methods; no direct SQL mutation is performed.
+ * Discovery is deliberately split into two trust levels:
+ * 1. Queue identity/order is read only through [GmmpQueueReader]'s verified
+ *    Cursor path.
+ * 2. A writable native entity model is accepted only from a generated Room
+ *    adapter whose OWN SQL names queue_table. The adapter binder is probed
+ *    without a real SQLite statement and the resulting entity mapping must
+ *    correlate one-to-one with the live Cursor before any writer is invoked.
+ *
+ * Unknown no-arg DAO boundaries, including reactive carriers, are metadata
+ * only here. They are never invoked during discovery.
  */
 internal class GmmpQueueMutationBridge(
     private val autoDj: Any
 ) {
     companion object {
         private const val TAG = "GoneSmartQueue"
-        private val reportedMutationShapes =
+        private val reportedShapes =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
-        private val reportedEntityFactoryShapes =
-            java.util.Collections.synchronizedSet(mutableSetOf<String>())
-        private val reportedEntityTypeMappings =
+        private val reportedEntityMappings =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
     }
 
@@ -126,6 +129,7 @@ internal class GmmpQueueMutationBridge(
                 ArrayList(newOrder)
             )
             resolved.statePosition.write(newCurrentPosition)
+
             val verified = GmmpQueueReader().read(autoDj)
                 ?: error("Queue verification unavailable")
             val verifyIds = verified.items
@@ -140,6 +144,7 @@ internal class GmmpQueueMutationBridge(
             ) {
                 "GMMP 4.2.1 queue verification failed"
             }
+
             Log.i(
                 TAG,
                 "QUEUE MUTATION | reverse verified | size=" +
@@ -157,8 +162,8 @@ internal class GmmpQueueMutationBridge(
                     ArrayList(original)
                 )
                 resolved.statePosition.write(oldState)
-            }.onFailure {
-                failure.addSuppressed(it)
+            }.onFailure { rollback ->
+                failure.addSuppressed(rollback)
             }
             throw failure
         }
@@ -173,8 +178,7 @@ internal class GmmpQueueMutationBridge(
         if (resolved.rows.size == 1) return true
 
         val currentModel = resolved.rows.singleOrNull {
-            number(resolved.queueId, it).toLong() ==
-                current.queueEntryId
+            number(resolved.queueId, it).toLong() == current.queueEntryId
         } ?: return false
         val stale = resolved.rows.filter { it !== currentModel }
         val delete = resolved.delete ?: return false
@@ -187,8 +191,6 @@ internal class GmmpQueueMutationBridge(
             java.lang.reflect.Array.set(staleArray, index, value)
         }
 
-        // Delete stale rows first. If the following position normalization
-        // fails, the currently playing native row is still retained.
         delete.invoke(resolved.dao, staleArray)
         setInt(resolved.position, currentModel, 1)
         resolved.update.invoke(
@@ -217,286 +219,58 @@ internal class GmmpQueueMutationBridge(
             ?: error("GMMP queue Cursor mapping unavailable")
         val dao = objectField(autoDj, "q")
             ?: error("GMMP 4.2.1 Queue DAO unavailable")
-        // GMMP 4.2.1 exposes generated Room DAO boundaries through
-        // inherited interfaces as well as concrete class methods. This is the
-        // same reflection shape that moved f94.q(p94) out of a
-        // class/superclass-only scan. Interface Method.invoke still dispatches
-        // on the concrete DAO instance; failed contracts are ignored below.
         val methods = GmmpReflectionPolicy.callableMethods(dao.javaClass)
-        // r24 proved that the nearest queue-specific API array type (ww3)
-        // is not the queue_table writer entity. Prefer the generated Room
-        // adapter itself: its queue_table SQL + erased bind(Object) bridge
-        // can reveal the actual model class without executing SQL.
-        val adapterEntity =
-            NativeQueueEntityAdapterTypeResolver.resolve(dao)
-        val entityTypeHint =
-            adapterEntity?.modelClass
-                ?: NativeQueueEntityTypeResolver.resolve(
-                    dao.javaClass,
-                    methods
-                )
-        if (adapterEntity != null) {
-            val key = dao.javaClass.name + "|" +
-                adapterEntity.modelClass.name
-            if (reportedEntityTypeMappings.add(key)) {
-                Log.i(
-                    TAG,
-                    "QUEUE ENTITY TYPE | source=generated-room-adapter" +
-                        " | model=" + adapterEntity.modelClass.name +
-                        " | evidence=" + adapterEntity.evidence
-                )
-            }
-        }
-        val listReaders = methods.filter {
-            !Modifier.isStatic(it.modifiers) &&
-                it.parameterCount == 0 &&
-                java.util.List::class.java
-                    .isAssignableFrom(it.returnType)
-        }
-        val listCandidates =
-            arrayListOf<Pair<String, List<Any>>>()
-        listReaders.forEach { method ->
-            runCatching {
-                method.isAccessible = true
-                @Suppress("UNCHECKED_CAST")
-                (method.invoke(dao) as? List<Any?>)
-                    ?.filterNotNull()
-                    ?.map { it }
-            }.getOrNull()?.takeIf {
-                it.size == context.items.size && it.isNotEmpty()
-            }?.let { rows ->
-                listCandidates +=
-                    (method.declaringClass.name + "." + method.name +
-                        ":direct") to rows
-            }
-        }
 
-        // GMMP 4.2.1 d85 no longer exposes the native Queue entity snapshot
-        // as a direct List. Its no-arg W1/X1 boundaries return R8-renamed
-        // reactive carriers. Subscribe read-only and accept an emission only
-        // when its row count matches the already-verified Cursor snapshot.
-        // queue_id/song_id/queue_position correlation below remains the real
-        // ownership proof before any writer is eligible.
-        val allReactiveReaders = if (listCandidates.isEmpty()) {
-            methods.filter {
-                !Modifier.isStatic(it.modifiers) &&
-                it.parameterCount == 0 &&
-                it.returnType != java.lang.Void.TYPE &&
-                !it.returnType.isPrimitive &&
-                !java.util.List::class.java
-                    .isAssignableFrom(it.returnType) &&
-                it.declaringClass != Any::class.java &&
-                it.returnType != String::class.java &&
-                it.returnType != Class::class.java
-            }
-        } else {
-            emptyList()
-        }
-        // Prefer generated DAO implementation boundaries. In the r18 shape
-        // these are exactly d85.W1()/X1(); inherited ys3 helpers are not
-        // query ownership evidence and must not be invoked speculatively.
-        val reactiveReaders =
-            allReactiveReaders.filter {
-                it.declaringClass == dao.javaClass
-            }.ifEmpty {
-                allReactiveReaders
-            }
-        val unresolvedCarrierShapes = arrayListOf<String>()
-        val partialReactiveRows =
-            arrayListOf<Pair<String, List<Any>>>()
-        reactiveReaders.take(6).forEach { method ->
-            val source = runCatching {
-                method.isAccessible = true
-                method.invoke(dao)
-            }.getOrNull() ?: return@forEach
-
-            // r23 disproved that the nearest queue-specific array type (ww3)
-            // is necessarily the generated Room writer entity. First let the
-            // verified read carrier materialize its real runtime List without
-            // forcing that type. It becomes eligible only after strict
-            // Cursor identity correlation below.
-            val exact = NativeReactiveListReader.read(
-                source = source,
-                expectedRows = context.items.size,
-                timeoutMs = 650L,
-                expectedModelClass = null,
-                allowPartial = false
-            )
-            if (exact != null &&
-                cursorCorrelates(exact.rows, context)
-            ) {
-                val sourceName =
-                    method.declaringClass.name + "." + method.name +
-                        "->" + exact.boundary + ":cursor-correlated"
-                listCandidates += sourceName to exact.rows
-                return@forEach
-            }
-
-            // Keep the queue-specific ww3 witness only for bounded partial
-            // stream aggregation. It is no longer treated as writer-entity
-            // ownership proof.
-            val snapshot = if (entityTypeHint != null) {
-                NativeReactiveListReader.read(
-                    source = source,
-                    expectedRows = context.items.size,
-                    timeoutMs = 650L,
-                    expectedModelClass = entityTypeHint,
-                    allowPartial = true
-                )
-            } else {
-                null
-            }
-            if (snapshot != null) {
-                val sourceName =
-                    method.declaringClass.name + "." + method.name +
-                        "->" + snapshot.boundary
-                if (snapshot.rows.size == context.items.size &&
-                    cursorCorrelates(snapshot.rows, context)
-                ) {
-                    listCandidates += sourceName to snapshot.rows
-                } else if (snapshot.rows.size < context.items.size) {
-                    partialReactiveRows += sourceName to snapshot.rows
-                }
-            } else {
-                val carrierMethods =
-                    GmmpReflectionPolicy.callableMethods(source.javaClass)
-                        .filter {
-                            !Modifier.isStatic(it.modifiers) &&
-                                it.parameterCount <= 1 &&
-                                it.declaringClass != Any::class.java
-                        }
-                        .take(24)
-                        .joinToString(",") {
-                            it.name + "(" +
-                                it.parameterTypes.joinToString(",") { p ->
-                                    p.name
-                                } +
-                                "):" + it.returnType.name
-                        }
-                unresolvedCarrierShapes +=
-                    method.name + "->" + source.javaClass.name +
-                        "{" + carrierMethods + "}"
-            }
-        }
-
-        // Generated fake-binder reconstruction remains a secondary fallback,
-        // but only after the real read carrier did not expose a fully
-        // Cursor-correlated entity set. When r25 resolves the actual entity
-        // from d85's queue_table adapter, this path can safely reconstruct
-        // that model from the already-verified Cursor values. The old ww3
-        // API witness remains only a final compatibility fallback.
-        if (listCandidates.isEmpty() && entityTypeHint != null) {
-            val reconstructed = NativeQueueEntityReconstructor.reconstruct(
-                dao = dao,
-                modelClass = entityTypeHint,
-                context = context
-            )
-            if (reconstructed != null &&
-                cursorCorrelates(reconstructed.rows, context)
-            ) {
-                listCandidates +=
-                    reconstructed.boundary to reconstructed.rows
-                Log.i(
-                    TAG,
-                    "QUEUE ENTITY FACTORY | model=" +
-                        entityTypeHint.name +
-                        " | rows=" + reconstructed.rows.size +
-                        " | proof=" + reconstructed.boundary
-                )
-            } else {
-                val key = dao.javaClass.name + "|" + entityTypeHint.name
-                if (reportedEntityFactoryShapes.add(key)) {
-                    Log.w(
-                        TAG,
-                        "QUEUE ENTITY FACTORY | unresolved | " +
-                            NativeQueueEntityReconstructor.diagnosticShape(
-                                dao,
-                                entityTypeHint
-                            )
-                    )
-                }
-            }
-        }
-
-        // W1/X1 may expose different reactive views of the same native
-        // entity stream. Once the nearest queue-specific DAO contract proves
-        // the concrete entity type, combine bounded partial emissions and
-        // deduplicate them by their numeric native-row fingerprint. This is
-        // still discovery only: the queue_id/song_id/queue_position checks
-        // below remain mandatory before a writer becomes eligible.
-        if (entityTypeHint != null && partialReactiveRows.isNotEmpty()) {
-            val compatible = partialReactiveRows
-                .flatMap { it.second }
-                .filter(entityTypeHint::isInstance)
-            val deduped = linkedMapOf<String, Any>()
-            compatible.forEach { row ->
-                deduped.putIfAbsent(
-                    nativeRowFingerprint(listOf(row)),
-                    row
-                )
-            }
-            if (deduped.size == context.items.size) {
-                listCandidates +=
-                    ("reactive-aggregate:" +
-                        partialReactiveRows.joinToString("+") {
-                            it.first + "#" + it.second.size
-                        }) to deduped.values.toList()
-            }
-        }
-
-        val distinctCandidates = listCandidates
-            .filter { (_, rows) -> cursorCorrelates(rows, context) }
-            .distinctBy { (_, rows) ->
-                nativeRowFingerprint(rows)
-            }
-        val chosenRows = distinctCandidates.singleOrNull()
-        if (chosenRows == null) {
-            reportMutationShape(dao, methods, context.items.size)
-            if (unresolvedCarrierShapes.isNotEmpty()) {
-                Log.w(
-                    TAG,
-                    "QUEUE REACTIVE SHAPE | " +
-                        unresolvedCarrierShapes.joinToString(";")
-                )
-            }
+        // r30 device evidence showed that invoking the opaque W1/X1 carriers
+        // during discovery coincides with large native queue changes. They are
+        // therefore untrusted metadata only. A native model is accepted solely
+        // from a generated adapter whose own SQL explicitly names queue_table.
+        val adapterEntity = NativeQueueEntityAdapterTypeResolver.resolve(dao)
+        if (adapterEntity == null) {
+            reportRoomAdapterShape(dao, methods, context.items.size)
             error(
-                "GMMP native queue entity reader is not unique: " +
-                    "entityHint=" +
-                    (entityTypeHint?.name ?: "none") + "; " +
-                    distinctCandidates.joinToString(",") { (source, rows) ->
-                        source + "#" + rows.size
-                    }.ifBlank {
-                        "none; callableReaders=" +
-                            (
-                                listReaders.map {
-                                    it.declaringClass.name + "." + it.name
-                                } +
-                                    reactiveReaders.take(8).map {
-                                        it.declaringClass.name + "." +
-                                            it.name + "->" +
-                                            it.returnType.name
-                                    }
-                                ).joinToString(",").ifBlank { "none" }
-                    }
+                "GMMP queue_table Room entity adapter is unresolved; " +
+                    "reactive DAO discovery is disabled"
             )
         }
-        val rows = chosenRows.second
+
+        val typeKey = dao.javaClass.name + "|" + adapterEntity.modelClass.name
+        if (reportedEntityMappings.add(typeKey)) {
+            Log.i(
+                TAG,
+                "QUEUE ENTITY TYPE | source=generated-room-adapter" +
+                    " | model=" + adapterEntity.modelClass.name +
+                    " | evidence=" + adapterEntity.evidence
+            )
+        }
+
+        val reconstructed = NativeQueueEntityReconstructor.reconstruct(
+            dao = dao,
+            modelClass = adapterEntity.modelClass,
+            context = context
+        )
+        if (reconstructed == null ||
+            !cursorCorrelates(reconstructed.rows, context)
+        ) {
+            reportRoomAdapterShape(dao, methods, context.items.size)
+            error(
+                "GMMP queue_table Room entity reconstruction did not " +
+                    "correlate with the read-only Cursor"
+            )
+        }
+
+        val rows = reconstructed.rows
         val modelClass = rows.first().javaClass
         require(rows.all(modelClass::isInstance))
 
-        val fields = hierarchyFields(modelClass).filter {
-            it.type == Integer.TYPE ||
-                it.type == Integer::class.java ||
-                it.type == java.lang.Long.TYPE ||
-                it.type == java.lang.Long::class.java
-        }.onEach { it.isAccessible = true }
-
-        val expectedQueueIds =
-            context.items.map { it.queueEntryId }.sorted()
+        val fields = numericFields(modelClass)
+        val expectedQueueIds = context.items.map {
+            it.queueEntryId
+        }.sorted()
         val queueIdCandidates = fields.filter { field ->
-            rows.mapNotNull {
+            rows.mapNotNull { row ->
                 runCatching {
-                    (field.get(it) as? Number)?.toLong()
+                    (field.get(row) as? Number)?.toLong()
                 }.getOrNull()
             }.sorted() == expectedQueueIds
         }
@@ -506,8 +280,7 @@ internal class GmmpQueueMutationBridge(
                     queueIdCandidates.joinToString(",") { it.name }
             )
 
-        val contextByQueueId =
-            context.items.associateBy { it.queueEntryId }
+        val contextByQueueId = context.items.associateBy { it.queueEntryId }
         fun aligned(
             label: String,
             expected: (QueueItemInfo) -> Long
@@ -534,14 +307,19 @@ internal class GmmpQueueMutationBridge(
         require(trackId != position)
 
         val updateCandidates = methods.filter {
-            it.parameterCount == 1 &&
+            !Modifier.isStatic(it.modifiers) &&
+                it.parameterCount == 1 &&
                 java.util.List::class.java
                     .isAssignableFrom(it.parameterTypes[0]) &&
                 it.returnType == java.lang.Void.TYPE
         }
-        val update = updateCandidates.singleOrNull {
-            it.name == "O0"
-        } ?: updateCandidates.singleOrNull()
+        val ownedUpdates = updateCandidates.filter {
+            it.declaringClass == dao.javaClass
+        }
+        val update = ownedUpdates.singleOrNull { it.name == "O0" }
+            ?: ownedUpdates.singleOrNull()
+            ?: updateCandidates.singleOrNull { it.name == "O0" }
+            ?: updateCandidates.singleOrNull()
             ?: error(
                 "GMMP Queue DAO update is not unique: " +
                     updateCandidates.joinToString(",") { it.name }
@@ -549,20 +327,18 @@ internal class GmmpQueueMutationBridge(
         update.isAccessible = true
 
         val deleteCandidates = methods.filter {
-            it.parameterCount == 1 &&
+            !Modifier.isStatic(it.modifiers) &&
+                it.parameterCount == 1 &&
                 it.parameterTypes[0].isArray &&
                 it.parameterTypes[0].componentType
                     .isAssignableFrom(modelClass) &&
                 it.returnType == java.lang.Void.TYPE
         }
-        val ownedDeleteCandidates = deleteCandidates.filter {
+        val ownedDeletes = deleteCandidates.filter {
             it.declaringClass == dao.javaClass
         }
         val delete = (
-            // In 4.2.1 the generated d85 implementation owns one concrete
-            // array writer (P0 in the observed build). Prefer exact DAO
-            // ownership over the old inherited 4.2.0 name "O".
-            ownedDeleteCandidates.singleOrNull()
+            ownedDeletes.singleOrNull()
                 ?: deleteCandidates.singleOrNull { it.name == "O" }
                 ?: deleteCandidates.singleOrNull()
             )?.apply { isAccessible = true }
@@ -581,8 +357,6 @@ internal class GmmpQueueMutationBridge(
             TAG,
             "QUEUE MUTATION MAPPING | dao=" + dao.javaClass.name +
                 " | model=" + modelClass.name +
-                " | entityHint=" +
-                (entityTypeHint?.name ?: "none") +
                 " | readRows=" + rows.size +
                 " | queueId=" + queueId.name +
                 " | trackId=" + trackId.name +
@@ -590,19 +364,37 @@ internal class GmmpQueueMutationBridge(
                 " | update=" + update.name +
                 " | delete=" + (delete?.name ?: "none") +
                 " | state=" + statePosition.description +
-                " | reader=" + chosenRows.first
+                " | reader=" + reconstructed.boundary
         )
+
         return Resolved(
-            dao,
-            rows,
-            queueId,
-            trackId,
-            position,
-            update,
-            delete,
-            statePosition,
-            context
+            dao = dao,
+            rows = rows,
+            queueId = queueId,
+            trackId = trackId,
+            position = position,
+            update = update,
+            delete = delete,
+            statePosition = statePosition,
+            context = context
         )
+    }
+
+    private fun reportRoomAdapterShape(
+        dao: Any,
+        methods: List<Method>,
+        expectedRows: Int
+    ) {
+        val key = "room|" + dao.javaClass.name
+        if (reportedShapes.add(key)) {
+            Log.w(
+                TAG,
+                "QUEUE ROOM ADAPTER SHAPE | dao=" + dao.javaClass.name +
+                    " | adapters=" +
+                    NativeQueueRoomAdapterDiagnostics.describe(dao)
+            )
+        }
+        reportMutationShape(dao, methods, expectedRows)
     }
 
     private fun resolveStatePosition(
@@ -651,23 +443,19 @@ internal class GmmpQueueMutationBridge(
             return MethodStatePositionBinding(host, getter, setter)
         }
 
-        // r20 device evidence repeatedly proves qr.t -> ur.method:b as the
-        // 4.2.1 current queue-position pointer. Resolve that state host first,
-        // before generic correlation can confuse TrackDao kr.G1 with a queue
-        // position that happens to have the same integer value.
+        // Verified 4.2.1 fast path; names are evidence only and structural
+        // matching below remains the fallback.
         objectField(autoDj, "t")?.let { state ->
             matchingFields(state).singleOrNull()?.let {
                 return FieldStatePositionBinding(state, it)
             }
             matchingMethod(state)?.let { return it }
         }
-
-        // Preserve the earlier 4.2.1 dx3 field path as fallback.
-        objectField(autoDj, "p")?.let { fast ->
-            matchingFields(fast).singleOrNull()?.let {
-                return FieldStatePositionBinding(fast, it)
+        objectField(autoDj, "p")?.let { state ->
+            matchingFields(state).singleOrNull()?.let {
+                return FieldStatePositionBinding(state, it)
             }
-            matchingMethod(fast)?.let { return it }
+            matchingMethod(state)?.let { return it }
         }
 
         val hosts = hierarchyFields(autoDj.javaClass)
@@ -677,29 +465,20 @@ internal class GmmpQueueMutationBridge(
                     ownerField.get(autoDj)
                 }.getOrNull() ?: return@mapNotNull null
                 if (!isStateSignalHost(host)) return@mapNotNull null
-                ownerField.name to host
+                host
             }
-            .distinctBy { (_, host) -> System.identityHashCode(host) }
+            .distinctBy(System::identityHashCode)
 
-        val fieldBindings = hosts.mapNotNull { (_, host) ->
+        val fieldBindings = hosts.mapNotNull { host ->
             matchingFields(host).singleOrNull()?.let {
                 FieldStatePositionBinding(host, it)
             }
         }
         if (fieldBindings.size == 1) return fieldBindings.single()
 
-        // Generic fallback only after the proven t/p state hosts failed.
-        val methodBindings = hosts.mapNotNull { (_, host) ->
-            matchingMethod(host)
-        }
+        val methodBindings = hosts.mapNotNull(::matchingMethod)
         if (methodBindings.size == 1) return methodBindings.single()
 
-        reportStateShape(
-            currentQueuePosition,
-            hosts,
-            fieldBindings,
-            methodBindings
-        )
         error(
             "GMMP current-position state binding is not unique" +
                 " | fields=" + fieldBindings.joinToString(",") {
@@ -719,13 +498,13 @@ internal class GmmpQueueMutationBridge(
             value is java.util.Collection<*> ||
             value is java.util.concurrent.Executor
         ) return false
-        val fields = hierarchyFields(value.javaClass)
-        return fields.none { field ->
+
+        return hierarchyFields(value.javaClass).none { field ->
             val declaredDatabase =
                 field.type.name ==
                     "gonemad.gmmp.data.database.GMDatabase" ||
-                    generateSequence<Class<*>>(field.type) { c -> c.superclass }
-                        .any { c -> c.name == "androidx.room.RoomDatabase" }
+                    generateSequence<Class<*>>(field.type) { it.superclass }
+                        .any { it.name == "androidx.room.RoomDatabase" }
             if (declaredDatabase) {
                 true
             } else {
@@ -739,65 +518,12 @@ internal class GmmpQueueMutationBridge(
                             "gonemad.gmmp.data.database.GMDatabase_Impl" ||
                             generateSequence<Class<*>>(
                                 nested.javaClass
-                            ) { c -> c.superclass }.any { c ->
-                                c.name == "androidx.room.RoomDatabase"
+                            ) { it.superclass }.any {
+                                it.name == "androidx.room.RoomDatabase"
                             }
                     )
             }
         }
-    }
-
-    private fun reportStateShape(
-        currentQueuePosition: Int,
-        hosts: List<Pair<String, Any>>,
-        fieldBindings: List<StatePositionBinding>,
-        methodBindings: List<StatePositionBinding>
-    ) {
-        val key = "state|" + autoDj.javaClass.name + "|" +
-            currentQueuePosition
-        if (!reportedMutationShapes.add(key)) return
-        val details = hosts.take(8).joinToString(";") { (ownerField, host) ->
-            val methods = GmmpReflectionPolicy.callableMethods(host.javaClass)
-                .filter { !Modifier.isStatic(it.modifiers) }
-            val readers = methods.filter {
-                it.parameterCount == 0 &&
-                    it.name != "hashCode" &&
-                    (
-                        it.returnType == Integer.TYPE ||
-                            it.returnType == Integer::class.java
-                    )
-            }.mapNotNull { method ->
-                runCatching {
-                    method.isAccessible = true
-                    val value = (method.invoke(host) as? Number)?.toInt()
-                        ?: return@runCatching null
-                    method.name + "=" + value
-                }.getOrNull()
-            }
-            val writers = methods.filter {
-                it.parameterCount == 1 &&
-                    (
-                        it.parameterTypes[0] == Integer.TYPE ||
-                            it.parameterTypes[0] == Integer::class.java
-                    ) &&
-                    it.returnType == java.lang.Void.TYPE
-            }.joinToString(",") { it.name }
-            ownerField + "->" + host.javaClass.name +
-                "{read=" + readers.joinToString(",").ifBlank { "none" } +
-                ";write=" + writers.ifBlank { "none" } + "}"
-        }
-        Log.w(
-            TAG,
-            "QUEUE MUTATION STATE SHAPE | current=" +
-                currentQueuePosition +
-                " | hosts=" + details.ifBlank { "none" } +
-                " | fieldCandidates=" +
-                fieldBindings.joinToString(",") { it.description }
-                    .ifBlank { "none" } +
-                " | methodCandidates=" +
-                methodBindings.joinToString(",") { it.description }
-                    .ifBlank { "none" }
-        )
     }
 
     private fun reportMutationShape(
@@ -805,34 +531,36 @@ internal class GmmpQueueMutationBridge(
         methods: List<Method>,
         expectedRows: Int
     ) {
-        val key = dao.javaClass.name + "|" + expectedRows
-        if (!reportedMutationShapes.add(key)) return
+        val key = "mutation|" + dao.javaClass.name + "|" + expectedRows
+        if (!reportedShapes.add(key)) return
+
         val noArg = methods.filter {
             !Modifier.isStatic(it.modifiers) && it.parameterCount == 0
         }.take(40).joinToString(",") {
             it.declaringClass.name + "." + it.name +
                 "():" + it.returnType.name
         }
-        val listWrites = methods.filter {
+        val writers = methods.filter {
             !Modifier.isStatic(it.modifiers) &&
                 it.parameterCount == 1 &&
                 (
                     java.util.List::class.java.isAssignableFrom(
                         it.parameterTypes[0]
-                    ) ||
-                    it.parameterTypes[0].isArray
+                    ) || it.parameterTypes[0].isArray
                 )
         }.take(40).joinToString(",") {
             it.declaringClass.name + "." + it.name +
                 "(" + it.parameterTypes[0].name + "):" +
                 it.returnType.name
         }
+
         Log.w(
             TAG,
             "QUEUE MUTATION SHAPE | dao=" + dao.javaClass.name +
                 " | expectedRows=" + expectedRows +
                 " | noArg=" + noArg.ifBlank { "none" } +
-                " | writers=" + listWrites.ifBlank { "none" }
+                " | writers=" + writers.ifBlank { "none" } +
+                " | reactiveInvocation=disabled"
         )
     }
 
@@ -843,18 +571,12 @@ internal class GmmpQueueMutationBridge(
         if (rows.size != context.items.size || rows.isEmpty()) return false
         val model = rows.first().javaClass
         if (!rows.all(model::isInstance)) return false
-
-        val fields = hierarchyFields(model).filter {
-            it.type == Integer.TYPE ||
-                it.type == Integer::class.java ||
-                it.type == java.lang.Long.TYPE ||
-                it.type == java.lang.Long::class.java
-        }.onEach { it.isAccessible = true }
+        val fields = numericFields(model)
         if (fields.size < 3) return false
 
-        val expectedQueueIds = context.items
-            .map { it.queueEntryId }
-            .sorted()
+        val expectedQueueIds = context.items.map {
+            it.queueEntryId
+        }.sorted()
         val queueIdCandidates = fields.filter { field ->
             rows.mapNotNull { row ->
                 runCatching {
@@ -902,33 +624,13 @@ internal class GmmpQueueMutationBridge(
         }.size == 1
     }
 
-    private fun nativeRowFingerprint(rows: List<Any>): String {
-        val first = rows.firstOrNull() ?: return "empty"
-        val model = first.javaClass
-        if (!rows.all(model::isInstance)) {
-            return rows.joinToString("|") { it.javaClass.name }
-        }
-        val numeric = hierarchyFields(model).filter {
+    private fun numericFields(type: Class<*>): List<Field> =
+        hierarchyFields(type).filter {
             it.type == Integer.TYPE ||
                 it.type == Integer::class.java ||
                 it.type == java.lang.Long.TYPE ||
                 it.type == java.lang.Long::class.java
         }.onEach { it.isAccessible = true }
-            .sortedBy { it.declaringClass.name + "|" + it.name }
-        return buildString {
-            append(model.name)
-            numeric.forEach { field ->
-                append('|').append(field.name).append('=')
-                rows.forEach { row ->
-                    append(
-                        runCatching {
-                            (field.get(row) as? Number)?.toLong()
-                        }.getOrNull() ?: Long.MIN_VALUE
-                    ).append(',')
-                }
-            }
-        }
-    }
 
     private fun objectField(target: Any, name: String): Any? =
         generateSequence<Class<*>>(target.javaClass) { it.superclass }
@@ -940,7 +642,9 @@ internal class GmmpQueueMutationBridge(
                 }.getOrNull()
             }
             .firstOrNull()
-            ?.let { runCatching { it.get(target) }.getOrNull() }
+            ?.let { field ->
+                runCatching { field.get(target) }.getOrNull()
+            }
 
     private fun number(field: Field, target: Any): Number =
         field.get(target) as? Number
@@ -964,5 +668,4 @@ internal class GmmpQueueMutationBridge(
                 it.declaringClass.name + "|" + it.name
             }
             .toList()
-
 }
