@@ -7,9 +7,9 @@ import java.lang.reflect.Modifier
  * directly by the runtime Queue DAO.
  *
  * Only nested adapter objects owned by the concrete DAO that expose the
- * generated two-argument void binder shape are inspected. Their no-arg String
- * methods are Room SQL-description boundaries; no DAO query, reactive source,
- * SQLite statement, binder or writer is invoked here.
+ * generated erased two-argument binder shape are inspected. Their no-arg
+ * String methods are Room SQL-description boundaries; no DAO query, reactive
+ * source, SQLite statement, binder or writer is invoked here.
  */
 internal object NativeQueueRoomAdapterDiagnostics {
     fun describe(dao: Any): String {
@@ -36,12 +36,15 @@ internal object NativeQueueRoomAdapterDiagnostics {
                 .toList()
 
             // A direct nested field alone is not enough: unrelated helper or
-            // database-state objects may also be nested. Generated Room
-            // adapters expose the binder boundary (statement, entity)->void.
-            // Require that metadata-only shape BEFORE invoking any String
-            // method on the object.
+            // database-state objects may also be nested. Mirror the erased
+            // Room binder boundary used by NativeQueueEntityAdapterTypeResolver:
+            // (reference statement, Object entity) -> void. In particular,
+            // java.lang.Object.wait(long,int) must never qualify as a binder.
             val binderMethods = methods.filter {
-                it.parameterCount == 2 &&
+                it.declaringClass != Any::class.java &&
+                    it.parameterCount == 2 &&
+                    !it.parameterTypes[0].isPrimitive &&
+                    it.parameterTypes[1] == Any::class.java &&
                     it.returnType == java.lang.Void.TYPE
             }
             if (binderMethods.isEmpty()) return@mapNotNull null
