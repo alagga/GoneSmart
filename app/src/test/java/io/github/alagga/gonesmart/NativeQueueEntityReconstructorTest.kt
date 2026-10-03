@@ -83,6 +83,41 @@ class NativeQueueEntityReconstructorTest {
         assertTrue(result.boundary.startsWith("generated-binding:"))
     }
 
+    private class NativePredicate
+
+    private open class PredicateDaoBase(
+        private val rows: List<NativeRow>
+    ) {
+        fun read(vararg predicates: NativePredicate): List<NativeRow> =
+            if (predicates.isEmpty()) rows else emptyList()
+    }
+
+    private class PredicateDao(rows: List<NativeRow>) : PredicateDaoBase(rows)
+
+    @Test fun nativePredicateListReaderBeatsWrongArrayComponentEntityHint() {
+        val context = context()
+        val nativeRows = context.items.map { item ->
+            NativeRow(
+                trackId = item.track.id,
+                queueId = item.queueEntryId,
+                shufflePosition = item.shufflePosition,
+                queuePosition = item.queuePosition
+            )
+        }
+
+        // The model hint intentionally represents the predicate family rather
+        // than the row type. r29 must still use GMMP's own unfiltered List
+        // reader and let Cursor correlation prove the actual runtime rows.
+        val result = NativeQueueEntityReconstructor.reconstruct(
+            dao = PredicateDao(nativeRows),
+            modelClass = NativePredicate::class.java,
+            context = context
+        )
+
+        assertEquals(nativeRows, result?.rows)
+        assertTrue(result?.boundary?.startsWith("native-predicate-list:") == true)
+    }
+
     @Test fun insertSqlMustExposeAllQueueColumnsInBindOrder() {
         assertEquals(
             listOf(

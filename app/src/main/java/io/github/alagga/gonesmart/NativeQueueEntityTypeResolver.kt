@@ -4,15 +4,15 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
- * Derives the concrete queue entity type from GMMP's generated DAO hierarchy.
+ * Resolves the nearest custom array contract in GMMP's Queue DAO hierarchy.
  *
- * R8 erases the generated implementation writer to Object[], while the nearest
- * queue-specific superclass can still expose a relation/wrapper array contract.
- * The wrapper is only a type witness: when it has exactly one non-platform
- * constructor component, that nested type can be nominated for read-carrier
- * unwrapping even when R8 has obscured its field/constructor shape. The caller
- * still requires exact live Cursor correlation of queue_id, song_id and
- * queue_position before any writer becomes eligible.
+ * Historical name note: older GoneSmart revisions treated this array component
+ * as a possible Queue entity type. GMMP 4.2.1 device evidence now shows that
+ * the observed custom array is the native where/predicate family instead. The
+ * returned class is therefore only a read-boundary witness used to reach
+ * GMMP's own predicate-based List reader. It is never accepted as writer
+ * entity ownership. The mutation bridge still requires exact live Cursor
+ * correlation of queue_id, song_id and queue_position before any writer runs.
  */
 internal object NativeQueueEntityTypeResolver {
     fun resolve(
@@ -41,47 +41,13 @@ internal object NativeQueueEntityTypeResolver {
             .filter { it.distance == bestDistance }
             .map { it.type }
             .distinct()
-        val witness = nearest.singleOrNull() ?: return null
-        return embeddedQueueEntity(witness) ?: witness
-    }
 
-    /**
-     * The observed 4.2.1 queue-specific array witness is a relation wrapper.
-     * Do not pin its R8 name or the nested model name. If the wrapper itself
-     * already has a direct Queue-entity numeric shape, keep it. Otherwise a
-     * unique custom constructor component is a safe *read-only nomination*:
-     * NativeReactiveListReader must find exactly one such nested instance in
-     * each emitted relation row, and GmmpQueueMutationBridge must then prove
-     * the complete set one-to-one against the live Queue Cursor before any
-     * mutation method can be selected or invoked.
-     *
-     * Requiring the embedded type to expose four obvious numeric fields here
-     * was too strict after R8: the r24 host pass consequently stopped at the
-     * wrapper witness and never exercised the stronger runtime correlation.
-     */
-    internal fun embeddedQueueEntity(witness: Class<*>): Class<*>? {
-        if (looksLikeQueueEntity(witness)) return null
-        val embedded = witness.declaredConstructors
-            .flatMap { it.parameterTypes.asIterable() }
-            .filter(::usable)
-            .filter { it != witness }
-            .distinct()
-        return embedded.singleOrNull()
-    }
-
-    private fun looksLikeQueueEntity(type: Class<*>): Boolean {
-        val numericFields = generateSequence<Class<*>>(type) { it.superclass }
-            .flatMap { it.declaredFields.asSequence() }
-            .count {
-                !Modifier.isStatic(it.modifiers) &&
-                    !it.isSynthetic &&
-                    isNumeric(it.type)
-            }
-        if (numericFields >= 4) return true
-        return type.declaredConstructors.any { ctor ->
-            ctor.parameterCount == 4 &&
-                ctor.parameterTypes.all(::isNumeric)
-        }
+        // r29: do not unwrap constructor components of the array type. The
+        // 4.2.1 witness has the shape Predicate(Column, operator, value), so
+        // its custom constructor component is a column descriptor, not a
+        // queue_table entity. The witness itself is enough to identify the
+        // native predicate-list reader structurally.
+        return nearest.singleOrNull()
     }
 
     private fun usable(type: Class<*>): Boolean {
@@ -94,11 +60,6 @@ internal object NativeQueueEntityTypeResolver {
             !name.startsWith("android.") &&
             !name.startsWith("kotlin.")
     }
-
-    private fun isNumeric(type: Class<*>): Boolean =
-        type == Integer.TYPE || type == Integer::class.java ||
-            type == java.lang.Long.TYPE || type == java.lang.Long::class.java ||
-            type == java.lang.Short.TYPE || type == java.lang.Short::class.java
 
     private data class Candidate(
         val type: Class<*>,

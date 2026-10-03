@@ -21,7 +21,7 @@ class NativeQueueEntityTypeResolverTest {
         fun erased(values: Array<Any>) = values.size
     }
 
-    @Test fun nearestQueueSpecificArrayTypeBeatsGenericBaseContract() {
+    @Test fun nearestQueueSpecificArrayContractBeatsGenericBaseContract() {
         val methods =
             GmmpReflectionPolicy.callableMethods(GeneratedQueueDao::class.java)
         assertEquals(
@@ -52,11 +52,11 @@ class NativeQueueEntityTypeResolverTest {
 
     private class WrappedQueueDao : WrappedQueueDaoBase()
 
-    @Test fun uniqueNumericEntityInsideQueueWrapperIsUnwrapped() {
+    @Test fun constructorComponentsAreNotReinterpretedAsQueueEntities() {
         val methods =
             GmmpReflectionPolicy.callableMethods(WrappedQueueDao::class.java)
         assertEquals(
-            EmbeddedQueueEntity::class.java,
+            QueueRelationWrapper::class.java,
             NativeQueueEntityTypeResolver.resolve(
                 WrappedQueueDao::class.java,
                 methods
@@ -64,64 +64,32 @@ class NativeQueueEntityTypeResolverTest {
         )
     }
 
-    // R8 can obscure the embedded model enough that its queue identity is not
-    // obvious from static constructor/field counts. It is still safe to
-    // nominate the one custom relation component because the mutation bridge
-    // performs exact live Cursor correlation before selecting any writer.
-    private class OpaqueEmbeddedEntity(
-        val payload: String
+    // Mirrors the 4.2.1 predicate shape: Predicate(Column, operator, value).
+    // The unique custom constructor component is a column descriptor, not an
+    // embedded queue_table row and must therefore never replace the array
+    // witness itself.
+    private class ColumnDescriptor
+
+    private class PredicateWitness(
+        val column: ColumnDescriptor,
+        val operator: String,
+        val value: Any
     )
 
-    private class OpaqueRelationWrapper(
-        val entity: OpaqueEmbeddedEntity,
-        val label: String,
-        val extra: Any
-    )
-
-    private open class OpaqueWrappedQueueDaoBase {
-        fun queueSpecific(values: Array<OpaqueRelationWrapper>) = values.size
+    private open class PredicateDaoBase {
+        fun filtered(values: Array<PredicateWitness>) = values.size
     }
 
-    private class OpaqueWrappedQueueDao : OpaqueWrappedQueueDaoBase()
+    private class PredicateDao : PredicateDaoBase()
 
-    @Test fun uniqueCustomRelationComponentCanBeNominatedBeforeRuntimeCorrelation() {
+    @Test fun predicateColumnDescriptorIsNotNominatedAsEntity() {
         val methods = GmmpReflectionPolicy.callableMethods(
-            OpaqueWrappedQueueDao::class.java
+            PredicateDao::class.java
         )
         assertEquals(
-            OpaqueEmbeddedEntity::class.java,
+            PredicateWitness::class.java,
             NativeQueueEntityTypeResolver.resolve(
-                OpaqueWrappedQueueDao::class.java,
-                methods
-            )
-        )
-    }
-
-    private class AmbiguousNestedA
-    private class AmbiguousNestedB
-
-    private class AmbiguousRelationWrapper(
-        val first: AmbiguousNestedA,
-        val second: AmbiguousNestedB,
-        val label: String
-    )
-
-    private open class AmbiguousRelationDaoBase {
-        fun queueSpecific(values: Array<AmbiguousRelationWrapper>) = values.size
-    }
-
-    private class AmbiguousRelationDao : AmbiguousRelationDaoBase()
-
-    @Test fun multipleCustomRelationComponentsFailClosed() {
-        val methods = GmmpReflectionPolicy.callableMethods(
-            AmbiguousRelationDao::class.java
-        )
-        // No unique embedded component can be nominated, so the nearest
-        // wrapper witness itself remains the only safe type witness.
-        assertEquals(
-            AmbiguousRelationWrapper::class.java,
-            NativeQueueEntityTypeResolver.resolve(
-                AmbiguousRelationDao::class.java,
+                PredicateDao::class.java,
                 methods
             )
         )
@@ -134,7 +102,7 @@ class NativeQueueEntityTypeResolverTest {
 
     private class AmbiguousDao : AmbiguousBase()
 
-    @Test fun ambiguousNearestEntityTypesFailClosed() {
+    @Test fun ambiguousNearestArrayContractsFailClosed() {
         assertNull(
             NativeQueueEntityTypeResolver.resolve(
                 AmbiguousDao::class.java,
