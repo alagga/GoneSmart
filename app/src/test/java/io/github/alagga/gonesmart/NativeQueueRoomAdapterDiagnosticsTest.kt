@@ -31,6 +31,23 @@ class NativeQueueRoomAdapterDiagnosticsTest {
         }
     }
 
+    private open class BaseDao {
+        @Suppress("unused")
+        private val inheritedAdapter = Adapter()
+
+        private class Adapter {
+            fun M(): String =
+                "DELETE FROM queue_table WHERE queue_id = ?"
+
+            fun G(statement: Binder, value: Any) {
+                statement.hashCode()
+                value.hashCode()
+            }
+        }
+    }
+
+    private class DerivedDao : BaseDao()
+
     private interface Binder
 
     @Test fun onlyOwnedNestedAdapterSqlIsInspected() {
@@ -40,5 +57,12 @@ class NativeQueueRoomAdapterDiagnosticsTest {
         assertTrue(shape.contains("queue_table"))
         assertFalse(shape.contains("do-not-call"))
         assertTrue(dao.dangerousCalls == 0)
+    }
+
+    @Test fun inheritedOwnerAdapterIsIncluded() {
+        val shape = NativeQueueRoomAdapterDiagnostics.describe(DerivedDao())
+
+        assertTrue(shape.contains("BaseDao"))
+        assertTrue(shape.contains("DELETE FROM queue_table"))
     }
 }
