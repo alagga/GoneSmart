@@ -102,6 +102,22 @@ class NativeQueueEntityAdapterTypeResolverTest {
         }
     }
 
+    private open class DuplicateSqlBase {
+        open fun M(): String =
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
+    }
+
+    private class DuplicateSqlQueueAdapter : DuplicateSqlBase() {
+        override fun M(): String =
+            "UPDATE queue_table SET queue_position = ? WHERE queue_id = ?"
+
+        fun G(statement: ConcreteStatement?, value: Any) {
+            val row = value as QueueRow
+            statement?.bindLong(1, row.position.toLong())
+            statement?.bindLong(2, row.queueId)
+        }
+    }
+
     private class OtherQueueAdapter {
         fun M(): String =
             "DELETE FROM queue_table WHERE queue_id = ?"
@@ -152,6 +168,11 @@ class NativeQueueEntityAdapterTypeResolverTest {
     private class InheritedBinderNoiseQueueDao {
         @Suppress("unused")
         private val update = QueueAdapterWithInheritedBinder()
+    }
+
+    private class DuplicateSqlQueueDao {
+        @Suppress("unused")
+        private val update = DuplicateSqlQueueAdapter()
     }
 
     private class AmbiguousDao {
@@ -219,6 +240,15 @@ class NativeQueueEntityAdapterTypeResolverTest {
         assertEquals(QueueRow::class.java, result?.modelClass)
         assertEquals(true, result?.evidence?.contains("binder-cast"))
         assertEquals(true, result?.evidence?.contains("null-statement"))
+    }
+
+    @Test fun identicalOverriddenSqlIsOneSemanticQueueBoundary() {
+        val result = NativeQueueEntityAdapterTypeResolver.resolve(
+            DuplicateSqlQueueDao()
+        )
+
+        assertEquals(QueueRow::class.java, result?.modelClass)
+        assertEquals(true, result?.evidence?.contains("queue-sql"))
     }
 
     @Test fun differentQueueAdapterEntityTypesFailClosed() {
