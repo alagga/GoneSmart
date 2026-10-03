@@ -1,8 +1,10 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeQueueDaoResolverTest {
@@ -20,7 +22,10 @@ class NativeQueueDaoResolverTest {
         val songId: Long
     )
 
-    private class QueueDao {
+    private abstract class QueueContract
+    private abstract class TrackContract
+
+    private class QueueDao : QueueContract() {
         @Suppress("unused")
         private val update = QueueAdapter()
 
@@ -36,7 +41,7 @@ class NativeQueueDaoResolverTest {
         }
     }
 
-    private class TrackDao {
+    private class TrackDao : TrackContract() {
         @Suppress("unused")
         private val update = TrackAdapter()
 
@@ -49,6 +54,45 @@ class NativeQueueDaoResolverTest {
                 statement.bindLong(1, row.songId)
             }
         }
+    }
+
+    private open class InheritedDatabaseNoise {
+        var inheritedCalls = 0
+
+        @Suppress("unused")
+        fun inheritedQueueAccessor(): QueueContract {
+            inheritedCalls++
+            return QueueDao()
+        }
+    }
+
+    private class FakeGeneratedDatabase : InheritedDatabaseNoise() {
+        val queueDao = QueueDao()
+        val trackDao = TrackDao()
+        var queueAccessorCalls = 0
+        var trackAccessorCalls = 0
+        var parameterizedCalls = 0
+
+        @Suppress("unused")
+        fun queue(): QueueContract {
+            queueAccessorCalls++
+            return queueDao
+        }
+
+        @Suppress("unused")
+        fun tracks(): TrackContract {
+            trackAccessorCalls++
+            return trackDao
+        }
+
+        @Suppress("unused")
+        fun parameterized(value: Int): QueueContract {
+            parameterizedCalls += value
+            return queueDao
+        }
+
+        @Suppress("unused")
+        fun concreteHelper(): QueueDao = queueDao
     }
 
     @Test fun queueTableAdapterWinsOverHistoricalTrackDaoCandidate() {
@@ -97,5 +141,39 @@ class NativeQueueDaoResolverTest {
                 listOf("autoDj:q" to TrackDao())
             )
         )
+    }
+
+    @Test fun generatedDatabaseAccessorsMaterializeDaoCandidatesOnly() {
+        val database = FakeGeneratedDatabase()
+
+        val candidates = NativeQueueDaoResolver.databaseAccessorCandidates(
+            database
+        )
+        val result = NativeQueueDaoResolver.resolveCandidates(candidates)
+
+        assertSame(database.queueDao, result?.dao)
+        assertEquals(1, database.queueAccessorCalls)
+        assertEquals(1, database.trackAccessorCalls)
+        assertEquals(0, database.parameterizedCalls)
+        assertEquals(0, database.inheritedCalls)
+        assertTrue(
+            candidates.any {
+                it.first.contains("queue():") && it.second === database.queueDao
+            }
+        )
+        assertTrue(
+            candidates.any {
+                it.first.contains("tracks():") && it.second === database.trackDao
+            }
+        )
+    }
+
+    @Test fun concreteGeneratedHelpersAreNotInvokedAsDaoAccessors() {
+        val database = FakeGeneratedDatabase()
+
+        val labels = NativeQueueDaoResolver.databaseAccessorCandidates(database)
+            .map { it.first }
+
+        assertFalse(labels.any { it.contains("concreteHelper") })
     }
 }
