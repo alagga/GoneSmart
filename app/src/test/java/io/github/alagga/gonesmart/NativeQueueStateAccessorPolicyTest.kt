@@ -53,9 +53,15 @@ class NativeQueueStateAccessorPolicyTest {
         assertEquals("current", selection!!.getter.name)
         assertEquals("writeCurrent", selection.setter.name)
         assertEquals(PreferredState::class.java, selection.setter.declaringClass)
+        assertTrue(
+            analysis.numericWriters.any {
+                it.name == "inheritedWrite" &&
+                    it.declaringClass == InheritedState::class.java
+            }
+        )
 
         selection.setter.invoke(host, 7)
-        assertEquals(7, selection.getter.invoke(host))
+        assertEquals(7, (selection.getter.invoke(host) as Number).toInt())
     }
 
     @Test fun multipleDirectSettersFailClosed() {
