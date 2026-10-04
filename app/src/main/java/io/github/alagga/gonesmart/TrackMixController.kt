@@ -21,6 +21,7 @@ import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
@@ -75,6 +76,7 @@ internal class TrackMixController(
         @Volatile var nativePlaySignal = false
         @Volatile var nativePlayAccepted = false
         @Volatile var refillObserved = false
+        val refillRequestedTracks = AtomicInteger(0)
         @Volatile var stage = "WAIT_PLAY"
         @Volatile var nativeSource = ""
     }
@@ -179,7 +181,14 @@ internal class TrackMixController(
         val request = pending ?: return
         if (request.stage == "FILLING") {
             request.refillObserved = true
-            Log.i(TAG, "MIX NATIVE REFILL | requested=$requested")
+            val total = request.refillRequestedTracks.addAndGet(
+                requested.coerceAtLeast(0)
+            )
+            Log.i(
+                TAG,
+                "MIX NATIVE REFILL | requested=$requested | " +
+                    "totalRequested=$total"
+            )
         }
     }
 
@@ -408,18 +417,92 @@ internal class TrackMixController(
                 it.currentId == selectedId &&
                     TrackMixPlan.hasEnoughTracks(initial, it.ids.size)
             }
-            if (filled == null && isCurrent(request) && !request.refillObserved) {
-                val actual = queueSnapshot()?.ids?.size ?: 1
-                val shortage = TrackMixPlan.additionalTracksNeeded(initial, actual)
-                if (shortage > 0) {
-                    Log.i(TAG, "MIX FILL FALLBACK | missing=$shortage")
-                    requestNativeRefill(shortage)
+
+            if (filled == null && isCurrent(request)) {
+                val observedRequested = request.refillRequestedTracks.get()
+                var current = queueSnapshot()?.takeIf {
+                    it.currentId == selectedId
                 }
-            }
-            if (filled == null) {
-                filled = awaitQueue(request, 65_000L) {
-                    it.currentId == selectedId &&
-                        TrackMixPlan.hasEnoughTracks(initial, it.ids.size)
+                var supplement = current?.let {
+                    TrackMixInitialFillPolicy.safeSupplementCount(
+                        initialSize = initial,
+                        seedQueueSize = cleared.ids.size,
+                        observedRequestedTracks = observedRequested,
+                        actualQueueSize = it.ids.size
+                    )
+                }
+
+                if (supplement == null && observedRequested > 0) {
+                    val expectedAfterNative =
+                        TrackMixInitialFillPolicy
+                            .expectedQueueSizeAfterObservedRefill(
+                                initialSize = initial,
+                                seedQueueSize = cleared.ids.size,
+                                observedRequestedTracks = observedRequested
+                            )
+                    Log.i(
+                        TAG,
+                        "MIX FILL WAIT | nativeRequested=$observedRequested | " +
+                            "expectedAfterNative=$expectedAfterNative | " +
+                            "actual=${current?.ids?.size ?: -1}"
+                    )
+                    // The first qr.z(count) call can block while GoneSmart
+                    // prepares a recommendation pool. Do not launch another
+                    // qr.z request until that original request has visibly
+                    // materialized in the independently read queue.
+                    current = awaitQueue(request, 62_000L) {
+                        it.currentId == selectedId &&
+                            it.ids.size >= expectedAfterNative
+                    }
+                    supplement = current?.let {
+                        TrackMixInitialFillPolicy.safeSupplementCount(
+                            initialSize = initial,
+                            seedQueueSize = cleared.ids.size,
+                            observedRequestedTracks = observedRequested,
+                            actualQueueSize = it.ids.size
+                        )
+                    }
+                } else if (supplement == null && observedRequested == 0) {
+                    supplement = TrackMixInitialFillPolicy.safeSupplementCount(
+                        initialSize = initial,
+                        seedQueueSize = cleared.ids.size,
+                        observedRequestedTracks = 0,
+                        actualQueueSize = cleared.ids.size
+                    )
+                }
+
+                if (current != null &&
+                    current.currentId == selectedId &&
+                    TrackMixPlan.hasEnoughTracks(initial, current.ids.size)
+                ) {
+                    filled = current
+                } else if (supplement != null && supplement > 0) {
+                    Log.i(
+                        TAG,
+                        "MIX FILL SUPPLEMENT | nativeRequested=$observedRequested | " +
+                            "actual=${current?.ids?.size ?: cleared.ids.size} | " +
+                            "missing=$supplement"
+                    )
+                    if (requestNativeRefill(supplement)) {
+                        filled = awaitQueue(request, 65_000L) {
+                            it.currentId == selectedId &&
+                                TrackMixPlan.hasEnoughTracks(
+                                    initial,
+                                    it.ids.size
+                                )
+                        }
+                    } else {
+                        Log.w(
+                            TAG,
+                            "MIX FILL SUPPLEMENT | native refill request failed"
+                        )
+                    }
+                } else if (supplement == null && observedRequested > 0) {
+                    Log.w(
+                        TAG,
+                        "MIX FILL WAIT | observed native refill did not " +
+                            "materialize; refusing concurrent supplement"
+                    )
                 }
             }
 
