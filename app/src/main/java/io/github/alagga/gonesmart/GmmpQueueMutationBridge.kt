@@ -20,7 +20,8 @@ import java.lang.reflect.Modifier
  * only here. They are never invoked during discovery.
  */
 internal class GmmpQueueMutationBridge(
-    private val autoDj: Any
+    private val autoDj: Any,
+    private val verifiedPositionWriter: NativeQueuePositionWriter? = null
 ) {
     companion object {
         private const val TAG = "GoneSmartQueue"
@@ -93,6 +94,24 @@ internal class GmmpQueueMutationBridge(
             setter.invoke(host, value)
             check(read() == value) {
                 "GMMP current-position setter did not update getter"
+            }
+        }
+    }
+
+    private class ExternalStatePositionBinding(
+        private val writer: NativeQueuePositionWriter
+    ) : StatePositionBinding {
+        override val description: String = writer.description
+
+        override fun read(): Int = writer.read()
+            ?: error("Passively verified GMMP current-position signal unavailable")
+
+        override fun write(value: Int) {
+            check(writer.write(value)) {
+                "Passively verified GMMP current-position writer failed"
+            }
+            check(read() == value) {
+                "Passively verified GMMP current-position write did not stick"
             }
         }
     }
@@ -211,15 +230,6 @@ internal class GmmpQueueMutationBridge(
             return current?.track?.id == selectedTrackId
         }
 
-        // A large Smart Playlist Play can expose a small temporary queue and
-        // then rebuild the complete queue_table. During that rebuild GMMP may
-        // keep its playback pointer at position 1 while replacing the row at
-        // position 1, so the originally selected song is no longer marked
-        // CURRENT even though it is still uniquely present in the final queue.
-        // If the verified pointer is already 1 we can safely move that exact
-        // native selected row to position 1 without discovering/writing a new
-        // pointer boundary. Any other pointer still requires the proven writer
-        // path and therefore remains fail-closed when unresolved.
         val pointerAlreadyTargetsOne =
             resolved.context.currentQueuePosition == 1
         val statePosition = if (pointerAlreadyTargetsOne) {
@@ -275,13 +285,6 @@ internal class GmmpQueueMutationBridge(
         val context = GmmpQueueReader().read(autoDj)
             ?: error("GMMP queue Cursor mapping unavailable")
 
-        // r31 device evidence disproved the historical assumption that the
-        // Auto-DJ `q` object is necessarily the queue writer DAO: its direct
-        // generated CRUD adapters all write tracks. Resolve the actual writer
-        // owner only from a generated Room adapter whose SQL proves
-        // queue_table ownership. Candidate discovery reads object fields only;
-        // it does not invoke DAO accessors, queries, reactive carriers or
-        // writers.
         val daoResolution = NativeQueueDaoResolver.resolve(autoDj)
         if (daoResolution == null) {
             objectField(autoDj, "q")?.let { legacyCandidate ->
@@ -486,6 +489,12 @@ internal class GmmpQueueMutationBridge(
     private fun resolveStatePosition(
         currentQueuePosition: Int
     ): StatePositionBinding {
+        fun externalBinding(): StatePositionBinding? {
+            val writer = verifiedPositionWriter ?: return null
+            if (writer.read() != currentQueuePosition) return null
+            return ExternalStatePositionBinding(writer)
+        }
+
         fun bindingFrom(
             analysis: NativeQueueStateAccessorPolicy.Analysis
         ): StatePositionBinding? {
@@ -515,31 +524,6 @@ internal class GmmpQueueMutationBridge(
                 "QUEUE CURRENT POINTER SHAPE | source=" + source +
                     " | " + analysis.describe(currentQueuePosition)
             )
-            val ownerCommands = GmmpReflectionPolicy
-                .callableMethods(autoDj.javaClass)
-                .filter {
-                    !Modifier.isStatic(it.modifiers) &&
-                        it.declaringClass == autoDj.javaClass &&
-                        it.parameterCount == 1 &&
-                        (
-                            it.parameterTypes[0] == Integer.TYPE ||
-                                it.parameterTypes[0] == Integer::class.java
-                        ) &&
-                        it.returnType == java.lang.Void.TYPE
-                }
-                .joinToString(",") {
-                    it.declaringClass.name + "." + it.name +
-                        "(" + it.parameterTypes[0].name + "):" +
-                        it.returnType.name
-                }
-                .ifBlank { "none" }
-            Log.w(
-                TAG,
-                "QUEUE CURRENT OWNER COMMAND SHAPE | source=" + source +
-                    " | owner=" + autoDj.javaClass.name +
-                    " | commands=" + ownerCommands +
-                    " | writeSelection=disabled"
-            )
         }
 
         fun preferredHost(
@@ -553,36 +537,25 @@ internal class GmmpQueueMutationBridge(
             val binding = bindingFrom(analysis)
             if (binding != null) return binding to true
             if (analysis.hasReadEvidence) {
-                // r36 proves qr.t -> ur is the Cursor-correlated state reader.
-                // r37 initially allowed the single qr(int)->void method as a
-                // split writer, but the Track Mix implementation itself proves
-                // qr.z(int) is GMMP's native refill command. Numeric commands
-                // on the Auto-DJ owner are therefore diagnostics only and may
-                // never be promoted to a current-position writer by shape.
+                externalBinding()?.let { return it to true }
                 report(source, analysis)
                 return null to true
             }
             return null to false
         }
 
-        // The accepted read-only Queue resolver repeatedly proves the 4.2.1
-        // current pointer on qr.t -> ur.method:b by correlating its integer
-        // signal with the independent queue_table Cursor. Once this preferred
-        // host yields read evidence, no unrelated state object may replace it.
         objectField(autoDj, "t")?.let { state ->
             val (binding, hasReadEvidence) = preferredHost("field:t", state)
             if (binding != null) return binding
             if (hasReadEvidence) {
                 error(
                     "GMMP writable current-position binding is unresolved " +
-                        "for verified state reader " + state.javaClass.name
+                        "for verified state reader " + state.javaClass.name +
+                        "; passive native writer has not been observed yet"
                 )
             }
         }
 
-        // Earlier 4.2.1 layouts exposed the current pointer through qr.p.
-        // This remains a compatibility fallback only when qr.t provides NO
-        // cursor-correlated integer evidence at all.
         objectField(autoDj, "p")?.let { state ->
             val (binding, hasReadEvidence) = preferredHost("field:p", state)
             if (binding != null) return binding
@@ -593,6 +566,8 @@ internal class GmmpQueueMutationBridge(
                 )
             }
         }
+
+        externalBinding()?.let { return it }
 
         val analyses = hierarchyFields(autoDj.javaClass)
             .mapNotNull { ownerField ->
