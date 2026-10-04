@@ -26,7 +26,9 @@ internal object NativeQueueStateAccessorPolicy {
         val matchingFields: List<Field>,
         val matchingGetters: List<Method>,
         val setters: List<Method>,
-        val directSetters: List<Method>
+        val directSetters: List<Method>,
+        val numericWriters: List<Method>,
+        val directNumericWriters: List<Method>
     ) {
         val hasReadEvidence: Boolean
             get() = matchingFields.isNotEmpty() || matchingGetters.isNotEmpty()
@@ -68,12 +70,20 @@ internal object NativeQueueStateAccessorPolicy {
             val ownedSetters = directSetters.joinToString(",") {
                 it.signature()
             }.ifBlank { "none" }
+            val allNumericWriters = numericWriters.joinToString(",") {
+                it.signature()
+            }.ifBlank { "none" }
+            val ownedNumericWriters = directNumericWriters.joinToString(",") {
+                it.signature()
+            }.ifBlank { "none" }
             return "host=" + host.javaClass.name +
                 " | current=" + currentValue +
                 " | fields=" + fields +
                 " | getters=" + getters +
                 " | setters=" + allSetters +
-                " | directSetters=" + ownedSetters
+                " | directSetters=" + ownedSetters +
+                " | numericWriters=" + allNumericWriters +
+                " | directNumericWriters=" + ownedNumericWriters
         }
     }
 
@@ -104,13 +114,17 @@ internal object NativeQueueStateAccessorPolicy {
                 (method.invoke(host) as? Number)?.toInt() == currentValue
             }.getOrDefault(false)
         }
-        val setters = methods.filter {
-            it.parameterCount == 1 &&
-                (
-                    it.parameterTypes[0] == Integer.TYPE ||
-                        it.parameterTypes[0] == Integer::class.java
-                ) &&
-                it.returnType == java.lang.Void.TYPE
+        val numericWriters = methods.filter {
+            it.parameterCount == 1 && isNumericType(it.parameterTypes[0])
+        }
+        val directNumericWriters = numericWriters.filter {
+            it.declaringClass == host.javaClass
+        }
+        val setters = numericWriters.filter {
+            (
+                it.parameterTypes[0] == Integer.TYPE ||
+                    it.parameterTypes[0] == Integer::class.java
+            ) && it.returnType == java.lang.Void.TYPE
         }
         val directSetters = setters.filter {
             it.declaringClass == host.javaClass
@@ -121,9 +135,17 @@ internal object NativeQueueStateAccessorPolicy {
             matchingFields = fields,
             matchingGetters = getters,
             setters = setters,
-            directSetters = directSetters
+            directSetters = directSetters,
+            numericWriters = numericWriters,
+            directNumericWriters = directNumericWriters
         )
     }
+
+    private fun isNumericType(type: Class<*>): Boolean =
+        type == Integer.TYPE || type == Integer::class.java ||
+            type == java.lang.Long.TYPE || type == java.lang.Long::class.java ||
+            type == java.lang.Short.TYPE || type == java.lang.Short::class.java ||
+            type == java.lang.Byte.TYPE || type == java.lang.Byte::class.java
 
     private fun hierarchyFields(type: Class<*>): List<Field> =
         generateSequence<Class<*>>(type) { it.superclass }
