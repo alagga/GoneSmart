@@ -198,29 +198,43 @@ internal class GmmpQueueMutationBridge(
         )
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
-        } ?: return false
-        if (current.track.id != selectedTrackId) return false
-        if (resolved.rows.size == 1) return true
-
-        // Native Play in GMMP 4.2.1 normally makes the selected seed the
-        // current row at queue_position=1 before Track Mix reaches this
-        // bridge. In that case deleting the stale row(s) does not move the
-        // current pointer at all, so requiring a writable state boundary is
-        // both unnecessary and unsafe. Resolve a writer only when the current
-        // row actually has to move to position 1.
-        val statePosition = if (current.queuePosition == 1) {
-            null
-        } else {
-            resolveStatePosition(current.queuePosition)
+        }
+        val selectedMatches = resolved.context.items.filter {
+            it.track.id == selectedTrackId
+        }
+        val selected = when {
+            current?.track?.id == selectedTrackId -> current
+            selectedMatches.size == 1 -> selectedMatches.single()
+            else -> return false
+        }
+        if (resolved.rows.size == 1) {
+            return current?.track?.id == selectedTrackId
         }
 
-        val currentModel = resolved.rows.singleOrNull {
-            number(resolved.queueId, it).toLong() == current.queueEntryId
+        // A large Smart Playlist Play can expose a small temporary queue and
+        // then rebuild the complete queue_table. During that rebuild GMMP may
+        // keep its playback pointer at position 1 while replacing the row at
+        // position 1, so the originally selected song is no longer marked
+        // CURRENT even though it is still uniquely present in the final queue.
+        // If the verified pointer is already 1 we can safely move that exact
+        // native selected row to position 1 without discovering/writing a new
+        // pointer boundary. Any other pointer still requires the proven writer
+        // path and therefore remains fail-closed when unresolved.
+        val pointerAlreadyTargetsOne =
+            resolved.context.currentQueuePosition == 1
+        val statePosition = if (pointerAlreadyTargetsOne) {
+            null
+        } else {
+            resolveStatePosition(resolved.context.currentQueuePosition)
+        }
+
+        val selectedModel = resolved.rows.singleOrNull {
+            number(resolved.queueId, it).toLong() == selected.queueEntryId
         } ?: return false
-        val stale = resolved.rows.filter { it !== currentModel }
+        val stale = resolved.rows.filter { it !== selectedModel }
         val delete = resolved.delete ?: return false
         val declaredComponent = delete.parameterTypes.single().componentType
-        val runtimeComponent = currentModel.javaClass
+        val runtimeComponent = selectedModel.javaClass
         val staleArray = typedEntityArray(runtimeComponent, stale)
         Log.i(
             TAG,
@@ -231,23 +245,24 @@ internal class GmmpQueueMutationBridge(
         )
 
         delete.invoke(resolved.dao, staleArray)
-        setInt(resolved.position, currentModel, 1)
+        setInt(resolved.position, selectedModel, 1)
         resolved.update.invoke(
             resolved.dao,
-            arrayListOf(currentModel)
+            arrayListOf(selectedModel)
         )
         statePosition?.write(1)
 
         val verified = GmmpQueueReader().read(autoDj) ?: return false
         val only = verified.items.singleOrNull() ?: return false
         val ok = only.track.id == selectedTrackId &&
-            only.queueEntryId == current.queueEntryId &&
+            only.queueEntryId == selected.queueEntryId &&
             only.state == QueueItemState.CURRENT
         if (ok) {
             Log.i(
                 TAG,
                 "QUEUE MUTATION | seed isolation verified | track=" +
-                    selectedTrackId + " | queueId=" + only.queueEntryId
+                    selectedTrackId + " | queueId=" + only.queueEntryId +
+                    " | realigned=" + (selected.state != QueueItemState.CURRENT)
             )
         }
         return ok

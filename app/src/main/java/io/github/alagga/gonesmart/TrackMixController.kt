@@ -43,6 +43,7 @@ internal class TrackMixController(
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val COMMAND_AUTO_DJ = "gonemad.gmmp.command.AUTO_DJ"
         private const val MIX_ITEM_ID = 0x47534D01
+        private const val AUTO_DJ_COMMAND_REFILL_WAIT_MS = 1_800L
         // These GMMP 4.2.0 menu XMLs all have native Play and Play next.
         // Contexts that represent whole albums/artists/playlists are excluded.
         private val SONG_MENUS = setOf(
@@ -64,6 +65,11 @@ internal class TrackMixController(
         val currentEntryId: Long? get() = entryIds.getOrNull(currentIndex)
     }
 
+    private data class LoadedPlay(
+        val snapshot: Snapshot,
+        val selectedTrackId: Long
+    )
+
     private data class Pending(
         val token: Long,
         val context: Context,
@@ -76,6 +82,7 @@ internal class TrackMixController(
         @Volatile var nativePlaySignal = false
         @Volatile var nativePlayAccepted = false
         @Volatile var refillObserved = false
+        @Volatile var transitionalRefillSuppressed = false
         val refillRequestedTracks = AtomicInteger(0)
         @Volatile var stage = "WAIT_PLAY"
         @Volatile var nativeSource = ""
@@ -86,11 +93,15 @@ internal class TrackMixController(
         Thread(task, "GoneSmartTrackMix").apply { isDaemon = true }
     }
     private val tokens = AtomicLong()
-    // Hard barrier around native Play -> Clear Queue. This is activated
-    // synchronously before dispatching GMMP's Play action, so selecting a
-    // queue row cannot trigger an old-queue Auto-DJ refill before the
-    // selected song has been isolated as the new seed.
+    // Hard barrier around native Play -> seed isolation -> initial native fill.
+    // It is activated synchronously before Play so neither an old-queue refill
+    // nor GMMP's transitional upcoming-count refill can race Track Mix.
     private val refillHold = AtomicBoolean(false)
+    // The one refill explicitly requested by Track Mix must cross the same
+    // native qr.z(count) hook while the global hold stays armed. Scope that
+    // exception to the calling worker thread so unrelated GMMP refills remain
+    // suppressed until Initial Size has been verified.
+    private val nativeRefillAllowance = ThreadLocal<Int>()
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
 
@@ -113,14 +124,50 @@ internal class TrackMixController(
     }
 
     fun shouldSuppressNativeRefill(): Boolean {
+        if ((nativeRefillAllowance.get() ?: 0) > 0) return false
         if (!refillHold.get()) return false
         val request = pending
+        if (request?.stage == "FILLING") {
+            request.transitionalRefillSuppressed = true
+        }
         Log.i(
             TAG,
             "MIX AUTO-DJ HOLD | stage=${request?.stage ?: "pre-play"} | " +
-                "deferring native refill until selected seed is isolated"
+                "deferring native refill until Track Mix initial fill"
         )
         return true
+    }
+
+    private fun requestHeldNativeRefill(count: Int): Boolean {
+        if (count <= 0) return true
+        val previous = nativeRefillAllowance.get() ?: 0
+        nativeRefillAllowance.set(previous + 1)
+        return try {
+            requestNativeRefill(count)
+        } finally {
+            if (previous == 0) {
+                nativeRefillAllowance.remove()
+            } else {
+                nativeRefillAllowance.set(previous)
+            }
+        }
+    }
+
+    private fun awaitAutoDjCommandRefillBoundary(request: Pending) {
+        val deadline = SystemClock.elapsedRealtime() +
+            AUTO_DJ_COMMAND_REFILL_WAIT_MS
+        while (
+            isCurrent(request) &&
+            !request.transitionalRefillSuppressed &&
+            SystemClock.elapsedRealtime() < deadline
+        ) {
+            Thread.sleep(45)
+        }
+        Log.i(
+            TAG,
+            "MIX AUTO-DJ ARM | transitionalRefillSuppressed=" +
+                request.transitionalRefillSuppressed
+        )
     }
 
     private fun shouldSuppressIntermediatePopup(): Boolean {
@@ -353,27 +400,29 @@ internal class TrackMixController(
 
     private fun runTrackMix(request: Pending) {
         try {
-            // Native Play may replace the queue or seek within the existing
-            // queue. Identify its selected entry before the atomic native
-            // DAO transition; never clear another currently playing queue.
-            val loaded = waitForSelectedSong(request) ?: run {
+            // Native Play may first expose a temporary queue and then replace
+            // it with the fully materialized source list. Keep the originally
+            // detected selected track across that native rebuild instead of
+            // retargeting Track Mix to whichever row temporarily becomes
+            // CURRENT while a large Smart Playlist is populated.
+            val loadedPlay = waitForSelectedSong(request) ?: run {
                 fail("The selected song did not start.", request.context)
                 return
             }
             if (!isCurrent(request)) return
-            val selectedId = loaded.currentId ?: run {
-                fail("The selected song could not be identified.", request.context)
-                return
-            }
+            val loaded = loadedPlay.snapshot
+            val selectedId = loadedPlay.selectedTrackId
 
             request.stage = "CLEARING"
-            val cleared = if (loaded.ids.size == 1) {
+            val cleared = if (
+                loaded.ids.size == 1 &&
+                loaded.currentId == selectedId
+            ) {
                 loaded
             } else {
                 // Deterministic native isolation: remove every other queue
-                // entry and move this exact selected queue_id to position 1
-                // inside GMMP's own Room transaction. No CLEAR_QUEUE
-                // broadcast and no retry loop.
+                // entry and move the exact originally selected track to
+                // position 1 inside GMMP's own Room writers.
                 isolateNativeSeed(request, selectedId)
             }
             if (cleared == null) {
@@ -396,117 +445,68 @@ internal class TrackMixController(
                 "MIX SEED | queueSize=${cleared.ids.size} | " +
                     "currentPreserved=true"
             )
-            // Seed isolation is now complete. Release the barrier before
-            // explicitly switching GMMP into Auto-DJ so that THIS new
-            // queue's native refill is allowed through.
-            refillHold.set(false)
+
             request.stage = "FILLING"
             val nativeSettings = settings.read()
             val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
             val upcoming = nativeSettings.upcomingTrackCount
+
+            // Keep the refill barrier armed while enabling Auto-DJ. GMMP's
+            // command path normally follows this by requesting its regular
+            // `upcoming` count (1 in the captured configuration), which is not
+            // the Initial Size contract for a freshly isolated Track Mix seed.
+            // That transitional request is suppressed. We then call the SAME
+            // native qr.z(count) refill boundary once with exactly the number
+            // of tracks missing from Initial Size.
+            request.transitionalRefillSuppressed = false
             sendCommand(request.context, COMMAND_AUTO_DJ)
             nativeToastSuppressionUntilMs =
                 SystemClock.elapsedRealtime() + 7_000L
+            awaitAutoDjCommandRefillBoundary(request)
+
+            val initialRequest =
+                TrackMixInitialFillPolicy.nativeInitialRefillCount(
+                    initialSize = initial,
+                    seedQueueSize = cleared.ids.size
+                )
             Log.i(
                 TAG,
                 "MIX AUTO-DJ | command=sent | initialSize=$initial | " +
                     "upcoming=$upcoming | seed=$selectedId"
             )
+            Log.i(
+                TAG,
+                "MIX INITIAL FILL | initial=$initial | " +
+                    "seedSize=${cleared.ids.size} | requested=$initialRequest | " +
+                    "boundary=native-refill-once"
+            )
 
-            var filled = awaitQueue(request, 3_000L) {
-                it.currentId == selectedId &&
-                    TrackMixPlan.hasEnoughTracks(initial, it.ids.size)
-            }
-
-            if (filled == null && isCurrent(request)) {
-                val observedRequested = request.refillRequestedTracks.get()
-                var current = queueSnapshot()?.takeIf {
-                    it.currentId == selectedId
-                }
-                var supplement = current?.let {
-                    TrackMixInitialFillPolicy.safeSupplementCount(
-                        initialSize = initial,
-                        seedQueueSize = cleared.ids.size,
-                        observedRequestedTracks = observedRequested,
-                        actualQueueSize = it.ids.size
-                    )
-                }
-
-                if (supplement == null && observedRequested > 0) {
-                    val expectedAfterNative =
-                        TrackMixInitialFillPolicy
-                            .expectedQueueSizeAfterObservedRefill(
-                                initialSize = initial,
-                                seedQueueSize = cleared.ids.size,
-                                observedRequestedTracks = observedRequested
-                            )
-                    Log.i(
-                        TAG,
-                        "MIX FILL WAIT | nativeRequested=$observedRequested | " +
-                            "expectedAfterNative=$expectedAfterNative | " +
-                            "actual=${current?.ids?.size ?: -1}"
-                    )
-                    // The first qr.z(count) call can block while GoneSmart
-                    // prepares a recommendation pool. Do not launch another
-                    // qr.z request until that original request has visibly
-                    // materialized in the independently read queue.
-                    current = awaitQueue(request, 62_000L) {
-                        it.currentId == selectedId &&
-                            it.ids.size >= expectedAfterNative
-                    }
-                    supplement = current?.let {
-                        TrackMixInitialFillPolicy.safeSupplementCount(
-                            initialSize = initial,
-                            seedQueueSize = cleared.ids.size,
-                            observedRequestedTracks = observedRequested,
-                            actualQueueSize = it.ids.size
-                        )
-                    }
-                } else if (supplement == null && observedRequested == 0) {
-                    supplement = TrackMixInitialFillPolicy.safeSupplementCount(
-                        initialSize = initial,
-                        seedQueueSize = cleared.ids.size,
-                        observedRequestedTracks = 0,
-                        actualQueueSize = cleared.ids.size
-                    )
-                }
-
-                if (current != null &&
-                    current.currentId == selectedId &&
-                    TrackMixPlan.hasEnoughTracks(initial, current.ids.size)
-                ) {
-                    filled = current
-                } else if (supplement != null && supplement > 0) {
-                    Log.i(
-                        TAG,
-                        "MIX FILL SUPPLEMENT | nativeRequested=$observedRequested | " +
-                            "actual=${current?.ids?.size ?: cleared.ids.size} | " +
-                            "missing=$supplement"
-                    )
-                    if (requestNativeRefill(supplement)) {
-                        filled = awaitQueue(request, 65_000L) {
-                            it.currentId == selectedId &&
-                                TrackMixPlan.hasEnoughTracks(
-                                    initial,
-                                    it.ids.size
-                                )
-                        }
-                    } else {
-                        Log.w(
-                            TAG,
-                            "MIX FILL SUPPLEMENT | native refill request failed"
-                        )
-                    }
-                } else if (supplement == null && observedRequested > 0) {
-                    Log.w(
-                        TAG,
-                        "MIX FILL WAIT | observed native refill did not " +
-                            "materialize; refusing concurrent supplement"
-                    )
+            val fillRequestAccepted =
+                requestHeldNativeRefill(initialRequest)
+            var filled = if (!fillRequestAccepted) {
+                Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
+                null
+            } else {
+                awaitQueue(request, 65_000L) {
+                    it.currentId == selectedId &&
+                        it.ids.size == initial
                 }
             }
+
+            // Initial Size is now verified (or the bounded fill failed). Only
+            // after this point may GMMP resume its ordinary upcoming refills.
+            refillHold.set(false)
 
             if (!isCurrent(request)) return
+            if (filled == null) {
+                val current = queueSnapshot()
+                if (current != null &&
+                    current.currentId == selectedId &&
+                    current.ids.size == initial
+                ) {
+                    filled = current
+                }
+            }
             if (filled == null) {
                 Log.w(
                     TAG,
@@ -731,12 +731,18 @@ internal class TrackMixController(
         )
     }
 
-    private fun waitForSelectedSong(request: Pending): Snapshot? {
+    private fun waitForSelectedSong(request: Pending): LoadedPlay? {
         var targetIdentity: TrackMixPlaybackIdentityPolicy.Identity? = null
+        var detectedAt = 0L
+        var detectedQueueSize = -1
         var stableSnapshot: Snapshot? = null
         var stableAt = 0L
         val deadline = SystemClock.elapsedRealtime() +
             TrackMixQueueSettlingPolicy.WAIT_TIMEOUT_MS
+        val completionGuard =
+            TrackMixQueueSettlingPolicy.requiredCompletionGuardMs(
+                request.source
+            )
 
         fun sameQueue(previous: Snapshot, current: Snapshot): Boolean =
             TrackMixQueueSettlingPolicy.sameQueue(
@@ -775,6 +781,8 @@ internal class TrackMixController(
 
             if (targetIdentity == null && playbackChanged) {
                 targetIdentity = identity
+                detectedAt = now
+                detectedQueueSize = current.ids.size
                 stableSnapshot = current
                 stableAt = now
                 Log.i(
@@ -782,7 +790,8 @@ internal class TrackMixController(
                     "MIX PLAY DETECTED | source=queue-current-change" +
                         " | entry=" + (identity.queueEntryId ?: -1L) +
                         " | track=" + identity.trackId +
-                        " | queueSize=" + current.ids.size
+                        " | queueSize=" + current.ids.size +
+                        " | completionGuardMs=" + completionGuard
                 )
                 continue
             }
@@ -798,6 +807,8 @@ internal class TrackMixController(
                 )
             ) {
                 targetIdentity = identity
+                detectedAt = now
+                detectedQueueSize = current.ids.size
                 stableSnapshot = current
                 stableAt = now
                 Log.i(
@@ -805,16 +816,32 @@ internal class TrackMixController(
                     "MIX PLAY DETECTED | source=current-queue-replay" +
                         " | entry=" + (identity.queueEntryId ?: -1L) +
                         " | track=" + identity.trackId +
-                        " | queueSize=" + current.ids.size
+                        " | queueSize=" + current.ids.size +
+                        " | completionGuardMs=" + completionGuard
                 )
                 continue
             }
 
             val target = targetIdentity ?: continue
-            if (!TrackMixPlaybackIdentityPolicy.sameCurrent(target, identity)) {
-                // The native Play target itself changed while the queue was
-                // still being built. Never isolate a later unrelated current
-                // row just because the queue eventually becomes stable.
+            val currentStillSelected =
+                TrackMixPlaybackIdentityPolicy.sameCurrent(target, identity)
+            val selectedOccurrences = current.ids.count {
+                it == target.trackId
+            }
+            val targetUsable =
+                TrackMixQueueSettlingPolicy.selectedTargetStillUsable(
+                    selectedTrackOccurrences = selectedOccurrences,
+                    currentStillSelected = currentStillSelected,
+                    detectedQueueSize = detectedQueueSize,
+                    currentQueueSize = current.ids.size
+                )
+
+            if (!targetUsable) {
+                // A current-row change with no accompanying list rebuild is a
+                // genuine retarget/manual playback change. Do not ever isolate
+                // that unrelated row. During a Smart Playlist rebuild the
+                // queue size changes and the original selected track remains
+                // uniquely identifiable, which is handled below.
                 stableSnapshot = null
                 stableAt = now
                 continue
@@ -828,22 +855,32 @@ internal class TrackMixController(
             }
 
             val stableFor = now - stableAt
+            val sinceDetection = now - detectedAt
             if (TrackMixQueueSettlingPolicy.isSettled(
                     sameQueue = true,
-                    stableForMs = stableFor
+                    stableForMs = stableFor,
+                    sinceDetectionMs = sinceDetection,
+                    requiredGuardMs = completionGuard
                 )
             ) {
                 Log.i(
                     TAG,
                     "MIX PLAY VERIFIED | source=queue-settled" +
-                        " | entry=" + (identity.queueEntryId ?: -1L) +
-                        " | track=" + identity.trackId +
+                        " | targetEntry=" + (target.queueEntryId ?: -1L) +
+                        " | targetTrack=" + target.trackId +
+                        " | currentNow=" + currentTrack +
                         " | queueSize=" + current.ids.size +
                         " | stableMs=" + stableFor +
+                        " | sinceDetectionMs=" + sinceDetection +
+                        " | rebuilt=" +
+                        (current.ids.size != detectedQueueSize) +
                         " | nativeSignal=" + request.nativePlaySignal +
                         " | changed=" + changed
                 )
-                return current
+                return LoadedPlay(
+                    snapshot = current,
+                    selectedTrackId = target.trackId
+                )
             }
         }
         return null

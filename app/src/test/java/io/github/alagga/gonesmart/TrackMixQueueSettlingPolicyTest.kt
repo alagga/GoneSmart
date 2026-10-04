@@ -1,10 +1,27 @@
 package io.github.alagga.gonesmart
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackMixQueueSettlingPolicyTest {
+    @Test
+    fun smartPlaylistTrackMenuGetsCompletionGuard() {
+        assertEquals(
+            TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+            TrackMixQueueSettlingPolicy.requiredCompletionGuardMs(
+                "menu_gm_context_track"
+            )
+        )
+        assertEquals(
+            0L,
+            TrackMixQueueSettlingPolicy.requiredCompletionGuardMs(
+                "menu_gm_context_playlist_details"
+            )
+        )
+    }
+
     @Test
     fun growingNativeQueueIsNotSettledEvenWhenCurrentTrackIsUnchanged() {
         assertFalse(
@@ -20,7 +37,7 @@ class TrackMixQueueSettlingPolicyTest {
     }
 
     @Test
-    fun identicalQueueRequiresFullQuietWindow() {
+    fun quietIntermediateSmartPlaylistQueueStillNeedsCompletionGuard() {
         val same = TrackMixQueueSettlingPolicy.sameQueue(
             previousTrackIds = listOf(10L, 11L),
             previousEntryIds = listOf(100L, 101L),
@@ -33,27 +50,57 @@ class TrackMixQueueSettlingPolicyTest {
         assertFalse(
             TrackMixQueueSettlingPolicy.isSettled(
                 sameQueue = same,
-                stableForMs = TrackMixQueueSettlingPolicy.QUIET_WINDOW_MS - 1
+                stableForMs = 812L,
+                sinceDetectionMs = 812L,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS
             )
         )
         assertTrue(
             TrackMixQueueSettlingPolicy.isSettled(
                 sameQueue = same,
-                stableForMs = TrackMixQueueSettlingPolicy.QUIET_WINDOW_MS
+                stableForMs = TrackMixQueueSettlingPolicy.QUIET_WINDOW_MS,
+                sinceDetectionMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS
             )
         )
     }
 
     @Test
-    fun currentIndexChangeResetsSettling() {
+    fun ordinaryPlaylistNeedsOnlyQuietWindow() {
+        assertTrue(
+            TrackMixQueueSettlingPolicy.isSettled(
+                sameQueue = true,
+                stableForMs = TrackMixQueueSettlingPolicy.QUIET_WINDOW_MS,
+                sinceDetectionMs = TrackMixQueueSettlingPolicy.QUIET_WINDOW_MS,
+                requiredGuardMs = 0L
+            )
+        )
+    }
+
+    @Test
+    fun selectedTargetMaySurviveAListRebuildAfterCurrentDrifts() {
+        assertTrue(
+            TrackMixQueueSettlingPolicy.selectedTargetStillUsable(
+                selectedTrackOccurrences = 1,
+                currentStillSelected = false,
+                detectedQueueSize = 2,
+                currentQueueSize = 7213
+            )
+        )
         assertFalse(
-            TrackMixQueueSettlingPolicy.sameQueue(
-                previousTrackIds = listOf(10L, 11L),
-                previousEntryIds = listOf(100L, 101L),
-                previousCurrentIndex = 0,
-                currentTrackIds = listOf(10L, 11L),
-                currentEntryIds = listOf(100L, 101L),
-                currentCurrentIndex = 1
+            TrackMixQueueSettlingPolicy.selectedTargetStillUsable(
+                selectedTrackOccurrences = 1,
+                currentStillSelected = false,
+                detectedQueueSize = 2,
+                currentQueueSize = 2
+            )
+        )
+        assertFalse(
+            TrackMixQueueSettlingPolicy.selectedTargetStillUsable(
+                selectedTrackOccurrences = 2,
+                currentStillSelected = false,
+                detectedQueueSize = 2,
+                currentQueueSize = 7213
             )
         )
     }
