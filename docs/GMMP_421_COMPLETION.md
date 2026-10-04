@@ -22,7 +22,8 @@ This document records the final device-verified state of the GMMP 4.2.1 compatib
 | Playlist Link | Accepted | Portable/fail-closed Smart-Playlist integration; disabled behavior remains GMMP-compatible. |
 | Play flipped | Accepted | Structurally resolved native `MusicService` playback flow verified on device. |
 | Companion Compatibility policy | Accepted | Tested version source-of-truth is 4.2.1; other installed versions are warning/untested. |
-| Companion per-row health colors | Implemented, host-tested/CI required | Neutral parent Status card, one overall divider, independently colored GMMP/Xposed/GoneSmart/Compatibility rows. |
+| Companion per-row health colors | Implemented + JVM covered | Neutral parent Status card, one overall divider, independently colored GMMP/Xposed/GoneSmart/Compatibility rows. A final visual device glance is optional before release, not a GMMP mapping dependency. |
+| Compatibility logging | Accepted cleanup | Broad class/runtime/Recycler inventories are disabled for the accepted 4.2.1 build; the compact self-test and targeted failure diagnostics remain. Deep inventory machinery is retained for future compatibility investigations. |
 
 ## Explicit open boundary
 
@@ -37,16 +38,31 @@ Known facts:
 - `qr.z(int)` is the native Auto-DJ **refill** boundary and must not be used as a current-position setter.
 - A previous value-correlation with another host was a false positive and has been removed.
 - The current 4.2.1 mutation bridge therefore fails closed rather than guessing a writer.
+- The compact compatibility self-test reports this boundary as `OPEN_CURRENT_POSITION_WRITER`; it no longer uses the stale `d85` heuristic.
 
 This is isolated from Playlist **Play flipped**, which is accepted.
 
-## Final cleanup requirements before retiring the branch
+## Final cleanup status
 
-- exact-head CI green;
-- Status screen compile/behavior clean;
-- broad 4.2.1 discovery logs retired/gated, keeping compact mapping/failure diagnostics;
-- `AGENTS.md` and compatibility playbook reflect this matrix;
-- decide whether to resolve Queue Flip now with one targeted, bundled test or carry it explicitly as the only known 4.2.1 limitation.
+- [x] Status health logic split into independent red/amber/green rows.
+- [x] Compatibility source-of-truth is GMMP 4.2.1.
+- [x] Broad 4.2.1 discovery logs retired/gated; compact self-test/failure diagnostics retained.
+- [x] `AGENTS.md` consolidated to current native-first/semantic resolver rules.
+- [x] `docs/GMMP_COMPATIBILITY_PLAYBOOK.md` rewritten to the final 4.2.1 ledger and future-update workflow.
+- [x] Track Auto-DJ verified from normal Playlist and large Smart Playlist, including exact Initial Size.
+- [x] Temporary cleanup workflow/script removed from the repository.
+- [ ] Queue-menu `Flip queue` current-position writer: resolve with one targeted bundled device investigation, or explicitly carry as the only known 4.2.1 limitation.
+- [ ] Final exact-head CI: required after the last documentation/cleanup commit before the branch is retired.
+
+## Dynamic / structural audit result
+
+The final audit found no additional unsafe guessed writer besides the explicitly open Queue Flip state boundary.
+
+- Critical Queue ownership/entity discovery is semantic: generated `queue_table` adapter SQL + native entity reader + independent Cursor correlation.
+- Playlist native playback resolves by structural method shape, retaining tested obfuscated names only as preferred fast paths where useful.
+- Auto-DJ selection tries the tested 4.2.0/4.2.1 name only as a fast path and falls back to a unique structural `int -> List` boundary; ambiguity fails closed.
+- Exact obfuscated hooks remain in some high-risk UI/native boundaries where choosing an arbitrary signature-equivalent method would be less safe. Those hook families are isolated and fail closed rather than taking down unrelated GoneSmart features.
+- Future unknown GMMP versions use the compatibility self-test/probe workflow; accepted-version deep inventories are no longer emitted continuously.
 
 ## Durable 4.2.1 lessons
 
