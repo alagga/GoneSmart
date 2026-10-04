@@ -45,6 +45,21 @@ internal class GmmpQueueMutationBridge(
             }
             return result
         }
+
+        internal fun uniqueOwnedIntWriter(owner: Any): Method? {
+            val candidates = GmmpReflectionPolicy.callableMethods(owner.javaClass)
+                .filter {
+                    !Modifier.isStatic(it.modifiers) &&
+                        it.declaringClass == owner.javaClass &&
+                        it.parameterCount == 1 &&
+                        (
+                            it.parameterTypes[0] == Integer.TYPE ||
+                                it.parameterTypes[0] == Integer::class.java
+                        ) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+            return candidates.singleOrNull()?.apply { isAccessible = true }
+        }
     }
 
     private interface StatePositionBinding {
@@ -97,6 +112,30 @@ internal class GmmpQueueMutationBridge(
         }
     }
 
+    private class OwnerMethodStatePositionBinding(
+        private val readHost: Any,
+        private val getter: Method,
+        private val writerHost: Any,
+        private val writer: Method
+    ) : StatePositionBinding {
+        override val description: String =
+            readHost.javaClass.name + ".method:" + getter.name +
+                "<-" + writerHost.javaClass.name + ".method:" + writer.name
+
+        override fun read(): Int =
+            (getter.invoke(readHost) as? Number)?.toInt()
+                ?: error("GMMP current-position getter became unavailable")
+
+        override fun write(value: Int) {
+            val before = read()
+            if (before == value) return
+            writer.invoke(writerHost, value)
+            check(read() == value) {
+                "GMMP owner current-position writer did not update getter"
+            }
+        }
+    }
+
     private data class Resolved(
         val dao: Any,
         val rows: List<Any>,
@@ -105,12 +144,17 @@ internal class GmmpQueueMutationBridge(
         val position: Field,
         val update: Method,
         val delete: Method?,
-        val statePosition: StatePositionBinding,
+        val statePosition: StatePositionBinding?,
         val context: QueueContext
     )
 
     fun reverseQueue(): Int {
-        val resolved = resolve(requireDelete = false)
+        val resolved = resolve(
+            requireDelete = false,
+            requireStatePosition = true
+        )
+        val statePosition = resolved.statePosition
+            ?: error("GMMP current-position writer unavailable")
         val original = resolved.rows.sortedBy {
             number(resolved.position, it).toInt()
         }
@@ -135,7 +179,7 @@ internal class GmmpQueueMutationBridge(
         }
         require(newCurrentIndex >= 0)
         val newCurrentPosition = oldPositions[newCurrentIndex]
-        val oldState = resolved.statePosition.read()
+        val oldState = statePosition.read()
 
         try {
             newOrder.forEachIndexed { index, row ->
@@ -145,7 +189,7 @@ internal class GmmpQueueMutationBridge(
                 resolved.dao,
                 ArrayList(newOrder)
             )
-            resolved.statePosition.write(newCurrentPosition)
+            statePosition.write(newCurrentPosition)
 
             val verified = GmmpQueueReader().read(autoDj)
                 ?: error("Queue verification unavailable")
@@ -178,7 +222,7 @@ internal class GmmpQueueMutationBridge(
                     resolved.dao,
                     ArrayList(original)
                 )
-                resolved.statePosition.write(oldState)
+                statePosition.write(oldState)
             }.onFailure { rollback ->
                 failure.addSuppressed(rollback)
             }
@@ -187,12 +231,27 @@ internal class GmmpQueueMutationBridge(
     }
 
     fun isolateCurrentTrack(selectedTrackId: Long): Boolean {
-        val resolved = resolve(requireDelete = true)
+        val resolved = resolve(
+            requireDelete = true,
+            requireStatePosition = false
+        )
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
         } ?: return false
         if (current.track.id != selectedTrackId) return false
         if (resolved.rows.size == 1) return true
+
+        // Native Play in GMMP 4.2.1 normally makes the selected seed the
+        // current row at queue_position=1 before Track Mix reaches this
+        // bridge. In that case deleting the stale row(s) does not move the
+        // current pointer at all, so requiring a writable state boundary is
+        // both unnecessary and unsafe. Resolve a writer only when the current
+        // row actually has to move to position 1.
+        val statePosition = if (current.queuePosition == 1) {
+            null
+        } else {
+            resolveStatePosition(current.queuePosition)
+        }
 
         val currentModel = resolved.rows.singleOrNull {
             number(resolved.queueId, it).toLong() == current.queueEntryId
@@ -216,7 +275,7 @@ internal class GmmpQueueMutationBridge(
             resolved.dao,
             arrayListOf(currentModel)
         )
-        resolved.statePosition.write(1)
+        statePosition?.write(1)
 
         val verified = GmmpQueueReader().read(autoDj) ?: return false
         val only = verified.items.singleOrNull() ?: return false
@@ -233,7 +292,10 @@ internal class GmmpQueueMutationBridge(
         return ok
     }
 
-    private fun resolve(requireDelete: Boolean): Resolved {
+    private fun resolve(
+        requireDelete: Boolean,
+        requireStatePosition: Boolean
+    ): Resolved {
         val context = GmmpQueueReader().read(autoDj)
             ?: error("GMMP queue Cursor mapping unavailable")
 
@@ -394,9 +456,11 @@ internal class GmmpQueueMutationBridge(
             )
         }
 
-        val statePosition = resolveStatePosition(
-            context.currentQueuePosition
-        )
+        val statePosition = if (requireStatePosition) {
+            resolveStatePosition(context.currentQueuePosition)
+        } else {
+            null
+        }
 
         Log.i(
             TAG,
@@ -408,7 +472,8 @@ internal class GmmpQueueMutationBridge(
                 " | position=" + position.name +
                 " | update=" + update.name +
                 " | delete=" + (delete?.name ?: "none") +
-                " | state=" + statePosition.description +
+                " | state=" +
+                (statePosition?.description ?: "deferred-if-needed") +
                 " | reader=" + reconstructed.boundary
         )
 
@@ -462,6 +527,25 @@ internal class GmmpQueueMutationBridge(
             return null
         }
 
+        fun ownerBindingFrom(
+            analysis: NativeQueueStateAccessorPolicy.Analysis
+        ): StatePositionBinding? {
+            val directGetters = analysis.matchingGetters.filter {
+                it.declaringClass == analysis.host.javaClass
+            }
+            val getter = directGetters.singleOrNull()
+                ?: analysis.matchingGetters.singleOrNull()
+                ?: return null
+            val writer = uniqueOwnedIntWriter(autoDj) ?: return null
+            getter.isAccessible = true
+            return OwnerMethodStatePositionBinding(
+                readHost = analysis.host,
+                getter = getter,
+                writerHost = autoDj,
+                writer = writer
+            )
+        }
+
         fun report(
             source: String,
             analysis: NativeQueueStateAccessorPolicy.Analysis
@@ -473,6 +557,30 @@ internal class GmmpQueueMutationBridge(
                 TAG,
                 "QUEUE CURRENT POINTER SHAPE | source=" + source +
                     " | " + analysis.describe(currentQueuePosition)
+            )
+            val ownerWriters = GmmpReflectionPolicy
+                .callableMethods(autoDj.javaClass)
+                .filter {
+                    !Modifier.isStatic(it.modifiers) &&
+                        it.declaringClass == autoDj.javaClass &&
+                        it.parameterCount == 1 &&
+                        (
+                            it.parameterTypes[0] == Integer.TYPE ||
+                                it.parameterTypes[0] == Integer::class.java
+                        ) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+                .joinToString(",") {
+                    it.declaringClass.name + "." + it.name +
+                        "(" + it.parameterTypes[0].name + "):" +
+                        it.returnType.name
+                }
+                .ifBlank { "none" }
+            Log.w(
+                TAG,
+                "QUEUE CURRENT OWNER WRITER SHAPE | source=" + source +
+                    " | owner=" + autoDj.javaClass.name +
+                    " | writers=" + ownerWriters
             )
         }
 
@@ -487,6 +595,14 @@ internal class GmmpQueueMutationBridge(
             val binding = bindingFrom(analysis)
             if (binding != null) return binding to true
             if (analysis.hasReadEvidence) {
+                // r36 proved that qr.t -> ur is a read-only signal host: b()
+                // tracks the Cursor current position but ur exposes no writer.
+                // Preserve that verified reader and allow the writer only on
+                // the Auto-DJ owner itself, where 4.2.1 exposes exactly one
+                // directly-owned int->void command. The writer is accepted
+                // structurally, not by its obfuscated name, and write() still
+                // requires the independent reader to change to the target.
+                ownerBindingFrom(analysis)?.let { return it to true }
                 report(source, analysis)
                 return null to true
             }
@@ -496,16 +612,16 @@ internal class GmmpQueueMutationBridge(
         // The accepted read-only Queue resolver repeatedly proves the 4.2.1
         // current pointer on qr.t -> ur.method:b by correlating its integer
         // signal with the independent queue_table Cursor. Once this preferred
-        // host yields the same read evidence here, write discovery MUST stay
-        // on that host. Falling through to qr.p/dx3 created the r34 false
-        // positive dx3.D->c2 when both happened to equal queue position 1.
+        // host yields read evidence, no unrelated state object may replace it.
+        // The write command may live on the Auto-DJ owner itself, but its
+        // postcondition is always checked through this verified reader.
         objectField(autoDj, "t")?.let { state ->
             val (binding, hasReadEvidence) = preferredHost("field:t", state)
             if (binding != null) return binding
             if (hasReadEvidence) {
                 error(
                     "GMMP writable current-position binding is unresolved " +
-                        "on verified state host " + state.javaClass.name
+                        "for verified state reader " + state.javaClass.name
                 )
             }
         }
@@ -519,7 +635,7 @@ internal class GmmpQueueMutationBridge(
             if (hasReadEvidence) {
                 error(
                     "GMMP writable current-position binding is unresolved " +
-                        "on fallback state host " + state.javaClass.name
+                        "for fallback state reader " + state.javaClass.name
                 )
             }
         }
