@@ -38,7 +38,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val GMMP_PACKAGE = "gonemad.gmmp"
-        private const val TESTED_GMMP_VERSION = "4.2.0"
 
         private const val COLOR_BG = 0xFF151419.toInt()
         private const val COLOR_SURFACE = 0xFF1E1D23.toInt()
@@ -71,7 +70,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frameworkStatusText: TextView
     private lateinit var runtimeStatusText: TextView
     private lateinit var compatibilityText: TextView
-    private lateinit var compatibilitySection: LinearLayout
     private var updateStatusText: TextView? = null
     private var updateVersionText: TextView? = null
     private var updateState: GitHubReleaseChecker.State = GitHubReleaseChecker.State.Checking
@@ -190,15 +188,9 @@ class MainActivity : AppCompatActivity() {
 
         val logo = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setImageResource(
-                R.drawable.gonesmart_logo_round
-            )
+            setImageResource(R.drawable.gonesmart_logo_round)
             contentDescription = "GoneSmart"
-            layoutParams = FrameLayout.LayoutParams(
-                dp(48),
-                dp(48),
-                Gravity.CENTER
-            )
+            layoutParams = FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER)
         }
 
         holder.addView(logo)
@@ -225,12 +217,7 @@ class MainActivity : AppCompatActivity() {
         return bar
     }
 
-    private fun addNavItem(
-        parent: LinearLayout,
-        tab: Tab,
-        label: String,
-        iconRes: Int
-    ) {
+    private fun addNavItem(parent: LinearLayout, tab: Tab, label: String, iconRes: Int) {
         val item = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -267,8 +254,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTab(tab: Tab) {
         activeTab = tab
-        // Switches and rating views belong to the outgoing page. Never
-        // retain detached views when moving between Home, Smart DJ and UI.
         switches.clear()
         settingRows.clear()
         minimumRatingSlider = null
@@ -297,9 +282,7 @@ class MainActivity : AppCompatActivity() {
                 if (selected) rounded(COLOR_ACCENT_DARK, 24f) else null
         }
 
-        if (tab == Tab.LOGS) {
-            refreshLogs()
-        }
+        if (tab == Tab.LOGS) refreshLogs()
         refreshUpdateStatus()
         refreshStatus()
     }
@@ -309,64 +292,43 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("STATUS"))
 
         statusCard = card().apply {
-            // The status card is one visual unit, but Compatibility owns the
-            // complete bottom strip so an untested host version never renders
-            // as a smaller warning card inside the green module state.
             setContentPadding(0, 0, 0, 0)
             clipToOutline = true
         }
         val statusContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-        }
-        val statusMainContent = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(20), dp(22), dp(12))
+            setPadding(dp(22), dp(20), dp(22), dp(16))
         }
 
         statusHeadline = textView("Checking module…", 21f, COLOR_TEXT, bold = true)
         statusSubline = textView("Waiting for Xposed service", 15f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(5), 0, dp(14))
         }
-        statusMainContent.addView(statusHeadline)
-        statusMainContent.addView(statusSubline)
-        statusMainContent.addView(divider())
+        statusContent.addView(statusHeadline)
+        statusContent.addView(statusSubline)
+        // Exactly one separator belongs below the overall status. Individual
+        // health rows use spacing/backgrounds instead of additional dividers.
+        statusContent.addView(divider())
 
         gmmpStatusText = statusRow("GoneMAD Music Player", "Checking…")
         frameworkStatusText = statusRow("Xposed framework", "Checking…")
         runtimeStatusText = statusRow("GoneSmart state", "Idle")
-        compatibilityText = statusRow("Compatibility", "Tested with $TESTED_GMMP_VERSION")
-
-        statusMainContent.addView(gmmpStatusText)
-        statusMainContent.addView(frameworkStatusText)
-        statusMainContent.addView(runtimeStatusText)
-        statusContent.addView(statusMainContent)
-
-        compatibilitySection = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), 0, dp(22), dp(12))
-            addView(divider())
-            addView(compatibilityText)
-        }
-        statusContent.addView(
-            compatibilitySection,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+        compatibilityText = statusRow(
+            "Compatibility",
+            "Tested with ${GmmpCompatibilityPolicy.TESTED_VERSION}"
         )
 
+        statusContent.addView(gmmpStatusText)
+        statusContent.addView(frameworkStatusText)
+        statusContent.addView(runtimeStatusText)
+        statusContent.addView(compatibilityText)
         statusCard.addView(statusContent)
         container.addView(statusCard)
 
         container.addView(verticalGap(14))
-        container.addView(actionButton("Open GoneMAD Music Player") {
-            openGmmp()
-        })
-
+        container.addView(actionButton("Open GoneMAD Music Player") { openGmmp() })
         container.addView(verticalGap(10))
-        container.addView(outlineButton("Restart GMMP") {
-            restartGmmp()
-        }, LinearLayout.LayoutParams(
+        container.addView(outlineButton("Restart GMMP") { restartGmmp() }, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(54)
         ))
@@ -378,9 +340,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(19), dp(18), dp(19), dp(18))
         }
-        updateContent.addView(
-            textView("Installed v${BuildConfig.VERSION_NAME}", 15f, COLOR_TEXT, bold = true)
-        )
+        updateContent.addView(textView("Installed v${BuildConfig.VERSION_NAME}", 15f, COLOR_TEXT, bold = true))
         updateStatusText = textView("Checking GitHub Releases…", 16f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(12), 0, dp(3))
         }
@@ -390,23 +350,16 @@ class MainActivity : AppCompatActivity() {
         updateCard.addView(updateContent)
         container.addView(updateCard)
         container.addView(verticalGap(12))
-        container.addView(actionButton("Add to Obtainium") {
-            openObtainium()
-        })
+        container.addView(actionButton("Add to Obtainium") { openObtainium() })
         container.addView(verticalGap(10))
-        container.addView(outlineButton("Check for updates") {
-            checkForUpdates()
-        }, LinearLayout.LayoutParams(
+        container.addView(outlineButton("Check for updates") { checkForUpdates() }, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(54)
         ))
         container.addView(verticalGap(10))
         container.addView(outlineButton("View GitHub releases") {
             openUrl("https://github.com/alagga/GoneSmart/releases")
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(54)
-        ))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
         refreshUpdateStatus()
 
         container.addView(verticalGap(24))
@@ -415,13 +368,11 @@ class MainActivity : AppCompatActivity() {
             title = "Smart DJ",
             body = "Smarter recommendations for your local library, directly in GMMP's Auto-DJ. GMMP still controls playback and its queue; configure recommendation and fallback options in the Smart DJ tab."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "UI extensions",
             body = "Optional GMMP extensions independent of Smart DJ: playlist and Smart-Playlist folders, multi-selection, Playlist Link, Flip and Track Auto-DJ. Configure them in the UI tab."
         ))
-
         container.addView(verticalGap(24))
         container.addView(sectionTitle("SETTINGS"))
         container.addView(infoCard(
@@ -436,7 +387,6 @@ class MainActivity : AppCompatActivity() {
         val container = pageContainer()
         container.addView(pageTitle("Smart DJ"))
         container.addView(sectionTitle("GENERAL"))
-
         container.addView(settingGroup(listOf(
             SettingSpec(
                 key = GoneSmartSettingsKeys.KEY_ENABLED,
@@ -452,95 +402,31 @@ class MainActivity : AppCompatActivity() {
         container.addView(minimumRatingCard())
         container.addView(verticalGap(10))
         container.addView(settingGroup(listOf(
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_SMART_RATING,
-                "M",
-                "Smart rating",
-                "Use the median rating of the current recommendation context as a dynamic minimum. If Minimum rating is higher, the stricter value wins.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
-                "↘",
-                "Rating fallback",
-                "Available when Minimum rating is above zero or Smart rating is enabled. If no tracks pass, retry once without those thresholds before native GMMP fallback.",
-                COLOR_AMBER
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
-                "★",
-                "Prefer higher-rated matches",
-                "When several tracks are suitable, favor the ones you've rated higher.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_EXCLUDE_HALF_STAR,
-                "½",
-                "Exclude 0.5-star tracks",
-                "Never select tracks rated exactly half a star. This remains active even during Rating fallback.",
-                COLOR_RED
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_PREFER_STUDIO,
-                "L",
-                "Prefer studio over live",
-                "Prefer studio recordings unless you're listening to live music.",
-                COLOR_AMBER
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_MATCH_QUEUE_ERA,
-                "Y",
-                "Match current music era",
-                "Give a small bonus to tracks from a similar release period.",
-                COLOR_GREEN
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_FAVOR_RECENTLY_ADDED,
-                "+",
-                "Favor recently added tracks",
-                "Favor recently added songs when you're listening to newer additions.",
-                COLOR_GREEN
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES,
-                "≠",
-                "Prevent version duplicates",
-                "Block Original, Radio, Extended and Club Mix variants of the same song family.",
-                COLOR_ACCENT
-            )
+            SettingSpec(GoneSmartSettingsKeys.KEY_SMART_RATING, "M", "Smart rating", "Use the median rating of the current recommendation context as a dynamic minimum. If Minimum rating is higher, the stricter value wins.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING, "↘", "Rating fallback", "Available when Minimum rating is above zero or Smart rating is enabled. If no tracks pass, retry once without those thresholds before native GMMP fallback.", COLOR_AMBER),
+            SettingSpec(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, "★", "Prefer higher-rated matches", "When several tracks are suitable, favor the ones you've rated higher.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_EXCLUDE_HALF_STAR, "½", "Exclude 0.5-star tracks", "Never select tracks rated exactly half a star. This remains active even during Rating fallback.", COLOR_RED),
+            SettingSpec(GoneSmartSettingsKeys.KEY_PREFER_STUDIO, "L", "Prefer studio over live", "Prefer studio recordings unless you're listening to live music.", COLOR_AMBER),
+            SettingSpec(GoneSmartSettingsKeys.KEY_MATCH_QUEUE_ERA, "Y", "Match current music era", "Give a small bonus to tracks from a similar release period.", COLOR_GREEN),
+            SettingSpec(GoneSmartSettingsKeys.KEY_FAVOR_RECENTLY_ADDED, "+", "Favor recently added tracks", "Favor recently added songs when you're listening to newer additions.", COLOR_GREEN),
+            SettingSpec(GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES, "≠", "Prevent version duplicates", "Block Original, Radio, Extended and Club Mix variants of the same song family.", COLOR_ACCENT)
         )))
 
         container.addView(verticalGap(24))
         container.addView(sectionTitle("FALLBACK & STATUS"))
         container.addView(settingGroup(listOf(
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES,
-                "↩",
-                "Fallback when no matches exist",
-                "Use regular GMMP Auto-DJ when GoneSmart finds no suitable local track.",
-                COLOR_RED
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES,
-                "i",
-                "Show status messages",
-                "Show a short message when fallback or another important state is entered.",
-                COLOR_ACCENT
-            )
+            SettingSpec(GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES, "↩", "Fallback when no matches exist", "Use regular GMMP Auto-DJ when GoneSmart finds no suitable local track.", COLOR_RED),
+            SettingSpec(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, "i", "Show status messages", "Show a short message when fallback or another important state is entered.", COLOR_ACCENT)
         )))
-
         container.addView(verticalGap(18))
         container.addView(infoCard(
             title = "Offline behavior",
             body = "A valid pool from the current queue can continue offline. A new queue never reuses an old pool; if GoneSmart has no usable cached track, GMMP Auto-DJ takes over and the player sparkle turns red."
         ))
-
         refreshSettingsSwitches()
         return scrollPage(container)
     }
 
-    /** The GoneSmart companion app always uses English. GMMP's context
-     * menus independently use the player's own localized resources. */
     private fun companionTrackAutoDjLabel(): String = TrackMixPlan.COMPANION_LABEL
 
     private fun localizedFeatureLogs(log: String): String =
@@ -552,104 +438,37 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("PLAYLISTS"))
         container.addView(settingGroup(listOf(
             SettingSpec(
-                GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
-                "✓",
-                "Multi-selection",
-                "Long-press a playlist in Add to Playlist, select more playlists, " +
-                    "then confirm once to add the current songs to all selected playlists.",
-                COLOR_ACCENT
+                key = GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
+                glyph = "✓",
+                title = "Multi-selection",
+                subtitle = "Long-press a playlist in Add to Playlist, select more playlists, then confirm once to add the current songs to all selected playlists.",
+                accent = COLOR_ACCENT
             )
         )))
-        // Feature accepted on the tested GMMP 4.2.0 device. Keep the
-        // setting available in both debug and eventual release variants.
         container.addView(verticalGap(12))
         container.addView(settingGroup(listOf(
-                SettingSpec(
-                    GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
-                    "▣",
-                    "Folders",
-                    "Browse physical folders directly in GMMP's Playlists tab " +
-                        "and Add to Playlist picker.",
-                    COLOR_ACCENT
-                ),
-                SettingSpec(
-                    GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
-                    "↗",
-                    "Group external playlists",
-                    "Show SD-card and other external playlists inside " +
-                        "the virtual Other Locations folder.",
-                    COLOR_GREEN
-                ),
-                SettingSpec(
-                    GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS,
-                    "⌂",
-                    "Group root playlists",
-                    "Show root playlists inside the virtual Other Locations folder. " +
-                        "Keeps the virtual folder available even when empty.",
-                    COLOR_ACCENT
-                )
-            )))
+            SettingSpec(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, "▣", "Folders", "Browse physical folders directly in GMMP's Playlists tab and Add to Playlist picker.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, "↗", "Group external playlists", "Show SD-card and other external playlists inside the virtual Other Locations folder.", COLOR_GREEN),
+            SettingSpec(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, "⌂", "Group root playlists", "Show root playlists inside the virtual Other Locations folder. Keeps the virtual folder available even when empty.", COLOR_ACCENT)
+        )))
         container.addView(verticalGap(24))
         container.addView(sectionTitle("SMART-PLAYLISTS"))
         container.addView(settingGroup(listOf(
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
-                "↔",
-                "Playlist Link",
-                "Use ordinary Playlists as live rules inside Smart-Playlists.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
-                "✓",
-                "Multi-selection",
-                "Long-press a Smart-Playlist in the Smart-Playlists tab, select more " +
-                    "Smart-Playlists, then choose Move to move all selected Smart-Playlists.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
-                "▤",
-                "Folders",
-                "Browse physical folders directly in GMMP's Smart-Playlists tab " +
-                    "and move Smart-Playlists between them.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
-                "⌂",
-                "Group root Smart-Playlists",
-                "Show root Smart-Playlists inside the virtual Other Locations " +
-                    "folder. Keeps the virtual folder available even when empty.",
-                COLOR_ACCENT
-            )
+            SettingSpec(GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE, "↔", "Playlist Link", "Use ordinary Playlists as live rules inside Smart-Playlists.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST, "✓", "Multi-selection", "Long-press a Smart-Playlist in the Smart-Playlists tab, select more Smart-Playlists, then choose Move to move all selected Smart-Playlists.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS, "▤", "Folders", "Browse physical folders directly in GMMP's Smart-Playlists tab and move Smart-Playlists between them.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS, "⌂", "Group root Smart-Playlists", "Show root Smart-Playlists inside the virtual Other Locations folder. Keeps the virtual folder available even when empty.", COLOR_ACCENT)
         )))
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Playlist & Smart-Playlist folders",
-            body = "Both folder views reuse GMMP's native rows and actions. " +
-                "Create or delete physical folders, move one or several entries, " +
-                "and configure the virtual Other Locations grouping separately."
+            body = "Both folder views reuse GMMP's native rows and actions. Create or delete physical folders, move one or several entries, and configure the virtual Other Locations grouping separately."
         ))
         container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYBACK & QUEUE"))
         container.addView(settingGroup(listOf(
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_TRACK_MIX,
-                "♫",
-                companionTrackAutoDjLabel(),
-                "Start Auto-DJ from any song and fill a fresh queue with similar tracks.",
-                COLOR_ACCENT
-            ),
-            SettingSpec(
-                GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
-                "⇵",
-                "Flip queue / Play flipped",
-                "Reverse your entire queue while keeping the current song, " +
-                    "or play any playlist or Smart-Playlist from its last " +
-                    "song to its first.",
-                COLOR_ACCENT
-            )
+            SettingSpec(GoneSmartSettingsKeys.KEY_TRACK_MIX, "♫", companionTrackAutoDjLabel(), "Start Auto-DJ from any song and fill a fresh queue with similar tracks.", COLOR_ACCENT),
+            SettingSpec(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, "⇵", "Flip queue / Play flipped", "Reverse your entire queue while keeping the current song, or play any playlist or Smart-Playlist from its last song to its first.", COLOR_ACCENT)
         )))
         refreshSettingsSwitches()
         return scrollPage(container)
@@ -672,17 +491,13 @@ class MainActivity : AppCompatActivity() {
         actions.addView(outlineButton("Clear") {
             GoneSmartEventStore.clear(this)
             refreshLogs()
-        }, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
-            marginEnd = dp(8)
-        })
+        }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(8) })
         actions.addView(actionButton("Copy") {
             val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("GoneSmart logs", text))
             Toast.makeText(this, "Logs copied", Toast.LENGTH_SHORT).show()
-        }, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
-            marginStart = dp(8)
-        })
+        }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
         container.addView(actions)
 
         logCountText = textView("0 lines", 14f, COLOR_TEXT_SECONDARY).apply {
@@ -690,9 +505,7 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(logCountText)
 
-        val logCard = card().apply {
-            setContentPadding(dp(18), dp(18), dp(18), dp(18))
-        }
+        val logCard = card().apply { setContentPadding(dp(18), dp(18), dp(18), dp(18)) }
         logTextView = textView("No runtime events yet.", 13f, COLOR_TEXT_SECONDARY).apply {
             typeface = Typeface.MONOSPACE
             setTextIsSelectable(true)
@@ -703,13 +516,10 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "Shows recent activity from all GoneSmart features. For detailed " +
-                "diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist, " +
-                "GoneSmartFlip or GoneSmartTrackMix.",
+            "Shows recent activity from all GoneSmart features. For detailed diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist, GoneSmartFlip or GoneSmartTrackMix.",
             13f,
             COLOR_MUTED
         ))
-
         return scrollPage(container)
     }
 
@@ -722,43 +532,31 @@ class MainActivity : AppCompatActivity() {
             title = "How are tracks selected?",
             body = "GoneSmart keeps GMMP's playback and queue handling, but replaces Auto-DJ track selection. It builds a session-aware context from the current and recent user-selected tracks, asks ListenBrainz and Last.fm for similar music, merges both signals, and matches the result against your local GMMP library. Only tracks that actually exist in your library can be selected."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What does ${companionTrackAutoDjLabel()} do?",
-            body = "In a song's three-dot menu, choose ${companionTrackAutoDjLabel()} after Play next. " +
-                "GoneSmart plays that song, keeps it as the only initial queue " +
-                "entry, switches GMMP to Auto-DJ and fills the queue to your " +
-                "configured Initial Size with recommended local tracks. " +
-                "Choosing ${companionTrackAutoDjLabel()} also enables Smart DJ if it was off. " +
-                "Turn ${companionTrackAutoDjLabel()} on or off in the UI tab. Completed mixes " +
-                "show one confirmation; errors appear separately."
+            body = "In a song's three-dot menu, choose ${companionTrackAutoDjLabel()} after Play next. GoneSmart plays that song, keeps it as the only initial queue entry, switches GMMP to Auto-DJ and fills the queue to your configured Initial Size with recommended local tracks. Choosing ${companionTrackAutoDjLabel()} also enables Smart DJ if it was off. Turn ${companionTrackAutoDjLabel()} on or off in the UI tab. Completed mixes show one confirmation; errors appear separately."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How much queue history is used?",
             body = "GoneSmart uses up to five representative seed tracks for the external recommendation providers. The current and most recent tracks carry the strongest weight. The wider session is still used for context such as rating, era, duplicate handling and drift control, without turning a long playlist into dozens of network requests."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What happens when no local match is found?",
             body = "The normal provider pass runs first. If it produces zero usable local candidates, GoneSmart performs exactly one broader search with more Last.fm results and a wider ListenBrainz recording search. If that still finds nothing, the configured rating and GMMP Auto-DJ fallback rules decide what happens next."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How does the recommendation pool work?",
             body = "GoneSmart prepares a pool of suitable local tracks instead of running a full network search for every song. GMMP can take tracks from that pool immediately. A refill is only prepared when the pool becomes low or when the queue session or relevant settings change, which keeps the system responsive and resource-efficient."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do Minimum rating and Smart rating work?",
             body = "Minimum rating is a fixed 0-5 star threshold in 0.5-star steps. Smart rating calculates the median GMMP rating of the tracks currently used as recommendation context. If both are enabled, GoneSmart uses whichever threshold is stricter. A 0 rating counts as 0 stars."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What does Rating fallback do?",
@@ -771,137 +569,57 @@ class MainActivity : AppCompatActivity() {
             title = "ListenBrainz + Last.fm",
             body = "ListenBrainz provides MusicBrainz-backed recording lookup and similar-recording data. Last.fm contributes similar-track data. GoneSmart sends only the seed metadata needed for those recommendation lookups; your full GMMP library stays local and is matched on-device. GoneSmart does not stream music from either service."
         ))
-
         container.addView(verticalGap(12))
         container.addView(outlineButton("Open ListenBrainz") {
-            startActivity(
-                Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("https://listenbrainz.org/")
-                )
-            )
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(54)
-        ))
-
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://listenbrainz.org/")))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
         container.addView(verticalGap(10))
         container.addView(outlineButton("Open Last.fm") {
-            startActivity(
-                Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("https://www.last.fm/")
-                )
-            )
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(54)
-        ))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.last.fm/")))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
 
         container.addView(verticalGap(22))
         container.addView(sectionTitle("GMMP UI EXTENSIONS"))
         container.addView(infoCard(
             title = "How does Multi-playlist selection work?",
-            body = "Enable it in the UI tab. In GMMP's Add to Playlist dialog, " +
-                "long-press a playlist to enter the original-style contextual " +
-                "selection mode, then select as many destinations as needed, " +
-                "including destinations in different folders. Tap the " +
-                "sparkle-marked native checkmark to add the original source " +
-                "tracks through GMMP's own playlist writer. One result " +
-                "message summarizes the accepted source files and completed " +
-                "destinations; Back cancels selection. If enabled when you " +
-                "create a new playlist, creation does not automatically add " +
-                "the selected tracks until you choose destinations."
+            body = "Enable it in the UI tab. In GMMP's Add to Playlist dialog, long-press a playlist to enter the original-style contextual selection mode, then select as many destinations as needed, including destinations in different folders. Tap the sparkle-marked native checkmark to add the original source tracks through GMMP's own playlist writer. One result message summarizes the accepted source files and completed destinations; Back cancels selection. If enabled when you create a new playlist, creation does not automatically add the selected tracks until you choose destinations."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What do Flip Queue and Play Flipped do?",
-            body = "Enable Flip queue in the UI tab. The GMMP Queue menu " +
-                "gets a sparkle-marked reverse action next to its existing " +
-                "commands; it reverses the entire native queue while " +
-                "preserving the exact currently playing entry and its " +
-                "position in the song. In ordinary and Smart-Playlist " +
-                "context menus, the sparkle-marked Play action starts " +
-                "the original GMMP playlist in reverse order. GMMP still " +
-                "resolves, writes and plays the selected native tracks; " +
-                "GoneSmart never edits the saved playlist file."
+            body = "Enable Flip queue in the UI tab. The GMMP Queue menu gets a sparkle-marked reverse action next to its existing commands; it reverses the entire native queue while preserving the exact currently playing entry and its position in the song. In ordinary and Smart-Playlist context menus, the sparkle-marked Play action starts the original GMMP playlist in reverse order. GMMP still resolves, writes and plays the selected native tracks; GoneSmart never edits the saved playlist file."
         ))
 
         container.addView(verticalGap(22))
         container.addView(sectionTitle("PLAYLISTS & FOLDERS"))
         container.addView(infoCard(
             title = "How do Playlist folders work?",
-            body = "Enable Playlist folders in the UI tab to browse physical folders " +
-                "in both GMMP playlist views. Group external playlists and Group " +
-                "root playlists independently control the virtual Other Locations " +
-                "folder. A real folder with that name stays separate. The normal " +
-                "Playlists tab remembers its location, while each new Add to " +
-                "Playlist dialog opens at root. Android Back and the picker's " +
-                "top-left Back button ascend folders before closing from root."
+            body = "Enable Playlist folders in the UI tab to browse physical folders in both GMMP playlist views. Group external playlists and Group root playlists independently control the virtual Other Locations folder. A real folder with that name stays separate. The normal Playlists tab remembers its location, while each new Add to Playlist dialog opens at root. Android Back and the picker's top-left Back button ascend folders before closing from root."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do I create playlists and folders?",
-            body = "Open the destination folder first. GoneSmart uses GMMP's " +
-                "original playlist creator/writer and folder actions. When " +
-                "Group root playlists is enabled, create main-root playlists " +
-                "from virtual Other Locations; otherwise use the root view. " +
-                "The Add to Playlist picker also offers playlist and folder " +
-                "creation options. A multi-selection confirm always remains " +
-                "available while playlists are selected."
+            body = "Open the destination folder first. GoneSmart uses GMMP's original playlist creator/writer and folder actions. When Group root playlists is enabled, create main-root playlists from virtual Other Locations; otherwise use the root view. The Add to Playlist picker also offers playlist and folder creation options. A multi-selection confirm always remains available while playlists are selected."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do I move one or more playlists?",
-            body = "In GMMP's Playlists tab, long-press a playlist and select " +
-                "any others, choose Move, navigate to an eligible destination " +
-                "and tap the white-check confirmation button above the " +
-                "mini-player. A verified successful move updates the playlist " +
-                "list without an extra popup; actual failures are reported. " +
-                "GoneSmart uses GMMP's original playlist delete and scan " +
-                "operations with a recoverable private staging step."
+            body = "In GMMP's Playlists tab, long-press a playlist and select any others, choose Move, navigate to an eligible destination and tap the white-check confirmation button above the mini-player. A verified successful move updates the playlist list without an extra popup; actual failures are reported. GoneSmart uses GMMP's original playlist delete and scan operations with a recoverable private staging step."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do Smart-Playlist folders work?",
-            body = "Enable UI → Smart-Playlists → Folders to browse physical .spl " +
-                "folders in GMMP's Smart-Playlists tab. Group root Smart-Playlists " +
-                "optionally places root .spl files in the virtual Other Locations " +
-                "folder. Use Move from a Smart-Playlist three-dot menu, or enable " +
-                "Multi-selection and long-press native Smart-Playlist rows to move " +
-                "several together. A move is blocked if another native Smart-Playlist " +
-                "links to a selected file by its absolute path."
+            body = "Enable UI → Smart-Playlists → Folders to browse physical .spl folders in GMMP's Smart-Playlists tab. Group root Smart-Playlists optionally places root .spl files in the virtual Other Locations folder. Use Move from a Smart-Playlist three-dot menu, or enable Multi-selection and long-press native Smart-Playlist rows to move several together. A move is blocked if another native Smart-Playlist links to a selected file by its absolute path."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What is Playlist Link?",
-            body = "Enable UI → Smart-Playlists → Playlist Link to extend GMMP's " +
-                "existing Link action in the Smart-Playlist editor. Choose Playlist " +
-                "to link an ordinary GMMP playlist as a live membership rule instead " +
-                "of copying its current tracks. Changes to that source playlist are " +
-                "picked up when the Smart-Playlist is evaluated again. If Playlist " +
-                "Playlist Link or GoneSmart itself is disabled later, saved Link rules stay " +
-                "visible but become neutral: GMMP can still open and use the " +
-                "Smart-Playlist, while those Link rules no longer filter its results. " +
-                "Re-enable Playlist Link to restore their live membership behavior."
+            body = "Enable UI → Smart-Playlists → Playlist Link to extend GMMP's existing Link action in the Smart-Playlist editor. Choose Playlist to link an ordinary GMMP playlist as a live membership rule instead of copying its current tracks. Changes to that source playlist are picked up when the Smart-Playlist is evaluated again. If Playlist Link or GoneSmart itself is disabled later, saved Link rules stay visible but become neutral: GMMP can still open and use the Smart-Playlist, while those Link rules no longer filter its results. Re-enable Playlist Link to restore their live membership behavior."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "How do GMMP language and theme settings apply?",
-            body = "The GoneSmart companion app stays English. Added controls " +
-                "inside GMMP reuse its original theme and translated native " +
-                "action labels. The feature-owned Move command and virtual " +
-                "Other Locations name use central host-language translations " +
-                "when the player lacks a native equivalent. The existing " +
-                "Playlists drawer entry shows a lilac GoneSmart sparkle only " +
-                "while Playlist folders is enabled; the Move confirm has a " +
-                "plain white checkmark."
+            body = "The GoneSmart companion app stays English. Added controls inside GMMP reuse its original theme and translated native action labels. The feature-owned Move command and virtual Other Locations name use central host-language translations when the player lacks a native equivalent. The existing Playlists drawer entry shows a lilac GoneSmart sparkle only while Playlist folders is enabled; the Move confirm has a plain white checkmark."
         ))
 
         container.addView(verticalGap(22))
@@ -910,7 +628,6 @@ class MainActivity : AppCompatActivity() {
             title = "What does the sparkle mean?",
             body = "Green: GMMP Auto-DJ is selected and GoneSmart is ready, either through an online recommendation path or a still-valid cached pool. Red: GMMP Auto-DJ is selected but GoneSmart currently cannot supply a smart track, an error/no-match state occurred, or regular GMMP Auto-DJ fallback is being used. No sparkle: GoneSmart is disabled, or the GMMP playback mode is Shuffle/Normal rather than Auto-DJ."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "What happens offline?",
@@ -928,9 +645,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("COMPATIBILITY"))
         container.addView(infoCard(
             title = "Tested GMMP version",
-            body = "GoneSmart is currently tested against GoneMAD Music Player $TESTED_GMMP_VERSION. Other GMMP versions are considered untested because GoneSmart hooks GMMP internals that can change between releases."
+            body = "GoneSmart is currently tested against GoneMAD Music Player ${GmmpCompatibilityPolicy.TESTED_VERSION}. Other GMMP versions are considered untested because GoneSmart hooks GMMP internals that can change between releases."
         ))
-
         container.addView(verticalGap(12))
         container.addView(infoCard(
             title = "Xposed / LSPatch",
@@ -943,153 +659,74 @@ class MainActivity : AppCompatActivity() {
             title = "Module not active?",
             body = "Make sure GoneSmart is enabled for gonemad.gmmp in your Xposed framework. If hooks do not refresh after a module update, use Restart GMMP below. The Logs tab contains high-level GoneSmart events; detailed development logs are available in Logcat with the tag GoneSmart."
         ))
-
         container.addView(verticalGap(14))
-        container.addView(outlineButton("Restart GMMP") {
-            restartGmmp()
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(54)
-        ))
-
+        container.addView(outlineButton("Restart GMMP") { restartGmmp() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
         container.addView(verticalGap(10))
         container.addView(actionButton("Open GoneSmart on GitHub") {
-            startActivity(
-                Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("https://github.com/alagga/GoneSmart")
-                )
-            )
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/alagga/GoneSmart")))
         })
-
         return scrollPage(container)
     }
 
     private fun minimumRatingCard(): View {
         val options = settingsRepository.read()
-
-        val card = card().apply {
-            setContentPadding(dp(20), dp(18), dp(20), dp(14))
-        }
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
+        val card = card().apply { setContentPadding(dp(20), dp(18), dp(20), dp(14)) }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        titleRow.addView(
-            textView(
-                "Minimum rating",
-                16f,
-                COLOR_TEXT,
-                bold = true
-            ),
-            LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f
-            )
-        )
-
-        val valueText =
-            textView(
-                minimumRatingLabel(options.minimumRatingStars),
-                15f,
-                COLOR_ACCENT,
-                bold = true
-            )
-
-        minimumRatingValueText =
-            valueText
-
-        titleRow.addView(
-            valueText
-        )
-
+        titleRow.addView(textView("Minimum rating", 16f, COLOR_TEXT, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val valueText = textView(minimumRatingLabel(options.minimumRatingStars), 15f, COLOR_ACCENT, bold = true)
+        minimumRatingValueText = valueText
+        titleRow.addView(valueText)
         content.addView(titleRow)
-        content.addView(
-            textView(
-                "Only allow automatically selected tracks with at least this GMMP rating. 0 disables the fixed minimum.",
-                13f,
-                COLOR_TEXT_SECONDARY
-            ).apply {
-                setPadding(0, dp(5), 0, dp(8))
-            }
-        )
+        content.addView(textView(
+            "Only allow automatically selected tracks with at least this GMMP rating. 0 disables the fixed minimum.",
+            13f,
+            COLOR_TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, dp(8)) })
 
-        val slider =
-            Slider(this).apply {
-                valueFrom = 0f
-                valueTo = 5f
-                stepSize = 0.5f
-                value = options.minimumRatingStars.toFloat()
-                trackActiveTintList = ColorStateList.valueOf(COLOR_ACCENT)
-                trackInactiveTintList = ColorStateList.valueOf(0xFF494650.toInt())
-                thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
-                haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
-                setLabelFormatter { sliderValue ->
-                    minimumRatingLabel(sliderValue.toDouble())
-                }
-                addOnChangeListener { _, sliderValue, fromUser ->
-                    minimumRatingValueText?.text =
-                        minimumRatingLabel(sliderValue.toDouble())
-
-                    if (fromUser) {
-                        settingsRepository.setFloat(
-                            GoneSmartSettingsKeys.KEY_MINIMUM_RATING,
-                            sliderValue
-                        )
-                        refreshRatingFallbackAvailability()
-                    }
+        val slider = Slider(this).apply {
+            valueFrom = 0f
+            valueTo = 5f
+            stepSize = 0.5f
+            value = options.minimumRatingStars.toFloat()
+            trackActiveTintList = ColorStateList.valueOf(COLOR_ACCENT)
+            trackInactiveTintList = ColorStateList.valueOf(0xFF494650.toInt())
+            thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
+            haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
+            setLabelFormatter { sliderValue -> minimumRatingLabel(sliderValue.toDouble()) }
+            addOnChangeListener { _, sliderValue, fromUser ->
+                minimumRatingValueText?.text = minimumRatingLabel(sliderValue.toDouble())
+                if (fromUser) {
+                    settingsRepository.setFloat(GoneSmartSettingsKeys.KEY_MINIMUM_RATING, sliderValue)
+                    refreshRatingFallbackAvailability()
                 }
             }
-
-        minimumRatingSlider =
-            slider
-
+        }
+        minimumRatingSlider = slider
         content.addView(slider)
         card.addView(content)
         return card
     }
 
     private fun minimumRatingLabel(value: Double): String {
-        val normalized =
-            kotlin.math.round(value * 2.0) / 2.0
-
-        return if (normalized <= 0.0) {
-            "Off"
-        } else {
-            String.format(
-                java.util.Locale.US,
-                "%.1f ★",
-                normalized
-            )
-        }
+        val normalized = kotlin.math.round(value * 2.0) / 2.0
+        return if (normalized <= 0.0) "Off" else String.format(java.util.Locale.US, "%.1f ★", normalized)
     }
 
     private fun settingGroup(specs: List<SettingSpec>): View {
-        val card = card().apply {
-            setContentPadding(0, dp(4), 0, dp(4))
-        }
-        val group = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
+        val card = card().apply { setContentPadding(0, dp(4), 0, dp(4)) }
+        val group = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         specs.forEachIndexed { index, spec ->
             group.addView(settingRow(spec))
             if (index != specs.lastIndex) {
                 group.addView(divider().apply {
-                    val params = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        dp(1)
-                    )
-                    params.marginStart = dp(76)
-                    params.marginEnd = dp(18)
-                    layoutParams = params
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                        marginStart = dp(76)
+                        marginEnd = dp(18)
+                    }
                 })
             }
         }
@@ -1104,42 +741,29 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(13), dp(14), dp(13))
             minimumHeight = dp(76)
         }
-
         val glyph = textView(spec.glyph, 18f, spec.accent, bold = true).apply {
             gravity = Gravity.CENTER
             background = rounded(withAlpha(spec.accent, 0.18f), 14f)
         }
         row.addView(glyph, LinearLayout.LayoutParams(dp(46), dp(46)))
-
         val labels = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), 0, dp(8), 0)
         }
         labels.addView(textView(spec.title, 16f, COLOR_TEXT, bold = true))
-        labels.addView(textView(spec.subtitle, 13f, COLOR_TEXT_SECONDARY).apply {
-            setPadding(0, dp(3), 0, 0)
-        })
+        labels.addView(textView(spec.subtitle, 13f, COLOR_TEXT_SECONDARY).apply { setPadding(0, dp(3), 0, 0) })
         row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
         val switch = SwitchMaterial(this).apply {
             buttonTintList = null
             trackTintList = ColorStateList(
-                arrayOf(
-                    intArrayOf(android.R.attr.state_checked),
-                    intArrayOf()
-                ),
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
                 intArrayOf(COLOR_ACCENT_DARK, 0xFF46434D.toInt())
             )
             thumbTintList = ColorStateList(
-                arrayOf(
-                    intArrayOf(android.R.attr.state_checked),
-                    intArrayOf()
-                ),
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
                 intArrayOf(COLOR_ACCENT, 0xFFC8C5CE.toInt())
             )
-            setOnCheckedChangeListener { _, checked ->
-                onSettingChanged(spec.key, checked)
-            }
+            setOnCheckedChangeListener { _, checked -> onSettingChanged(spec.key, checked) }
         }
         switches[spec.key] = switch
         settingRows[spec.key] = row
@@ -1150,26 +774,13 @@ class MainActivity : AppCompatActivity() {
     private fun refreshSettingsSwitches() {
         if (switches.isEmpty()) return
         val options = settingsRepository.read()
-
         setSwitch(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
         setSwitch(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, options.playlistFoldersEnabled)
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
-            options.smartPlaylistFoldersEnabled
-        )
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
-            options.smartMultiPlaylistEnabled
-        )
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
-            options.playlistBridgeEnabled
-        )
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
-            options.smartGroupRootPlaylists
-        )
+        setSwitch(GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS, options.smartPlaylistFoldersEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST, options.smartMultiPlaylistEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE, options.playlistBridgeEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS, options.smartGroupRootPlaylists)
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
         setSwitch(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)
         refreshPlaylistFolderAvailability(options)
@@ -1180,80 +791,43 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
             GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
-            options.fallbackWithoutRatingRestrictions &&
-                (options.minimumRatingStars > 0.0 || options.smartRatingEnabled)
+            options.fallbackWithoutRatingRestrictions && (options.minimumRatingStars > 0.0 || options.smartRatingEnabled)
         )
         setSwitch(GoneSmartSettingsKeys.KEY_EXCLUDE_HALF_STAR, options.excludeHalfStarTracks)
-
         minimumRatingSlider?.let { slider ->
             val value = options.minimumRatingStars.toFloat()
-            if (kotlin.math.abs(slider.value - value) > 0.001f) {
-                slider.value = value
-            }
+            if (kotlin.math.abs(slider.value - value) > 0.001f) slider.value = value
             minimumRatingValueText?.text = minimumRatingLabel(options.minimumRatingStars)
         }
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_STUDIO, options.preferStudioVersionsOverLive)
         setSwitch(GoneSmartSettingsKeys.KEY_MATCH_QUEUE_ERA, options.matchQueueEra)
         setSwitch(GoneSmartSettingsKeys.KEY_FAVOR_RECENTLY_ADDED, options.favorRecentlyAddedTracks)
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES,
-            options.preventBaseVersionDuplicates
-        )
-        setSwitch(
-            GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES,
-            options.fallbackToNativeAutoDjWhenNoSuitableTracks
-        )
+        setSwitch(GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES, options.preventBaseVersionDuplicates)
+        setSwitch(GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES, options.fallbackToNativeAutoDjWhenNoSuitableTracks)
         setSwitch(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, options.showStatusMessages)
         refreshRatingFallbackAvailability(options)
     }
 
-    private fun refreshPlaylistFolderAvailability(
-        options: GoneSmartOptions = settingsRepository.read()
-    ) {
-        for (key in listOf(
-            GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
-            GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS
-        )) {
+    private fun refreshPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {
+        for (key in listOf(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS)) {
             switches[key]?.isEnabled = options.playlistFoldersEnabled
-            settingRows[key]?.alpha =
-                if (options.playlistFoldersEnabled) 1f else 0.45f
+            settingRows[key]?.alpha = if (options.playlistFoldersEnabled) 1f else 0.45f
         }
     }
 
-    private fun refreshSmartPlaylistFolderAvailability(
-        options: GoneSmartOptions = settingsRepository.read()
-    ) {
-        for (key in listOf(
-            GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
-            GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
-        )) {
+    private fun refreshSmartPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {
+        for (key in listOf(GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST, GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS)) {
             switches[key]?.isEnabled = options.smartPlaylistFoldersEnabled
-            settingRows[key]?.alpha =
-                if (options.smartPlaylistFoldersEnabled) 1f else 0.45f
+            settingRows[key]?.alpha = if (options.smartPlaylistFoldersEnabled) 1f else 0.45f
         }
     }
 
-    /**
-     * Rating fallback is meaningful only if Minimum rating or Smart rating
-     * can actually exclude tracks. Disable and uncheck it otherwise. A
-     * genuine user change is written immediately to the running target.
-     */
-    private fun refreshRatingFallbackAvailability(
-        suppliedOptions: GoneSmartOptions? = null
-    ) {
+    private fun refreshRatingFallbackAvailability(suppliedOptions: GoneSmartOptions? = null) {
         val options = suppliedOptions ?: settingsRepository.read()
-        val available =
-            options.minimumRatingStars > 0.0 || options.smartRatingEnabled
-
+        val available = options.minimumRatingStars > 0.0 || options.smartRatingEnabled
         if (!available && options.fallbackWithoutRatingRestrictions) {
-            // Prevent an invisible, pre-checked fallback from automatically
-            // activating when the user later enables a rating threshold.
-            settingsRepository.setBoolean(
-                GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING,
-                false
-            )
+            settingsRepository.setBoolean(GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING, false)
         }
-
         val fallbackKey = GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING
         setSwitch(fallbackKey, available && options.fallbackWithoutRatingRestrictions)
         switches[fallbackKey]?.isEnabled = available
@@ -1263,25 +837,15 @@ class MainActivity : AppCompatActivity() {
     private fun onSettingChanged(key: String, checked: Boolean) {
         if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {
             val options = settingsRepository.read()
-            if (
-                options.minimumRatingStars <= 0.0 &&
-                !options.smartRatingEnabled
-            ) {
+            if (options.minimumRatingStars <= 0.0 && !options.smartRatingEnabled) {
                 refreshRatingFallbackAvailability(options)
                 return
             }
         }
-
         settingsRepository.setBoolean(key, checked)
-        if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS) {
-            refreshPlaylistFolderAvailability()
-        }
-        if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) {
-            refreshSmartPlaylistFolderAvailability()
-        }
-        if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) {
-            refreshRatingFallbackAvailability()
-        }
+        if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS) refreshPlaylistFolderAvailability()
+        if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) refreshSmartPlaylistFolderAvailability()
+        if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) refreshRatingFallbackAvailability()
     }
 
     private fun setSwitch(key: String, value: Boolean) {
@@ -1289,9 +853,7 @@ class MainActivity : AppCompatActivity() {
         if (switch.isChecked == value) return
         switch.setOnCheckedChangeListener(null)
         switch.isChecked = value
-        switch.setOnCheckedChangeListener { _, checked ->
-            onSettingChanged(key, checked)
-        }
+        switch.setOnCheckedChangeListener { _, checked -> onSettingChanged(key, checked) }
     }
 
     private fun refreshStatus() {
@@ -1316,81 +878,79 @@ class MainActivity : AppCompatActivity() {
         val gmmpVersion = getGmmpVersion()
         val installed = gmmpVersion != null
         val options = settingsRepository.read()
+        val runtime = GoneSmartEventStore.snapshot(this)
 
         when {
             !serviceAvailable -> {
                 statusHeadline.text = "Xposed service not connected"
                 statusSubline.text = "Open your Xposed framework and verify GoneSmart is enabled."
-                statusCard.setCardBackgroundColor(COLOR_SURFACE)
             }
-
             running && options.enabled -> {
                 statusHeadline.text = "GoneSmart module active"
                 statusSubline.text = "Injected into GoneMAD Music Player"
-                statusCard.setCardBackgroundColor(withAlpha(COLOR_GREEN, 0.35f))
             }
-
             running && !options.enabled -> {
                 statusHeadline.text = "GoneSmart disabled"
                 statusSubline.text = "GMMP is running with its normal Auto-DJ selection."
-                statusCard.setCardBackgroundColor(COLOR_SURFACE)
             }
-
             else -> {
                 statusHeadline.text = "GoneSmart ready"
                 statusSubline.text = "Start GoneMAD Music Player to activate the module."
-                statusCard.setCardBackgroundColor(COLOR_SURFACE)
             }
         }
+        // The card itself stays neutral. Health colors belong exclusively to
+        // their individual rows so amber/red never blend with a green parent.
+        statusCard.setCardBackgroundColor(COLOR_SURFACE)
 
         gmmpStatusText.text = if (installed) {
-            "GoneMAD Music Player\nInstalled • $gmmpVersion${if (running) " • running" else ""}"
+            "GoneMAD Music Player\nInstalled • $gmmpVersion${if (running) " • running" else " • not running"}"
         } else {
             "GoneMAD Music Player\nNot installed or not visible"
         }
+        applyStatusTone(gmmpStatusText, StatusHealthPolicy.gmmp(installed, running))
 
+        val frameworkApi = if (service != null) {
+            try { service.apiVersion } catch (_: Throwable) { null }
+        } else null
         frameworkStatusText.text = if (service != null) {
             val frameworkName = try { service.frameworkName } catch (_: Throwable) { "Xposed" }
             val frameworkVersion = try { service.frameworkVersion } catch (_: Throwable) { "" }
-            "Xposed framework\n$frameworkName $frameworkVersion • API ${service.apiVersion}"
+            val supportSuffix = if (frameworkApi != null &&
+                frameworkApi in StatusHealthPolicy.MIN_XPOSED_API..StatusHealthPolicy.TARGET_XPOSED_API
+            ) "" else " • unsupported API"
+            "Xposed framework\n$frameworkName $frameworkVersion • API ${frameworkApi ?: "?"}$supportSuffix"
         } else {
             "Xposed framework\nNot connected"
         }
-
-        val runtime = GoneSmartEventStore.snapshot(this)
-        runtimeStatusText.text = "GoneSmart state\n${runtimeDescription(runtime)}"
-
-        val compatibilityState = GmmpCompatibilityPolicy.state(
-            gmmpVersion,
-            TESTED_GMMP_VERSION
+        applyStatusTone(
+            frameworkStatusText,
+            StatusHealthPolicy.framework(serviceAvailable, frameworkApi)
         )
+
+        runtimeStatusText.text = "GoneSmart state\n${runtimeDescription(runtime)}"
+        applyStatusTone(
+            runtimeStatusText,
+            StatusHealthPolicy.runtime(
+                serviceAvailable = serviceAvailable,
+                gmmpInstalled = installed,
+                running = running,
+                enabled = options.enabled,
+                runtimeMode = runtime.mode
+            )
+        )
+
+        val compatibilityState = GmmpCompatibilityPolicy.state(gmmpVersion)
         compatibilityText.text = when (compatibilityState) {
             GmmpCompatibilityPolicy.State.UNKNOWN ->
-                "Compatibility\nTested with GMMP $TESTED_GMMP_VERSION"
+                "Compatibility\nGMMP unavailable • tested: ${GmmpCompatibilityPolicy.TESTED_VERSION}"
             GmmpCompatibilityPolicy.State.TESTED ->
                 "Compatibility\nTested • GMMP $gmmpVersion"
             GmmpCompatibilityPolicy.State.UNTESTED ->
-                "Compatibility\nUntested GMMP version $gmmpVersion • tested: $TESTED_GMMP_VERSION"
+                "Compatibility\nUntested GMMP version $gmmpVersion • tested: ${GmmpCompatibilityPolicy.TESTED_VERSION}"
         }
-        compatibilityText.setTextColor(
-            COLOR_TEXT_SECONDARY
-        )
-        compatibilityText.background = null
-        compatibilityText.setPadding(
-            0,
-            dp(12),
-            0,
-            dp(4)
-        )
-        compatibilitySection.setBackgroundColor(
-            if (compatibilityState == GmmpCompatibilityPolicy.State.UNTESTED) {
-                withAlpha(
-                    COLOR_AMBER,
-                    0.32f
-                )
-            } else {
-                Color.TRANSPARENT
-            }
+        applyStatusTone(
+            compatibilityText,
+            StatusHealthPolicy.compatibility(compatibilityState)
         )
     }
 
@@ -1412,10 +972,7 @@ class MainActivity : AppCompatActivity() {
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
         logCountText.text =
-            "${summary.total} events • Smart DJ ${summary.smartDj} • " +
-                "Playlists ${summary.playlists} • Flip ${summary.flip} • " +
-                "${companionTrackAutoDjLabel()} ${summary.trackMix} • " +
-                "UI ${summary.ui} • System ${summary.system}" +
+            "${summary.total} events • Smart DJ ${summary.smartDj} • Playlists ${summary.playlists} • Flip ${summary.flip} • ${companionTrackAutoDjLabel()} ${summary.trackMix} • UI ${summary.ui} • System ${summary.system}" +
                 if (summary.other > 0) " • Other ${summary.other}" else ""
         logTextView.text = if (lines.isEmpty()) {
             "No events yet. Activity will appear here as you use GoneSmart."
@@ -1427,10 +984,7 @@ class MainActivity : AppCompatActivity() {
     private fun getGmmpVersion(): String? {
         return try {
             val info = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                packageManager.getPackageInfo(
-                    GMMP_PACKAGE,
-                    PackageManager.PackageInfoFlags.of(0)
-                )
+                packageManager.getPackageInfo(GMMP_PACKAGE, PackageManager.PackageInfoFlags.of(0))
             } else {
                 @Suppress("DEPRECATION")
                 packageManager.getPackageInfo(GMMP_PACKAGE, 0)
@@ -1456,44 +1010,23 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "GoneMAD Music Player was not found.", Toast.LENGTH_SHORT).show()
             return
         }
-
         Toast.makeText(this, "Restarting GMMP…", Toast.LENGTH_SHORT).show()
-
         Thread {
             try {
-                val process = Runtime.getRuntime().exec(
-                    arrayOf(
-                        "su",
-                        "-c",
-                        "am force-stop $GMMP_PACKAGE"
-                    )
-                )
-
+                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "am force-stop $GMMP_PACKAGE"))
                 val exitCode = process.waitFor()
-                if (exitCode != 0) {
-                    throw IllegalStateException("root force-stop returned $exitCode")
-                }
-
+                if (exitCode != 0) throw IllegalStateException("root force-stop returned $exitCode")
                 Thread.sleep(450L)
-
                 runOnUiThread {
                     try {
                         startActivity(launchIntent)
                     } catch (_: Throwable) {
-                        Toast.makeText(
-                            this,
-                            "GMMP was stopped but could not be opened automatically.",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        Toast.makeText(this, "GMMP was stopped but could not be opened automatically.", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (_: Throwable) {
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Could not restart GMMP. Root access may be unavailable.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(this, "Could not restart GMMP. Root access may be unavailable.", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -1501,32 +1034,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshUpdateStatus() {
         val (message, detail, color) = when (val state = updateState) {
-            GitHubReleaseChecker.State.Checking ->
-                Triple("Checking GitHub Releases…", "No APK downloads are started.", COLOR_TEXT_SECONDARY)
-            is GitHubReleaseChecker.State.UpToDate ->
-                Triple(
-                    "You have the latest published release",
-                    "GitHub: v${state.version}",
-                    COLOR_GREEN
-                )
-            is GitHubReleaseChecker.State.NewVersion ->
-                Triple(
-                    "New version available: v${state.version}",
-                    "Open Obtainium to install this update.",
-                    COLOR_AMBER
-                )
-            is GitHubReleaseChecker.State.DevelopmentBuild ->
-                Triple(
-                    "Development build",
-                    "Latest published release: v${state.version}",
-                    COLOR_ACCENT
-                )
-            is GitHubReleaseChecker.State.Unavailable ->
-                Triple(
-                    "Update check unavailable",
-                    "Check your connection or retry. ${state.reason}",
-                    COLOR_TEXT_SECONDARY
-                )
+            GitHubReleaseChecker.State.Checking -> Triple("Checking GitHub Releases…", "No APK downloads are started.", COLOR_TEXT_SECONDARY)
+            is GitHubReleaseChecker.State.UpToDate -> Triple("You have the latest published release", "GitHub: v${state.version}", COLOR_GREEN)
+            is GitHubReleaseChecker.State.NewVersion -> Triple("New version available: v${state.version}", "Open Obtainium to install this update.", COLOR_AMBER)
+            is GitHubReleaseChecker.State.DevelopmentBuild -> Triple("Development build", "Latest published release: v${state.version}", COLOR_ACCENT)
+            is GitHubReleaseChecker.State.Unavailable -> Triple("Update check unavailable", "Check your connection or retry. ${state.reason}", COLOR_TEXT_SECONDARY)
         }
         updateStatusText?.apply {
             text = message
@@ -1551,17 +1063,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openUrl(url: String) {
-        runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        }.onFailure {
-            Toast.makeText(this, "Could not open link", Toast.LENGTH_SHORT).show()
-        }
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { Toast.makeText(this, "Could not open link", Toast.LENGTH_SHORT).show() }
     }
 
     private fun openObtainium() {
-        // Official Obtainium deep link; package-pinned so no other app can
-        // intercept this action. Importing is still explicitly confirmed
-        // inside Obtainium, never silently installed by GoneSmart.
         val intent = Intent(
             Intent.ACTION_VIEW,
             Uri.parse("obtainium://add/https://github.com/alagga/GoneSmart")
@@ -1574,61 +1080,41 @@ class MainActivity : AppCompatActivity() {
         } catch (_: ActivityNotFoundException) {
             AlertDialog.Builder(this)
                 .setTitle("Obtainium is not installed")
-                .setMessage(
-                    "Obtainium can track GoneSmart's GitHub Releases " +
-                        "and install signed updates. Install Obtainium " +
-                        "first or add the GoneSmart repository URL manually."
-                )
-                .setPositiveButton("Get Obtainium") { _, _ ->
-                    openUrl("https://github.com/ImranR98/Obtainium/releases/latest")
-                }
-                .setNeutralButton("View GoneSmart") { _, _ ->
-                    openUrl("https://github.com/alagga/GoneSmart")
-                }
+                .setMessage("Obtainium can track GoneSmart's GitHub Releases and install signed updates. Install Obtainium first or add the GoneSmart repository URL manually.")
+                .setPositiveButton("Get Obtainium") { _, _ -> openUrl("https://github.com/ImranR98/Obtainium/releases/latest") }
+                .setNeutralButton("View GoneSmart") { _, _ -> openUrl("https://github.com/alagga/GoneSmart") }
                 .setNegativeButton("Cancel", null)
                 .show()
         }
     }
 
-    private fun pageContainer(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(12), dp(24), dp(34))
-        }
+    private fun pageContainer(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(24), dp(12), dp(24), dp(34))
     }
 
-    private fun scrollPage(content: View): View {
-        return ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-            addView(content)
-        }
+    private fun scrollPage(content: View): View = ScrollView(this).apply {
+        isFillViewport = true
+        clipToPadding = false
+        addView(content)
     }
 
-    private fun card(): MaterialCardView {
-        return MaterialCardView(this).apply {
-            radius = dp(24).toFloat()
-            cardElevation = 0f
-            strokeWidth = 0
-            setCardBackgroundColor(COLOR_SURFACE)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
+    private fun card(): MaterialCardView = MaterialCardView(this).apply {
+        radius = dp(24).toFloat()
+        cardElevation = 0f
+        strokeWidth = 0
+        setCardBackgroundColor(COLOR_SURFACE)
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
     }
 
     private fun infoCard(title: String, body: String): View {
-        val card = card().apply {
-            setContentPadding(dp(20), dp(18), dp(20), dp(18))
-        }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
+        val card = card().apply { setContentPadding(dp(20), dp(18), dp(20), dp(18)) }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(textView(title, 17f, COLOR_TEXT, bold = true))
-        content.addView(textView(body, 14f, COLOR_TEXT_SECONDARY).apply {
-            setPadding(0, dp(7), 0, 0)
-        })
+        content.addView(textView(body, 14f, COLOR_TEXT_SECONDARY).apply { setPadding(0, dp(7), 0, 0) })
         card.addView(content)
         return card
     }
@@ -1636,27 +1122,46 @@ class MainActivity : AppCompatActivity() {
     private fun statusRow(title: String, value: String): TextView {
         return textView("$title\n$value", 14f, COLOR_TEXT_SECONDARY).apply {
             setLineSpacing(0f, 1.08f)
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(dp(14), dp(11), dp(14), dp(11))
+            background = rounded(COLOR_SURFACE_2, 14f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
         }
     }
 
-    private fun pageTitle(text: String): View {
-        return textView(text, 31f, COLOR_TEXT, bold = true).apply {
-            setPadding(dp(4), dp(4), 0, dp(26))
+    private fun applyStatusTone(view: TextView, tone: StatusHealthPolicy.Tone) {
+        val accent = when (tone) {
+            StatusHealthPolicy.Tone.GREEN -> COLOR_GREEN
+            StatusHealthPolicy.Tone.AMBER -> COLOR_AMBER
+            StatusHealthPolicy.Tone.RED -> COLOR_RED
         }
+        view.background = rounded(blendColors(COLOR_SURFACE_2, accent, 0.30f), 14f)
+        view.setTextColor(COLOR_TEXT_SECONDARY)
     }
 
-    private fun sectionTitle(text: String): View {
-        return textView(text, 15f, COLOR_ACCENT, bold = true).apply {
-            letterSpacing = 0.08f
-            setPadding(dp(6), dp(10), 0, dp(12))
-        }
+    private fun blendColors(base: Int, accent: Int, fraction: Float): Int {
+        val f = fraction.coerceIn(0f, 1f)
+        fun channel(baseChannel: Int, accentChannel: Int): Int =
+            (baseChannel + (accentChannel - baseChannel) * f).roundToInt()
+        return Color.rgb(
+            channel(Color.red(base), Color.red(accent)),
+            channel(Color.green(base), Color.green(accent)),
+            channel(Color.blue(base), Color.blue(accent))
+        )
     }
 
-    private fun actionButton(
-        text: String,
-        onClick: () -> Unit
-    ): MaterialButton {
+    private fun pageTitle(text: String): View = textView(text, 31f, COLOR_TEXT, bold = true).apply {
+        setPadding(dp(4), dp(4), 0, dp(26))
+    }
+
+    private fun sectionTitle(text: String): View = textView(text, 15f, COLOR_ACCENT, bold = true).apply {
+        letterSpacing = 0.08f
+        setPadding(dp(6), dp(10), 0, dp(12))
+    }
+
+    private fun actionButton(text: String, onClick: () -> Unit): MaterialButton {
         return MaterialButton(this).apply {
             this.text = text
             textSize = 16f
@@ -1667,17 +1172,11 @@ class MainActivity : AppCompatActivity() {
             insetTop = 0
             insetBottom = 0
             setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(58)
-            )
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58))
         }
     }
 
-    private fun outlineButton(
-        text: String,
-        onClick: () -> Unit
-    ): MaterialButton {
+    private fun outlineButton(text: String, onClick: () -> Unit): MaterialButton {
         return MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
             this.text = text
             textSize = 16f
@@ -1692,12 +1191,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun textView(
-        text: String,
-        sizeSp: Float,
-        color: Int,
-        bold: Boolean = false
-    ): TextView {
+    private fun textView(text: String, sizeSp: Float, color: Int, bold: Boolean = false): TextView {
         return TextView(this).apply {
             this.text = text
             textSize = sizeSp
@@ -1706,47 +1200,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun divider(): View {
-        return View(this).apply {
-            setBackgroundColor(0xFF343239.toInt())
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(1)
-            )
-        }
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(0xFF343239.toInt())
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
     }
 
-    private fun verticalGap(heightDp: Int): View {
-        return Space(this).apply {
-            layoutParams = LinearLayout.LayoutParams(1, dp(heightDp))
-        }
+    private fun verticalGap(heightDp: Int): View = Space(this).apply {
+        layoutParams = LinearLayout.LayoutParams(1, dp(heightDp))
     }
 
-    private fun rounded(color: Int, radiusDp: Float): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(radiusDp).toFloat()
-            setColor(color)
-        }
+    private fun rounded(color: Int, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(radiusDp).toFloat()
+        setColor(color)
     }
 
     private fun withAlpha(color: Int, fraction: Float): Int {
         val alpha = (255 * fraction.coerceIn(0f, 1f)).toInt()
-        return Color.argb(
-            alpha,
-            Color.red(color),
-            Color.green(color),
-            Color.blue(color)
-        )
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
     }
 
-    private fun dp(value: Int): Int {
-        return (value * resources.displayMetrics.density).toInt()
-    }
-
-    private fun dp(value: Float): Int {
-        return (value * resources.displayMetrics.density).toInt()
-    }
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
 
     private data class SettingSpec(
         val key: String,
@@ -1755,6 +1230,4 @@ class MainActivity : AppCompatActivity() {
         val subtitle: String,
         val accent: Int
     )
-
-
 }
