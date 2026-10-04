@@ -8,15 +8,23 @@ class GmmpCompatibilityPolicyTest {
     fun classifiesMissingTestedAndUntestedVersions() {
         assertEquals(
             GmmpCompatibilityPolicy.State.UNKNOWN,
-            GmmpCompatibilityPolicy.state(null, "4.2.0")
+            GmmpCompatibilityPolicy.state(null)
         )
         assertEquals(
             GmmpCompatibilityPolicy.State.TESTED,
-            GmmpCompatibilityPolicy.state("4.2.0", "4.2.0")
+            GmmpCompatibilityPolicy.state("4.2.1")
         )
         assertEquals(
             GmmpCompatibilityPolicy.State.UNTESTED,
-            GmmpCompatibilityPolicy.state("4.2.1", "4.2.0")
+            GmmpCompatibilityPolicy.state("4.2.2")
+        )
+    }
+
+    @Test
+    fun legacyOverloadStillSupportsExplicitTargets() {
+        assertEquals(
+            GmmpCompatibilityPolicy.State.TESTED,
+            GmmpCompatibilityPolicy.state("4.2.0", "4.2.0")
         )
     }
 }
