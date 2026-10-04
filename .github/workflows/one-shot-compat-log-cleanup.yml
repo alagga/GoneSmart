@@ -1,0 +1,113 @@
+name: One-shot compatibility log cleanup
+
+on:
+  push:
+    branches: [feature/playlist-bridge]
+    paths:
+      - '.github/workflows/one-shot-compat-log-cleanup.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/playlist-bridge
+
+      - name: Retire graduated 4.2.1 discovery logs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt')
+          text = path.read_text()
+
+          anchor = '''        private const val COMPAT_PROBE_REVISION =
+              "gmmp421-r25"
+          '''
+          replacement = anchor + '''
+              // Broad reflection/recycler inventories were needed while 4.2.1
+              // was unknown. Keep the machinery for a future compatibility
+              // investigation, but do not flood normal accepted-version logs.
+              private const val ENABLE_DEEP_COMPAT_DIAGNOSTICS = false
+          '''
+          if anchor not in text:
+              raise SystemExit('compat revision anchor not found')
+          text = text.replace(anchor, replacement, 1)
+
+          old_start = '''        compatibilityExecutor.execute {
+              logCompatibilityStaticInventory(param.classLoader)
+              logCompatibilitySelfTest(param.classLoader)
+          }
+          '''
+          new_start = '''        compatibilityExecutor.execute {
+              if (ENABLE_DEEP_COMPAT_DIAGNOSTICS) {
+                  logCompatibilityStaticInventory(param.classLoader)
+              }
+              logCompatibilitySelfTest(param.classLoader)
+          }
+          '''
+          if old_start not in text:
+              raise SystemExit('compat startup block not found')
+          text = text.replace(old_start, new_start, 1)
+
+          runtime_sig = '''    private fun scheduleCompatibilityRuntimeInstance(
+              marker: String,
+              instance: Any?
+          ) {
+          '''
+          if runtime_sig not in text:
+              raise SystemExit('runtime diagnostic function not found')
+          text = text.replace(
+              runtime_sig,
+              runtime_sig + '''        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
+          ''',
+              1,
+          )
+
+          recycler_sig = '''    private fun logCompatibilityRecyclerAdapter(
+              view: android.view.View?,
+              adapterHint: Any?,
+              source: String
+          ) {
+          '''
+          if recycler_sig not in text:
+              raise SystemExit('recycler diagnostic function not found')
+          text = text.replace(
+              recycler_sig,
+              recycler_sig + '''        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
+          ''',
+              1,
+          )
+
+          flip_start = '        checks["flipQueue"] = result {'
+          next_check = '        checks["playlistPlayback"] = result {'
+          start = text.find(flip_start)
+          end = text.find(next_check, start)
+          if start < 0 or end < 0:
+              raise SystemExit('stale flip self-test block not found')
+          text = (
+              text[:start]
+              + '        checks["flipQueue"] = "OPEN_CURRENT_POSITION_WRITER"\n\n'
+              + text[end:]
+          )
+
+          path.write_text(text)
+          PY
+
+          git diff --check
+          git diff -- app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt
+
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt
+          git commit -m 'chore(compat): retire GMMP 4.2.1 discovery logs'
+          git push origin HEAD:feature/playlist-bridge
