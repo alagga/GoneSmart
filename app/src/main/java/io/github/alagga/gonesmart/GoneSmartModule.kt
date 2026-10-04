@@ -35,6 +35,11 @@ class GoneSmartModule : XposedModule() {
         private const val COMPAT_PROBE_REVISION =
             "gmmp421-r25"
 
+
+        // Broad reflection/recycler inventories were needed while 4.2.1
+        // was unknown. Keep the machinery for a future compatibility
+        // investigation, but do not flood normal accepted-version logs.
+        private const val ENABLE_DEEP_COMPAT_DIAGNOSTICS = false
         // r14 retires the deep Playlist/Smart-list inventories: their
         // 4.2.1 adapter/holder/model ownership is device-proven and encoded
         // in semantic resolvers/tests. Keep only still-open boundaries here;
@@ -569,7 +574,9 @@ class GoneSmartModule : XposedModule() {
                 " | buildDebug=${BuildConfig.DEBUG}"
         )
         compatibilityExecutor.execute {
-            logCompatibilityStaticInventory(param.classLoader)
+            if (ENABLE_DEEP_COMPAT_DIAGNOSTICS) {
+                logCompatibilityStaticInventory(param.classLoader)
+            }
             logCompatibilitySelfTest(param.classLoader)
         }
 
@@ -1558,54 +1565,7 @@ class GoneSmartModule : XposedModule() {
             "READY_LEGACY"
         }
 
-        checks["flipQueue"] = result {
-            val legacy = runCatching {
-                val type = loader.loadClass("ex3")
-                type.declaredMethods.any {
-                    it.name == "D" && it.parameterCount == 0
-                }
-            }.getOrDefault(false)
-            if (legacy) {
-                "READY_LEGACY"
-            } else {
-                val dao = loader.loadClass("d85")
-                val daoMethods = GmmpReflectionPolicy.callableMethods(dao)
-                require(daoMethods.any {
-                    it.parameterCount == 1 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.parameterTypes[0]) &&
-                        it.returnType == java.lang.Void.TYPE
-                })
-                val direct = daoMethods.any {
-                    it.parameterCount == 0 &&
-                        java.util.List::class.java
-                            .isAssignableFrom(it.returnType)
-                }
-                val reactive = daoMethods.any {
-                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
-                        it.parameterCount == 0 &&
-                        it.returnType != java.lang.Void.TYPE &&
-                        !it.returnType.isPrimitive &&
-                        !java.util.List::class.java
-                            .isAssignableFrom(it.returnType) &&
-                        it.declaringClass == dao
-                }
-                require(direct || reactive)
-                val queueSpecificHint =
-                    NativeQueueEntityTypeResolver.resolve(dao, daoMethods)
-                if (direct) {
-                    "READY_CALLABLE_RUNTIME_DAO" +
-                        (queueSpecificHint?.let {
-                            ":hint=" + it.name
-                        } ?: "")
-                } else {
-                    "READY_REACTIVE_RUNTIME_DAO" +
-                        (queueSpecificHint?.let {
-                            ":hint=" + it.name
-                        } ?: "")
-                }
-            }
-        }
+        checks["flipQueue"] = "OPEN_CURRENT_POSITION_WRITER"
 
         checks["playlistPlayback"] = result {
             val service = loader.loadClass(
@@ -1889,6 +1849,7 @@ class GoneSmartModule : XposedModule() {
         marker: String,
         instance: Any?
     ) {
+        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
         instance ?: return
         val weak = WeakReference(instance)
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -2216,6 +2177,7 @@ class GoneSmartModule : XposedModule() {
         adapterHint: Any?,
         source: String
     ) {
+        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
         if (view == null) {
             return
         }
