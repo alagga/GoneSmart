@@ -649,11 +649,22 @@ internal class TrackMixController(
     }
 
     private fun waitForSelectedSong(request: Pending): Snapshot? {
-        var stableIdentity:
-            TrackMixPlaybackIdentityPolicy.Identity? = null
+        var targetIdentity: TrackMixPlaybackIdentityPolicy.Identity? = null
         var stableSnapshot: Snapshot? = null
         var stableAt = 0L
-        val deadline = SystemClock.elapsedRealtime() + 9_000L
+        val deadline = SystemClock.elapsedRealtime() +
+            TrackMixQueueSettlingPolicy.WAIT_TIMEOUT_MS
+
+        fun sameQueue(previous: Snapshot, current: Snapshot): Boolean =
+            TrackMixQueueSettlingPolicy.sameQueue(
+                previousTrackIds = previous.ids,
+                previousEntryIds = previous.entryIds,
+                previousCurrentIndex = previous.currentIndex,
+                currentTrackIds = current.ids,
+                currentEntryIds = current.entryIds,
+                currentCurrentIndex = current.currentIndex
+            )
+
         while (isCurrent(request) && SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(160)
             val current = queueSnapshot() ?: continue
@@ -677,70 +688,79 @@ internal class TrackMixController(
                     before,
                     identity
                 )
-            // r18 device evidence: GMMP's Now Playing metadata changed to the
-            // selected song immediately, while the queue entry/shape kept
-            // settling and our old two-snapshot stability gate timed out.
-            // The verified queue Cursor is already current-playback aware;
-            // a changed track/entry is therefore the postcondition we need
-            // before native isolation. Do not wait for unrelated queue shape.
-            if (playbackChanged) {
+            val now = SystemClock.elapsedRealtime()
+
+            if (targetIdentity == null && playbackChanged) {
+                targetIdentity = identity
+                stableSnapshot = current
+                stableAt = now
                 Log.i(
                     TAG,
-                    "MIX PLAY VERIFIED | source=queue-current-change" +
+                    "MIX PLAY DETECTED | source=queue-current-change" +
                         " | entry=" + (identity.queueEntryId ?: -1L) +
-                        " | track=" + identity.trackId
+                        " | track=" + identity.trackId +
+                        " | queueSize=" + current.ids.size
                 )
-                return current
+                continue
             }
 
-            val nativeReady = request.nativePlaySignal || changed
-
-            if (TrackMixPlaybackIdentityPolicy.sameCurrent(
-                    stableIdentity,
-                    identity
+            if (targetIdentity == null &&
+                TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                    source = request.source,
+                    nativePlayAccepted = request.nativePlayAccepted,
+                    before = before,
+                    current = identity,
+                    stableMs = now - request.createdAt,
+                    actionAgeMs = now - request.createdAt
                 )
             ) {
-                val age = SystemClock.elapsedRealtime() - stableAt
-                val actionAge =
-                    SystemClock.elapsedRealtime() - request.createdAt
-
-                if (nativeReady && age >= 350) {
-                    return stableSnapshot ?: current
-                }
-
-                // Queue-context Play on the ALREADY current row is a valid
-                // Track Auto-DJ seed operation. In that case the native Play
-                // handler restarts/continues the same track, so neither track
-                // ID nor queue-entry ID can change. r19 Logcat proves GMMP
-                // accepted Play and restarted decoding/scrobbling while our
-                // old identity-change gate waited until timeout.
-                //
-                // Restrict this fallback to GMMP's queue context, require the
-                // original Play handler to have returned handled, and give a
-                // non-current target 1.5 s to publish its normal identity
-                // change first. We still isolate the verified CURRENT Cursor
-                // entry, never a menu-model guess.
-                if (TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
-                        source = request.source,
-                        nativePlayAccepted = request.nativePlayAccepted,
-                        before = before,
-                        current = identity,
-                        stableMs = age,
-                        actionAgeMs = actionAge
-                    )
-                ) {
-                    Log.i(
-                        TAG,
-                        "MIX PLAY VERIFIED | source=current-queue-replay" +
-                            " | entry=" + (identity.queueEntryId ?: -1L) +
-                            " | track=" + identity.trackId
-                    )
-                    return stableSnapshot ?: current
-                }
-            } else {
-                stableIdentity = identity
+                targetIdentity = identity
                 stableSnapshot = current
-                stableAt = SystemClock.elapsedRealtime()
+                stableAt = now
+                Log.i(
+                    TAG,
+                    "MIX PLAY DETECTED | source=current-queue-replay" +
+                        " | entry=" + (identity.queueEntryId ?: -1L) +
+                        " | track=" + identity.trackId +
+                        " | queueSize=" + current.ids.size
+                )
+                continue
+            }
+
+            val target = targetIdentity ?: continue
+            if (!TrackMixPlaybackIdentityPolicy.sameCurrent(target, identity)) {
+                // The native Play target itself changed while the queue was
+                // still being built. Never isolate a later unrelated current
+                // row just because the queue eventually becomes stable.
+                stableSnapshot = null
+                stableAt = now
+                continue
+            }
+
+            val previous = stableSnapshot
+            if (previous == null || !sameQueue(previous, current)) {
+                stableSnapshot = current
+                stableAt = now
+                continue
+            }
+
+            val stableFor = now - stableAt
+            if (TrackMixQueueSettlingPolicy.isSettled(
+                    sameQueue = true,
+                    stableForMs = stableFor
+                )
+            ) {
+                Log.i(
+                    TAG,
+                    "MIX PLAY VERIFIED | source=queue-settled" +
+                        " | entry=" + (identity.queueEntryId ?: -1L) +
+                        " | track=" + identity.trackId +
+                        " | queueSize=" + current.ids.size +
+                        " | stableMs=" + stableFor +
+                        " | nativeSignal=" + request.nativePlaySignal +
+                        " | changed=" + changed
+                )
+                return current
             }
         }
         return null
