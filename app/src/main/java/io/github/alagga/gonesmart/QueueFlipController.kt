@@ -20,44 +20,38 @@ import android.view.View
 import android.widget.Toast
 import android.widget.PopupMenu
 import java.lang.ref.WeakReference
-import java.util.concurrent.Executors
 import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 /**
- * Opt-in full queue reversal and reverse playback for GMMP 4.2.0.
+ * Opt-in full queue reversal and reverse playback for GMMP.
  *
  * Existing queue: update native queue entities transactionally using
  * GMMP's own Room DAO and move its playback pointer with the SAME entry.
  * Playlist / smart playlist: forward the selected row's original Play
- * command, then reverse the NEW list just before MusicService.w1(action=0)
- * builds the playback queue. Neither path edits any playlist on disk.
+ * command, then reverse the NEW list just before MusicService builds the
+ * playback queue. Neither path edits any playlist on disk.
  */
 internal class QueueFlipController {
     companion object {
         private const val TAG = "GoneSmartFlip"
-
-        // Our own non-resource ID; GMMP resource IDs begin with 0x7f.
         private const val FLIP_ACTION_ID = 0x47534601
-
         private const val QUEUE_MENU = "menu_gm_queue"
         private const val PLAYLIST_MENU = "menu_gm_context_playlist_list"
         private const val PLAYLIST_DETAIL_MENU = "menu_gm_context_playlist"
         private const val SMART_MENU = "menu_gm_context_smart"
     }
 
-    // GMMP's Room queue DAO explicitly rejects database reads on
-    // Android's main thread. Keep all diagnostic snapshots off the UI
-    // thread without altering any native playback state.
     private val diagnosticsExecutor =
         Executors.newSingleThreadExecutor { task ->
-            Thread(task, "GoneSmartFlipDiagnostics").apply {
-                isDaemon = true
-            }
+            Thread(task, "GoneSmartFlipDiagnostics").apply { isDaemon = true }
         }
 
     private val mainThread = Handler(Looper.getMainLooper())
     private val eventReporter = GoneSmartRuntimeReporter()
+    private val positionWriterObserver = NativeQueuePositionWriterObserver()
 
     private data class PendingPlayback(
         val kind: Kind,
@@ -69,28 +63,17 @@ internal class QueueFlipController {
         val sourceKind: String
     )
 
-    @Volatile
-    private var pendingPlayback: PendingPlayback? = null
-
-    @Volatile
-    private var nativePlaylistInterceptorReady = false
+    @Volatile private var pendingPlayback: PendingPlayback? = null
+    @Volatile private var nativePlaylistInterceptorReady = false
+    @Volatile private var queueFlipInProgress = false
+    @Volatile private var enabled = false
+    @Volatile private var nativeQueue: WeakReference<Any>? = null
+    @Volatile private var nativeAutoDj: WeakReference<Any>? = null
 
     fun setNativePlaylistInterceptorReady(ready: Boolean) {
         nativePlaylistInterceptorReady = ready
         Log.i(TAG, "FLIP PLAY HOOK STATUS | ready=$ready")
     }
-
-    @Volatile
-    private var queueFlipInProgress = false
-
-    @Volatile
-    private var enabled = false
-
-    @Volatile
-    private var nativeQueue: WeakReference<Any>? = null
-
-    @Volatile
-    private var nativeAutoDj: WeakReference<Any>? = null
 
     fun setEnabled(value: Boolean) {
         enabled = value
@@ -104,10 +87,26 @@ internal class QueueFlipController {
     }
 
     fun captureNativeAutoDj(candidate: Any?) {
-        if (candidate?.javaClass?.name == "qr") {
-            nativeAutoDj = WeakReference(candidate)
-        }
+        if (candidate != null) nativeAutoDj = WeakReference(candidate)
     }
+
+    /**
+     * Called by passive MusicService hooks. The original GMMP method always
+     * runs exactly once. Observation merely compares the independent native
+     * current-position signal before/after normal GMMP behavior.
+     */
+    fun aroundNativePositionCommand(
+        service: Any?,
+        method: Method,
+        value: Int?,
+        proceed: () -> Any?
+    ): Any? = positionWriterObserver.aroundNaturalInvocation(
+        service = service,
+        method = method,
+        argument = value,
+        autoDj = nativeAutoDj?.get(),
+        proceed = proceed
+    )
 
     fun onMenuInflated(
         menuResId: Int,
@@ -154,21 +153,13 @@ internal class QueueFlipController {
             "id",
             context.packageName
         )
-        val nativePlay = if (nativePlayId != 0) {
-            menu.findItem(nativePlayId)
-        } else {
-            null
-        }
+        val nativePlay = if (nativePlayId != 0) menu.findItem(nativePlayId) else null
 
-        // GMMP supplies its own localized Play/Queue label. Two custom
-        // bold counter-directional arrows replace the very thin ⇵ glyph.
-        // The usual full-size GoneSmart two-star lilac badge follows.
         val baseLabel = when (kind) {
             Kind.QUEUE -> nativeString(context, "queue")
             Kind.PLAYLIST, Kind.SMART ->
-                nativePlay?.title?.toString()
-                    ?: nativeString(context, "play")
-        } ?: return // Do not inject English into a GMMP locale lacking the resource.
+                nativePlay?.title?.toString() ?: nativeString(context, "play")
+        } ?: return
         val title = brandedMenuTitle(context, baseLabel)
 
         val item = menu.add(
@@ -190,19 +181,14 @@ internal class QueueFlipController {
                 anchor = anchor,
                 before = kind == Kind.QUEUE
             )
-        } else {
-            false
-        }
+        } else false
 
         Log.i(
             TAG,
-            "FLIP MENU | name=$menuName | " +
-                "kind=$kind | anchorFound=${anchor != null} | " +
-                "positioned=$placed | playFound=${nativePlay != null} | " +
-                "menuClass=${menu.javaClass.name}"
+            "FLIP MENU | name=$menuName | kind=$kind | " +
+                "anchorFound=${anchor != null} | positioned=$placed | " +
+                "playFound=${nativePlay != null} | menuClass=${menu.javaClass.name}"
         )
-        // Keep per-item menu internals out of production Logcat.
-        // Only actual Flip actions and verified outcomes are logged.
     }
 
     private enum class Kind {
@@ -226,9 +212,8 @@ internal class QueueFlipController {
     ) {
         Log.i(
             TAG,
-            "FLIP CLICK | menu=$menuName | kind=$kind | " +
-                "nativePlay=${if (nativePlayId != 0)
-                    menu.findItem(nativePlayId)?.title else null}"
+            "FLIP CLICK | menu=$menuName | kind=$kind | nativePlay=" +
+                if (nativePlayId != 0) menu.findItem(nativePlayId)?.title else null
         )
         if (!enabled) return
         when (kind) {
@@ -249,11 +234,6 @@ internal class QueueFlipController {
         }
     }
 
-    /**
-     * Use the exact original PopupMenu listener that GMMP installed for
-     * THIS row. xn0 captures the selected playlist/smart playlist through
-     * zn0, which prevents accidentally starting a different playlist.
-     */
     private fun playPlaylistFlipped(
         kind: Kind,
         context: Context,
@@ -266,9 +246,10 @@ internal class QueueFlipController {
                 GoneSmartRuntimeContract.CATEGORY_FLIP,
                 "Reverse playback unavailable: GMMP integration was not initialized."
             )
-            toast(context, NativeGmmpUiText.error(
-                    context, nativeString(context, "playlists")
-                ))
+            toast(
+                context,
+                NativeGmmpUiText.error(context, nativeString(context, "playlists"))
+            )
             return
         }
         val play = menu.findItem(nativePlayId)
@@ -285,9 +266,10 @@ internal class QueueFlipController {
                 GoneSmartRuntimeContract.CATEGORY_FLIP,
                 "Could not start ${kind.displayName()} in reverse."
             )
-            toast(context, NativeGmmpUiText.error(
-                    context, nativeString(context, "playlists")
-                ))
+            toast(
+                context,
+                NativeGmmpUiText.error(context, nativeString(context, "playlists"))
+            )
             return
         }
         synchronized(this) {
@@ -306,9 +288,10 @@ internal class QueueFlipController {
                     GoneSmartRuntimeContract.CATEGORY_FLIP,
                     "Could not start ${kind.displayName()} in reverse."
                 )
-                toast(context, NativeGmmpUiText.error(
-                    context, nativeString(context, "playlists")
-                ))
+                toast(
+                    context,
+                    NativeGmmpUiText.error(context, nativeString(context, "playlists"))
+                )
             }
         } catch (failure: Throwable) {
             synchronized(this) { pendingPlayback = null }
@@ -321,16 +304,6 @@ internal class QueueFlipController {
         }
     }
 
-    /**
-     * Called BEFORE GMMP executes MusicService.w1.
-     * Its action=0 path resets the queue and inserts this List<rm3> of
-     * resolved songs. Intercept only that path, after the exact menu
-     * listener was activated, and reverse the list before any native
-     * playback begins. No delayed queue-flip race or transient first song.
-     *
-     * The pending request expires rather than affecting later normal
-     * playback if an empty/broken playlist never reaches MusicService.
-     */
     fun consumeReversePlaylistForNativePlay(
         action: Int?,
         tracks: List<*>?
@@ -352,16 +325,14 @@ internal class QueueFlipController {
             val first = source.firstOrNull() ?: return@synchronized null
             val nativeClass = first.javaClass
             val structurallyNative = source.all {
-                it != null &&
-                    nativeClass.isInstance(it) &&
-                    runCatching { firstSongId(it) is Number }
-                        .getOrDefault(false)
+                it != null && nativeClass.isInstance(it) &&
+                    runCatching { firstSongId(it) is Number }.getOrDefault(false)
             }
             if (!structurallyNative) {
                 Log.w(
                     TAG,
-                    "FLIP PLAY | unsupported native playback list" +
-                        " | model=" + nativeClass.name
+                    "FLIP PLAY | unsupported native playback list | model=" +
+                        nativeClass.name
                 )
                 return@synchronized null
             }
@@ -374,8 +345,8 @@ internal class QueueFlipController {
         ).entries
         Log.i(
             TAG,
-            "FLIP PLAY APPLIED | kind=${pending.kind} | " +
-                "size=${reversed.size} | originalFirstId=" +
+            "FLIP PLAY APPLIED | kind=${pending.kind} | size=${reversed.size} | " +
+                "originalFirstId=" +
                 runCatching { firstSongId(source.first()!!) }.getOrNull() +
                 " | newFirstId=" +
                 runCatching { firstSongId(reversed.first()) }.getOrNull() +
@@ -387,11 +358,6 @@ internal class QueueFlipController {
         )
     }
 
-    /**
-     * Verify the newly inserted native queue AFTER GMMP's asynchronous
-     * native playlist-playback transaction has had time to complete. Prefer
-     * the 4.2.1 read-only Cursor verifier; preserve ex3 as the 4.2.0 fallback.
-     */
     fun verifyNativePlaylistPlayback(
         expectedTracks: List<*>,
         sourceKind: String
@@ -414,22 +380,18 @@ internal class QueueFlipController {
                     }
                     if (ids.size >= expectedIds.size &&
                         ids.take(expectedIds.size) == expectedIds &&
-                        current?.queueEntryId ==
-                            ordered.firstOrNull()?.queueEntryId
+                        current?.queueEntryId == ordered.firstOrNull()?.queueEntryId
                     ) {
                         Log.i(
                             TAG,
-                            "FLIP PLAY VERIFIED | kind=" + sourceKind +
-                                " | source=cursor | expected=" +
-                                expectedIds.size + " | queueSize=" + ids.size +
-                                " | currentPosition=" +
-                                (current?.queuePosition ?: -1) +
-                                " | checks=" + (attempt + 1)
+                            "FLIP PLAY VERIFIED | kind=$sourceKind | source=cursor | " +
+                                "expected=${expectedIds.size} | queueSize=${ids.size} | " +
+                                "currentPosition=${current?.queuePosition ?: -1} | " +
+                                "checks=${attempt + 1}"
                         )
                         eventReporter.reportEvent(
                             GoneSmartRuntimeContract.CATEGORY_FLIP,
-                            "Playing " + sourceKind + " in reverse: " +
-                                expectedIds.size + " tracks."
+                            "Playing $sourceKind in reverse: ${expectedIds.size} tracks."
                         )
                         return@execute
                     }
@@ -455,16 +417,16 @@ internal class QueueFlipController {
                 if (legacy) {
                     Log.i(
                         TAG,
-                        "FLIP PLAY VERIFIED | kind=" + sourceKind +
-                            " | source=legacy | checks=" + (attempt + 1)
+                        "FLIP PLAY VERIFIED | kind=$sourceKind | source=legacy | " +
+                            "checks=${attempt + 1}"
                     )
                     return@execute
                 }
             }
             Log.e(
                 TAG,
-                "FLIP PLAY VERIFY | " + sourceKind +
-                    " playback did not match reversed playlist after 3 seconds"
+                "FLIP PLAY VERIFY | $sourceKind playback did not match reversed " +
+                    "playlist after 3 seconds"
             )
         }
     }
@@ -477,9 +439,10 @@ internal class QueueFlipController {
     private fun flipCurrentQueue(context: Context) {
         synchronized(this) {
             if (queueFlipInProgress) {
-                toast(context, NativeGmmpUiText.error(
-                    context, nativeString(context, "queue")
-                ))
+                toast(
+                    context,
+                    NativeGmmpUiText.error(context, nativeString(context, "queue"))
+                )
                 return
             }
             queueFlipInProgress = true
@@ -492,9 +455,9 @@ internal class QueueFlipController {
                     if (count > 1) {
                         (nativeString(context, "queue") ?: "").trim()
                             .takeIf(String::isNotBlank)?.plus(" ✓") ?: "✓"
-                    } else NativeGmmpUiText.error(
-                        context, nativeString(context, "queue")
-                    )
+                    } else {
+                        NativeGmmpUiText.error(context, nativeString(context, "queue"))
+                    }
                 )
             } catch (failure: Throwable) {
                 Log.e(TAG, "FLIP APPLY | failed; see rollback status", failure)
@@ -502,28 +465,30 @@ internal class QueueFlipController {
                     GoneSmartRuntimeContract.CATEGORY_FLIP,
                     "Could not reverse the queue. See Logcat for details."
                 )
-                toast(context, NativeGmmpUiText.error(
-                    context, nativeString(context, "queue")
-                ))
+                toast(
+                    context,
+                    NativeGmmpUiText.error(context, nativeString(context, "queue"))
+                )
             } finally {
                 queueFlipInProgress = false
             }
         }
     }
 
-    /**
-     * On the worker thread (Room rejects main-thread queries), update
-     * every native ey3 by its unique queue_id in ONE native DAO transaction.
-     * No direct SQL: xx3.O0(List) uses GMMP's own UPDATE OR ABORT adapter.
-     * queue_position has NO unique index in GMMP 4.2.0, allowing a single
-     * batch reverse while keeping duplicate song IDs distinguishable.
-     */
     private fun performNativeQueueFlip(): Int {
         val legacyQueue = nativeQueue?.get()
         if (legacyQueue == null) {
             val autoDj = nativeAutoDj?.get()
                 ?: error("GMMP native Auto-DJ/queue not captured")
-            return GmmpQueueMutationBridge(autoDj).reverseQueue()
+            val positionWriter = positionWriterObserver.binding(autoDj)
+                ?: error(
+                    "GMMP native current-position writer has not been " +
+                        "passively observed yet"
+                )
+            return GmmpQueueMutationBridge(
+                autoDj,
+                positionWriter
+            ).reverseQueue()
         }
         val queue = legacyQueue
         val dao = field(queue, "r")
@@ -572,18 +537,16 @@ internal class QueueFlipController {
         val positionField = original[0].javaClass.getDeclaredField("a")
             .apply { isAccessible = true }
 
-        // Re-read just before committing; do not overwrite an unrelated
-        // queue if GMMP changed its contents while the worker was waiting.
         val latest = snapshot()
-        require(latest.map { (field(it, "d") as Number).toLong() } == ids &&
-            (currentMethod.invoke(queue) as? Int) == oldPosition) {
+        require(
+            latest.map { (field(it, "d") as Number).toLong() } == ids &&
+                (currentMethod.invoke(queue) as? Int) == oldPosition
+        ) {
             "Native queue changed before flip; aborting"
         }
 
         var wrote = false
         try {
-            // The planned entry at each index receives that index's old
-            // 1-based queue position; its unique queue ID never changes.
             plan.entries.forEachIndexed { index, entry ->
                 positionField.setInt(entry, oldPositions[index])
             }
@@ -593,26 +556,25 @@ internal class QueueFlipController {
             val verify = snapshot().map {
                 (field(it, "d") as Number).toLong()
             }
-            require(verify == ids.reversed() &&
-                (currentMethod.invoke(queue) as? Int) == newPosition) {
+            require(
+                verify == ids.reversed() &&
+                    (currentMethod.invoke(queue) as? Int) == newPosition
+            ) {
                 "Native queue verification failed"
             }
             Log.i(
                 TAG,
-                "FLIP APPLIED | size=${original.size} | " +
-                    "oldPosition=$oldPosition | newPosition=$newPosition | " +
-                    "currentEntryId=$oldCurrentEntryId | " +
+                "FLIP APPLIED | size=${original.size} | oldPosition=$oldPosition | " +
+                    "newPosition=$newPosition | currentEntryId=$oldCurrentEntryId | " +
                     "verified=true | writer=xx3.O0"
             )
             eventReporter.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_FLIP,
-                "Reversed ${original.size}-track queue. " +
-                    "Current song moved from position $oldPosition to $newPosition."
+                "Reversed ${original.size}-track queue. Current song moved " +
+                    "from position $oldPosition to $newPosition."
             )
             return original.size
         } catch (failure: Throwable) {
-            // Restore the original queue if the write succeeded but the
-            // native playback pointer/verification failed.
             if (wrote) {
                 runCatching {
                     original.forEachIndexed { index, entry ->
@@ -633,16 +595,11 @@ internal class QueueFlipController {
                     )
                 }
             }
-            throw (failure as? InvocationTargetException)?.targetException
-                ?: failure
+            throw (failure as? InvocationTargetException)?.targetException ?: failure
         }
     }
 
     private fun brandedMenuTitle(context: Context, label: String): CharSequence {
-        // Text first, then the original typographic two-way arrow with
-        // a slight native-font-weight adjustment, then our unchanged
-        // 28 dp two-star lilac sparkle. ReplacementSpans do not increase
-        // native GMMP popup row height.
         val badge = PlayerAutoDjBadgeController.SparkleBadgeDrawable(
             0xFFA39AFF.toInt(),
             scale = 1.85f
@@ -665,28 +622,14 @@ internal class QueueFlipController {
         return text
     }
 
-    /**
-     * Keep the original typographic ⇵ with its subtly strengthened
-     * font-matched stroke. Separate its two arrow halves by a small
-     * text-proportional tracking gap instead of changing their shapes.
-     *
-     * Clipping and translating only the right half preserves the exact
-     * arrowheads, glyph height and weight the user approved. The span
-     * does not change line metrics or the neighboring sparkle.
-     */
     private class BoldReverseArrowsSpan(context: Context) : ReplacementSpan() {
         private val density = context.resources.displayMetrics.density
         private val glyph = "⇵"
 
-        // Roughly the tracking between ordinary adjacent glyphs at the
-        // same text size; deliberately subtler than inserting a space.
         private fun gap(paint: Paint): Float =
             (paint.textSize * 0.16f).coerceIn(2f * density, 3.4f * density)
 
         private fun arrowPaint(textPaint: Paint): Paint {
-            // Measure the glyph outline instead of guessing an Android
-            // dp width. Font, typeface and accessibility scale all come
-            // directly from the native GMMP menu's TextView.
             val stem = Path()
             textPaint.getTextPath("l", 0, 1, 0f, 0f, stem)
             val bounds = RectF()
@@ -696,9 +639,6 @@ internal class QueueFlipController {
 
             return Paint(textPaint).apply {
                 style = Paint.Style.FILL_AND_STROKE
-                // The original ⇵ glyph remains the basis. Increase its
-                // original line width only slightly (~20% of a native
-                // lowercase l stem), never use the old 2.65/3.8 dp shafts.
                 strokeWidth = (lWidth * 0.20f).coerceIn(
                     0.18f * density,
                     0.55f * density
@@ -714,8 +654,6 @@ internal class QueueFlipController {
             end: Int,
             fm: Paint.FontMetricsInt?
         ): Int {
-            // Do not modify fm: the menu row stays exactly as high as
-            // its native neighbors despite the arrow and sparkle.
             return (paint.measureText(glyph) + gap(paint) + 2f * density)
                 .roundToInt()
                 .coerceAtLeast(1)
@@ -736,18 +674,10 @@ internal class QueueFlipController {
             val lineCenter = y + (metrics.ascent + metrics.descent) / 2f
             val glyphBounds = Rect()
             paint.getTextBounds(glyph, 0, glyph.length, glyphBounds)
-            // Optical center of the actual fallback-font arrow glyph,
-            // not the font's generic text bounding box.
             val glyphBaseline =
                 lineCenter - (glyphBounds.top + glyphBounds.bottom) / 2f
-
-            // Unicode ⇵ is a single glyph, so normal letterSpacing
-            // cannot affect its two arrows. Draw its left/right halves
-            // independently, shifting only the right half horizontally.
-            // Both draws use the same native font and stroke measurement.
             val drawX = x + density
-            val splitX =
-                drawX + (glyphBounds.left + glyphBounds.right) / 2f
+            val splitX = drawX + (glyphBounds.left + glyphBounds.right) / 2f
             val extra = gap(paint)
             val arrowInk = arrowPaint(paint)
             val clipTop = top.toFloat() - 8f * density
@@ -771,27 +701,51 @@ internal class QueueFlipController {
                 drawX + glyphBounds.right + extra + sidePadding,
                 clipBottom
             )
-            canvas.drawText(
-                glyph,
-                drawX + extra,
-                glyphBaseline,
-                arrowInk
-            )
+            canvas.drawText(glyph, drawX + extra, glyphBaseline, arrowInk)
             canvas.restoreToCount(rightSave)
         }
     }
 
-    private fun nativeString(context: Context, name: String): String? {
-        val res = context.resources.getIdentifier(
-            name,
-            "string",
-            context.packageName
-        )
-        return if (res != 0) {
-            runCatching { context.getString(res) }.getOrNull()
-        } else {
-            null
+    private class BaselineCenteredSparkleSpan(
+        context: Context,
+        private val drawable: PlayerAutoDjBadgeController.SparkleBadgeDrawable
+    ) : ReplacementSpan() {
+        private val density = context.resources.displayMetrics.density
+        private val sizePx = (28f * density).roundToInt().coerceAtLeast(1)
+
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?
+        ): Int = sizePx
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint
+        ) {
+            val metrics = paint.fontMetricsInt
+            val lineCenter = y + (metrics.ascent + metrics.descent) / 2f
+            val save = canvas.save()
+            canvas.translate(x, lineCenter - sizePx / 2f)
+            drawable.setBounds(0, 0, sizePx, sizePx)
+            drawable.draw(canvas)
+            canvas.restoreToCount(save)
         }
+    }
+
+    private fun nativeString(context: Context, name: String): String? {
+        val res = context.resources.getIdentifier(name, "string", context.packageName)
+        return if (res != 0) runCatching { context.getString(res) }.getOrNull()
+        else null
     }
 
     private fun menuContext(menu: Menu, inflater: Any?): Context? {
@@ -802,9 +756,7 @@ internal class QueueFlipController {
         }.getOrNull()
         if (fromMenu != null) return fromMenu
 
-        if (inflater is MenuInflater) {
-            return field(inflater, "mContext") as? Context
-        }
+        if (inflater is MenuInflater) return field(inflater, "mContext") as? Context
         return null
     }
 
@@ -813,9 +765,7 @@ internal class QueueFlipController {
         while (cls != null && cls != Any::class.java) {
             val current = cls
             val resolved = runCatching {
-                current.getDeclaredField(name).apply {
-                    isAccessible = true
-                }.get(instance)
+                current.getDeclaredField(name).apply { isAccessible = true }.get(instance)
             }
             if (resolved.isSuccess) return resolved.getOrNull()
             cls = cls.superclass
@@ -823,12 +773,6 @@ internal class QueueFlipController {
         return null
     }
 
-    /**
-     * GMMP's AppCompat MenuBuilder retains item order in mItems.
-     * When available, place the new entry exactly after Shuffle or
-     * immediately before Remove duplicates. Native items are otherwise
-     * unchanged and Menu.add's normal order is left as a fallback.
-     */
     private fun moveRelativeToAnchor(
         menu: Menu,
         inserted: MenuItem,
@@ -843,10 +787,7 @@ internal class QueueFlipController {
         return runCatching {
             editable.removeAt(originalIndex)
             val anchorIndex = editable.indexOf(anchor)
-            editable.add(
-                if (before) anchorIndex else anchorIndex + 1,
-                inserted
-            )
+            editable.add(if (before) anchorIndex else anchorIndex + 1, inserted)
             true
         }.getOrDefault(false)
     }
