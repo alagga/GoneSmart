@@ -445,91 +445,106 @@ internal class GmmpQueueMutationBridge(
     private fun resolveStatePosition(
         currentQueuePosition: Int
     ): StatePositionBinding {
-        fun matchingFields(host: Any): List<Field> =
-            hierarchyFields(host.javaClass).filter {
-                it.type == Integer.TYPE ||
-                    it.type == Integer::class.java
-            }.onEach { it.isAccessible = true }.filter {
-                runCatching {
-                    (it.get(host) as? Number)?.toInt() ==
-                        currentQueuePosition
-                }.getOrDefault(false)
+        fun bindingFrom(
+            analysis: NativeQueueStateAccessorPolicy.Analysis
+        ): StatePositionBinding? {
+            analysis.methodSelection()?.let { selection ->
+                return MethodStatePositionBinding(
+                    selection.host,
+                    selection.getter,
+                    selection.setter
+                )
             }
-
-        fun matchingMethod(host: Any): MethodStatePositionBinding? {
-            val methods = GmmpReflectionPolicy.callableMethods(host.javaClass)
-                .filter { !Modifier.isStatic(it.modifiers) }
-            val getters = methods.filter {
-                it.parameterCount == 0 &&
-                    it.name != "hashCode" &&
-                    (
-                        it.returnType == Integer.TYPE ||
-                            it.returnType == Integer::class.java
-                    )
-            }.filter { method ->
-                runCatching {
-                    method.isAccessible = true
-                    (method.invoke(host) as? Number)?.toInt() ==
-                        currentQueuePosition
-                }.getOrDefault(false)
+            analysis.fieldSelection()?.let { field ->
+                field.isAccessible = true
+                return FieldStatePositionBinding(analysis.host, field)
             }
-            val setters = methods.filter {
-                it.parameterCount == 1 &&
-                    (
-                        it.parameterTypes[0] == Integer.TYPE ||
-                            it.parameterTypes[0] == Integer::class.java
-                    ) &&
-                    it.returnType == java.lang.Void.TYPE
-            }
-            val getter = getters.singleOrNull() ?: return null
-            val setter = setters.singleOrNull() ?: return null
-            getter.isAccessible = true
-            setter.isAccessible = true
-            return MethodStatePositionBinding(host, getter, setter)
+            return null
         }
 
-        // Verified 4.2.1 fast path; names are evidence only and structural
-        // matching below remains the fallback.
+        fun report(
+            source: String,
+            analysis: NativeQueueStateAccessorPolicy.Analysis
+        ) {
+            val key = "current-pointer|" + source + "|" +
+                analysis.host.javaClass.name + "|" + currentQueuePosition
+            if (!reportedShapes.add(key)) return
+            Log.w(
+                TAG,
+                "QUEUE CURRENT POINTER SHAPE | source=" + source +
+                    " | " + analysis.describe(currentQueuePosition)
+            )
+        }
+
+        fun preferredHost(
+            source: String,
+            host: Any
+        ): Pair<StatePositionBinding?, Boolean> {
+            val analysis = NativeQueueStateAccessorPolicy.analyze(
+                host,
+                currentQueuePosition
+            )
+            val binding = bindingFrom(analysis)
+            if (binding != null) return binding to true
+            if (analysis.hasReadEvidence) {
+                report(source, analysis)
+                return null to true
+            }
+            return null to false
+        }
+
+        // The accepted read-only Queue resolver repeatedly proves the 4.2.1
+        // current pointer on qr.t -> ur.method:b by correlating its integer
+        // signal with the independent queue_table Cursor. Once this preferred
+        // host yields the same read evidence here, write discovery MUST stay
+        // on that host. Falling through to qr.p/dx3 created the r34 false
+        // positive dx3.D->c2 when both happened to equal queue position 1.
         objectField(autoDj, "t")?.let { state ->
-            matchingFields(state).singleOrNull()?.let {
-                return FieldStatePositionBinding(state, it)
+            val (binding, hasReadEvidence) = preferredHost("field:t", state)
+            if (binding != null) return binding
+            if (hasReadEvidence) {
+                error(
+                    "GMMP writable current-position binding is unresolved " +
+                        "on verified state host " + state.javaClass.name
+                )
             }
-            matchingMethod(state)?.let { return it }
-        }
-        objectField(autoDj, "p")?.let { state ->
-            matchingFields(state).singleOrNull()?.let {
-                return FieldStatePositionBinding(state, it)
-            }
-            matchingMethod(state)?.let { return it }
         }
 
-        val hosts = hierarchyFields(autoDj.javaClass)
+        // Earlier 4.2.1 layouts exposed the current pointer through qr.p.
+        // This remains a compatibility fallback only when qr.t provides NO
+        // cursor-correlated integer evidence at all.
+        objectField(autoDj, "p")?.let { state ->
+            val (binding, hasReadEvidence) = preferredHost("field:p", state)
+            if (binding != null) return binding
+            if (hasReadEvidence) {
+                error(
+                    "GMMP writable current-position binding is unresolved " +
+                        "on fallback state host " + state.javaClass.name
+                )
+            }
+        }
+
+        val analyses = hierarchyFields(autoDj.javaClass)
             .mapNotNull { ownerField ->
                 ownerField.isAccessible = true
                 val host = runCatching {
                     ownerField.get(autoDj)
                 }.getOrNull() ?: return@mapNotNull null
                 if (!isStateSignalHost(host)) return@mapNotNull null
-                host
+                NativeQueueStateAccessorPolicy.analyze(
+                    host,
+                    currentQueuePosition
+                ).takeIf { it.hasReadEvidence }
             }
-            .distinctBy(System::identityHashCode)
+            .distinctBy { System.identityHashCode(it.host) }
 
-        val fieldBindings = hosts.mapNotNull { host ->
-            matchingFields(host).singleOrNull()?.let {
-                FieldStatePositionBinding(host, it)
-            }
-        }
-        if (fieldBindings.size == 1) return fieldBindings.single()
-
-        val methodBindings = hosts.mapNotNull(::matchingMethod)
-        if (methodBindings.size == 1) return methodBindings.single()
+        val bindings = analyses.mapNotNull(::bindingFrom)
+        if (bindings.size == 1) return bindings.single()
+        analyses.forEach { report("structural", it) }
 
         error(
             "GMMP current-position state binding is not unique" +
-                " | fields=" + fieldBindings.joinToString(",") {
-                    it.description
-                }.ifBlank { "none" } +
-                " | methods=" + methodBindings.joinToString(",") {
+                " | candidates=" + bindings.joinToString(",") {
                     it.description
                 }.ifBlank { "none" }
         )
