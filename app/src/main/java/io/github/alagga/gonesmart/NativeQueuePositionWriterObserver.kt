@@ -19,8 +19,13 @@ internal interface NativeQueuePositionWriter {
  * Learns GMMP's writable current-position boundary only from NORMAL GMMP
  * behavior. Candidate methods are never probed. A method becomes eligible
  * only when one of its natural calls changes the independent ur-backed signal
- * exactly to the method's Int argument. Nested candidate calls are tracked so
- * only the deepest method that actually caused the transition is retained.
+ * exactly to the method's Int argument.
+ *
+ * GMMP 4.2.1 may publish the new current position shortly after the natural
+ * MusicService call has returned, so discovery checks both the immediate
+ * return and a short bounded delayed window. Delayed matches remain
+ * fail-closed: all matching calls in that window are compared and only one
+ * unique deepest candidate may graduate to a writer.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -28,9 +33,22 @@ internal class NativeQueuePositionWriterObserver(
 ) {
     companion object {
         private const val TAG = "GoneSmartFlip"
+        private const val PENDING_MAX_AGE_MS = 650L
+        private val DELAYED_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
 
     private data class Frame(var childMatched: Boolean = false)
+
+    private data class Pending(
+        val service: WeakReference<Any>,
+        val autoDj: WeakReference<Any>,
+        val method: Method,
+        val looper: Looper,
+        val beforeValue: Int,
+        val argument: Int,
+        val depth: Int,
+        val createdAt: Long
+    )
 
     private data class Verified(
         val service: WeakReference<Any>,
@@ -41,6 +59,8 @@ internal class NativeQueuePositionWriterObserver(
     )
 
     private val stack = ThreadLocal.withInitial { ArrayDeque<Frame>() }
+    private val pendingLock = Any()
+    private val pending = ArrayDeque<Pending>()
 
     @Volatile
     private var verified: Verified? = null
@@ -58,6 +78,7 @@ internal class NativeQueuePositionWriterObserver(
         val before = readSignal(autoDj)
         val frame = Frame()
         val frames = stack.get()
+        val depth = frames.size
         frames.addLast(frame)
         try {
             return proceed()
@@ -74,6 +95,19 @@ internal class NativeQueuePositionWriterObserver(
                     if (looper != null) {
                         record(service, autoDj, method, looper, after!!.source)
                     }
+                }
+            } else if (before != null) {
+                val looper = Looper.myLooper()
+                if (looper != null) {
+                    scheduleDelayedObservation(
+                        service = service,
+                        autoDj = autoDj,
+                        method = method,
+                        looper = looper,
+                        beforeValue = before.value,
+                        argument = argument,
+                        depth = depth
+                    )
                 }
             }
             if (frames.isEmpty()) stack.remove()
@@ -122,6 +156,106 @@ internal class NativeQueuePositionWriterObserver(
         }
     }
 
+    private fun scheduleDelayedObservation(
+        service: Any,
+        autoDj: Any,
+        method: Method,
+        looper: Looper,
+        beforeValue: Int,
+        argument: Int,
+        depth: Int
+    ) {
+        if (verified != null) return
+        val observation = Pending(
+            service = WeakReference(service),
+            autoDj = WeakReference(autoDj),
+            method = method,
+            looper = looper,
+            beforeValue = beforeValue,
+            argument = argument,
+            depth = depth,
+            createdAt = SystemClock.elapsedRealtime()
+        )
+        synchronized(pendingLock) {
+            prunePendingLocked(observation.createdAt)
+            pending.addLast(observation)
+        }
+        val handler = Handler(looper)
+        DELAYED_CHECKS_MS.forEach { delay ->
+            handler.postDelayed(
+                { verifyDelayedTransition(service, autoDj) },
+                delay
+            )
+        }
+    }
+
+    private fun verifyDelayedTransition(service: Any, autoDj: Any) {
+        if (verified != null) return
+        val reading = readSignal(autoDj) ?: return
+        val now = SystemClock.elapsedRealtime()
+        val matches = synchronized(pendingLock) {
+            prunePendingLocked(now)
+            pending.filter { candidate ->
+                candidate.service.get() === service &&
+                    candidate.autoDj.get() === autoDj &&
+                    candidate.beforeValue != reading.value &&
+                    candidate.argument == reading.value
+            }
+        }
+        if (matches.isEmpty()) return
+
+        val deepest = matches.maxOf { it.depth }
+        val deepestMatches = matches.filter { it.depth == deepest }
+        val methods = deepestMatches.distinctBy {
+            it.method.declaringClass.name + "|" + it.method.name + "|" +
+                it.method.parameterTypes.joinToString(",") { type -> type.name }
+        }
+        if (methods.size != 1) {
+            Log.w(
+                TAG,
+                "QUEUE POSITION WRITER DELAYED AMBIGUOUS | position=" +
+                    reading.value + " | candidates=" +
+                    methods.joinToString(",") {
+                        it.method.declaringClass.name + "." + it.method.name
+                    }
+            )
+            synchronized(pendingLock) {
+                pending.removeAll { candidate ->
+                    candidate.service.get() === service &&
+                        candidate.autoDj.get() === autoDj &&
+                        candidate.argument == reading.value
+                }
+            }
+            return
+        }
+
+        val proof = methods.single()
+        record(
+            service = service,
+            autoDj = autoDj,
+            method = proof.method,
+            looper = proof.looper,
+            signalSource = reading.source
+        )
+        synchronized(pendingLock) {
+            pending.removeAll { candidate ->
+                candidate.service.get() === service &&
+                    candidate.autoDj.get() === autoDj
+            }
+        }
+    }
+
+    private fun prunePendingLocked(now: Long) {
+        while (pending.isNotEmpty()) {
+            val first = pending.first()
+            val expired = now - first.createdAt > PENDING_MAX_AGE_MS
+            val dead = first.service.get() == null || first.autoDj.get() == null
+            if (!expired && !dead) break
+            pending.removeFirst()
+        }
+    }
+
+    @Synchronized
     private fun record(
         service: Any,
         autoDj: Any,
