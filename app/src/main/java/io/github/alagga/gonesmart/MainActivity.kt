@@ -66,6 +66,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusHeadline: TextView
     private lateinit var statusSubline: TextView
     private lateinit var statusCard: MaterialCardView
+    private lateinit var statusSummarySection: LinearLayout
     private lateinit var gmmpStatusText: TextView
     private lateinit var frameworkStatusText: TextView
     private lateinit var runtimeStatusText: TextView
@@ -297,17 +298,22 @@ class MainActivity : AppCompatActivity() {
         }
         val statusContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(20), dp(22), dp(16))
         }
 
+        statusSummarySection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(16))
+        }
         statusHeadline = textView("Checking module…", 21f, COLOR_TEXT, bold = true)
         statusSubline = textView("Waiting for Xposed service", 15f, COLOR_TEXT_SECONDARY).apply {
-            setPadding(0, dp(5), 0, dp(14))
+            setPadding(0, dp(5), 0, 0)
         }
-        statusContent.addView(statusHeadline)
-        statusContent.addView(statusSubline)
-        // Exactly one separator belongs below the overall status. Individual
-        // health rows use spacing/backgrounds instead of additional dividers.
+        statusSummarySection.addView(statusHeadline)
+        statusSummarySection.addView(statusSubline)
+        statusContent.addView(statusSummarySection)
+        // The only separator remains directly below the aggregate status.
+        // The following health rows are contiguous colored sections of this
+        // same outer card, not nested cards of their own.
         statusContent.addView(divider())
 
         gmmpStatusText = statusRow("GoneMAD Music Player", "Checking…")
@@ -907,7 +913,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             "GoneMAD Music Player\nNot installed or not visible"
         }
-        applyStatusTone(gmmpStatusText, StatusHealthPolicy.gmmp(installed, running))
+        val gmmpTone = StatusHealthPolicy.gmmp(installed, running)
+        applyStatusTone(gmmpStatusText, gmmpTone)
 
         val frameworkApi = if (service != null) {
             try { service.apiVersion } catch (_: Throwable) { null }
@@ -922,22 +929,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             "Xposed framework\nNot connected"
         }
-        applyStatusTone(
-            frameworkStatusText,
-            StatusHealthPolicy.framework(serviceAvailable, frameworkApi)
-        )
+        val frameworkTone = StatusHealthPolicy.framework(serviceAvailable, frameworkApi)
+        applyStatusTone(frameworkStatusText, frameworkTone)
 
         runtimeStatusText.text = "GoneSmart state\n${runtimeDescription(runtime)}"
-        applyStatusTone(
-            runtimeStatusText,
-            StatusHealthPolicy.runtime(
-                serviceAvailable = serviceAvailable,
-                gmmpInstalled = installed,
-                running = running,
-                enabled = options.enabled,
-                runtimeMode = runtime.mode
-            )
+        val runtimeTone = StatusHealthPolicy.runtime(
+            serviceAvailable = serviceAvailable,
+            gmmpInstalled = installed,
+            running = running,
+            enabled = options.enabled,
+            runtimeMode = runtime.mode
         )
+        applyStatusTone(runtimeStatusText, runtimeTone)
 
         val compatibilityState = GmmpCompatibilityPolicy.state(gmmpVersion)
         compatibilityText.text = when (compatibilityState) {
@@ -948,10 +951,16 @@ class MainActivity : AppCompatActivity() {
             GmmpCompatibilityPolicy.State.UNTESTED ->
                 "Compatibility\nUntested GMMP version $gmmpVersion • tested: ${GmmpCompatibilityPolicy.TESTED_VERSION}"
         }
-        applyStatusTone(
-            compatibilityText,
-            StatusHealthPolicy.compatibility(compatibilityState)
+        val compatibilityTone = StatusHealthPolicy.compatibility(compatibilityState)
+        applyStatusTone(compatibilityText, compatibilityTone)
+
+        val overallTone = StatusHealthPolicy.overall(
+            gmmpTone,
+            frameworkTone,
+            runtimeTone,
+            compatibilityTone
         )
+        applyStatusTone(statusSummarySection, overallTone)
     }
 
     private fun runtimeDescription(snapshot: GoneSmartEventStore.RuntimeSnapshot): String {
@@ -1122,23 +1131,21 @@ class MainActivity : AppCompatActivity() {
     private fun statusRow(title: String, value: String): TextView {
         return textView("$title\n$value", 14f, COLOR_TEXT_SECONDARY).apply {
             setLineSpacing(0f, 1.08f)
-            setPadding(dp(14), dp(11), dp(14), dp(11))
-            background = rounded(COLOR_SURFACE_2, 14f)
+            setPadding(dp(22), dp(13), dp(22), dp(13))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
+            )
         }
     }
 
-    private fun applyStatusTone(view: TextView, tone: StatusHealthPolicy.Tone) {
+    private fun applyStatusTone(view: View, tone: StatusHealthPolicy.Tone) {
         val accent = when (tone) {
             StatusHealthPolicy.Tone.GREEN -> COLOR_GREEN
             StatusHealthPolicy.Tone.AMBER -> COLOR_AMBER
             StatusHealthPolicy.Tone.RED -> COLOR_RED
         }
-        view.background = rounded(blendColors(COLOR_SURFACE_2, accent, 0.30f), 14f)
-        view.setTextColor(COLOR_TEXT_SECONDARY)
+        view.setBackgroundColor(blendColors(COLOR_SURFACE, accent, 0.30f))
     }
 
     private fun blendColors(base: Int, accent: Int, fraction: Float): Int {

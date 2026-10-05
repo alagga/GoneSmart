@@ -480,11 +480,11 @@ internal class QueueFlipController {
         if (legacyQueue == null) {
             val autoDj = nativeAutoDj?.get()
                 ?: error("GMMP native Auto-DJ/queue not captured")
+            // First let the mutation bridge resolve a writable boundary on
+            // the same native state host that already proves the read signal.
+            // A passively observed MusicService writer is an additional safe
+            // fallback, not a prerequisite for Queue Flip to run.
             val positionWriter = positionWriterObserver.binding(autoDj)
-                ?: error(
-                    "GMMP native current-position writer has not been " +
-                        "passively observed yet"
-                )
             return GmmpQueueMutationBridge(
                 autoDj,
                 positionWriter
