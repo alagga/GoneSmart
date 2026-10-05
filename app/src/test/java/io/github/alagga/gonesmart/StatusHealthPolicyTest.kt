@@ -47,4 +47,31 @@ class StatusHealthPolicyTest {
             StatusHealthPolicy.compatibility(GmmpCompatibilityPolicy.State.UNKNOWN)
         )
     }
+
+    @Test
+    fun overallUsesMostSevereChildTone() {
+        assertEquals(
+            StatusHealthPolicy.Tone.GREEN,
+            StatusHealthPolicy.overall(
+                StatusHealthPolicy.Tone.GREEN,
+                StatusHealthPolicy.Tone.GREEN
+            )
+        )
+        assertEquals(
+            StatusHealthPolicy.Tone.AMBER,
+            StatusHealthPolicy.overall(
+                StatusHealthPolicy.Tone.GREEN,
+                StatusHealthPolicy.Tone.AMBER,
+                StatusHealthPolicy.Tone.GREEN
+            )
+        )
+        assertEquals(
+            StatusHealthPolicy.Tone.RED,
+            StatusHealthPolicy.overall(
+                StatusHealthPolicy.Tone.AMBER,
+                StatusHealthPolicy.Tone.RED,
+                StatusHealthPolicy.Tone.GREEN
+            )
+        )
+    }
 }
