@@ -27,6 +27,10 @@ class StatusHealthPolicyTest {
             StatusHealthPolicy.runtime(true, true, true, true, GoneSmartRuntimeContract.MODE_SMART)
         )
         assertEquals(
+            StatusHealthPolicy.Tone.GREEN,
+            StatusHealthPolicy.runtime(true, true, true, true, GoneSmartRuntimeContract.MODE_NONE)
+        )
+        assertEquals(
             StatusHealthPolicy.Tone.AMBER,
             StatusHealthPolicy.runtime(true, true, true, true, GoneSmartRuntimeContract.MODE_FALLBACK)
         )
