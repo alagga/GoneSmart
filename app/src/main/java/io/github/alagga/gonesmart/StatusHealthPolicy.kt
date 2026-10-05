@@ -35,7 +35,8 @@ internal object StatusHealthPolicy {
         runtimeMode == GoneSmartRuntimeContract.MODE_STOPPED -> Tone.RED
         !running || !enabled -> Tone.AMBER
         runtimeMode == GoneSmartRuntimeContract.MODE_FALLBACK -> Tone.AMBER
-        runtimeMode == GoneSmartRuntimeContract.MODE_SMART -> Tone.GREEN
+        runtimeMode == GoneSmartRuntimeContract.MODE_SMART ||
+            runtimeMode == GoneSmartRuntimeContract.MODE_NONE -> Tone.GREEN
         else -> Tone.AMBER
     }
 
