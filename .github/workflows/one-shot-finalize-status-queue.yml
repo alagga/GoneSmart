@@ -1,0 +1,33 @@
+name: One-shot final status and queue patch
+
+on:
+  push:
+    branches: [feature/playlist-bridge]
+    paths:
+      - '.github/workflows/one-shot-finalize-status-queue.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/playlist-bridge
+
+      - name: Apply final patch
+        run: |
+          python .github/scripts/finalize_status_and_queue_flip.py
+          git diff --check
+          git diff -- app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt
+          git commit -m 'fix(status,queue): integrate health sections and pointer fallback'
+          git push origin HEAD:feature/playlist-bridge
