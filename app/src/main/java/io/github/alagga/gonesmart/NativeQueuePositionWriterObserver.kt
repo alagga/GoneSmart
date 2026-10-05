@@ -61,6 +61,8 @@ internal class NativeQueuePositionWriterObserver(
     private val stack = ThreadLocal.withInitial { ArrayDeque<Frame>() }
     private val pendingLock = Any()
     private val pending = ArrayDeque<Pending>()
+    private val reportedUnmatchedTransitions =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     @Volatile
     private var verified: Verified? = null
@@ -193,16 +195,32 @@ internal class NativeQueuePositionWriterObserver(
         if (verified != null) return
         val reading = readSignal(autoDj) ?: return
         val now = SystemClock.elapsedRealtime()
-        val matches = synchronized(pendingLock) {
+        val recent = synchronized(pendingLock) {
             prunePendingLocked(now)
             pending.filter { candidate ->
                 candidate.service.get() === service &&
                     candidate.autoDj.get() === autoDj &&
-                    candidate.beforeValue != reading.value &&
-                    candidate.argument == reading.value
+                    candidate.beforeValue != reading.value
             }
         }
-        if (matches.isEmpty()) return
+        if (recent.isEmpty()) return
+
+        val matches = recent.filter { it.argument == reading.value }
+        if (matches.isEmpty()) {
+            val key = System.identityHashCode(autoDj).toString() + "|" + reading.value
+            if (reportedUnmatchedTransitions.add(key)) {
+                Log.w(
+                    TAG,
+                    "QUEUE POSITION TRANSITION UNMATCHED | position=" +
+                        reading.value + " | recent=" +
+                        recent.joinToString(",") {
+                            it.method.declaringClass.name + "." + it.method.name +
+                                "=" + it.argument
+                        }
+                )
+            }
+            return
+        }
 
         val deepest = matches.maxOf { it.depth }
         val deepestMatches = matches.filter { it.depth == deepest }
