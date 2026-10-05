@@ -44,4 +44,11 @@ internal object StatusHealthPolicy {
         GmmpCompatibilityPolicy.State.UNTESTED -> Tone.AMBER
         GmmpCompatibilityPolicy.State.UNKNOWN -> Tone.RED
     }
+
+    /** Overall Status card health: the most severe child state wins. */
+    fun overall(vararg tones: Tone): Tone = when {
+        tones.any { it == Tone.RED } -> Tone.RED
+        tones.any { it == Tone.AMBER } -> Tone.AMBER
+        else -> Tone.GREEN
+    }
 }
