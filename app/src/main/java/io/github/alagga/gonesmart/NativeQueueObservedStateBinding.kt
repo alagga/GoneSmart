@@ -61,13 +61,18 @@ internal object NativeQueueObservedStateBinding {
         fun fail(reason: String): Match? {
             val key = host.javaClass.name + "|" + observedWriter.name
             if (reportedFailures.add(key)) {
-                Log.w(
-                    TAG,
-                    "QUEUE OBSERVED STATE SHAPE | reason=$reason | observed=" +
-                        observedWriter.declaringClass.name + "." +
-                        observedWriter.name + "(int) | " +
-                        analysis.describe(observedValue)
-                )
+                // android.util.Log is unavailable in local JVM tests. Keep
+                // diagnostics best-effort so policy tests exercise the exact
+                // production path without requiring an Android shadow.
+                runCatching {
+                    Log.w(
+                        TAG,
+                        "QUEUE OBSERVED STATE SHAPE | reason=$reason | observed=" +
+                            observedWriter.declaringClass.name + "." +
+                            observedWriter.name + "(int) | " +
+                            analysis.describe(observedValue)
+                    )
+                }
             }
             return null
         }
