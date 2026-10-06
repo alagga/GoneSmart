@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import android.util.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 
@@ -13,6 +14,10 @@ import java.lang.reflect.Method
  * setter on the observed host and the readback must live on that same host.
  */
 internal object NativeQueueObservedStateBinding {
+    private const val TAG = "GoneSmartFlip"
+    private val reportedFailures =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     sealed interface Reader {
         val description: String
         fun read(host: Any): Int?
@@ -53,9 +58,25 @@ internal object NativeQueueObservedStateBinding {
             currentValue = observedValue
         )
 
+        fun fail(reason: String): Match? {
+            val key = host.javaClass.name + "|" + observedWriter.name
+            if (reportedFailures.add(key)) {
+                Log.w(
+                    TAG,
+                    "QUEUE OBSERVED STATE SHAPE | reason=$reason | observed=" +
+                        observedWriter.declaringClass.name + "." +
+                        observedWriter.name + "(int) | " +
+                        analysis.describe(observedValue)
+                )
+            }
+            return null
+        }
+
         val directWriter = analysis.directSetters.singleOrNull()
-            ?: return null
-        if (!sameMethod(directWriter, observedWriter)) return null
+            ?: return fail("direct-writer-not-unique")
+        if (!sameMethod(directWriter, observedWriter)) {
+            return fail("observed-writer-is-not-unique-direct-writer")
+        }
 
         val directGetters = analysis.matchingGetters.filter {
             it.declaringClass == host.javaClass
@@ -72,7 +93,7 @@ internal object NativeQueueObservedStateBinding {
         }
         val field = directFields.singleOrNull()
             ?: analysis.matchingFields.singleOrNull()
-            ?: return null
+            ?: return fail("matching-readback-not-found")
         field.isAccessible = true
         return Match(FieldReader(field), directWriter)
     }
