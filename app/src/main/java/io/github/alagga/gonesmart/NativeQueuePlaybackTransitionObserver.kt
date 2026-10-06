@@ -11,16 +11,20 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Discovery never invokes a candidate method. The original invocation is
  * allowed to proceed exactly once; before/after state is sampled read-only.
+ * Delayed checks are deliberately bounded so compatibility discovery cannot
+ * turn nested playback callbacks into sustained main-thread work.
  */
 internal class NativeQueuePlaybackTransitionObserver {
     companion object {
         private const val TAG = "GoneSmartFlip"
         private const val MAX_LOGS = 24
-        private val DELAYS_MS = longArrayOf(40L, 120L, 280L)
+        private const val MAX_PENDING_DELAYED = 8
+        private const val DELAY_MS = 120L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val logCount = AtomicInteger(0)
+    private val pendingDelayed = AtomicInteger(0)
     private val reported =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
@@ -38,9 +42,12 @@ internal class NativeQueuePlaybackTransitionObserver {
         val immediate = NativeQueuePlaybackDiagnostics.changes(before, after)
         if (immediate.isNotEmpty()) {
             report(method, args, "immediate", immediate)
-        } else {
-            DELAYS_MS.forEach { delay ->
-                mainHandler.postDelayed({
+        } else if (
+            logCount.get() < MAX_LOGS &&
+            pendingDelayed.incrementAndGet() <= MAX_PENDING_DELAYED
+        ) {
+            mainHandler.postDelayed({
+                try {
                     val delayed = NativeQueuePlaybackDiagnostics.snapshot(
                         service,
                         autoDj
@@ -50,10 +57,14 @@ internal class NativeQueuePlaybackTransitionObserver {
                         delayed
                     )
                     if (changes.isNotEmpty()) {
-                        report(method, args, "delayed-${delay}ms", changes)
+                        report(method, args, "delayed-${DELAY_MS}ms", changes)
                     }
-                }, delay)
-            }
+                } finally {
+                    pendingDelayed.decrementAndGet()
+                }
+            }, DELAY_MS)
+        } else if (pendingDelayed.get() > MAX_PENDING_DELAYED) {
+            pendingDelayed.decrementAndGet()
         }
         return result
     }
