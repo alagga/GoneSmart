@@ -1,6 +1,6 @@
 package io.github.alagga.gonesmart
 
-import androidx.room.RoomDatabase
+import gonemad.gmmp.data.database.GMDatabase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -22,7 +22,7 @@ class NativeAutoDjAccessorResolverTest {
         @Suppress("unused")
         var daoB: Any? = null
         @Suppress("unused")
-        var database: RoomDatabase? = null
+        var database: GMDatabase? = null
         @Suppress("unused")
         var state: NativeState? = NativeState()
     }
