@@ -7,7 +7,6 @@ import android.util.Log
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 internal interface NativeQueuePositionWriter {
@@ -20,13 +19,17 @@ internal interface NativeQueuePositionWriter {
  * Learns GMMP's writable current-position boundary only from NORMAL GMMP
  * behavior. Candidate methods are never probed.
  *
- * The strongest 4.2.1 proof is causal and same-host: when GMMP naturally
- * invokes the structurally unique Auto-DJ child Int writer, integer read
- * signals on that exact receiver are sampled before/after. A writer graduates
- * only if one native readback changes to the exact argument and that argument
- * identifies exactly one live queue_position in the independent read-only
- * queue_table Cursor. This prevents the earlier cross-host/value-correlation
- * mistakes without making the full current-row resolver part of the proof.
+ * GMMP 4.2.1 naturally invokes the structurally unique Auto-DJ child
+ * Int->void writer (observed as dx3.c2(int)) with the absolute queue_position
+ * it is switching to. That natural invocation plus an independently existing
+ * queue_table row is sufficient to identify the COMMAND boundary.
+ *
+ * Identification is deliberately separate from controlled-write success:
+ * GoneSmart never trusts a cached target value as readback. A controlled
+ * Queue Flip write succeeds only when the real native position signal on the
+ * Auto-DJ state host changes to the requested position. This prevents a
+ * reordered queue from being left with GMMP's playhead pinned to the old
+ * numeric position.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -34,51 +37,24 @@ internal class NativeQueuePositionWriterObserver(
 ) {
     companion object {
         private const val TAG = "GoneSmartFlip"
-        private const val PENDING_MAX_AGE_MS = 650L
-        private const val ABSOLUTE_CURSOR_PROOF =
+        private const val STRUCTURAL_PROOF =
             "natural-unique-state-writer+queue-position"
-        private val DELAYED_CHECKS_MS = longArrayOf(40L, 120L, 280L)
-        private val CAUSAL_READBACK_CHECKS_MS = longArrayOf(30L, 90L, 180L)
-        private val CAUSAL_PROOF_CHECKS_MS = longArrayOf(30L, 120L)
+        private const val WRITE_TIMEOUT_MS = 1500L
+        private val DELAYED_SIGNAL_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
-
-    private data class Frame(var childMatched: Boolean = false)
-
-    private data class Pending(
-        val service: WeakReference<Any>,
-        val autoDj: WeakReference<Any>,
-        val method: Method,
-        val looper: Looper,
-        val beforeValue: Int,
-        val argument: Int,
-        val depth: Int,
-        val createdAt: Long
-    )
 
     private data class Verified(
         val receiver: WeakReference<Any>,
         val autoDj: WeakReference<Any>,
         val method: Method,
         val looper: Looper?,
-        val signalSource: String,
-        val readback: NativeQueuePositionCausalReadbackPolicy.Readback?
+        val signalSource: String
     )
 
-    private val stack = ThreadLocal.withInitial { ArrayDeque<Frame>() }
     private val controlledWrite = ThreadLocal<Boolean>()
-    private val pendingLock = Any()
-    private val pending = ArrayDeque<Pending>()
-    private val reportedUnmatchedTransitions =
-        java.util.Collections.synchronizedSet(mutableSetOf<String>())
-    private val causalExecutor = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "GoneSmartQueuePositionProof").apply { isDaemon = true }
-    }
 
     @Volatile
     private var verified: Verified? = null
-
-    @Volatile
-    private var latestAbsolutePosition: Int? = null
 
     fun aroundNaturalInvocation(
         service: Any?,
@@ -87,10 +63,6 @@ internal class NativeQueuePositionWriterObserver(
         autoDj: Any?,
         proceed: () -> Any?
     ): Any? {
-        // A writer already graduated from natural GMMP behavior may later be
-        // invoked deliberately by Queue Flip. Do not let our own invocation
-        // refresh or re-prove the passive observation; the controlled write
-        // has its own bounded postconditions below.
         if (controlledWrite.get() == true) return proceed()
         if (service == null || argument == null || autoDj == null) {
             return proceed()
@@ -101,99 +73,57 @@ internal class NativeQueuePositionWriterObserver(
                 .stateWriterMethods(autoDj.javaClass)
                 .singleOrNull()
                 ?.let { sameMethod(it, method) } == true
-        val causalBefore = if (uniqueStateWriter) {
-            NativeQueuePositionCausalReadbackPolicy.snapshot(service)
-        } else {
-            null
-        }
         val before = readSignal(autoDj)
-        val frame = Frame()
-        val frames = stack.get()
-        val depth = frames.size
-        frames.addLast(frame)
-        try {
-            return proceed()
-        } finally {
-            frames.removeLast()
-            val invocationLooper = Looper.myLooper()
+        val invocationLooper = Looper.myLooper()
+        val result = proceed()
+        val after = readSignal(autoDj)
 
-            val causalReadback = causalBefore?.let {
-                NativeQueuePositionCausalReadbackPolicy.select(
-                    host = service,
-                    before = it,
-                    writerArgument = argument
+        val nativeSignalProof =
+            before != null && after != null &&
+                before.value != after.value && after.value == argument
+        when {
+            nativeSignalProof -> record(
+                receiver = service,
+                autoDj = autoDj,
+                method = method,
+                looper = invocationLooper,
+                signalSource = after!!.source
+            )
+            uniqueStateWriter && isUniqueQueuePosition(autoDj, argument) -> {
+                // This proves WHICH native command GMMP uses, not that a
+                // future controlled invocation has succeeded. write() below
+                // still requires the independent native read signal.
+                record(
+                    receiver = service,
+                    autoDj = autoDj,
+                    method = method,
+                    looper = invocationLooper,
+                    signalSource = STRUCTURAL_PROOF
                 )
-            }
-            if (causalReadback != null) {
-                frames.lastOrNull()?.childMatched = true
-                scheduleCausalProof(
+                scheduleDelayedSignalObservation(
                     receiver = service,
                     autoDj = autoDj,
                     method = method,
                     argument = argument,
                     looper = invocationLooper,
-                    readback = causalReadback
+                    beforeValue = before?.value
                 )
-            } else {
-                if (causalBefore != null) {
-                    scheduleDelayedCausalReadback(
-                        receiver = service,
-                        autoDj = autoDj,
-                        method = method,
-                        argument = argument,
-                        looper = invocationLooper,
-                        before = causalBefore
-                    )
-                }
-
-                val after = readSignal(autoDj)
-                val absoluteCursorProof =
-                    uniqueStateWriter && isUniqueQueuePosition(autoDj, argument)
-
-                if (absoluteCursorProof) {
-                    latestAbsolutePosition = argument
-                    frames.lastOrNull()?.childMatched = true
-                    if (!frame.childMatched) {
-                        record(
-                            receiver = service,
-                            autoDj = autoDj,
-                            method = method,
-                            looper = invocationLooper,
-                            signalSource = ABSOLUTE_CURSOR_PROOF,
-                            readback = null
-                        )
-                    }
-                } else {
-                    val changedToArgument =
-                        before != null && after != null &&
-                            before.value != after.value && after.value == argument
-                    if (changedToArgument) {
-                        frames.lastOrNull()?.childMatched = true
-                        if (!frame.childMatched) {
-                            record(
-                                receiver = service,
-                                autoDj = autoDj,
-                                method = method,
-                                looper = invocationLooper,
-                                signalSource = after!!.source,
-                                readback = null
-                            )
-                        }
-                    } else if (before != null && invocationLooper != null) {
-                        scheduleDelayedObservation(
-                            service = service,
-                            autoDj = autoDj,
-                            method = method,
-                            looper = invocationLooper,
-                            beforeValue = before.value,
-                            argument = argument,
-                            depth = depth
-                        )
-                    }
-                }
             }
-            if (frames.isEmpty()) stack.remove()
+            uniqueStateWriter -> scheduleDelayedSignalObservation(
+                receiver = service,
+                autoDj = autoDj,
+                method = method,
+                argument = argument,
+                looper = invocationLooper,
+                beforeValue = before?.value
+            )
         }
+        return result
+    }
+
+    fun hasVerifiedWriter(autoDj: Any): Boolean {
+        val proof = verified ?: return false
+        return proof.autoDj.get() === autoDj && proof.receiver.get() != null
     }
 
     fun binding(autoDj: Any): NativeQueuePositionWriter? {
@@ -205,15 +135,12 @@ internal class NativeQueuePositionWriterObserver(
                 proof.method.declaringClass.name + "." + proof.method.name +
                     "(int) via " + proof.signalSource
 
-            override fun read(): Int? = when {
-                proof.readback != null -> proof.readback.read(receiver)
-                proof.signalSource == ABSOLUTE_CURSOR_PROOF -> latestAbsolutePosition
-                else -> readSignal(autoDj)?.value
-            }
+            override fun read(): Int? = readSignal(autoDj)?.value
 
             override fun write(position: Int): Boolean {
                 val before = read() ?: return false
                 if (before == position) return true
+
                 val invoke = {
                     controlledWrite.set(true)
                     try {
@@ -236,111 +163,59 @@ internal class NativeQueuePositionWriterObserver(
                         ok = invoke()
                         done.countDown()
                     }
-                    done.await(1500L, TimeUnit.MILLISECONDS) && ok
+                    done.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok
                 }
                 if (!invoked) return false
 
-                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
-                    // The method identity was established only from a natural
-                    // GMMP invocation whose argument was independently proven
-                    // to be a unique queue_position. During a controlled Flip
-                    // invocation there is intentionally no synthetic passive
-                    // re-proof. Require the target row to exist uniquely,
-                    // then advance the trusted absolute position hint. The
-                    // mutation bridge performs the final queue/current-ID
-                    // verification after this write.
-                    if (!isUniqueQueuePosition(autoDj, position)) return false
-                    latestAbsolutePosition = position
-                    return true
-                }
-
-                val deadline = SystemClock.elapsedRealtime() + 1200L
+                val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
                 do {
-                    if (read() == position) {
-                        if (!isUniqueQueuePosition(autoDj, position)) return false
-                        latestAbsolutePosition = position
-                        return true
+                    val nativePosition = read()
+                    if (nativePosition == position) {
+                        return isUniqueQueuePosition(autoDj, position)
                     }
                     Thread.sleep(20L)
                 } while (SystemClock.elapsedRealtime() < deadline)
+
+                Log.e(
+                    TAG,
+                    "QUEUE POSITION WRITE REJECTED | writer=" +
+                        proof.method.declaringClass.name + "." +
+                        proof.method.name + " | requested=" + position +
+                        " | nativeRead=" + (read()?.toString() ?: "unavailable")
+                )
                 return false
             }
         }
     }
 
-    private fun scheduleDelayedCausalReadback(
+    private fun scheduleDelayedSignalObservation(
         receiver: Any,
         autoDj: Any,
         method: Method,
         argument: Int,
         looper: Looper?,
-        before: NativeQueuePositionCausalReadbackPolicy.Snapshot
+        beforeValue: Int?
     ) {
-        if (verified != null) return
-        CAUSAL_READBACK_CHECKS_MS.forEach { delay ->
-            val check = {
-                if (verified == null) {
-                    val readback = NativeQueuePositionCausalReadbackPolicy.select(
-                        host = receiver,
-                        before = before,
-                        writerArgument = argument
-                    )
-                    if (readback != null) {
-                        scheduleCausalProof(
-                            receiver = receiver,
-                            autoDj = autoDj,
-                            method = method,
-                            argument = argument,
-                            looper = looper,
-                            readback = readback
-                        )
+        if (looper == null || verified?.signalSource != STRUCTURAL_PROOF) return
+        DELAYED_SIGNAL_CHECKS_MS.forEach { delay ->
+            Handler(looper).postDelayed(
+                {
+                    val reading = readSignal(autoDj) ?: return@postDelayed
+                    if (reading.value != argument || reading.value == beforeValue) {
+                        return@postDelayed
                     }
-                }
-            }
-            if (looper != null) {
-                Handler(looper).postDelayed(check, delay)
-            } else {
-                causalExecutor.schedule(
-                    { runCatching(check) },
-                    delay,
-                    TimeUnit.MILLISECONDS
-                )
-            }
-        }
-    }
-
-    private fun scheduleCausalProof(
-        receiver: Any,
-        autoDj: Any,
-        method: Method,
-        argument: Int,
-        looper: Looper?,
-        readback: NativeQueuePositionCausalReadbackPolicy.Readback
-    ) {
-        fun verify() {
-            if (verified != null && verified?.method != method) return
-            if (readback.read(receiver) != argument) return
-            if (!isUniqueQueuePosition(autoDj, argument)) return
-            latestAbsolutePosition = argument
-            record(
-                receiver = receiver,
-                autoDj = autoDj,
-                method = method,
-                looper = looper,
-                signalSource = "causal-same-host:" + readback.description,
-                readback = readback
-            )
-        }
-
-        // Try once outside the intercepted method immediately. If Room is
-        // temporarily busy/re-entrant, repeat in a short bounded delayed
-        // window. No writer is invoked by these checks.
-        verify()
-        CAUSAL_PROOF_CHECKS_MS.forEach { delay ->
-            causalExecutor.schedule(
-                { runCatching(::verify) },
-                delay,
-                TimeUnit.MILLISECONDS
+                    if (!isUniqueQueuePosition(autoDj, argument)) {
+                        return@postDelayed
+                    }
+                    upgradeSignalProof(
+                        receiver = receiver,
+                        autoDj = autoDj,
+                        method = method,
+                        looper = looper,
+                        signalSource = reading.source
+                    )
+                },
+                delay
             )
         }
     }
@@ -351,13 +226,6 @@ internal class NativeQueuePositionWriterObserver(
             left.returnType == right.returnType &&
             left.parameterTypes.contentEquals(right.parameterTypes)
 
-    /**
-     * Independent proof used while the current-position boundary itself is
-     * still being discovered. Deliberately do NOT call GmmpQueueReader here:
-     * that reader needs a CurrentMarker, which would make writer discovery
-     * circular. We only ask the already verified read-only Room bridge whether
-     * this absolute queue_position exists exactly once.
-     */
     private fun isUniqueQueuePosition(autoDj: Any, position: Int): Boolean {
         if (position < 0) return false
         return runCatching {
@@ -377,159 +245,66 @@ internal class NativeQueuePositionWriterObserver(
         }.getOrDefault(false)
     }
 
-    private fun scheduleDelayedObservation(
-        service: Any,
-        autoDj: Any,
-        method: Method,
-        looper: Looper,
-        beforeValue: Int,
-        argument: Int,
-        depth: Int
-    ) {
-        if (verified != null) return
-        val observation = Pending(
-            service = WeakReference(service),
-            autoDj = WeakReference(autoDj),
-            method = method,
-            looper = looper,
-            beforeValue = beforeValue,
-            argument = argument,
-            depth = depth,
-            createdAt = SystemClock.elapsedRealtime()
-        )
-        synchronized(pendingLock) {
-            prunePendingLocked(observation.createdAt)
-            pending.addLast(observation)
-        }
-        val handler = Handler(looper)
-        DELAYED_CHECKS_MS.forEach { delay ->
-            handler.postDelayed(
-                { verifyDelayedTransition(service, autoDj) },
-                delay
-            )
-        }
-    }
-
-    private fun verifyDelayedTransition(service: Any, autoDj: Any) {
-        if (verified != null) return
-        val reading = readSignal(autoDj) ?: return
-        val now = SystemClock.elapsedRealtime()
-        val recent = synchronized(pendingLock) {
-            prunePendingLocked(now)
-            pending.filter { candidate ->
-                candidate.service.get() === service &&
-                    candidate.autoDj.get() === autoDj &&
-                    candidate.beforeValue != reading.value
-            }
-        }
-        if (recent.isEmpty()) return
-
-        val matches = recent.filter { it.argument == reading.value }
-        if (matches.isEmpty()) {
-            val key = System.identityHashCode(autoDj).toString() + "|" + reading.value
-            if (reportedUnmatchedTransitions.add(key)) {
-                Log.w(
-                    TAG,
-                    "QUEUE POSITION TRANSITION UNMATCHED | position=" +
-                        reading.value + " | recent=" +
-                        recent.joinToString(",") {
-                            it.method.declaringClass.name + "." + it.method.name +
-                                "=" + it.argument
-                        }
-                )
-            }
-            return
-        }
-
-        val matchesDeepest = matches.maxOf { it.depth }
-        val deepestMatches = matches.filter { it.depth == matchesDeepest }
-        val methods = deepestMatches.distinctBy {
-            it.method.declaringClass.name + "|" + it.method.name + "|" +
-                it.method.parameterTypes.joinToString(",") { type -> type.name }
-        }
-        if (methods.size != 1) {
-            Log.w(
-                TAG,
-                "QUEUE POSITION WRITER DELAYED AMBIGUOUS | position=" +
-                    reading.value + " | candidates=" +
-                    methods.joinToString(",") {
-                        it.method.declaringClass.name + "." + it.method.name
-                    }
-            )
-            synchronized(pendingLock) {
-                pending.removeAll { candidate ->
-                    candidate.service.get() === service &&
-                        candidate.autoDj.get() === autoDj &&
-                        candidate.argument == reading.value
-                }
-            }
-            return
-        }
-
-        val proof = methods.single()
-        record(
-            receiver = service,
-            autoDj = autoDj,
-            method = proof.method,
-            looper = proof.looper,
-            signalSource = reading.source,
-            readback = null
-        )
-        synchronized(pendingLock) {
-            pending.removeAll { candidate ->
-                candidate.service.get() === service &&
-                    candidate.autoDj.get() === autoDj
-            }
-        }
-    }
-
-    private fun prunePendingLocked(now: Long) {
-        while (pending.isNotEmpty()) {
-            val first = pending.first()
-            val expired = now - first.createdAt > PENDING_MAX_AGE_MS
-            val dead = first.service.get() == null || first.autoDj.get() == null
-            if (!expired && !dead) break
-            pending.removeFirst()
-        }
-    }
-
     @Synchronized
     private fun record(
         receiver: Any,
         autoDj: Any,
         method: Method,
         looper: Looper?,
-        signalSource: String,
-        readback: NativeQueuePositionCausalReadbackPolicy.Readback?
+        signalSource: String
     ) {
         val existing = verified
-        if (existing != null &&
-            (existing.receiver.get() !== receiver ||
+        if (existing != null) {
+            if (existing.receiver.get() !== receiver ||
                 existing.autoDj.get() !== autoDj ||
-                !sameMethod(existing.method, method))
-        ) {
-            Log.w(
-                TAG,
-                "QUEUE POSITION WRITER AMBIGUOUS | keeping first passive proof"
-            )
+                !sameMethod(existing.method, method)
+            ) {
+                Log.w(
+                    TAG,
+                    "QUEUE POSITION WRITER AMBIGUOUS | keeping first passive proof"
+                )
+            }
             return
         }
-        if (existing == null) {
-            method.isAccessible = true
-            verified = Verified(
-                WeakReference(receiver),
-                WeakReference(autoDj),
-                method,
-                looper,
-                signalSource,
-                readback
-            )
-            Log.i(
-                TAG,
-                "QUEUE POSITION WRITER VERIFIED | writer=" +
-                    method.declaringClass.name + "." + method.name +
-                    "(int) | signal=" + signalSource
-            )
-        }
+        method.isAccessible = true
+        verified = Verified(
+            receiver = WeakReference(receiver),
+            autoDj = WeakReference(autoDj),
+            method = method,
+            looper = looper,
+            signalSource = signalSource
+        )
+        Log.i(
+            TAG,
+            "QUEUE POSITION WRITER VERIFIED | writer=" +
+                method.declaringClass.name + "." + method.name +
+                "(int) | signal=" + signalSource
+        )
+    }
+
+    @Synchronized
+    private fun upgradeSignalProof(
+        receiver: Any,
+        autoDj: Any,
+        method: Method,
+        looper: Looper?,
+        signalSource: String
+    ) {
+        val existing = verified ?: return
+        if (existing.receiver.get() !== receiver ||
+            existing.autoDj.get() !== autoDj ||
+            !sameMethod(existing.method, method) ||
+            existing.signalSource != STRUCTURAL_PROOF
+        ) return
+        verified = existing.copy(
+            looper = looper,
+            signalSource = signalSource
+        )
+        Log.i(
+            TAG,
+            "QUEUE POSITION WRITER SIGNAL VERIFIED | writer=" +
+                method.declaringClass.name + "." + method.name +
+                "(int) | signal=" + signalSource
+        )
     }
 }
