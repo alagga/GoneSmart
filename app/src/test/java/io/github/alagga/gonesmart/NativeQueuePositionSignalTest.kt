@@ -5,46 +5,58 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class NativeQueuePositionSignalTest {
-    private class PositionHost(private val position: Int) {
-        fun current(): Int = position
-    }
-
-    private class FastOwner(position: Int) {
+    private class DxLikeHost(position: Int) {
         @Suppress("unused")
-        val t = PositionHost(position)
+        val o: Int = position
+
+        fun duplicateRead(): Int = position
     }
 
-    private class AmbiguousHost {
-        fun first(): Int = 2
-        fun second(): Int = 2
+    private class UrLikeHost {
+        fun b(): Int = 1
+    }
+
+    private class Owner(position: Int) {
+        @Suppress("unused")
+        val p = DxLikeHost(position)
+
+        @Suppress("unused")
+        val t = UrLikeHost()
+    }
+
+    private class AmbiguousDxHost {
+        @Suppress("unused")
+        val a: Int = 2
+
+        @Suppress("unused")
+        val b: Int = 3
     }
 
     private class AmbiguousOwner {
         @Suppress("unused")
-        val t = AmbiguousHost()
+        val p = AmbiguousDxHost()
     }
 
-    private class FallbackOwner(position: Int) {
+    private class WrongOwner {
         @Suppress("unused")
-        val state = PositionHost(position)
+        val t = UrLikeHost()
     }
 
     @Test
-    fun preferredStateFieldResolvesUniqueIntGetter() {
-        val reading = NativeQueuePositionSignal.read(FastOwner(7))
+    fun preferredDxFieldWinsOverUnrelatedUrValue() {
+        val reading = NativeQueuePositionSignal.read(Owner(7))
         assertEquals(7, reading?.value)
-        assertEquals(true, reading?.source?.startsWith("field:t->") == true)
+        assertEquals(true, reading?.source?.contains("field:p->") == true)
+        assertEquals(true, reading?.source?.endsWith("field:o") == true)
     }
 
     @Test
-    fun ambiguousPreferredHostFailsClosed() {
+    fun ambiguousDxHostWithoutVerifiedFieldFailsClosed() {
         assertNull(NativeQueuePositionSignal.read(AmbiguousOwner()))
     }
 
     @Test
-    fun structuralFallbackRequiresUniqueEligibleHost() {
-        val reading = NativeQueuePositionSignal.read(FallbackOwner(11))
-        assertEquals(11, reading?.value)
-        assertEquals(true, reading?.source?.startsWith("field:state->") == true)
+    fun urOnlyOwnerIsNotAcceptedAsPlaybackPosition() {
+        assertNull(NativeQueuePositionSignal.read(WrongOwner()))
     }
 }
