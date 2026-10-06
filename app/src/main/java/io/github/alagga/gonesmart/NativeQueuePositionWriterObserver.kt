@@ -25,7 +25,8 @@ internal interface NativeQueuePositionWriter {
  * signals on that exact receiver are sampled before/after. A writer graduates
  * only if one native readback changes to the exact argument and that argument
  * identifies exactly one live queue_position in the independent read-only
- * Cursor. This prevents the earlier cross-host/value-correlation mistakes.
+ * queue_table Cursor. This prevents the earlier cross-host/value-correlation
+ * mistakes without making the full current-row resolver part of the proof.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -64,6 +65,7 @@ internal class NativeQueuePositionWriterObserver(
     )
 
     private val stack = ThreadLocal.withInitial { ArrayDeque<Frame>() }
+    private val controlledWrite = ThreadLocal<Boolean>()
     private val pendingLock = Any()
     private val pending = ArrayDeque<Pending>()
     private val reportedUnmatchedTransitions =
@@ -85,6 +87,11 @@ internal class NativeQueuePositionWriterObserver(
         autoDj: Any?,
         proceed: () -> Any?
     ): Any? {
+        // A writer already graduated from natural GMMP behavior may later be
+        // invoked deliberately by Queue Flip. Do not let our own invocation
+        // refresh or re-prove the passive observation; the controlled write
+        // has its own bounded postconditions below.
+        if (controlledWrite.get() == true) return proceed()
         if (service == null || argument == null || autoDj == null) {
             return proceed()
         }
@@ -208,10 +215,15 @@ internal class NativeQueuePositionWriterObserver(
                 val before = read() ?: return false
                 if (before == position) return true
                 val invoke = {
-                    runCatching {
-                        proof.method.isAccessible = true
-                        proof.method.invoke(receiver, position)
-                    }.isSuccess
+                    controlledWrite.set(true)
+                    try {
+                        runCatching {
+                            proof.method.isAccessible = true
+                            proof.method.invoke(receiver, position)
+                        }.isSuccess
+                    } finally {
+                        controlledWrite.remove()
+                    }
                 }
                 val invoked = if (
                     proof.looper == null || Looper.myLooper() == proof.looper
@@ -227,6 +239,20 @@ internal class NativeQueuePositionWriterObserver(
                     done.await(1500L, TimeUnit.MILLISECONDS) && ok
                 }
                 if (!invoked) return false
+
+                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
+                    // The method identity was established only from a natural
+                    // GMMP invocation whose argument was independently proven
+                    // to be a unique queue_position. During a controlled Flip
+                    // invocation there is intentionally no synthetic passive
+                    // re-proof. Require the target row to exist uniquely,
+                    // then advance the trusted absolute position hint. The
+                    // mutation bridge performs the final queue/current-ID
+                    // verification after this write.
+                    if (!isUniqueQueuePosition(autoDj, position)) return false
+                    latestAbsolutePosition = position
+                    return true
+                }
 
                 val deadline = SystemClock.elapsedRealtime() + 1200L
                 do {
@@ -325,14 +351,29 @@ internal class NativeQueuePositionWriterObserver(
             left.returnType == right.returnType &&
             left.parameterTypes.contentEquals(right.parameterTypes)
 
+    /**
+     * Independent proof used while the current-position boundary itself is
+     * still being discovered. Deliberately do NOT call GmmpQueueReader here:
+     * that reader needs a CurrentMarker, which would make writer discovery
+     * circular. We only ask the already verified read-only Room bridge whether
+     * this absolute queue_position exists exactly once.
+     */
     private fun isUniqueQueuePosition(autoDj: Any, position: Int): Boolean {
         if (position < 0) return false
         return runCatching {
-            val context = GmmpQueueReader().read(autoDj, position)
-                ?: return@runCatching false
-            context.currentQueuePosition == position &&
-                context.items.count { it.queuePosition == position } == 1 &&
-                context.items.count { it.state == QueueItemState.CURRENT } == 1
+            val count = GmmpReadOnlySql.query(
+                autoDjInstance = autoDj,
+                sql = "SELECT COUNT(*) AS match_count FROM queue_table " +
+                    "WHERE queue_position = $position"
+            ) { cursor ->
+                if (!cursor.moveToFirst()) {
+                    0
+                } else {
+                    val column = cursor.getColumnIndex("match_count")
+                    if (column < 0) 0 else cursor.getInt(column)
+                }
+            }
+            count == 1
         }.getOrDefault(false)
     }
 
