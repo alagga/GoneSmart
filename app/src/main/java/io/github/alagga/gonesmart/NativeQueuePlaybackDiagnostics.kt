@@ -5,10 +5,13 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
- * Read-only diagnostics for the still-open GMMP 4.2.1 playback-position
- * boundary. Nothing in this object invokes a writer. It only samples integer
- * state that GMMP already exposes and identifies natural methods worth
- * observing.
+ * Read-only queue/playback diagnostics retained for compatibility failures.
+ *
+ * The broad MusicService transition probe used while mapping GMMP 4.2.1 has
+ * been retired from normal runtime: the writable current-position command is
+ * now identified structurally on Auto-DJ's state child and verified from
+ * natural GMMP calls. Keeping dozens of broad playback hooks after that proof
+ * adds overhead without improving safety.
  */
 internal object NativeQueuePlaybackDiagnostics {
     private const val MAX_HOSTS = 8
@@ -76,37 +79,20 @@ internal object NativeQueuePlaybackDiagnostics {
     }
 
     /**
-     * Direct MusicService methods that are safe to observe passively. The
-     * hook never calls these methods itself; it only wraps invocations GMMP
-     * makes naturally. We deliberately include zero-arg and event-style
-     * methods because the 4.2.1 title transition bypasses all one-Int service
-     * commands observed in r39.
+     * Broad MusicService probing is intentionally retired for the accepted
+     * 4.2.1 mapping. Future unknown versions should re-enable diagnostics only
+     * through the compatibility workflow, not permanently hook every playback
+     * transition in an already-tested release.
      */
-    fun playbackMethods(serviceClass: Class<*>): List<Method> =
-        GmmpReflectionPolicy.concreteMethods(serviceClass)
-            .filter { method ->
-                method.declaringClass == serviceClass &&
-                    !Modifier.isStatic(method.modifiers) &&
-                    !Modifier.isAbstract(method.modifiers) &&
-                    method.parameterCount <= 2 &&
-                    (method.returnType == Void.TYPE ||
-                        method.returnType == Boolean::class.javaPrimitiveType ||
-                        method.returnType == Boolean::class.java) &&
-                    method.name !in setOf(
-                        "onCreate",
-                        "onDestroy",
-                        "onBind"
-                    )
-            }
-            .distinctBy(::signature)
-            .take(48)
+    fun playbackMethods(@Suppress("UNUSED_PARAMETER") serviceClass: Class<*>): List<Method> =
+        emptyList()
 
     /**
      * Candidate state-host writers are derived from Auto-DJ's declared child
      * types. They are only hooked, never invoked by discovery. A type must
      * expose integer read state and a one-Int/void command before it is
-     * considered. This recovers the old qr.p/dx3 surface without making the
-     * obfuscated field name its semantic identity.
+     * considered. This recovers the observed qr.p/dx3 surface without making
+     * an obfuscated field or method name its semantic identity.
      */
     fun stateWriterMethods(autoDjClass: Class<*>): List<Method> {
         val hostTypes = hierarchyFields(autoDjClass)
