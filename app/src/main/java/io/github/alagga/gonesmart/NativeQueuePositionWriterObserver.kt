@@ -37,6 +37,7 @@ internal class NativeQueuePositionWriterObserver(
         private const val ABSOLUTE_CURSOR_PROOF =
             "natural-unique-state-writer+queue-position"
         private val DELAYED_CHECKS_MS = longArrayOf(40L, 120L, 280L)
+        private val CAUSAL_READBACK_CHECKS_MS = longArrayOf(30L, 90L, 180L)
         private val CAUSAL_PROOF_CHECKS_MS = longArrayOf(30L, 120L)
     }
 
@@ -107,6 +108,7 @@ internal class NativeQueuePositionWriterObserver(
             return proceed()
         } finally {
             frames.removeLast()
+            val invocationLooper = Looper.myLooper()
 
             val causalReadback = causalBefore?.let {
                 NativeQueuePositionCausalReadbackPolicy.select(
@@ -122,10 +124,21 @@ internal class NativeQueuePositionWriterObserver(
                     autoDj = autoDj,
                     method = method,
                     argument = argument,
-                    looper = Looper.myLooper(),
+                    looper = invocationLooper,
                     readback = causalReadback
                 )
             } else {
+                if (causalBefore != null) {
+                    scheduleDelayedCausalReadback(
+                        receiver = service,
+                        autoDj = autoDj,
+                        method = method,
+                        argument = argument,
+                        looper = invocationLooper,
+                        before = causalBefore
+                    )
+                }
+
                 val after = readSignal(autoDj)
                 val absoluteCursorProof =
                     uniqueStateWriter && isUniqueQueuePosition(autoDj, argument)
@@ -133,13 +146,12 @@ internal class NativeQueuePositionWriterObserver(
                 if (absoluteCursorProof) {
                     latestAbsolutePosition = argument
                     frames.lastOrNull()?.childMatched = true
-                    val looper = Looper.myLooper()
                     if (!frame.childMatched) {
                         record(
                             receiver = service,
                             autoDj = autoDj,
                             method = method,
-                            looper = looper,
+                            looper = invocationLooper,
                             signalSource = ABSOLUTE_CURSOR_PROOF,
                             readback = null
                         )
@@ -155,24 +167,21 @@ internal class NativeQueuePositionWriterObserver(
                                 receiver = service,
                                 autoDj = autoDj,
                                 method = method,
-                                looper = Looper.myLooper(),
+                                looper = invocationLooper,
                                 signalSource = after!!.source,
                                 readback = null
                             )
                         }
-                    } else if (before != null) {
-                        val looper = Looper.myLooper()
-                        if (looper != null) {
-                            scheduleDelayedObservation(
-                                service = service,
-                                autoDj = autoDj,
-                                method = method,
-                                looper = looper,
-                                beforeValue = before.value,
-                                argument = argument,
-                                depth = depth
-                            )
-                        }
+                    } else if (before != null && invocationLooper != null) {
+                        scheduleDelayedObservation(
+                            service = service,
+                            autoDj = autoDj,
+                            method = method,
+                            looper = invocationLooper,
+                            beforeValue = before.value,
+                            argument = argument,
+                            depth = depth
+                        )
                     }
                 }
             }
@@ -229,6 +238,47 @@ internal class NativeQueuePositionWriterObserver(
                     Thread.sleep(20L)
                 } while (SystemClock.elapsedRealtime() < deadline)
                 return false
+            }
+        }
+    }
+
+    private fun scheduleDelayedCausalReadback(
+        receiver: Any,
+        autoDj: Any,
+        method: Method,
+        argument: Int,
+        looper: Looper?,
+        before: NativeQueuePositionCausalReadbackPolicy.Snapshot
+    ) {
+        if (verified != null) return
+        CAUSAL_READBACK_CHECKS_MS.forEach { delay ->
+            val check = {
+                if (verified == null) {
+                    val readback = NativeQueuePositionCausalReadbackPolicy.select(
+                        host = receiver,
+                        before = before,
+                        writerArgument = argument
+                    )
+                    if (readback != null) {
+                        scheduleCausalProof(
+                            receiver = receiver,
+                            autoDj = autoDj,
+                            method = method,
+                            argument = argument,
+                            looper = looper,
+                            readback = readback
+                        )
+                    }
+                }
+            }
+            if (looper != null) {
+                Handler(looper).postDelayed(check, delay)
+            } else {
+                causalExecutor.schedule(
+                    { runCatching(check) },
+                    delay,
+                    TimeUnit.MILLISECONDS
+                )
             }
         }
     }
