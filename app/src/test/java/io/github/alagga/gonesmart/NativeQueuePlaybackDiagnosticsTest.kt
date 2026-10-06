@@ -62,13 +62,11 @@ class NativeQueuePlaybackDiagnosticsTest {
     }
 
     @Test
-    fun playbackPolicyIncludesEventAndOneIntCommands() {
-        val names = NativeQueuePlaybackDiagnostics.playbackMethods(Service::class.java)
-            .map { it.name }
-            .toSet()
-        assertTrue("event" in names)
-        assertTrue("oneInt" in names)
-        assertTrue("ignoredString" !in names)
+    fun broadPlaybackProbeIsRetiredAfterWriterGraduation() {
+        assertTrue(
+            NativeQueuePlaybackDiagnostics.playbackMethods(Service::class.java)
+                .isEmpty()
+        )
     }
 
     @Test
