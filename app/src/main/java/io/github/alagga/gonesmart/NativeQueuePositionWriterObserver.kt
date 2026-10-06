@@ -7,6 +7,7 @@ import android.util.Log
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 internal interface NativeQueuePositionWriter {
@@ -17,17 +18,14 @@ internal interface NativeQueuePositionWriter {
 
 /**
  * Learns GMMP's writable current-position boundary only from NORMAL GMMP
- * behavior. Candidate methods are never probed. A method becomes eligible
- * only from natural GMMP behavior. The preferred 4.2.1 proof is the
- * structurally unique Auto-DJ child state writer being called naturally with
- * an argument that identifies exactly one live queue_position in the read-only
- * Cursor. Internal scalar state remains a compatibility fallback only.
+ * behavior. Candidate methods are never probed.
  *
- * GMMP 4.2.1 may publish the new current position shortly after the natural
- * native call has returned, so discovery checks both the immediate return and
- * a short bounded delayed window. Delayed matches remain fail-closed: all
- * matching calls in that window are compared and only one unique deepest
- * candidate may graduate to a writer.
+ * The strongest 4.2.1 proof is causal and same-host: when GMMP naturally
+ * invokes the structurally unique Auto-DJ child Int writer, integer read
+ * signals on that exact receiver are sampled before/after. A writer graduates
+ * only if one native readback changes to the exact argument and that argument
+ * identifies exactly one live queue_position in the independent read-only
+ * Cursor. This prevents the earlier cross-host/value-correlation mistakes.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -39,6 +37,7 @@ internal class NativeQueuePositionWriterObserver(
         private const val ABSOLUTE_CURSOR_PROOF =
             "natural-unique-state-writer+queue-position"
         private val DELAYED_CHECKS_MS = longArrayOf(40L, 120L, 280L)
+        private val CAUSAL_PROOF_CHECKS_MS = longArrayOf(30L, 120L)
     }
 
     private data class Frame(var childMatched: Boolean = false)
@@ -55,11 +54,12 @@ internal class NativeQueuePositionWriterObserver(
     )
 
     private data class Verified(
-        val service: WeakReference<Any>,
+        val receiver: WeakReference<Any>,
         val autoDj: WeakReference<Any>,
         val method: Method,
-        val looper: Looper,
-        val signalSource: String
+        val looper: Looper?,
+        val signalSource: String,
+        val readback: NativeQueuePositionCausalReadbackPolicy.Readback?
     )
 
     private val stack = ThreadLocal.withInitial { ArrayDeque<Frame>() }
@@ -67,6 +67,9 @@ internal class NativeQueuePositionWriterObserver(
     private val pending = ArrayDeque<Pending>()
     private val reportedUnmatchedTransitions =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val causalExecutor = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "GoneSmartQueuePositionProof").apply { isDaemon = true }
+    }
 
     @Volatile
     private var verified: Verified? = null
@@ -84,6 +87,17 @@ internal class NativeQueuePositionWriterObserver(
         if (service == null || argument == null || autoDj == null) {
             return proceed()
         }
+
+        val uniqueStateWriter =
+            NativeQueuePlaybackDiagnostics
+                .stateWriterMethods(autoDj.javaClass)
+                .singleOrNull()
+                ?.let { sameMethod(it, method) } == true
+        val causalBefore = if (uniqueStateWriter) {
+            NativeQueuePositionCausalReadbackPolicy.snapshot(service)
+        } else {
+            null
+        }
         val before = readSignal(autoDj)
         val frame = Frame()
         val frames = stack.get()
@@ -93,60 +107,72 @@ internal class NativeQueuePositionWriterObserver(
             return proceed()
         } finally {
             frames.removeLast()
-            val after = readSignal(autoDj)
-            val uniqueStateWriter =
-                NativeQueuePlaybackDiagnostics
-                    .stateWriterMethods(autoDj.javaClass)
-                    .singleOrNull()
-                    ?.let { sameMethod(it, method) } == true
-            val absoluteCursorProof =
-                uniqueStateWriter &&
-                    isUniqueQueuePosition(autoDj, argument)
 
-            if (absoluteCursorProof) {
-                latestAbsolutePosition = argument
+            val causalReadback = causalBefore?.let {
+                NativeQueuePositionCausalReadbackPolicy.select(
+                    host = service,
+                    before = it,
+                    writerArgument = argument
+                )
+            }
+            if (causalReadback != null) {
                 frames.lastOrNull()?.childMatched = true
-                val looper = Looper.myLooper()
-                if (looper != null && !frame.childMatched) {
-                    record(
-                        service,
-                        autoDj,
-                        method,
-                        looper,
-                        ABSOLUTE_CURSOR_PROOF
-                    )
-                } else if (looper == null) {
-                    Log.w(
-                        TAG,
-                        "QUEUE POSITION WRITER NATURAL PROOF | no Looper" +
-                            " | writer=" + method.declaringClass.name +
-                            "." + method.name + "(int)"
-                    )
-                }
+                scheduleCausalProof(
+                    receiver = service,
+                    autoDj = autoDj,
+                    method = method,
+                    argument = argument,
+                    looper = Looper.myLooper(),
+                    readback = causalReadback
+                )
             } else {
-                val changedToArgument =
-                    before != null && after != null &&
-                        before.value != after.value && after.value == argument
-                if (changedToArgument) {
-                frames.lastOrNull()?.childMatched = true
-                if (!frame.childMatched) {
+                val after = readSignal(autoDj)
+                val absoluteCursorProof =
+                    uniqueStateWriter && isUniqueQueuePosition(autoDj, argument)
+
+                if (absoluteCursorProof) {
+                    latestAbsolutePosition = argument
+                    frames.lastOrNull()?.childMatched = true
                     val looper = Looper.myLooper()
-                    if (looper != null) {
-                        record(service, autoDj, method, looper, after!!.source)
-                    }
-                }
-                } else if (before != null) {
-                    val looper = Looper.myLooper()
-                    if (looper != null) {
-                        scheduleDelayedObservation(
-                            service = service,
+                    if (!frame.childMatched) {
+                        record(
+                            receiver = service,
                             autoDj = autoDj,
                             method = method,
                             looper = looper,
-                            beforeValue = before.value,
-                            argument = argument,
-                            depth = depth
+                            signalSource = ABSOLUTE_CURSOR_PROOF,
+                            readback = null
                         )
+                    }
+                } else {
+                    val changedToArgument =
+                        before != null && after != null &&
+                            before.value != after.value && after.value == argument
+                    if (changedToArgument) {
+                        frames.lastOrNull()?.childMatched = true
+                        if (!frame.childMatched) {
+                            record(
+                                receiver = service,
+                                autoDj = autoDj,
+                                method = method,
+                                looper = Looper.myLooper(),
+                                signalSource = after!!.source,
+                                readback = null
+                            )
+                        }
+                    } else if (before != null) {
+                        val looper = Looper.myLooper()
+                        if (looper != null) {
+                            scheduleDelayedObservation(
+                                service = service,
+                                autoDj = autoDj,
+                                method = method,
+                                looper = looper,
+                                beforeValue = before.value,
+                                argument = argument,
+                                depth = depth
+                            )
+                        }
                     }
                 }
             }
@@ -157,18 +183,17 @@ internal class NativeQueuePositionWriterObserver(
     fun binding(autoDj: Any): NativeQueuePositionWriter? {
         val proof = verified ?: return null
         if (proof.autoDj.get() !== autoDj) return null
-        val service = proof.service.get() ?: return null
+        val receiver = proof.receiver.get() ?: return null
         return object : NativeQueuePositionWriter {
             override val description: String =
                 proof.method.declaringClass.name + "." + proof.method.name +
                     "(int) via " + proof.signalSource
 
-            override fun read(): Int? =
-                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
-                    latestAbsolutePosition
-                } else {
-                    readSignal(autoDj)?.value
-                }
+            override fun read(): Int? = when {
+                proof.readback != null -> proof.readback.read(receiver)
+                proof.signalSource == ABSOLUTE_CURSOR_PROOF -> latestAbsolutePosition
+                else -> readSignal(autoDj)?.value
+            }
 
             override fun write(position: Int): Boolean {
                 val before = read() ?: return false
@@ -176,10 +201,12 @@ internal class NativeQueuePositionWriterObserver(
                 val invoke = {
                     runCatching {
                         proof.method.isAccessible = true
-                        proof.method.invoke(service, position)
+                        proof.method.invoke(receiver, position)
                     }.isSuccess
                 }
-                val invoked = if (Looper.myLooper() == proof.looper) {
+                val invoked = if (
+                    proof.looper == null || Looper.myLooper() == proof.looper
+                ) {
                     invoke()
                 } else {
                     val done = CountDownLatch(1)
@@ -191,18 +218,54 @@ internal class NativeQueuePositionWriterObserver(
                     done.await(1500L, TimeUnit.MILLISECONDS) && ok
                 }
                 if (!invoked) return false
-                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
-                    if (!isUniqueQueuePosition(autoDj, position)) return false
-                    latestAbsolutePosition = position
-                    return true
-                }
+
                 val deadline = SystemClock.elapsedRealtime() + 1200L
                 do {
-                    if (read() == position) return true
+                    if (read() == position) {
+                        if (!isUniqueQueuePosition(autoDj, position)) return false
+                        latestAbsolutePosition = position
+                        return true
+                    }
                     Thread.sleep(20L)
                 } while (SystemClock.elapsedRealtime() < deadline)
                 return false
             }
+        }
+    }
+
+    private fun scheduleCausalProof(
+        receiver: Any,
+        autoDj: Any,
+        method: Method,
+        argument: Int,
+        looper: Looper?,
+        readback: NativeQueuePositionCausalReadbackPolicy.Readback
+    ) {
+        fun verify() {
+            if (verified != null && verified?.method != method) return
+            if (readback.read(receiver) != argument) return
+            if (!isUniqueQueuePosition(autoDj, argument)) return
+            latestAbsolutePosition = argument
+            record(
+                receiver = receiver,
+                autoDj = autoDj,
+                method = method,
+                looper = looper,
+                signalSource = "causal-same-host:" + readback.description,
+                readback = readback
+            )
+        }
+
+        // Try once outside the intercepted method immediately. If Room is
+        // temporarily busy/re-entrant, repeat in a short bounded delayed
+        // window. No writer is invoked by these checks.
+        verify()
+        CAUSAL_PROOF_CHECKS_MS.forEach { delay ->
+            causalExecutor.schedule(
+                { runCatching(::verify) },
+                delay,
+                TimeUnit.MILLISECONDS
+            )
         }
     }
 
@@ -215,13 +278,11 @@ internal class NativeQueuePositionWriterObserver(
     private fun isUniqueQueuePosition(autoDj: Any, position: Int): Boolean {
         if (position < 0) return false
         return runCatching {
-            GmmpReadOnlySql.query(
-                autoDjInstance = autoDj,
-                sql = "SELECT COUNT(*) FROM queue_table WHERE queue_position = ?",
-                args = arrayOf(position)
-            ) { cursor ->
-                cursor.moveToFirst() && cursor.getInt(0) == 1
-            }
+            val context = GmmpQueueReader().read(autoDj, position)
+                ?: return@runCatching false
+            context.currentQueuePosition == position &&
+                context.items.count { it.queuePosition == position } == 1 &&
+                context.items.count { it.state == QueueItemState.CURRENT } == 1
         }.getOrDefault(false)
     }
 
@@ -316,11 +377,12 @@ internal class NativeQueuePositionWriterObserver(
 
         val proof = methods.single()
         record(
-            service = service,
+            receiver = service,
             autoDj = autoDj,
             method = proof.method,
             looper = proof.looper,
-            signalSource = reading.source
+            signalSource = reading.source,
+            readback = null
         )
         synchronized(pendingLock) {
             pending.removeAll { candidate ->
@@ -342,17 +404,18 @@ internal class NativeQueuePositionWriterObserver(
 
     @Synchronized
     private fun record(
-        service: Any,
+        receiver: Any,
         autoDj: Any,
         method: Method,
-        looper: Looper,
-        signalSource: String
+        looper: Looper?,
+        signalSource: String,
+        readback: NativeQueuePositionCausalReadbackPolicy.Readback?
     ) {
         val existing = verified
         if (existing != null &&
-            (existing.service.get() !== service ||
+            (existing.receiver.get() !== receiver ||
                 existing.autoDj.get() !== autoDj ||
-                existing.method != method)
+                !sameMethod(existing.method, method))
         ) {
             Log.w(
                 TAG,
@@ -363,11 +426,12 @@ internal class NativeQueuePositionWriterObserver(
         if (existing == null) {
             method.isAccessible = true
             verified = Verified(
-                WeakReference(service),
+                WeakReference(receiver),
                 WeakReference(autoDj),
                 method,
                 looper,
-                signalSource
+                signalSource,
+                readback
             )
             Log.i(
                 TAG,
