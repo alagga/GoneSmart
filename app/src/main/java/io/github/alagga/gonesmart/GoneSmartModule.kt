@@ -1209,7 +1209,8 @@ class GoneSmartModule : XposedModule() {
             val positionCandidates = GmmpReflectionPolicy
                 .callableMethods(serviceClass)
                 .filter { method ->
-                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.declaringClass == serviceClass &&
+                        !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
                         !java.lang.reflect.Modifier.isAbstract(method.modifiers) &&
                         method.parameterCount == 1 &&
                         (method.parameterTypes[0] == Integer.TYPE ||
