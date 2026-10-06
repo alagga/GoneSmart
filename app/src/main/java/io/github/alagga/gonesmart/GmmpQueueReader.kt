@@ -241,25 +241,22 @@ class GmmpQueueReader {
             return markerFromSignals(signals, rows, source)
         }
 
-        // r20 device evidence repeatedly resolves the actual 4.2.1
-        // playback pointer from qr.t -> ur.method:b. Prefer that verified
-        // state host before generic integer correlation; qr.r is the Track
-        // DAO and happened to expose an unrelated integer with the same value.
-        readObjectField(autoDjInstance, "t")?.let { state ->
-            fromHost(
-                state,
-                "field:t->" + state.javaClass.name
-            )?.let { return it }
-        }
-
-        // Earlier 4.2.1 builds exposed the pointer through qr.p/dx3.
-        readObjectField(autoDjInstance, "p")?.let { fast ->
-            fromHost(fast, "direct-state:" + fast.javaClass.name)
+        // r39 device evidence disproved qr.t/ur.b as playback position:
+        // ur.b remained 1 while MusicService was reading queue positions 7
+        // and 8. Earlier 4.2.1 device passes repeatedly correlated qr.p/dx3
+        // with the actually playing row, so restore that owner first.
+        readObjectField(autoDjInstance, "p")?.let { state ->
+            fromHost(state, "direct-state:" + state.javaClass.name)
                 ?.let { return it }
         }
 
+        // qr.t/ur is deliberately NOT a current-position fallback. Its value
+        // can coincidentally equal a valid queue_position and caused r36-r39
+        // to select row 1 even while another row was playing.
+
         val candidates = hierarchyFields(autoDjInstance.javaClass)
             .mapNotNull { field ->
+                if (field.name == "t") return@mapNotNull null
                 field.isAccessible = true
                 val value = runCatching {
                     field.get(autoDjInstance)

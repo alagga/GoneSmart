@@ -1190,33 +1190,33 @@ class GoneSmartModule : XposedModule() {
             }
         }
 
-        // Learn the 4.2.1 writable current-position boundary passively.
-        // Hook only natural GMMP MusicService commands that take exactly one
-        // Int. The observer NEVER invokes a candidate during discovery: the
-        // original call proceeds once, and a writer is retained only when the
-        // independent ur-backed position signal changes exactly to that Int.
-        // This avoids repeating the earlier signature/value-guessing mistake.
+        // r40: observe the real 4.2.1 playback-position boundary passively.
+        // r39 proved that the natural title transition bypasses the three
+        // one-Int MusicService commands and also disproved qr.t/ur.b as the
+        // current queue_position. Bundle service-event and Auto-DJ child
+        // writer observation in one device pass. No candidate is invoked by
+        // discovery; every hook only wraps a call GMMP makes naturally.
         runCatching {
             val serviceClass = param.classLoader.loadClass(
                 "gonemad.gmmp.playback.service.MusicService"
             )
+            val methodKey: (Method) -> String = { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name } + "|" +
+                    method.returnType.name
+            }
+
             val positionCandidates = GmmpReflectionPolicy
                 .callableMethods(serviceClass)
                 .filter { method ->
                     !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
                         !java.lang.reflect.Modifier.isAbstract(method.modifiers) &&
                         method.parameterCount == 1 &&
-                        (method.parameterTypes[0] == Int::class.javaPrimitiveType ||
+                        (method.parameterTypes[0] == Integer.TYPE ||
                             method.parameterTypes[0] == Integer::class.java) &&
-                        method.declaringClass.name.startsWith("gonemad.gmmp.")
+                        method.returnType == Void.TYPE
                 }
-                .distinctBy {
-                    it.declaringClass.name + "|" + it.name + "|" +
-                        it.returnType.name
-                }
-            require(positionCandidates.isNotEmpty()) {
-                "No passive MusicService Int command candidates"
-            }
+                .distinctBy(methodKey)
             positionCandidates.forEach { method ->
                 method.isAccessible = true
                 hook(method).intercept { chain ->
@@ -1229,15 +1229,58 @@ class GoneSmartModule : XposedModule() {
                     }
                 }
             }
+
+            val positionKeys = positionCandidates.map(methodKey).toSet()
+            val playbackCandidates = NativeQueuePlaybackDiagnostics
+                .playbackMethods(serviceClass)
+                .filter { methodKey(it) !in positionKeys }
+            playbackCandidates.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val args = (0 until method.parameterCount).map { index ->
+                        chain.getArg(index)
+                    }
+                    queueFlipController.aroundNativePlaybackTransition(
+                        service = chain.getThisObject(),
+                        method = method,
+                        args = args
+                    ) {
+                        chain.proceed()
+                    }
+                }
+            }
+
+            val autoDjClass = param.classLoader.loadClass("qr")
+            val stateWriterCandidates = NativeQueuePlaybackDiagnostics
+                .stateWriterMethods(autoDjClass)
+            stateWriterCandidates.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    queueFlipController.aroundNativeStatePositionCommand(
+                        receiver = chain.getThisObject(),
+                        method = method,
+                        value = (chain.getArg(0) as? Number)?.toInt()
+                    ) {
+                        chain.proceed()
+                    }
+                }
+            }
+
             Log.i(
                 "GoneSmartFlip",
-                "QUEUE POSITION OBSERVER READY | candidates=" +
-                    positionCandidates.size
+                "QUEUE PLAYBACK OBSERVER READY | serviceInt=" +
+                    positionCandidates.size +
+                    " | playback=" + playbackCandidates.size +
+                    " | stateWriters=" + stateWriterCandidates.size +
+                    " | writerSignatures=" +
+                    NativeQueuePlaybackDiagnostics.signatures(
+                        stateWriterCandidates
+                    ).ifBlank { "none" }
             )
         }.onFailure { error ->
             Log.w(
                 "GoneSmartFlip",
-                "QUEUE POSITION OBSERVER UNAVAILABLE | passive discovery disabled",
+                "QUEUE PLAYBACK OBSERVER UNAVAILABLE | passive discovery disabled",
                 error
             )
         }

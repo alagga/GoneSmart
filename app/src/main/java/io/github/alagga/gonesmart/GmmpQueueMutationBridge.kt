@@ -495,103 +495,38 @@ internal class GmmpQueueMutationBridge(
             return ExternalStatePositionBinding(writer)
         }
 
-        fun bindingFrom(
-            analysis: NativeQueueStateAccessorPolicy.Analysis
-        ): StatePositionBinding? {
-            analysis.methodSelection()?.let { selection ->
-                return MethodStatePositionBinding(
-                    selection.host,
-                    selection.getter,
-                    selection.setter
-                )
-            }
-            analysis.fieldSelection()?.let { field ->
-                field.isAccessible = true
-                return FieldStatePositionBinding(analysis.host, field)
-            }
-            return null
-        }
+        externalBinding()?.let { return it }
 
-        fun report(
-            source: String,
-            analysis: NativeQueueStateAccessorPolicy.Analysis
-        ) {
-            val key = "current-pointer|" + source + "|" +
-                analysis.host.javaClass.name + "|" + currentQueuePosition
-            if (!reportedShapes.add(key)) return
-            Log.w(
-                TAG,
-                "QUEUE CURRENT POINTER SHAPE | source=" + source +
-                    " | " + analysis.describe(currentQueuePosition)
-            )
-        }
-
-        fun preferredHost(
-            source: String,
-            host: Any
-        ): Pair<StatePositionBinding?, Boolean> {
+        // r39 disproved qr.t/ur.b as playback queue_position. Diagnose only
+        // the older, repeatedly correlated qr.p/dx3 owner here, but do not
+        // invoke any of its apparent setters until a natural GMMP call has
+        // passively verified one through NativeQueuePositionWriterObserver.
+        objectField(autoDj, "p")?.let { state ->
             val analysis = NativeQueueStateAccessorPolicy.analyze(
-                host,
+                state,
                 currentQueuePosition
             )
-            val binding = bindingFrom(analysis)
-            if (binding != null) return binding to true
             if (analysis.hasReadEvidence) {
-                externalBinding()?.let { return it to true }
-                report(source, analysis)
-                return null to true
-            }
-            return null to false
-        }
-
-        objectField(autoDj, "t")?.let { state ->
-            val (binding, hasReadEvidence) = preferredHost("field:t", state)
-            if (binding != null) return binding
-            if (hasReadEvidence) {
+                val key = "current-pointer|field:p|" +
+                    state.javaClass.name + "|" + currentQueuePosition
+                if (reportedShapes.add(key)) {
+                    Log.w(
+                        TAG,
+                        "QUEUE CURRENT POINTER SHAPE | source=field:p | " +
+                            analysis.describe(currentQueuePosition)
+                    )
+                }
                 error(
                     "GMMP writable current-position binding is unresolved " +
-                        "for verified state reader " + state.javaClass.name +
+                        "for corrected playback reader " + state.javaClass.name +
                         "; passive native writer has not been observed yet"
                 )
             }
         }
 
-        objectField(autoDj, "p")?.let { state ->
-            val (binding, hasReadEvidence) = preferredHost("field:p", state)
-            if (binding != null) return binding
-            if (hasReadEvidence) {
-                error(
-                    "GMMP writable current-position binding is unresolved " +
-                        "for fallback state reader " + state.javaClass.name
-                )
-            }
-        }
-
-        externalBinding()?.let { return it }
-
-        val analyses = hierarchyFields(autoDj.javaClass)
-            .mapNotNull { ownerField ->
-                ownerField.isAccessible = true
-                val host = runCatching {
-                    ownerField.get(autoDj)
-                }.getOrNull() ?: return@mapNotNull null
-                if (!isStateSignalHost(host)) return@mapNotNull null
-                NativeQueueStateAccessorPolicy.analyze(
-                    host,
-                    currentQueuePosition
-                ).takeIf { it.hasReadEvidence }
-            }
-            .distinctBy { System.identityHashCode(it.host) }
-
-        val bindings = analyses.mapNotNull(::bindingFrom)
-        if (bindings.size == 1) return bindings.single()
-        analyses.forEach { report("structural", it) }
-
         error(
-            "GMMP current-position state binding is not unique" +
-                " | candidates=" + bindings.joinToString(",") {
-                    it.description
-                }.ifBlank { "none" }
+            "GMMP current-position playback reader is unresolved; " +
+                "passive native writer discovery remains fail-closed"
         )
     }
 

@@ -52,6 +52,8 @@ internal class QueueFlipController {
     private val mainThread = Handler(Looper.getMainLooper())
     private val eventReporter = GoneSmartRuntimeReporter()
     private val positionWriterObserver = NativeQueuePositionWriterObserver()
+    private val playbackTransitionObserver =
+        NativeQueuePlaybackTransitionObserver()
     private val observedPositionCommands =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val autoDjAccessorFailureLogged =
@@ -73,6 +75,7 @@ internal class QueueFlipController {
     @Volatile private var enabled = false
     @Volatile private var nativeQueue: WeakReference<Any>? = null
     @Volatile private var nativeAutoDj: WeakReference<Any>? = null
+    @Volatile private var nativeMusicService: WeakReference<Any>? = null
 
     fun setNativePlaylistInterceptorReady(ready: Boolean) {
         nativePlaylistInterceptorReady = ready
@@ -107,6 +110,7 @@ internal class QueueFlipController {
     ): Any? {
         val autoDj = nativeAutoDj?.get()
             ?: service?.let(::resolveNativeAutoDjFromService)
+        if (service != null) nativeMusicService = WeakReference(service)
         if (service != null && value != null) {
             val key = method.declaringClass.name + "." + method.name + "(int)"
             if (observedPositionCommands.add(key)) {
@@ -119,6 +123,50 @@ internal class QueueFlipController {
         }
         return positionWriterObserver.aroundNaturalInvocation(
             service = service,
+            method = method,
+            argument = value,
+            autoDj = autoDj,
+            proceed = proceed
+        )
+    }
+
+    fun aroundNativePlaybackTransition(
+        service: Any?,
+        method: Method,
+        args: List<Any?>,
+        proceed: () -> Any?
+    ): Any? {
+        val autoDj = nativeAutoDj?.get()
+            ?: service?.let(::resolveNativeAutoDjFromService)
+        if (service != null) nativeMusicService = WeakReference(service)
+        return playbackTransitionObserver.aroundNaturalInvocation(
+            service = service,
+            method = method,
+            args = args,
+            autoDj = autoDj,
+            proceed = proceed
+        )
+    }
+
+    fun aroundNativeStatePositionCommand(
+        receiver: Any?,
+        method: Method,
+        value: Int?,
+        proceed: () -> Any?
+    ): Any? {
+        val autoDj = nativeAutoDj?.get()
+        if (receiver != null && value != null) {
+            val key = method.declaringClass.name + "." + method.name + "(int)"
+            if (observedPositionCommands.add(key)) {
+                Log.i(
+                    TAG,
+                    "QUEUE STATE COMMAND OBSERVED | command=$key | arg=$value | " +
+                        "autoDj=" + if (autoDj != null) "ready" else "unresolved"
+                )
+            }
+        }
+        return positionWriterObserver.aroundNaturalInvocation(
+            service = receiver,
             method = method,
             argument = value,
             autoDj = autoDj,
@@ -525,6 +573,17 @@ internal class QueueFlipController {
             // the same native state host that already proves the read signal.
             // A passively observed MusicService writer is an additional safe
             // fallback, not a prerequisite for Queue Flip to run.
+            val snapshot = NativeQueuePlaybackDiagnostics.snapshot(
+                nativeMusicService?.get(),
+                autoDj
+            )
+            Log.i(
+                TAG,
+                "QUEUE PLAYBACK SNAPSHOT | " +
+                    snapshot.values.entries.joinToString(",") {
+                        it.key + "=" + it.value
+                    }.ifBlank { "none" }
+            )
             val positionWriter = positionWriterObserver.binding(autoDj)
             return GmmpQueueMutationBridge(
                 autoDj,
