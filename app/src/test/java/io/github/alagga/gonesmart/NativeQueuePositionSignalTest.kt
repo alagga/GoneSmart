@@ -9,7 +9,7 @@ class NativeQueuePositionSignalTest {
         @Suppress("unused")
         val o: Int = position
 
-        fun duplicateRead(): Int = position
+        fun duplicateRead(): Int = o
     }
 
     private class UrLikeHost {
