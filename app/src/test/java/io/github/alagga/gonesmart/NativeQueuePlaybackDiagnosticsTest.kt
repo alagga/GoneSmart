@@ -5,7 +5,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeQueuePlaybackDiagnosticsTest {
-    private class StateHost(var o: Int) {
+    private class StateHost(position: Int) {
+        @JvmField
+        var o: Int = position
+
         fun current(): Int = o
         fun setPosition(value: Int) {
             o = value
