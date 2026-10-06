@@ -18,8 +18,10 @@ internal interface NativeQueuePositionWriter {
 /**
  * Learns GMMP's writable current-position boundary only from NORMAL GMMP
  * behavior. Candidate methods are never probed. A method becomes eligible
- * only when one of its natural calls changes the corrected qr.p/dx3-backed
- * playback-position signal exactly to the method's Int argument.
+ * only from natural GMMP behavior. The preferred 4.2.1 proof is the
+ * structurally unique Auto-DJ child state writer being called naturally with
+ * an argument that identifies exactly one live queue_position in the read-only
+ * Cursor. Internal scalar state remains a compatibility fallback only.
  *
  * GMMP 4.2.1 may publish the new current position shortly after the natural
  * native call has returned, so discovery checks both the immediate return and
@@ -34,6 +36,8 @@ internal class NativeQueuePositionWriterObserver(
     companion object {
         private const val TAG = "GoneSmartFlip"
         private const val PENDING_MAX_AGE_MS = 650L
+        private const val ABSOLUTE_CURSOR_PROOF =
+            "natural-unique-state-writer+queue-position"
         private val DELAYED_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
 
@@ -67,6 +71,9 @@ internal class NativeQueuePositionWriterObserver(
     @Volatile
     private var verified: Verified? = null
 
+    @Volatile
+    private var latestAbsolutePosition: Int? = null
+
     fun aroundNaturalInvocation(
         service: Any?,
         method: Method,
@@ -87,10 +94,40 @@ internal class NativeQueuePositionWriterObserver(
         } finally {
             frames.removeLast()
             val after = readSignal(autoDj)
-            val changedToArgument =
-                before != null && after != null &&
-                    before.value != after.value && after.value == argument
-            if (changedToArgument) {
+            val uniqueStateWriter =
+                NativeQueuePlaybackDiagnostics
+                    .stateWriterMethods(autoDj.javaClass)
+                    .singleOrNull()
+                    ?.let { sameMethod(it, method) } == true
+            val absoluteCursorProof =
+                uniqueStateWriter &&
+                    isUniqueQueuePosition(autoDj, argument)
+
+            if (absoluteCursorProof) {
+                latestAbsolutePosition = argument
+                frames.lastOrNull()?.childMatched = true
+                val looper = Looper.myLooper()
+                if (looper != null && !frame.childMatched) {
+                    record(
+                        service,
+                        autoDj,
+                        method,
+                        looper,
+                        ABSOLUTE_CURSOR_PROOF
+                    )
+                } else if (looper == null) {
+                    Log.w(
+                        TAG,
+                        "QUEUE POSITION WRITER NATURAL PROOF | no Looper" +
+                            " | writer=" + method.declaringClass.name +
+                            "." + method.name + "(int)"
+                    )
+                }
+            } else {
+                val changedToArgument =
+                    before != null && after != null &&
+                        before.value != after.value && after.value == argument
+                if (changedToArgument) {
                 frames.lastOrNull()?.childMatched = true
                 if (!frame.childMatched) {
                     val looper = Looper.myLooper()
@@ -98,18 +135,19 @@ internal class NativeQueuePositionWriterObserver(
                         record(service, autoDj, method, looper, after!!.source)
                     }
                 }
-            } else if (before != null) {
-                val looper = Looper.myLooper()
-                if (looper != null) {
-                    scheduleDelayedObservation(
-                        service = service,
-                        autoDj = autoDj,
-                        method = method,
-                        looper = looper,
-                        beforeValue = before.value,
-                        argument = argument,
-                        depth = depth
-                    )
+                } else if (before != null) {
+                    val looper = Looper.myLooper()
+                    if (looper != null) {
+                        scheduleDelayedObservation(
+                            service = service,
+                            autoDj = autoDj,
+                            method = method,
+                            looper = looper,
+                            beforeValue = before.value,
+                            argument = argument,
+                            depth = depth
+                        )
+                    }
                 }
             }
             if (frames.isEmpty()) stack.remove()
@@ -125,7 +163,12 @@ internal class NativeQueuePositionWriterObserver(
                 proof.method.declaringClass.name + "." + proof.method.name +
                     "(int) via " + proof.signalSource
 
-            override fun read(): Int? = readSignal(autoDj)?.value
+            override fun read(): Int? =
+                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
+                    latestAbsolutePosition
+                } else {
+                    readSignal(autoDj)?.value
+                }
 
             override fun write(position: Int): Boolean {
                 val before = read() ?: return false
@@ -148,6 +191,11 @@ internal class NativeQueuePositionWriterObserver(
                     done.await(1500L, TimeUnit.MILLISECONDS) && ok
                 }
                 if (!invoked) return false
+                if (proof.signalSource == ABSOLUTE_CURSOR_PROOF) {
+                    if (!isUniqueQueuePosition(autoDj, position)) return false
+                    latestAbsolutePosition = position
+                    return true
+                }
                 val deadline = SystemClock.elapsedRealtime() + 1200L
                 do {
                     if (read() == position) return true
@@ -156,6 +204,25 @@ internal class NativeQueuePositionWriterObserver(
                 return false
             }
         }
+    }
+
+    private fun sameMethod(left: Method, right: Method): Boolean =
+        left.declaringClass == right.declaringClass &&
+            left.name == right.name &&
+            left.returnType == right.returnType &&
+            left.parameterTypes.contentEquals(right.parameterTypes)
+
+    private fun isUniqueQueuePosition(autoDj: Any, position: Int): Boolean {
+        if (position < 0) return false
+        return runCatching {
+            GmmpReadOnlySql.query(
+                autoDjInstance = autoDj,
+                sql = "SELECT COUNT(*) FROM queue_table WHERE queue_position = ?",
+                args = arrayOf(position)
+            ) { cursor ->
+                cursor.moveToFirst() && cursor.getInt(0) == 1
+            }
+        }.getOrDefault(false)
     }
 
     private fun scheduleDelayedObservation(

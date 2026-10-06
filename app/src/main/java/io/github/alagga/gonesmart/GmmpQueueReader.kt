@@ -11,8 +11,9 @@ import java.lang.reflect.Modifier
  * 4.2.0 used the concrete ex3 -> QueueDao path. 4.2.1 moved qr.q to a
  * generated Room DAO, so a second path reads queue_table through the same
  * already-open read-only Cursor bridge as the library reader. The current
- * playback row is resolved only from structurally validated integer state;
- * ambiguous candidates fail closed and leave native Auto-DJ untouched.
+ * playback row prefers a passively verified absolute queue-position hint.
+ * Internal integer state is only a fallback; ambiguous candidates fail closed
+ * and leave native Auto-DJ untouched.
  */
 class GmmpQueueReader {
 
@@ -57,9 +58,12 @@ class GmmpQueueReader {
     private val reportedCursorBindings =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    fun read(autoDjInstance: Any): QueueContext? {
+    fun read(
+        autoDjInstance: Any,
+        currentQueuePositionHint: Int? = null
+    ): QueueContext? {
         readLegacy(autoDjInstance)?.let { return it }
-        return readThroughCursor(autoDjInstance)
+        return readThroughCursor(autoDjInstance, currentQueuePositionHint)
     }
 
     private fun readLegacy(autoDjInstance: Any): QueueContext? =
@@ -126,7 +130,10 @@ class GmmpQueueReader {
             }
         }.getOrNull()
 
-    private fun readThroughCursor(autoDjInstance: Any): QueueContext? =
+    private fun readThroughCursor(
+        autoDjInstance: Any,
+        currentQueuePositionHint: Int?
+    ): QueueContext? =
         runCatching {
             val rows = GmmpReadOnlySql.query(
                 autoDjInstance = autoDjInstance,
@@ -174,8 +181,11 @@ class GmmpQueueReader {
             }
             if (rows.isEmpty()) return@runCatching null
 
-            val marker = resolveCurrentMarker(autoDjInstance, rows)
-                ?: return@runCatching null
+            val marker = resolveCurrentMarker(
+                autoDjInstance,
+                rows,
+                currentQueuePositionHint
+            ) ?: return@runCatching null
             val useShuffle =
                 marker.orderKind == OrderKind.SHUFFLE &&
                     rows.all { it.shufflePosition >= 0 } &&
@@ -234,8 +244,28 @@ class GmmpQueueReader {
 
     private fun resolveCurrentMarker(
         autoDjInstance: Any,
-        rows: List<CursorRow>
+        rows: List<CursorRow>,
+        currentQueuePositionHint: Int?
     ): CurrentMarker? {
+        currentQueuePositionHint?.let { position ->
+            val matches = rows.indices.filter { index ->
+                rows[index].queuePosition == position
+            }
+            if (matches.size == 1) {
+                return CurrentMarker(
+                    rowIndex = matches.single(),
+                    orderKind = OrderKind.QUEUE,
+                    source = "verified-native-writer-hint"
+                )
+            }
+            Log.w(
+                TAG,
+                "GMMP QUEUE CURRENT | absolute position hint rejected" +
+                    " | position=" + position +
+                    " | matches=" + matches.size
+            )
+        }
+
         fun fromHost(host: Any, source: String): CurrentMarker? {
             val signals = integerSignals(host)
             return markerFromSignals(signals, rows, source)

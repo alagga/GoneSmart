@@ -171,8 +171,10 @@ internal class GmmpQueueMutationBridge(
             )
             statePosition.write(newCurrentPosition)
 
-            val verified = GmmpQueueReader().read(autoDj)
-                ?: error("Queue verification unavailable")
+            val verified = GmmpQueueReader().read(
+                autoDj,
+                statePosition.read()
+            ) ?: error("Queue verification unavailable")
             val verifyIds = verified.items
                 .sortedBy { it.queuePosition }
                 .map { it.queueEntryId }
@@ -262,7 +264,10 @@ internal class GmmpQueueMutationBridge(
         )
         statePosition?.write(1)
 
-        val verified = GmmpQueueReader().read(autoDj) ?: return false
+        val verified = GmmpQueueReader().read(
+            autoDj,
+            statePosition?.read()
+        ) ?: return false
         val only = verified.items.singleOrNull() ?: return false
         val ok = only.track.id == selectedTrackId &&
             only.queueEntryId == selected.queueEntryId &&
@@ -282,7 +287,8 @@ internal class GmmpQueueMutationBridge(
         requireDelete: Boolean,
         requireStatePosition: Boolean
     ): Resolved {
-        val context = GmmpQueueReader().read(autoDj)
+        val absoluteHint = verifiedPositionWriter?.read()
+        val context = GmmpQueueReader().read(autoDj, absoluteHint)
             ?: error("GMMP queue Cursor mapping unavailable")
 
         val daoResolution = NativeQueueDaoResolver.resolve(autoDj)
