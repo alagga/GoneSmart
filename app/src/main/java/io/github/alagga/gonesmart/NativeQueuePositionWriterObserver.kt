@@ -18,14 +18,14 @@ internal interface NativeQueuePositionWriter {
 /**
  * Learns GMMP's writable current-position boundary only from NORMAL GMMP
  * behavior. Candidate methods are never probed. A method becomes eligible
- * only when one of its natural calls changes the independent ur-backed signal
- * exactly to the method's Int argument.
+ * only when one of its natural calls changes the corrected qr.p/dx3-backed
+ * playback-position signal exactly to the method's Int argument.
  *
  * GMMP 4.2.1 may publish the new current position shortly after the natural
- * MusicService call has returned, so discovery checks both the immediate
- * return and a short bounded delayed window. Delayed matches remain
- * fail-closed: all matching calls in that window are compared and only one
- * unique deepest candidate may graduate to a writer.
+ * native call has returned, so discovery checks both the immediate return and
+ * a short bounded delayed window. Delayed matches remain fail-closed: all
+ * matching calls in that window are compared and only one unique deepest
+ * candidate may graduate to a writer.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -222,8 +222,8 @@ internal class NativeQueuePositionWriterObserver(
             return
         }
 
-        val deepest = matches.maxOf { it.depth }
-        val deepestMatches = matches.filter { it.depth == deepest }
+        val matchesDeepest = matches.maxOf { it.depth }
+        val deepestMatches = matches.filter { it.depth == matchesDeepest }
         val methods = deepestMatches.distinctBy {
             it.method.declaringClass.name + "|" + it.method.name + "|" +
                 it.method.parameterTypes.joinToString(",") { type -> type.name }
