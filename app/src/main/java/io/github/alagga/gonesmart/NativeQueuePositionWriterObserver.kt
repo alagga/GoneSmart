@@ -6,7 +6,9 @@ import android.os.SystemClock
 import android.util.Log
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 
 internal interface NativeQueuePositionWriter {
@@ -141,30 +143,12 @@ internal class NativeQueuePositionWriterObserver(
                 val before = read() ?: return false
                 if (before == position) return true
 
-                val invoke = {
-                    controlledWrite.set(true)
-                    try {
-                        runCatching {
-                            proof.method.isAccessible = true
-                            proof.method.invoke(receiver, position)
-                        }.isSuccess
-                    } finally {
-                        controlledWrite.remove()
-                    }
-                }
-                val invoked = if (
-                    proof.looper == null || Looper.myLooper() == proof.looper
-                ) {
-                    invoke()
-                } else {
-                    val done = CountDownLatch(1)
-                    var ok = false
-                    Handler(proof.looper).post {
-                        ok = invoke()
-                        done.countDown()
-                    }
-                    done.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok
-                }
+                val invoked = invokeControlled(
+                    proof = proof,
+                    receiver = receiver,
+                    autoDj = autoDj,
+                    position = position
+                )
                 if (!invoked) return false
 
                 val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
@@ -186,6 +170,63 @@ internal class NativeQueuePositionWriterObserver(
                 return false
             }
         }
+    }
+
+    private fun invokeControlled(
+        proof: Verified,
+        receiver: Any,
+        autoDj: Any,
+        position: Int
+    ): Boolean {
+        val invoke = {
+            controlledWrite.set(true)
+            try {
+                runCatching {
+                    proof.method.isAccessible = true
+                    proof.method.invoke(receiver, position)
+                }.isSuccess
+            } finally {
+                controlledWrite.remove()
+            }
+        }
+
+        if (proof.looper != null) {
+            if (Looper.myLooper() == proof.looper) return invoke()
+            val done = CountDownLatch(1)
+            var ok = false
+            Handler(proof.looper).post {
+                ok = invoke()
+                done.countDown()
+            }
+            return done.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok
+        }
+
+        val executor = nativeExecutor(autoDj)
+        if (executor != null) {
+            return runCatching {
+                executor.submit<Boolean> { invoke() }
+                    .get(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            }.getOrDefault(false)
+        }
+        return invoke()
+    }
+
+    private fun nativeExecutor(autoDj: Any): ExecutorService? {
+        val values = hierarchyFields(autoDj.javaClass)
+            .asSequence()
+            .filter { field ->
+                !Modifier.isStatic(field.modifiers) &&
+                    ExecutorService::class.java.isAssignableFrom(field.type)
+            }
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(autoDj) as? ExecutorService
+                }.getOrNull()
+            }
+            .distinctBy(System::identityHashCode)
+            .toList()
+        return values.singleOrNull()
     }
 
     private fun scheduleDelayedSignalObservation(
@@ -307,4 +348,9 @@ internal class NativeQueuePositionWriterObserver(
                 "(int) | signal=" + signalSource
         )
     }
+
+    private fun hierarchyFields(type: Class<*>): List<java.lang.reflect.Field> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .toList()
 }
