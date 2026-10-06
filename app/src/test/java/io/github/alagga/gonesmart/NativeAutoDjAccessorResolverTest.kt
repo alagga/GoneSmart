@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import androidx.room.RoomDatabase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -21,7 +22,20 @@ class NativeAutoDjAccessorResolverTest {
         @Suppress("unused")
         var daoB: Any? = null
         @Suppress("unused")
-        var database: Any? = null
+        var database: RoomDatabase? = null
+        @Suppress("unused")
+        var state: NativeState? = NativeState()
+    }
+
+    private class LookalikeWithoutDatabase {
+        @Suppress("unused")
+        var executor: ExecutorService? = null
+        @Suppress("unused")
+        var daoA: Any? = null
+        @Suppress("unused")
+        var daoB: Any? = null
+        @Suppress("unused")
+        var helper: Any? = null
         @Suppress("unused")
         var state: NativeState? = NativeState()
     }
@@ -41,6 +55,10 @@ class NativeAutoDjAccessorResolverTest {
 
         @Suppress("unused")
         fun unrelated(): UnrelatedExecutorOwner = UnrelatedExecutorOwner()
+
+        @Suppress("unused")
+        fun broadLookalike(): LookalikeWithoutDatabase =
+            LookalikeWithoutDatabase()
     }
 
     private class AmbiguousService {
@@ -72,6 +90,15 @@ class NativeAutoDjAccessorResolverTest {
         assertTrue(
             !NativeAutoDjAccessorResolver.looksLikeAutoDjType(
                 UnrelatedExecutorOwner::class.java
+            )
+        )
+    }
+
+    @Test
+    fun `executor and integer state without database ownership is rejected`() {
+        assertTrue(
+            !NativeAutoDjAccessorResolver.looksLikeAutoDjType(
+                LookalikeWithoutDatabase::class.java
             )
         )
     }
