@@ -23,15 +23,13 @@ internal interface NativeQueuePositionWriter {
  *
  * GMMP 4.2.1 naturally invokes the structurally unique Auto-DJ child
  * Int->void writer (observed as dx3.c2(int)) with the absolute queue_position
- * it is switching to. That natural invocation plus an independently existing
- * queue_table row is sufficient to identify the COMMAND boundary.
+ * it is switching to. The natural invocation is promoted only when the same
+ * runtime host exposes an unambiguous read signal with that value or the
+ * previously accepted independent Auto-DJ signal proves the transition.
  *
  * Identification is deliberately separate from controlled-write success:
- * GoneSmart never trusts a cached target value as readback. A controlled
- * Queue Flip write succeeds only when the real native position signal on the
- * Auto-DJ state host changes to the requested position. This prevents a
- * reordered queue from being left with GMMP's playhead pinned to the old
- * numeric position.
+ * a Queue Flip write succeeds only when the verified native readback reaches
+ * the requested position and that queue_position still exists uniquely.
  */
 internal class NativeQueuePositionWriterObserver(
     private val readSignal: (Any) -> NativeQueuePositionSignal.Reading? =
@@ -39,8 +37,6 @@ internal class NativeQueuePositionWriterObserver(
 ) {
     companion object {
         private const val TAG = "GoneSmartFlip"
-        private const val STRUCTURAL_PROOF =
-            "natural-unique-state-writer+queue-position"
         private const val WRITE_TIMEOUT_MS = 1500L
         private val DELAYED_SIGNAL_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
@@ -50,7 +46,8 @@ internal class NativeQueuePositionWriterObserver(
         val autoDj: WeakReference<Any>,
         val method: Method,
         val looper: Looper?,
-        val signalSource: String
+        val signalSource: String,
+        val sameHostReader: NativeQueueObservedStateBinding.Reader?
     )
 
     private val controlledWrite = ThreadLocal<Boolean>()
@@ -70,48 +67,55 @@ internal class NativeQueuePositionWriterObserver(
             return proceed()
         }
 
-        val uniqueStateWriter =
-            NativeQueuePlaybackDiagnostics
-                .stateWriterMethods(autoDj.javaClass)
-                .singleOrNull()
-                ?.let { sameMethod(it, method) } == true
+        val stateWriter = NativeQueuePlaybackDiagnostics
+            .stateWriterMethods(autoDj.javaClass)
+            .any { sameMethod(it, method) }
         val before = readSignal(autoDj)
         val invocationLooper = Looper.myLooper()
         val result = proceed()
         val after = readSignal(autoDj)
 
-        val nativeSignalProof =
-            before != null && after != null &&
-                before.value != after.value && after.value == argument
-        when {
-            nativeSignalProof -> record(
+        val sameHostProof = if (
+            stateWriter && isUniqueQueuePosition(autoDj, argument)
+        ) {
+            NativeQueueObservedStateBinding.resolve(
+                host = service,
+                observedWriter = method,
+                observedValue = argument
+            )
+        } else {
+            null
+        }
+        if (sameHostProof != null) {
+            record(
                 receiver = service,
                 autoDj = autoDj,
                 method = method,
                 looper = invocationLooper,
-                signalSource = after!!.source
+                signalSource = "same-host:" + sameHostProof.reader.description,
+                sameHostReader = sameHostProof.reader
             )
-            uniqueStateWriter && isUniqueQueuePosition(autoDj, argument) -> {
-                // This proves WHICH native command GMMP uses, not that a
-                // future controlled invocation has succeeded. write() below
-                // still requires the independent native read signal.
-                record(
-                    receiver = service,
-                    autoDj = autoDj,
-                    method = method,
-                    looper = invocationLooper,
-                    signalSource = STRUCTURAL_PROOF
-                )
-                scheduleDelayedSignalObservation(
-                    receiver = service,
-                    autoDj = autoDj,
-                    method = method,
-                    argument = argument,
-                    looper = invocationLooper,
-                    beforeValue = before?.value
-                )
-            }
-            uniqueStateWriter -> scheduleDelayedSignalObservation(
+            return result
+        }
+
+        val nativeSignalProof =
+            before != null && after != null &&
+                before.value != after.value && after.value == argument &&
+                isUniqueQueuePosition(autoDj, argument)
+        if (nativeSignalProof) {
+            record(
+                receiver = service,
+                autoDj = autoDj,
+                method = method,
+                looper = invocationLooper,
+                signalSource = after!!.source,
+                sameHostReader = null
+            )
+            return result
+        }
+
+        if (stateWriter) {
+            scheduleDelayedObservation(
                 receiver = service,
                 autoDj = autoDj,
                 method = method,
@@ -137,11 +141,15 @@ internal class NativeQueuePositionWriterObserver(
                 proof.method.declaringClass.name + "." + proof.method.name +
                     "(int) via " + proof.signalSource
 
-            override fun read(): Int? = readSignal(autoDj)?.value
+            override fun read(): Int? =
+                proof.sameHostReader?.read(receiver)
+                    ?: readSignal(autoDj)?.value
 
             override fun write(position: Int): Boolean {
                 val before = read() ?: return false
-                if (before == position) return true
+                if (before == position) {
+                    return isUniqueQueuePosition(autoDj, position)
+                }
 
                 val invoked = invokeControlled(
                     proof = proof,
@@ -229,7 +237,7 @@ internal class NativeQueuePositionWriterObserver(
         return values.singleOrNull()
     }
 
-    private fun scheduleDelayedSignalObservation(
+    private fun scheduleDelayedObservation(
         receiver: Any,
         autoDj: Any,
         method: Method,
@@ -237,23 +245,43 @@ internal class NativeQueuePositionWriterObserver(
         looper: Looper?,
         beforeValue: Int?
     ) {
-        if (looper == null || verified?.signalSource != STRUCTURAL_PROOF) return
+        if (looper == null) return
         DELAYED_SIGNAL_CHECKS_MS.forEach { delay ->
             Handler(looper).postDelayed(
                 {
-                    val reading = readSignal(autoDj) ?: return@postDelayed
-                    if (reading.value != argument || reading.value == beforeValue) {
-                        return@postDelayed
-                    }
                     if (!isUniqueQueuePosition(autoDj, argument)) {
                         return@postDelayed
                     }
-                    upgradeSignalProof(
+                    val sameHostProof = NativeQueueObservedStateBinding.resolve(
+                        host = receiver,
+                        observedWriter = method,
+                        observedValue = argument
+                    )
+                    if (sameHostProof != null) {
+                        record(
+                            receiver = receiver,
+                            autoDj = autoDj,
+                            method = method,
+                            looper = looper,
+                            signalSource =
+                                "same-host-delayed:" +
+                                    sameHostProof.reader.description,
+                            sameHostReader = sameHostProof.reader
+                        )
+                        return@postDelayed
+                    }
+
+                    val reading = readSignal(autoDj) ?: return@postDelayed
+                    if (reading.value != argument ||
+                        reading.value == beforeValue
+                    ) return@postDelayed
+                    record(
                         receiver = receiver,
                         autoDj = autoDj,
                         method = method,
                         looper = looper,
-                        signalSource = reading.source
+                        signalSource = reading.source,
+                        sameHostReader = null
                     )
                 },
                 delay
@@ -292,7 +320,8 @@ internal class NativeQueuePositionWriterObserver(
         autoDj: Any,
         method: Method,
         looper: Looper?,
-        signalSource: String
+        signalSource: String,
+        sameHostReader: NativeQueueObservedStateBinding.Reader?
     ) {
         val existing = verified
         if (existing != null) {
@@ -313,37 +342,12 @@ internal class NativeQueuePositionWriterObserver(
             autoDj = WeakReference(autoDj),
             method = method,
             looper = looper,
-            signalSource = signalSource
+            signalSource = signalSource,
+            sameHostReader = sameHostReader
         )
         Log.i(
             TAG,
             "QUEUE POSITION WRITER VERIFIED | writer=" +
-                method.declaringClass.name + "." + method.name +
-                "(int) | signal=" + signalSource
-        )
-    }
-
-    @Synchronized
-    private fun upgradeSignalProof(
-        receiver: Any,
-        autoDj: Any,
-        method: Method,
-        looper: Looper?,
-        signalSource: String
-    ) {
-        val existing = verified ?: return
-        if (existing.receiver.get() !== receiver ||
-            existing.autoDj.get() !== autoDj ||
-            !sameMethod(existing.method, method) ||
-            existing.signalSource != STRUCTURAL_PROOF
-        ) return
-        verified = existing.copy(
-            looper = looper,
-            signalSource = signalSource
-        )
-        Log.i(
-            TAG,
-            "QUEUE POSITION WRITER SIGNAL VERIFIED | writer=" +
                 method.declaringClass.name + "." + method.name +
                 "(int) | signal=" + signalSource
         )
