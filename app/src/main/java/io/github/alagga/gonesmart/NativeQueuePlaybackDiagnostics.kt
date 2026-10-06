@@ -90,7 +90,7 @@ internal object NativeQueuePlaybackDiagnostics {
                     !Modifier.isAbstract(method.modifiers) &&
                     method.parameterCount <= 2 &&
                     (method.returnType == Void.TYPE ||
-                        method.returnType == Boolean.TYPE ||
+                        method.returnType == Boolean::class.javaPrimitiveType ||
                         method.returnType == Boolean::class.java) &&
                     method.name !in setOf(
                         "onCreate",
