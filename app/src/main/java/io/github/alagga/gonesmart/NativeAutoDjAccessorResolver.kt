@@ -9,10 +9,10 @@ import java.util.concurrent.ExecutorService
  * on an obfuscated accessor name.
  *
  * The accessor is invoked only after its DECLARED return type uniquely proves
- * the Auto-DJ shape: it owns an ExecutorService, several native reference
- * fields and a native child type with a zero-arg Int reader (the independent
- * current-position signal used by [NativeQueuePositionSignal]).  No candidate
- * accessor is invoked during discovery unless that structural proof is unique.
+ * the Auto-DJ shape. In addition to the executor/native-state structure, the
+ * owner must expose GMMP's database boundary. This distinguishes the real
+ * 4.2.1 qr owner from unrelated service helpers that happen to contain an
+ * ExecutorService and integer state.
  */
 internal object NativeAutoDjAccessorResolver {
     data class Resolution(
@@ -66,6 +66,9 @@ internal object NativeAutoDjAccessorResolver {
             }) {
             return false
         }
+        if (fields.none { field -> isDatabaseType(field.type) }) {
+            return false
+        }
         return referenceFields.any { field ->
             GmmpReflectionPolicy.callableMethods(field.type).any { method ->
                 !Modifier.isStatic(method.modifiers) &&
@@ -75,6 +78,13 @@ internal object NativeAutoDjAccessorResolver {
                     !method.declaringClass.name.startsWith("android.") &&
                     !method.declaringClass.name.startsWith("kotlin.")
             }
+        }
+    }
+
+    private fun isDatabaseType(type: Class<*>): Boolean {
+        if (type.name == "gonemad.gmmp.data.database.GMDatabase") return true
+        return generateSequence<Class<*>>(type) { it.superclass }.any {
+            it.name == "androidx.room.RoomDatabase"
         }
     }
 
