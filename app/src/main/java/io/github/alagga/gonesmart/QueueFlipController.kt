@@ -52,6 +52,10 @@ internal class QueueFlipController {
     private val mainThread = Handler(Looper.getMainLooper())
     private val eventReporter = GoneSmartRuntimeReporter()
     private val positionWriterObserver = NativeQueuePositionWriterObserver()
+    private val observedPositionCommands =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val autoDjAccessorFailureLogged =
+        java.util.concurrent.atomic.AtomicBoolean(false)
 
     private data class PendingPlayback(
         val kind: Kind,
@@ -100,13 +104,50 @@ internal class QueueFlipController {
         method: Method,
         value: Int?,
         proceed: () -> Any?
-    ): Any? = positionWriterObserver.aroundNaturalInvocation(
-        service = service,
-        method = method,
-        argument = value,
-        autoDj = nativeAutoDj?.get(),
-        proceed = proceed
-    )
+    ): Any? {
+        val autoDj = nativeAutoDj?.get()
+            ?: service?.let(::resolveNativeAutoDjFromService)
+        if (service != null && value != null) {
+            val key = method.declaringClass.name + "." + method.name + "(int)"
+            if (observedPositionCommands.add(key)) {
+                Log.i(
+                    TAG,
+                    "QUEUE POSITION COMMAND OBSERVED | command=$key | arg=$value | " +
+                        "autoDj=" + if (autoDj != null) "ready" else "unresolved"
+                )
+            }
+        }
+        return positionWriterObserver.aroundNaturalInvocation(
+            service = service,
+            method = method,
+            argument = value,
+            autoDj = autoDj,
+            proceed = proceed
+        )
+    }
+
+    private fun resolveNativeAutoDjFromService(service: Any): Any? {
+        val resolution = NativeAutoDjAccessorResolver.resolve(service)
+        if (resolution != null) {
+            captureNativeAutoDj(resolution.instance)
+            Log.i(
+                TAG,
+                "QUEUE AUTO DJ CAPTURE | source=service-accessor | accessor=" +
+                    resolution.accessor.declaringClass.name + "." +
+                    resolution.accessor.name + "():" +
+                    resolution.accessor.returnType.name
+            )
+            return resolution.instance
+        }
+        if (autoDjAccessorFailureLogged.compareAndSet(false, true)) {
+            Log.w(
+                TAG,
+                "QUEUE AUTO DJ ACCESSOR UNRESOLVED | candidates=" +
+                    NativeAutoDjAccessorResolver.diagnosticShape(service.javaClass)
+            )
+        }
+        return null
+    }
 
     fun onMenuInflated(
         menuResId: Int,
