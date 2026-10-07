@@ -1,0 +1,61 @@
+name: tmp-r42-queue-continuity
+
+on:
+  push:
+    branches: [tmp-queue-continuity-r42]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: tmp-queue-continuity-r42
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install SDK
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Apply r42 patch
+        run: python3 tools/r42_queue_continuity_patch.py
+
+      - name: Check r42 invariants
+        run: |
+          grep -q "QUEUE POSITION NORMALIZE" app/src/main/java/io/github/alagga/gonesmart/GmmpQueueMutationBridge.kt
+          grep -q "normalizeManagedQueueAfterNativeRefill" app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q "SMART DJ INITIAL FAST FALLBACK" app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt
+          grep -q "Track Auto-DJ queue-root continuity" docs/GMMP_COMPATIBILITY_PLAYBOOK.md
+          test -f app/src/test/java/io/github/alagga/gonesmart/QueuePositionNormalizationPolicyTest.kt
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Debug build
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Commit validated patch and remove temporary infrastructure
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-r42-queue-continuity.yml tools/r42_queue_continuity_patch.py
+          git add AGENTS.md docs app/src/main app/src/test
+          git commit -m "fix(track-mix): restore queue continuity and responsive refill"
+          git push origin HEAD:tmp-queue-continuity-r42
