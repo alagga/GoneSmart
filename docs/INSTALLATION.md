@@ -18,17 +18,21 @@ On launch, GoneSmart checks the latest published stable version via the GitHub R
 
 Tap **Add to Obtainium** in GoneSmart, or use the [Add to Obtainium link](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fadd%3Furl%3Dhttps%253A%252F%252Fgithub.com%252Falagga%252FGoneSmart) on the README. Obtainium tracks this GitHub repository and handles updates once you approve importing it. Keep your original APK's signing lineage: an APK signed with a different key cannot update an existing installation in place.
 
+### GMMP updates
+
+GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. The currently tested GMMP version is **4.2.1**. We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart's compatibility status before updating GMMP manually.
+
 ### If the module does not become active
 
 - Confirm that GoneSmart is enabled and scoped to GMMP.
 - Force stop GMMP after installing or updating GoneSmart.
 - Use **Restart GMMP** from the GoneSmart companion app.
 - Check the in-app Logs page and, for deeper debugging, Logcat with tag `GoneSmart`.
-- Check the exact GMMP version. The currently tested version is 4.2.0.
+- Check the exact GMMP version. The currently tested version is 4.2.1.
 
-## No root: LSPatch 1.2 (experimental)
+## No root: LSPatch 1.2 (experimental / untested)
 
-This path has not been validated as thoroughly as the rooted Vector setup.
+This path is documented as a possible no-root setup, but it has **not been tested by the GoneSmart maintainer**. Treat it as experimental.
 
 1. Install GoneSmart.
 2. Install JingMatrix LSPatch v1.2.
