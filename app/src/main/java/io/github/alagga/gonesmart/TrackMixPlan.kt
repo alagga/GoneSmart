@@ -38,7 +38,7 @@ internal object TrackMixPlan {
         return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
     }
 
-    /** Original GMMP 'started' when present; otherwise icon-only status. */
+    /** Original GMMP `started` when present; otherwise icon-only status. */
     @Suppress("UNUSED_PARAMETER")
     fun localizedStartedMessage(
         language: String,
