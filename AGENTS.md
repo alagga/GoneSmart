@@ -2,7 +2,7 @@
 
 **Purpose:** Canonical entry point for assistants and contributors. Read this file before changing code, then inspect the relevant source, current branch head, compatibility docs and exact-head CI.
 
-**Last consolidated:** 2026-10-07. **Release line:** 0.4.0. **Accepted GMMP target:** 4.2.1.
+**Last consolidated:** 2026-10-08. **Release line:** 0.4.1. **Accepted GMMP target:** 4.2.1.
 
 ## 1. Collaboration and repository discipline
 
@@ -126,7 +126,7 @@ Accepted actions may retain one bounded postcondition check, not discovery-era p
 - Retain rollback data until postconditions succeed.
 - Never infer writer ownership from a historical class/field name alone.
 
-## 12. Documentation hierarchy
+## 12. Documentation and public communication
 
 - `AGENTS.md`: standing collaboration/architecture rules.
 - `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: version ledger and future-update procedure.
@@ -137,6 +137,14 @@ Accepted actions may retain one bounded postcondition check, not discovery-era p
 - Feature docs: detailed user/developer behavior.
 
 Public release notes, the README and roadmap should explain **what a feature does and what the user gains**. Keep implementation detail at a high level (for example, "more dynamic hooks improve robustness for future GMMP versions"). Obfuscated names, resolver internals, queue-writer mechanics and similar reverse-engineering detail belong in the compatibility/audit/development docs, not the GitHub Release body unless required to explain a limitation.
+
+Public-facing compatibility/support wording must remain accurate:
+
+- GoneSmart is an **independent project** and is not affiliated with GoneMAD Software.
+- Before a suspected GMMP bug is reported upstream, users should disable GoneSmart and verify that the issue is reproducible without GoneSmart. Issues that only occur with GoneSmart enabled belong in GoneSmart's issue/support channels.
+- LSPatch is currently an **experimental, untested-by-the-maintainer** path. Do not soften this to "less tested" unless real maintainer testing has actually happened.
+- Names such as Spotify, YouTube and YouTube Music are only **examples of possible future recommendation-provider directions** until feasibility is evaluated and a provider is explicitly accepted for implementation. Do not present them as committed/planned integrations.
+- A small patch following a major feature release should say so at the top of its release notes and prominently point users to the preceding major release, so the major feature set remains visible on GitHub's Latest Release page.
 
 Keep chronology out of `AGENTS.md`; preserve it in the audit/evidence docs.
 
