@@ -1,6 +1,6 @@
 # GoneSmart v0.4.1
 
-> **Small follow-up to v0.4.0.** GoneSmart 0.4.0 remains the major feature release: it introduced Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link, Queue Flip / Play flipped, Track Auto-DJ, the redesigned status screen, and the larger GMMP 4.2.1 compatibility/performance update. See the [v0.4.0 release](https://github.com/alagga/GoneSmart/releases/tag/v0.4.0) for the full feature notes.
+**Small follow-up to v0.4.0.** GoneSmart 0.4.0 remains the major feature release: it introduced Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link, Queue Flip / Play flipped, Track Auto-DJ, the redesigned status screen, and the larger GMMP 4.2.1 compatibility/performance update. See the [v0.4.0 release](https://github.com/alagga/GoneSmart/releases/tag/v0.4.0) for the full feature notes.
 
 GoneSmart 0.4.1 is a small compatibility and documentation follow-up. It does not replace the 0.4.0 feature set.
 
