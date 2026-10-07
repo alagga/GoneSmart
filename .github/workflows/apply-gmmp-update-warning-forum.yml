@@ -1,0 +1,66 @@
+name: Apply GMMP update warning and forum workflow
+
+on:
+  push:
+    branches:
+      - feature/gmmp-update-warning-forum
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply implementation
+        run: python3 tools/apply_gmmp_update_warning_forum.py
+
+      - name: Verify forum generator
+        run: python3 scripts/generate_forum_posts.py --check
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Remove one-off helper
+        run: rm -f tools/apply_gmmp_update_warning_forum.py .github/workflows/apply-gmmp-update-warning-forum.yml
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat: warn on GMMP version changes and generate forum release copy"
+          git push origin HEAD:feature/gmmp-update-warning-forum
