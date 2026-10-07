@@ -9,7 +9,7 @@ Standing contributor rules live in `AGENTS.md`; detailed reverse-engineering chr
 | GMMP version | State | Notes |
 | --- | --- | --- |
 | 4.2.0 | Accepted historical baseline | Original concrete mappings and device-tested behavior. Names are evidence only. |
-| 4.2.1 | Accepted for current core/features, with one explicit open boundary | Smart DJ, Playlist/Smart-Playlist features, Play flipped and Track Auto-DJ are accepted. Queue-menu `Flip queue` still lacks a proven current-position writer when the reversal changes Current position. |
+| 4.2.1 | Accepted | Smart DJ, Playlist/Smart-Playlist features, Play flipped, Queue Flip and Track Auto-DJ are device-accepted. Broad compatibility probes and accepted-version hot-path diagnostics are retired/gated. |
 | Any other version | Untested | Show amber Compatibility status and run the bounded compatibility workflow before claiming support. |
 
 Source of truth for the companion status is `GmmpCompatibilityPolicy.TESTED_VERSION = "4.2.1"`.
@@ -23,7 +23,7 @@ A durable resolver should combine as many of these as appropriate:
 1. owner/runtime type reached from a known live object;
 2. method/field signature and hierarchy;
 3. generated Room adapter SQL ownership;
-4. independent read-only Cursor correlation;
+4. independent read-only Cursor/native-state correlation;
 5. uniqueness among candidates;
 6. postcondition after the real native action;
 7. rollback/fail-closed behavior for mutation.
@@ -63,6 +63,8 @@ Once a semantic shape is proven:
 
 Accepted versions should not continuously emit full reflection inventories. Normal logs keep compact mapping/result markers. Deep inventories are re-enabled only for an unknown version or the failing unresolved boundary.
 
+Probe retirement also includes **runtime cost**. After a boundary is accepted, remove repeated reflection, Cursor/SQL readbacks, delayed discovery callbacks, model reconstruction and view-tree scans from normal render/playback hot paths. Logging less while still doing the work is not sufficient cleanup.
+
 ## 4. GMMP 4.2.1 accepted boundary map
 
 ### Smart DJ refill
@@ -76,14 +78,12 @@ The selection/recommendation pipeline remains GoneSmart-owned, while GMMP owns i
 
 ### Read-only queue state
 
-Queue state is read independently through GMMP's read-only Cursor path. The current marker is correlated with the native position signal reached through `qr.t -> ur.b()` on the tested build.
-
-Cursor values are authoritative for:
+Queue state is read independently through GMMP's read-only Cursor path. Cursor values are authoritative for:
 - `queue_id`;
 - `queue_track_id`;
 - `queue_position`;
 - `queue_shuffle_position`;
-- Current-row correlation.
+- Current-row correlation and mutation postconditions.
 
 ### Queue DAO / entity / writers
 
@@ -97,17 +97,27 @@ Device/runtime proof for 4.2.1:
 - verified update writer: `O0(List)` after ownership/entity proof;
 - delete reflection may expose `Object[]`, but the implementation casts to `cy3[]`; GoneSmart must pass a real typed entity array.
 
-The earlier `d85` candidate was rejected as Queue writer owner because its generated adapters write `tracks`, not `queue_table`. This is the canonical example of why historical field/name assumptions are insufficient.
+The earlier `d85` candidate was rejected as Queue writer owner because its generated adapters write `tracks`, not `queue_table`. Reactive `W1/X1` candidates are not invoked during Queue discovery.
 
-Reactive `W1/X1` candidates are not invoked during Queue discovery.
+### Current-position writer / Queue Flip
 
-### Current-position state
+Queue Flip is accepted on 4.2.1.
 
-- Proven read boundary: `ur.b()` through the current-position host reached from `qr.t`.
-- No safe current-position writer has yet been proven on 4.2.1.
-- `qr.z(int)` is refill and is explicitly excluded from state-writer discovery.
+The writer is not selected by an obfuscated name. GoneSmart observes **natural GMMP playback calls**, compares them with an independent native current-position signal, and promotes a writer only when the observed transition reaches exactly the naturally requested queue position and that queue position is valid/unique. Candidate methods are never actively invoked just to discover them.
 
-This does not block Track Auto-DJ when the pointer already targets position 1, but it does remain relevant to Queue-menu `Flip queue` when a reversal must move Current to a different queue position.
+The observed 4.2.1 writer is `dx3.c2(int)`. Treat this name as version evidence only. `qr.z(int)` remains refill and is explicitly excluded.
+
+Controlled Queue Flip then:
+
+1. starts from an independently Cursor-verified Queue snapshot;
+2. correlates native Queue entities 1:1;
+3. reverses through proven native Queue writers;
+4. writes Current through the passively verified native state writer when required;
+5. re-reads the independent Cursor/native Current state;
+6. requires reversed queue IDs plus the same Current queue identity;
+7. rolls back when verification fails.
+
+After a writer has been proved for the live Auto-DJ instance, passive writer discovery becomes a cheap pass-through. Generic getter scans, delayed readbacks and SQL correlation must not continue on every playback callback.
 
 ### Track Auto-DJ
 
@@ -123,29 +133,44 @@ Accepted device flow:
 8. call the same native refill boundary once with `Initial Size - seed size`;
 9. verify **exact Initial Size** and preserved Current seed before releasing normal refill behavior.
 
-This has been verified from normal Playlist and large Smart-Playlist launch contexts. With Initial Size 5 and one seed, the final accepted log shows one native request for 4 tracks and a final queue of exactly 5.
+This has been verified from normal Playlist and large Smart-Playlist launch contexts. With Initial Size 5 and one seed, the accepted flow makes one native request for 4 tracks and verifies a final queue of exactly 5.
 
 ### Playlist / Smart-Playlist surfaces
 
 Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link and native Play-flipped behavior are accepted on 4.2.1. Resolvers should continue to prefer semantic adapter/model/writer ownership and native actions; historical class names are only fast paths.
 
-## 5. Queue Flip open boundary
+Performance contract for these surfaces:
+- native adapter/scroll/layout events are preferred over periodic polling;
+- attached but offscreen ViewPager pages must not do row reflection/model scanning merely because they still draw/layout;
+- foreground pre-draw fallback must be bounded and contain only work that genuinely needs frame timing;
+- expensive visible-row alignment/interaction work is coalesced from scroll/refresh events;
+- accepted-version diagnostics are not allowed to recreate the discovery-time runtime cost.
 
-There are two separate features that must not be conflated:
+## 5. Accepted-version performance audit
 
-- **Play flipped** (playlist context): accepted on 4.2.1 through the structurally resolved native `MusicService` playback boundary.
-- **Flip queue** (current Queue menu): reversing queue positions while preserving the same current track can require writing a new current queue position.
+The final 4.2.1 cleanup found two important classes of accidental overhead:
 
-The second operation must remain fail-closed until a native current-position writer is semantically identified and verified. A valid solution must:
+### Queue writer discovery
 
-1. start from an independently Cursor-verified Queue snapshot;
-2. prove the native state-writer boundary without signature guessing;
-3. perform the native queue update;
-4. write the corresponding current position through GMMP's native state path;
-5. re-read the Cursor and confirm reversed queue IDs + identical Current queue ID;
-6. roll back both row positions and current state if verification fails.
+A generic same-host fallback could invoke several zero-arg GMMP getters repeatedly while trying to correlate a natural position transition. Some of those getters perform Queue SQL internally. In device logs this appeared as hundreds of `w6` queue queries per second and severe frame loss.
 
-Do not close this item by calling `qr.z(int)`.
+Final policy:
+- prefer the cheap independently verified native position signal first;
+- cache structural writer-candidate membership;
+- allow broad same-host fallback at most once per candidate per process;
+- delayed checks use the cheap signal only;
+- once a writer is verified, all discovery hooks pass through immediately.
+
+### Playlist/Smart-Playlist folder rendering
+
+The folder overlays previously retained some row/style/reflection work in `OnPreDraw`, including while native ViewPager pages remained attached but offscreen.
+
+Final policy:
+- offscreen pages are idle apart from the minimal geometry needed to keep an overlay hidden;
+- Smart-folder visible-row title/interaction sync is posted/coalesced from native scroll and refresh events;
+- normal Playlist periodic model-refresh fallback runs only on the foreground page and at a slow interval; native adapter notifications remain the primary refresh path.
+
+Do not hide GMMP's native `w6` logger to make logs look clean. Remove GoneSmart-caused unnecessary queries. Native GMMP queries performed legitimately when a library tab is opened/refocused may remain visible.
 
 ## 6. Probe ledger / retirement rules
 
@@ -155,16 +180,17 @@ Final policy:
 - keep the reusable compatibility self-test infrastructure;
 - keep targeted failure diagnostics near semantic resolvers;
 - retire continuous broad class/recycler/holder inventories for the tested 4.2.1 build;
-- re-enable/expand them only for an unknown GMMP version or an unresolved boundary;
+- retire the runtime cost of graduated passive probes as well as their logs;
+- re-enable/expand diagnostics only for an unknown GMMP version or an unresolved boundary;
 - every new probe must state its scope, trigger, safety bound and retirement condition.
 
 ## 7. Status UI contract
 
-The companion's Status card is neutral. It has one divider below the overall status and then independently colored health rows:
+The companion has one large Status card. The top overall-status section is colored from aggregate health (red > amber > green), followed by exactly one divider and four full-width colored sections in the same card:
 
 - GMMP: red missing / amber installed-not-running / green running;
 - Xposed: red service missing / amber unsupported libxposed API / green supported API;
-- GoneSmart state: red unavailable/stopped / amber inactive or fallback/degraded / green healthy runtime;
+- GoneSmart state: red unavailable/stopped / amber degraded or fallback / green healthy normal/idle or Smart runtime;
 - Compatibility: red unknown/missing / amber untested version / green tested 4.2.1.
 
 Compatibility warning color must not be blended with a green parent background, and there is no extra divider dedicated to Compatibility.
@@ -180,8 +206,7 @@ Before promoting a new GMMP version to tested:
 - [ ] one device flow per changed semantic boundary succeeds;
 - [ ] failure paths fail closed and do not corrupt native state;
 - [ ] broad discovery logs retired or gated;
+- [ ] graduated probes no longer impose obvious persistent runtime cost;
 - [ ] companion Compatibility source-of-truth updated;
-- [ ] `AGENTS.md` and this playbook updated;
+- [ ] `AGENTS.md`, `docs/GMMP_421_COMPLETION.md` and this playbook updated;
 - [ ] exact-head CI fully green.
-
-A version can be documented as accepted with an explicit isolated limitation only if that limitation remains disabled/fail-closed and does not affect the accepted feature families.
