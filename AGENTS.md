@@ -86,6 +86,7 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Prefer GMMP's complete localized native phrase when one exists.
 - GoneSmart-owned notices may use concise English fallbacks.
 - **Never use a checkmark, warning icon or other symbol as the entire fallback message.** Success/failure must remain understandable as text (for example `Track Auto-DJ started`, `Playlist moved`, `Error`).
+- 0.4.0 acceptance: Track Auto-DJ confirmation uses GMMP's native `started` phrase when available and readable `started` fallback otherwise; Queue Flip success is `Queue reversed`. Checkmark glyphs in `MainActivity` are visual UI decoration, not popup fallbacks.
 - Suppression of native Toasts/Snackbars must be narrowly scoped, one-shot/bounded and limited to known duplicate or misleading transitional messages.
 - Do not suppress unrelated GMMP notifications.
 
