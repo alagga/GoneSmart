@@ -21,14 +21,23 @@ smart = smart_path.read_text()
 
 smart = replace_once(
     smart,
-    "        var touchGuardReported: Boolean = false\n        var overscrollReported: Boolean = false\n    )",
-    "        var touchGuardReported: Boolean = false\n        var overscrollReported: Boolean = false,\n        var visibleRowSyncPending: Boolean = false\n    )",
+    """        var touchGuardReported: Boolean = false
+        var overscrollReported: Boolean = false
+    )""",
+    """        var touchGuardReported: Boolean = false
+        var overscrollReported: Boolean = false,
+        var visibleRowSyncPending: Boolean = false
+    )""",
     "smart browser row-sync state",
 )
 
 smart = regex_once(
     smart,
-    r'''        val scrollDrawListener =\n            android\.view\.ViewTreeObserver\.OnPreDrawListener \{\n.*?\n            \}\n        val detachListener = object : View\.OnAttachStateChangeListener \{''',
+    r'''        val scrollDrawListener =
+            android\.view\.ViewTreeObserver\.OnPreDrawListener \{
+.*?
+            \}
+        val detachListener = object : View\.OnAttachStateChangeListener \{''',
     '''        val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
@@ -94,14 +103,14 @@ smart = regex_once(
 
 smart = replace_once(
     smart,
-    '''    fun onNativeRecyclerScrolled(view: View?, dy: Int) {
+    """    fun onNativeRecyclerScrolled(view: View?, dy: Int) {
         if (dy == 0) return
         val list = view as? ViewGroup ?: return
         val browser = browsers[list] ?: return
         syncFolderRowsScrollByDelta(browser, dy)
     }
-''',
-    '''    fun onNativeRecyclerScrolled(view: View?, dy: Int) {
+""",
+    """    fun onNativeRecyclerScrolled(view: View?, dy: Int) {
         if (dy == 0) return
         val list = view as? ViewGroup ?: return
         val browser = browsers[list] ?: return
@@ -126,21 +135,21 @@ smart = replace_once(
             syncVisibleSmartRowInteractions(browser)
         }
     }
-''',
+""",
     "smart scroll row sync",
 )
 
 smart = replace_once(
     smart,
-    '''                settleFolderScrollAfterRefresh(browser, generation)
+    """                settleFolderScrollAfterRefresh(browser, generation)
                 positionOverlay(browser)
             }
-''',
-    '''                settleFolderScrollAfterRefresh(browser, generation)
+""",
+    """                settleFolderScrollAfterRefresh(browser, generation)
                 positionOverlay(browser)
                 scheduleVisibleRowSync(browser)
             }
-''',
+""",
     "smart refresh row sync",
 )
 
@@ -151,7 +160,10 @@ playlist = playlist_path.read_text()
 
 playlist = regex_once(
     playlist,
-    r'''        var lastThemeProbe = 0L\n        var lastSelectionChromeProbe = 0L\n.*?\n        val detachListener = object : View\.OnAttachStateChangeListener \{''',
+    r'''        var lastThemeProbe = 0L
+        var lastSelectionChromeProbe = 0L
+.*?
+        val detachListener = object : View\.OnAttachStateChangeListener \{''',
     '''        var lastThemeProbe = 0L
         var lastSelectionChromeProbe = 0L
         // Keep draw-time work scoped to the actually visible page. Adapter
