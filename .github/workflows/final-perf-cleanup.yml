@@ -1,0 +1,45 @@
+name: One-shot final performance audit cleanup
+
+on:
+  push:
+    branches:
+      - feature/playlist-bridge
+    paths:
+      - tools/final_perf_cleanup.py
+      - .github/workflows/final-perf-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/playlist-bridge
+          fetch-depth: 0
+      - name: Update persistent audit documentation
+        run: python3 tools/final_perf_cleanup.py
+      - name: Remove one-shot patch infrastructure
+        run: |
+          git rm -f \
+            .github/workflows/player-badge-perf.yml \
+            .github/workflows/runtime-perf-audit.yml \
+            .github/workflows/final-perf-cleanup.yml \
+            tools/player_badge_perf_patch.py \
+            tools/runtime_perf_audit_patch.py \
+            tools/final_perf_cleanup.py
+      - name: Check diff
+        run: git diff --check
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest
+      - name: Commit documentation and cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AGENTS.md docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/GMMP_421_COMPLETION.md
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m "docs(perf): record final 4.2.1 hot-path audit"
+          git push origin HEAD:feature/playlist-bridge
