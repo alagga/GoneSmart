@@ -1,0 +1,94 @@
+name: Publish GoneSmart v0.4.1 (one-time)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-041.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n1)
+          test "$VERSION" = "0.4.1" || { echo "Expected versionName 0.4.1, got: $VERSION"; exit 1; }
+          python3 scripts/generate_forum_posts.py --check
+
+      - name: Remove one-time publisher from main
+        id: clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/publish-041.yml
+          git commit -m "chore: remove one-time v0.4.1 publisher [skip ci]"
+          git push origin HEAD:main
+          CLEAN_SHA=$(git rev-parse HEAD)
+          echo "clean_sha=$CLEAN_SHA" >> "$GITHUB_OUTPUT"
+          echo "Clean main SHA: $CLEAN_SHA"
+
+      - name: Dispatch exact-head Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml --ref main
+
+      - name: Wait for exact-head Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEAN_SHA: ${{ steps.clean.outputs.clean_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ID=""
+          for _ in $(seq 1 60); do
+            RUN_ID=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$CLEAN_SHA&event=workflow_dispatch&per_page=10" --jq '.workflow_runs[0].id // empty')
+            if [ -n "$RUN_ID" ]; then
+              echo "Build run: $RUN_ID"
+              break
+            fi
+            sleep 5
+          done
+          test -n "$RUN_ID" || { echo "Exact-head Build run did not appear."; exit 1; }
+
+          for _ in $(seq 1 120); do
+            STATUS=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.status')
+            CONCLUSION=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.conclusion // ""')
+            echo "Build status=$STATUS conclusion=$CONCLUSION"
+            if [ "$STATUS" = "completed" ]; then
+              test "$CONCLUSION" = "success" || { echo "Exact-head Build failed: $CONCLUSION"; exit 1; }
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for exact-head Build."
+          exit 1
+
+      - name: Dispatch signed v0.4.1 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.4.1 >/dev/null 2>&1; then
+            echo "v0.4.1 already exists; refusing duplicate release."
+            exit 1
+          fi
+          gh workflow run release.yml --ref main -f prerelease=false
+          echo "Release workflow dispatched."
