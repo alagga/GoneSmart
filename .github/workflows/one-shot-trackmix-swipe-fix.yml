@@ -34,6 +34,7 @@ jobs:
         run: |
           python3 .github/tmp_prepare_agents.py
           python3 .github/tmp_trackmix_swipe_fix_v2.py
+          python3 .github/tmp_harden_legacy_trackmix.py
           python3 .github/tmp_smartdj_latency_fix.py
 
       - name: Check diff
@@ -41,7 +42,14 @@ jobs:
           git diff --check
           git diff --stat
           if grep -n "TimeUnit" app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt; then exit 1; fi
-          if grep -n 'nativeAutoDj?.get()?.let { field(it, "q") }' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt; then exit 1; fi
+          if grep -n 'nativeAutoDj?.get()?.let { field(it, "q") }' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt | grep -v 'takeIf'; then
+            python3 - <<'PY'
+          from pathlib import Path
+          s=Path('app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt').read_text()
+          bad='nativeAutoDj?.get()?.let { field(it, "q") }\n            ?: '
+          raise SystemExit(1 if bad in s else 0)
+          PY
+          fi
           if grep -R "markRefillAttempt" -n app/src/main/java/io/github/alagga/gonesmart; then exit 1; fi
 
       - name: Unit tests
@@ -56,6 +64,7 @@ jobs:
             .github/tmp_trackmix_swipe_fix.py \
             .github/tmp_trackmix_swipe_fix_v2.py \
             .github/tmp_prepare_agents.py \
+            .github/tmp_harden_legacy_trackmix.py \
             .github/tmp_smartdj_latency_fix.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
