@@ -1,0 +1,163 @@
+name: Temporary r43 Auto-DJ continuity patch
+
+on:
+  push:
+    branches: ['feature/tmp-r43-autodj-continuity']
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Apply r43 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}\n--- needle ---\n{old}")
+              p.write_text(text.replace(old, new, 1))
+
+          track = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt'
+          queue_flip = 'app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt'
+
+          replace_once(
+              track,
+              '''            "menu_gm_context_shared"\n        )\n    }\n\n    private data class Snapshot(''',
+              '''            "menu_gm_context_shared"\n        )\n\n        @Volatile\n        private var activeManagedController:\n            WeakReference<TrackMixController>? = null\n\n        /**\n         * QueueFlipController calls this only after GMMP itself naturally\n         * changes the verified CURRENT position. It is an event signal, not\n         * a polling loop and never discovers or invokes an unknown writer.\n         */\n        fun onVerifiedNaturalQueuePosition(\n            autoDj: Any,\n            currentPosition: Int?\n        ) {\n            activeManagedController?.get()\n                ?.scheduleManagedRefillCheck(\n                    autoDj = autoDj,\n                    currentPosition = currentPosition\n                )\n        }\n    }\n\n    private data class Snapshot('''
+          )
+
+          replace_once(
+              track,
+              '''    @Volatile private var managedAutoDj: WeakReference<Any>? = null\n\n    @Volatile private var enabled = true''',
+              '''    @Volatile private var managedAutoDj: WeakReference<Any>? = null\n    private val managedRefillInFlight = AtomicBoolean(false)\n    @Volatile private var lastManagedObservedPosition = Int.MIN_VALUE\n\n    @Volatile private var enabled = true'''
+          )
+
+          replace_once(
+              track,
+              '''    fun setEnabled(value: Boolean) {\n        enabled = value\n        Log.i(TAG, "MIX SETTINGS | enabled=$value")\n    }''',
+              '''    fun setEnabled(value: Boolean) {\n        enabled = value\n        if (!value) {\n            disarmManagedAutoDjSession("feature-disabled")\n        }\n        Log.i(TAG, "MIX SETTINGS | enabled=$value")\n    }'''
+          )
+
+          replace_once(
+              track,
+              '''    private fun armManagedAutoDjSession() {\n        val autoDj = nativeAutoDj?.get() ?: return\n        val legacyQueue = field(autoDj, "q")\n            ?.takeIf { it.javaClass.name == "ex3" }\n        if (legacyQueue == null) {\n            managedAutoDj = WeakReference(autoDj)\n        }\n    }''',
+              '''    private fun armManagedAutoDjSession() {\n        val autoDj = nativeAutoDj?.get() ?: return\n        val legacyQueue = field(autoDj, "q")\n            ?.takeIf { it.javaClass.name == "ex3" }\n        if (legacyQueue == null) {\n            managedAutoDj = WeakReference(autoDj)\n            managedRefillInFlight.set(false)\n            lastManagedObservedPosition = Int.MIN_VALUE\n            activeManagedController = WeakReference(this)\n            Log.i(TAG, "MIX CONTINUITY | managed 4.2.1 Auto-DJ session armed")\n        }\n    }\n\n    private fun disarmManagedAutoDjSession(reason: String) {\n        val wasActive = managedAutoDj?.get() != null\n        managedAutoDj = null\n        managedRefillInFlight.set(false)\n        lastManagedObservedPosition = Int.MIN_VALUE\n        if (activeManagedController?.get() === this) {\n            activeManagedController = null\n        }\n        if (wasActive) {\n            Log.i(TAG, "MIX CONTINUITY | disarmed | reason=$reason")\n        }\n    }\n\n    private fun scheduleManagedRefillCheck(\n        autoDj: Any,\n        currentPosition: Int?\n    ) {\n        val position = currentPosition ?: return\n        if (position <= 0) return\n        if (managedAutoDj?.get() !== autoDj) return\n        if (pending != null || refillHold.get()) return\n\n        synchronized(this) {\n            if (managedAutoDj?.get() !== autoDj) return\n            if (lastManagedObservedPosition == position) return\n            lastManagedObservedPosition = position\n        }\n\n        work.execute {\n            if (managedAutoDj?.get() !== autoDj) return@execute\n            if (pending != null || refillHold.get()) return@execute\n            if (!managedRefillInFlight.compareAndSet(false, true)) return@execute\n\n            try {\n                val context = queueReader.read(autoDj, position)\n                    ?: return@execute\n                val ordered = context.items.sortedBy { it.queuePosition }\n                val currentIndex = ordered.indexOfFirst {\n                    it.state == QueueItemState.CURRENT\n                }\n                if (currentIndex < 0) return@execute\n\n                val expectedPositions = (1..ordered.size).toList()\n                val actualPositions = ordered.map { it.queuePosition }\n                if (actualPositions != expectedPositions) {\n                    Log.w(\n                        TAG,\n                        "MIX CONTINUITY | skip refill check; queue not normalized | " +\n                            "positions=" + actualPositions.joinToString(",")\n                    )\n                    return@execute\n                }\n\n                val nativeSettings = settings.read()\n                val requested = TrackAutoDjContinuationPolicy.refillCount(\n                    queueSize = ordered.size,\n                    currentIndex = currentIndex,\n                    upcomingTrackCount = nativeSettings.upcomingTrackCount\n                )\n                if (requested <= 0) return@execute\n\n                val remaining = ordered.size - currentIndex - 1\n                Log.i(\n                    TAG,\n                    "MIX CONTINUITY REFILL | currentPosition=" +\n                        ordered[currentIndex].queuePosition +\n                        " | queueSize=" + ordered.size +\n                        " | remaining=$remaining" +\n                        " | upcoming=${nativeSettings.upcomingTrackCount}" +\n                        " | requested=$requested" +\n                        " | boundary=native-qr.z"\n                )\n\n                if (!requestNativeRefill(requested)) {\n                    Log.w(\n                        TAG,\n                        "MIX CONTINUITY REFILL | native request rejected | " +\n                            "requested=$requested"\n                    )\n                }\n            } catch (failure: Throwable) {\n                Log.e(\n                    TAG,\n                    "MIX CONTINUITY REFILL | managed refill check failed",\n                    failure\n                )\n            } finally {\n                managedRefillInFlight.set(false)\n            }\n        }\n    }'''
+          )
+
+          replace_once(
+              track,
+              '''    fun onNativePlaybackQueueUpdated(origin: String) {\n        val request = pending\n        if (request == null) {\n            managedAutoDj = null\n            return\n        }''',
+              '''    fun onNativePlaybackQueueUpdated(origin: String) {\n        val request = pending\n        if (request == null) {\n            disarmManagedAutoDjSession("native-queue-replaced:$origin")\n            return\n        }'''
+          )
+
+          replace_once(
+              track,
+              '''    private fun runTrackMix(request: Pending) {\n        try {''',
+              '''    private fun runTrackMix(request: Pending) {\n        var managedSessionReady = false\n        try {'''
+          )
+
+          replace_once(
+              track,
+              '''            } else {\n                Log.i(\n                    TAG,\n                    "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +''',
+              '''            } else {\n                managedSessionReady = true\n                Log.i(\n                    TAG,\n                    "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +'''
+          )
+
+          replace_once(
+              track,
+              '''        } finally {\n            refillHold.set(false)\n            request.stage = "DONE"\n            if (pending === request) pending = null\n        }\n    }''',
+              '''        } finally {\n            refillHold.set(false)\n            request.stage = "DONE"\n            if (pending === request) pending = null\n            if (!managedSessionReady) {\n                disarmManagedAutoDjSession("track-mix-not-verified")\n            }\n        }\n    }'''
+          )
+
+          replace_once(
+              queue_flip,
+              '''    fun verifiedPositionWriter(autoDj: Any): NativeQueuePositionWriter? =\n        positionWriterObserver.binding(autoDj)\n''',
+              '''    fun verifiedPositionWriter(autoDj: Any): NativeQueuePositionWriter? =\n        positionWriterObserver.binding(autoDj)\n\n    private fun notifyTrackMixNaturalPosition(autoDj: Any?) {\n        val instance = autoDj ?: return\n        val position = runCatching {\n            verifiedPositionWriter(instance)?.read()\n        }.getOrNull()\n        TrackMixController.onVerifiedNaturalQueuePosition(\n            autoDj = instance,\n            currentPosition = position\n        )\n    }\n'''
+          )
+
+          replace_once(
+              queue_flip,
+              '''        return positionWriterObserver.aroundNaturalInvocation(\n            service = service,\n            method = method,\n            argument = value,\n            autoDj = autoDj,\n            proceed = proceed\n        )\n    }\n\n    fun aroundNativePlaybackTransition(''',
+              '''        val result = positionWriterObserver.aroundNaturalInvocation(\n            service = service,\n            method = method,\n            argument = value,\n            autoDj = autoDj,\n            proceed = proceed\n        )\n        notifyTrackMixNaturalPosition(autoDj)\n        return result\n    }\n\n    fun aroundNativePlaybackTransition('''
+          )
+
+          replace_once(
+              queue_flip,
+              '''        return positionWriterObserver.aroundNaturalInvocation(\n            service = receiver,\n            method = method,\n            argument = value,\n            autoDj = autoDj,\n            proceed = proceed\n        )\n    }\n\n    private fun resolveNativeAutoDjFromService''',
+              '''        val result = positionWriterObserver.aroundNaturalInvocation(\n            service = receiver,\n            method = method,\n            argument = value,\n            autoDj = autoDj,\n            proceed = proceed\n        )\n        notifyTrackMixNaturalPosition(autoDj)\n        return result\n    }\n\n    private fun resolveNativeAutoDjFromService'''
+          )
+
+          Path('app/src/main/java/io/github/alagga/gonesmart/TrackAutoDjContinuationPolicy.kt').write_text('''package io.github.alagga.gonesmart\n\n/**\n * Pure continuation policy for the 4.2.1 Track Auto-DJ queue-root repair.\n *\n * GMMP's hidden append/end allocator is intentionally not guessed. Once a\n * Track Auto-DJ-owned queue has been normalized to 1..N, a verified natural\n * CURRENT transition may request only the deficit needed to restore GMMP's\n * own configured upcoming-track count through the already-proven qr.z path.\n */\ninternal object TrackAutoDjContinuationPolicy {\n    fun refillCount(\n        queueSize: Int,\n        currentIndex: Int,\n        upcomingTrackCount: Int\n    ): Int {\n        if (queueSize <= 0) return 0\n        if (currentIndex !in 0 until queueSize) return 0\n\n        val targetUpcoming = upcomingTrackCount.coerceAtLeast(1)\n        val remaining = queueSize - currentIndex - 1\n        return (targetUpcoming - remaining).coerceAtLeast(0)\n    }\n}\n''')
+
+          Path('app/src/test/java/io/github/alagga/gonesmart/TrackAutoDjContinuationPolicyTest.kt').write_text('''package io.github.alagga.gonesmart\n\nimport org.junit.Assert.assertEquals\nimport org.junit.Test\n\nclass TrackAutoDjContinuationPolicyTest {\n    @Test\n    fun `does not refill while configured upcoming track is present`() {\n        assertEquals(\n            0,\n            TrackAutoDjContinuationPolicy.refillCount(\n                queueSize = 5,\n                currentIndex = 3,\n                upcomingTrackCount = 1\n            )\n        )\n    }\n\n    @Test\n    fun `refills one track when current reaches queue tail`() {\n        assertEquals(\n            1,\n            TrackAutoDjContinuationPolicy.refillCount(\n                queueSize = 5,\n                currentIndex = 4,\n                upcomingTrackCount = 1\n            )\n        )\n    }\n\n    @Test\n    fun `requests only the missing upcoming deficit`() {\n        assertEquals(\n            1,\n            TrackAutoDjContinuationPolicy.refillCount(\n                queueSize = 5,\n                currentIndex = 3,\n                upcomingTrackCount = 2\n            )\n        )\n        assertEquals(\n            2,\n            TrackAutoDjContinuationPolicy.refillCount(\n                queueSize = 5,\n                currentIndex = 4,\n                upcomingTrackCount = 2\n            )\n        )\n    }\n\n    @Test\n    fun `invalid current index fails closed`() {\n        assertEquals(\n            0,\n            TrackAutoDjContinuationPolicy.refillCount(\n                queueSize = 5,\n                currentIndex = -1,\n                upcomingTrackCount = 1\n            )\n        )\n    }\n}\n''')
+
+          agents = Path('AGENTS.md')
+          agents_text = agents.read_text()
+          marker = '- Track Auto-DJ must not leave the user with a one-row queue while network recommendation preparation runs for many seconds. Give the smart pool only a short bounded head start for the explicit Initial-Size refill; if it is not ready, let native GMMP fill immediately **without cancelling the same pool fill**, so Next remains available and Smart DJ can take over subsequent refills.\n'
+          addition = marker + '- **r43 continuation:** rebasing `queue_position` to `1..N` does not prove that GMMP 4.2.1\'s hidden queue-end/append allocator was rebased. Device evidence showed a normalized `1..5` queue reaching position 5, then GMMP querying position 6 and returning `next source null` without invoking `qr.z`. Until that allocator is passively proven, only a Track-Auto-DJ-owned normalized session may repair this gap: on a **verified natural CURRENT transition**, derive the real remaining rows from the independent Queue reader, compare them with GMMP\'s own `upcoming` preference, and invoke the already-verified native `qr.z(deficit)` boundary. This continuation must be event-driven, position-deduplicated, single-refill-in-flight, never polling, and must disarm on unrelated native list playback.\n'
+          if marker not in agents_text:
+              raise SystemExit('AGENTS r42 marker not found')
+          agents.write_text(agents_text.replace(marker, addition, 1))
+
+          playbook = Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md')
+          pb = playbook.read_text()
+          pb += '''\n\n### 2026-10-07 — r43 Track Auto-DJ continuation after queue rebase\n\n- Device evidence disproved the assumption that a verified DAO rebase also resets GMMP 4.2.1's hidden queue-end/append state. After r42 normalized `1,5905,5906,5907,5908` to `1..5`, playback reached the tail and GMMP queried position 6, returned `next source null`, and did not call the native Auto-DJ refill boundary again.\n- Do not guess an obfuscated allocator field. For the Track-Auto-DJ-owned normalized session only, use the already passively verified CURRENT position event as the trigger, read the actual queue once, and call the existing native `qr.z(deficit)` boundary only when the real remaining count falls below GMMP's configured `upcoming` count.\n- The continuation is event-driven and deduplicated by verified queue position; only one managed refill may be in flight. Normal list playback disarms it.\n'''
+          playbook.write_text(pb)
+
+          Path('docs/GMMP_421_QUEUE_R43.md').write_text('''# GMMP 4.2.1 queue continuity — r43\n\n## Evidence\n\nThe r42 DAO rebase fixed the visible sparse queue-position problem but did not reset GMMP's hidden queue-end/append state. A Track Auto-DJ run created four native fallback rows, then GoneSmart verified `old=1,5905,5906,5907,5908 -> new=1..5`. Playback advanced through the normalized queue. At the tail GMMP queried `queue_position = 6`, returned `next source null`, and never invoked another native Auto-DJ refill.\n\nThe recommendation pool itself was already ready before the tail transition, so provider latency was not the reason continuation stopped.\n\n## r43 contract\n\n- Keep the r42 native DAO position normalization; it fixes the user-visible/current-row corruption.\n- Do not mutate or guess the unknown 4.2.1 append/end allocator.\n- Only while the Track Auto-DJ-owned 4.2.1 session is armed, observe GMMP's already-verified natural CURRENT-position signal.\n- On a new verified position, perform one queue read, derive remaining rows, and compare them with GMMP's own `autoDj_upcomingTracks` setting.\n- If there is a deficit, invoke the already-verified native `qr.z(deficit)` refill boundary. The normal Smart DJ interception/pool-selection path still owns replacement.\n- Dedupe repeated observer callbacks for the same position, allow one refill in flight, and never poll.\n- Any unrelated native list Play disarms the managed continuation.\n''')
+          PY
+
+          git diff --check
+          grep -q "MIX CONTINUITY REFILL" app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q "notifyTrackMixNaturalPosition" app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt
+          grep -q "r43 continuation" AGENTS.md
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AGENTS.md docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/GMMP_421_QUEUE_R43.md \
+            app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt \
+            app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt \
+            app/src/main/java/io/github/alagga/gonesmart/TrackAutoDjContinuationPolicy.kt \
+            app/src/test/java/io/github/alagga/gonesmart/TrackAutoDjContinuationPolicyTest.kt
+          git commit -m "fix(track-mix): restore managed Auto-DJ continuation"
+          git push
