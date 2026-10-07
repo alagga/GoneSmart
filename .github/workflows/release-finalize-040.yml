@@ -23,6 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/release_finalize_040.py
+          sed -i 's/[[:space:]]\+$//' docs/GMMP_421_COMPLETION.md
           git diff --check
 
           echo 'Remaining checkmark glyphs in Kotlin source (review only):'
