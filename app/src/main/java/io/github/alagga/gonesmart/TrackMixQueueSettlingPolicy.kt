@@ -42,6 +42,29 @@ internal object TrackMixQueueSettlingPolicy {
                     currentQueueSize != detectedQueueSize
             )
 
+    /**
+     * GMMP's generic track menu is also used by Smart Playlists. During native
+     * Play the first observed CURRENT can be a short-lived intermediate row.
+     * If that provisional row disappears entirely before the completion guard
+     * has elapsed, the independently observed new CURRENT may replace it.
+     * After the guard, fail closed so a manual playback change is never
+     * mistaken for the originally selected Track Mix seed.
+     */
+    fun shouldRetargetTransientTarget(
+        source: String,
+        sinceDetectionMs: Long,
+        requiredGuardMs: Long,
+        selectedTrackOccurrences: Int,
+        currentStillSelected: Boolean,
+        playbackChangedFromBefore: Boolean
+    ): Boolean =
+        source == "menu_gm_context_track" &&
+            requiredGuardMs > 0L &&
+            sinceDetectionMs < requiredGuardMs &&
+            selectedTrackOccurrences == 0 &&
+            !currentStillSelected &&
+            playbackChangedFromBefore
+
     fun isSettled(
         sameQueue: Boolean,
         stableForMs: Long,

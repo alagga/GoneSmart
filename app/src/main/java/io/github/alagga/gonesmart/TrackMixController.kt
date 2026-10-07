@@ -1016,11 +1016,37 @@ internal class TrackMixController(
                 )
 
             if (!targetUsable) {
-                // A current-row change with no accompanying list rebuild is a
-                // genuine retarget/manual playback change. Do not ever isolate
-                // that unrelated row. During a Smart Playlist rebuild the
-                // queue size changes and the original selected track remains
-                // uniquely identifiable, which is handled below.
+                val sinceDetection = now - detectedAt
+                val mayRetarget =
+                    TrackMixQueueSettlingPolicy.shouldRetargetTransientTarget(
+                        source = request.source,
+                        sinceDetectionMs = sinceDetection,
+                        requiredGuardMs = completionGuard,
+                        selectedTrackOccurrences = selectedOccurrences,
+                        currentStillSelected = currentStillSelected,
+                        playbackChangedFromBefore = playbackChanged
+                    )
+                if (mayRetarget) {
+                    Log.i(
+                        TAG,
+                        "MIX PLAY RETARGETED | reason=transient-current-disappeared" +
+                            " | oldEntry=" + (target.queueEntryId ?: -1L) +
+                            " | oldTrack=" + target.trackId +
+                            " | newEntry=" + (identity.queueEntryId ?: -1L) +
+                            " | newTrack=" + identity.trackId +
+                            " | sinceDetectionMs=" + sinceDetection
+                    )
+                    targetIdentity = identity
+                    detectedAt = now
+                    detectedQueueSize = current.ids.size
+                    stableSnapshot = current
+                    stableAt = now
+                    continue
+                }
+
+                // Outside the guarded native Play settling window, a current
+                // row change is treated as a competing/manual playback change.
+                // Never retarget there and never isolate an unrelated row.
                 stableSnapshot = null
                 stableAt = now
                 continue
