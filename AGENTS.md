@@ -2,7 +2,7 @@
 
 **Purpose:** Canonical entry point for assistants and contributors working on GoneSmart. Read this file before changing code, then inspect the relevant source, docs, current branch head and exact-head CI.
 
-**Last consolidated:** 2026-10-05. **Compatibility target:** GoneMAD Music Player 4.2.1. **Development branch at consolidation:** `feature/playlist-bridge`.
+**Last consolidated:** 2026-10-07. **Compatibility target:** GoneMAD Music Player 4.2.1. **Development branch at consolidation:** `feature/playlist-bridge`.
 
 ## 1. Collaboration and repository discipline
 
@@ -20,7 +20,7 @@ GoneSmart extends GMMP; it does not replace GMMP internals with parallel impleme
 
 - Reuse GMMP's native writers, callbacks, adapters, transactions, localized resources and playback flows whenever they exist.
 - Never write directly to GMMP SQL/Room tables when a native DAO/writer boundary exists.
-- Obfuscated names such as `qr`, `vx3`, `z`, `O0` are evidence for a tested APK, **not semantic identity**.
+- Obfuscated names such as `qr`, `vx3`, `z`, `O0`, `dx3`, `c2` are evidence for a tested APK, **not semantic identity**.
 - Resolver order: tested fast path → structural/semantic discovery → uniqueness check → runtime/postcondition verification.
 - Ambiguous or unverified state-changing boundaries must **fail closed**. Do not choose a candidate merely because its name/signature looks plausible.
 - Read-only observation may be broader than mutation discovery. State-changing code requires stricter evidence.
@@ -38,6 +38,8 @@ A compatibility probe has this lifecycle:
 
 Deep inventories are temporary. Once a boundary has graduated, ordinary runtime logs should retain only concise success/failure information; detailed reflection dumps should be emitted only for an unresolved/failing boundary or an unknown GMMP version.
 
+**Graduation also retires runtime cost.** A probe is not truly retired if it stops logging but still performs broad reflection, Cursor/SQL readbacks, view-tree scans or model reconstruction on every frame/playback callback. Accepted-version hot paths must become cached/event-driven/pass-through wherever possible.
+
 Diagnostics must be privacy-safe and bounded. Prefer class hierarchy, signatures, declared/runtime types and candidate counts. Do not dump whole libraries, unbounded playlists or filesystem paths merely for compatibility discovery.
 
 ## 4. GMMP 4.2.1 queue contract
@@ -52,15 +54,16 @@ The 4.2.1 queue mapping was established from independent read-only Cursor eviden
 - Delete reflection may expose `Object[]`, while the bridge internally casts to `cy3[]`; pass an actual typed runtime `cy3[]`.
 - The independent queue Cursor is authoritative for `queue_id`, `queue_track_id`, `queue_position`, `queue_shuffle_position` and post-mutation verification.
 - Reactive `W1/X1` DAO methods are not invoked during discovery.
-- `qr.t -> ur.b()` is the verified **current-position reader**.
-- `ur` does not expose a proven current-position writer.
+- `qr.t -> ur.b()` remains useful read evidence from the 4.2.1 investigation, but Current mutation must use the passively verified state-writer contract rather than name/signature guessing.
 - **`qr.z(int)` is the native Auto-DJ refill boundary. It is not a current-position setter. Never rediscover/use it as one merely because it is an `int -> void` method.**
 
 ### Queue Flip status
 
-Playlist **Play flipped** is device-verified on 4.2.1 through GMMP's native playback path.
+Playlist **Play flipped** and Queue-menu **Flip queue** are both device-accepted on 4.2.1.
 
-The Queue-menu **Flip queue** mutation still requires a semantically proven current-position writer when reversing the queue moves the current row to another queue position. Do not mark that writer solved and do not substitute `qr.z(int)`. Until a native writer is proven with postconditions, this boundary must fail closed.
+Queue Flip resolves the current-position writer passively from **natural GMMP playback behavior**. A candidate is never invoked just to test it. The writer is promoted only after an independent native position signal/readback proves that the natural call moved Current to the same queue position; controlled use still requires postcondition verification and rollback support. The observed 4.2.1 writer is currently `dx3.c2(int)`, but that obfuscated name is evidence only.
+
+After the writer has been proved for the live Auto-DJ instance, the observer must become a cheap pass-through. Do not keep reflection, delayed discovery callbacks or queue SQL running on every natural playback invocation.
 
 ## 5. Track Auto-DJ / song-based Auto-DJ
 
@@ -80,15 +83,18 @@ The 4.2.1 Track Auto-DJ flow is accepted for both normal Playlists and large Sma
 - Playlist Link rules must stay portable/fail-closed. When the feature is disabled, previously saved Smart Playlists must remain openable by GMMP and GoneSmart-only semantics must become inert rather than corrupting native parsing.
 - Multi-selection must alter only the intended add/move/create action, not suppress unrelated native menu items or navigation.
 - UI extensions must adapt to GMMP theme/navigation modes through native styling/evidence rather than fixed colors/layout assumptions where avoidable.
+- Attached but **offscreen ViewPager pages must be effectively idle**. Do not do row reflection, model scanning, expensive style sampling or refresh fallback work merely because the native view remains attached.
+- Prefer native adapter/scroll/layout events. If a pre-draw listener is unavoidable, keep only genuinely frame-dependent geometry/overscroll work there and gate it to the visible foreground surface.
+- Coalesce visible-row synchronization to at most one posted animation-frame update per scroll/refresh burst.
 
 ## 7. Companion Status screen contract
 
-The Home status card has one neutral overall container and exactly one divider below the overall headline/subline. Individual health rows own their status background; there is no second Compatibility divider or green parent tint bleeding through a warning row.
+The Home status UI is **one large Status card**, not nested cards. The top overall-status section is colored from the aggregate health (worst status wins: red > amber > green), followed by exactly one divider and then four full-width colored sections inside the same card.
 
 Rows:
 - **GoneMAD Music Player:** missing = red; installed but not running = amber; installed + running = green.
 - **Xposed framework:** service unavailable = red; connected but unsupported libxposed API = amber; supported API = green.
-- **GoneSmart state:** unavailable/stopped = red; inactive/degraded/fallback = amber; healthy Smart runtime = green.
+- **GoneSmart state:** unavailable/stopped = red; degraded/fallback = amber; healthy normal/idle or Smart runtime = green.
 - **Compatibility:** tested GMMP = green; installed but untested version = amber; unavailable/unknown GMMP = red.
 
 Compatibility source of truth is `GmmpCompatibilityPolicy.TESTED_VERSION`; do not duplicate a second tested-version constant in the Activity.
@@ -106,6 +112,8 @@ Keep concise markers for:
 
 Retire or gate deep `GMMP COMPAT CLASS/RECYCLER ... FIELDS/METHODS/CTORS/NESTED` inventories after a version is accepted. Preserve the reusable diagnostics utilities for the next unknown version; do not keep the full discovery flood active on every normal 4.2.1 launch.
 
+Do not “fix” noisy native GMMP tags such as `w6` by hiding their logger. If GoneSmart caused unnecessary native SQL, remove the repeated work. Native queries that GMMP itself legitimately performs while opening/refocusing a library tab may remain visible in logcat.
+
 ## 9. Safety for queue/library mutation
 
 - Before mutation, correlate the native rows 1:1 with the independent Cursor snapshot.
@@ -119,6 +127,7 @@ Retire or gate deep `GMMP COMPAT CLASS/RECYCLER ... FIELDS/METHODS/CTORS/NESTED`
 
 - `AGENTS.md`: standing rules and current accepted architecture.
 - `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: current version ledger and future-update procedure.
+- `docs/GMMP_421_COMPLETION.md`: concise final 4.2.1 acceptance/performance state.
 - `docs/NATIVE_GMMP_AUDIT.md` and dated `GMMP_421_*` files: reverse-engineering chronology/evidence.
 - Feature-specific docs: detailed behavior where needed.
 
@@ -133,6 +142,7 @@ A development branch can be called complete only when:
 3. temporary probes/debug logging are retired or scoped to failure/unknown-version paths;
 4. tests cover durable resolver/policy behavior;
 5. `AGENTS.md` and compatibility docs match the actual code;
-6. no known unsafe guessed writer remains enabled.
+6. no known unsafe guessed writer remains enabled;
+7. accepted-version discovery and UI diagnostics no longer impose obvious persistent hot-path cost.
 
 Before the 0.4.0 release, new features should be developed on a new branch from the chosen clean integration point, not appended indefinitely to a completed compatibility branch.
