@@ -22,6 +22,8 @@ Keep the original release keystore backed up offline; every update must use the 
 6. Open **Actions → Release APK → Run workflow** with **prerelease** disabled.
 7. Verify the resulting `v<versionName>` tag, GitHub Release and signed APK asset.
 
+If an exact-head Build is clearly stuck in GitHub Actions infrastructure before GoneSmart's own test/build steps start, do not treat that run as a code failure and do not publish by bypassing the gate. Trigger a fresh exact-head Build and require that replacement run to complete successfully before releasing.
+
 The release workflow verifies secrets, regenerates the GMMP forum copy, restores the release keystore, builds the signed APK, derives the tag from Gradle, creates the tag for a manual dispatch, uploads `GoneSmart-v<version>.apk` plus versioned forum-thread/reply BBCode assets, and uses `RELEASE_NOTES.md` as the release body. Manual releases must be dispatched from `main`. If the generated forum files changed, the workflow refreshes the copy-ready files on `main` after publication.
 
 After publishing, copy `docs/forum/LATEST_RELEASE_REPLY.bbcode` into the existing GMMP forum thread and update its first post from `docs/forum/THREAD_START.bbcode` whenever the overview or compatibility information changed. The suggested subject is in `docs/forum/THREAD_SUBJECT.txt`.
