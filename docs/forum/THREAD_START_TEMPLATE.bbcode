@@ -1,4 +1,4 @@
-[size=5][b]GoneSmart – Smart Auto-DJ, Playlist & UI Extensions for GoneMAD Music Player[/b][/size]
+[b]GoneSmart – Smart Auto-DJ, Playlist & UI Extensions for GoneMAD Music Player[/b]
 
 Hi everyone,
 
@@ -13,94 +13,80 @@ I'll keep this first post updated and use the thread replies for future releases
 [url={{RELEASE_URL}}]GoneSmart v{{VERSION}}[/url]
 
 
-[size=4][b]What is GoneSmart?[/b][/size]
+[b]What is GoneSmart?[/b]
 
 GoneSmart keeps GMMP as the actual music player and adds extra functionality around it.
 
-[list]
-[*][b]Smart Auto-DJ[/b] – uses the current listening session to find related music and matches those recommendations against tracks that already exist in your local GMMP library.
-[*][b]UI & workflow extensions[/b] – additional playlist, Smart-Playlist, queue and playback tools integrated into GMMP.
-[/list]
+• [b]Smart Auto-DJ[/b] – uses the current listening session to find related music and matches those recommendations against tracks that already exist in your local GMMP library.
+• [b]UI & workflow extensions[/b] – additional playlist, Smart-Playlist, queue and playback tools integrated into GMMP.
 
 For Smart Auto-DJ, GoneSmart currently combines recommendations from [b]ListenBrainz[/b] and [b]Last.fm[/b]. Your complete music library is not uploaded to those services; matching against your library happens locally.
 
 
-[size=4][b]Main features[/b][/size]
+[b]Main features[/b]
 
 [b]Smart Auto-DJ[/b]
-[list]
-[*]Session-aware recommendations based on the current and recently selected tracks
-[*]ListenBrainz + Last.fm recommendation sources
-[*]Only selects music that exists in your GMMP library
-[*]Recommendation pool for faster Auto-DJ refills
-[*]Rating and matching preferences
-[*]Optional fallback to GMMP's normal Auto-DJ
-[*]Player indicator showing GoneSmart Auto-DJ status
-[/list]
+• Session-aware recommendations based on the current and recently selected tracks
+• ListenBrainz + Last.fm recommendation sources
+• Only selects music that exists in your GMMP library
+• Recommendation pool for faster Auto-DJ refills
+• Rating and matching preferences
+• Optional fallback to GMMP's normal Auto-DJ
+• Player indicator showing GoneSmart Auto-DJ status
 
 [b]Playlist & Smart-Playlist tools[/b]
-[list]
-[*]Playlist folders
-[*]Smart-Playlist folders
-[*]Multi-selection
-[*]Playlist Link – use a normal playlist as a live source inside a Smart Playlist
-[/list]
+• Playlist folders
+• Smart-Playlist folders
+• Multi-selection
+• Playlist Link – use a normal playlist as a live source inside a Smart Playlist
 
 [b]Playback tools[/b]
-[list]
-[*]Flip the current queue
-[*]Play normal playlists or Smart Playlists from last track to first
-[*]Track Auto-DJ – start a new Smart Auto-DJ session directly from an individual song
-[/list]
+• Flip the current queue
+• Play normal playlists or Smart Playlists from last track to first
+• Track Auto-DJ – start a new Smart Auto-DJ session directly from an individual song
 
 [b]Companion app[/b]
-[list]
-[*]Module and GMMP status
-[*]Smart DJ and UI settings
-[*]Compatibility information
-[*]High-level activity/error logs
-[*]Update checking and built-in help
-[/list]
+• Module and GMMP status
+• Smart DJ and UI settings
+• Compatibility information
+• High-level activity/error logs
+• Update checking and built-in help
 
 
-[size=4][b]Current compatibility[/b][/size]
+[b]Current compatibility[/b]
 
-[list]
-[*][b]GoneSmart:[/b] v{{VERSION}}
-[*][b]Tested GMMP version:[/b] {{TESTED_GMMP}}
-[*][b]Android:[/b] 8.0+
-[*][b]Hooking API:[/b] libxposed API 102
-[*][b]Recommended rooted setup:[/b] JingMatrix Vector 2.2+
-[/list]
+• [b]GoneSmart:[/b] v{{VERSION}}
+• [b]Tested GMMP version:[/b] {{TESTED_GMMP}}
+• [b]Android:[/b] 8.0+
+• [b]Hooking API:[/b] libxposed API 102
+• [b]Recommended rooted setup:[/b] JingMatrix Vector 2.2+
 
 LSPatch v1.2 is documented as a possible no-root setup, but it has [b]not been tested by me[/b] and should be treated as experimental.
 
 
-[size=4][b]Important[/b][/size]
+[b]Important[/b]
 
 GoneSmart is an [b]independent project[/b] and is not affiliated with GoneMAD Software.
 
 If you run into something that looks like a GMMP bug, please disable GoneSmart first and check whether the problem can still be reproduced with normal GMMP before reporting it to the GMMP developer. If it only happens with GoneSmart enabled, please report it here or on the GoneSmart GitHub instead.
 
 
-[size=4][b]GMMP updates[/b][/size]
+[b]GMMP updates[/b]
 
 GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. I recommend disabling automatic Play Store updates for GMMP and checking the tested GMMP version here or on GitHub before updating manually. GoneSmart also warns when it detects a different GMMP version.
 
 
-[size=4][b]Ideas for 0.5.0[/b][/size]
+[b]Ideas for 0.5.0[/b]
 
 Current directions for the next larger update include:
 
-[list]
-[*][b]More recommendation providers[/b] – additional recommendation sources are being considered. Services such as Spotify, YouTube or YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
-[*][b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
-[/list]
+• [b]More recommendation providers[/b] – additional recommendation sources are being considered. Services such as Spotify, YouTube or YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
+• [b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
 
 These ideas may change during development.
 
 
-[size=4][b]Feedback & bug reports[/b][/size]
+[b]Feedback & bug reports[/b]
 
 Feedback is very welcome, especially with different libraries, Android setups and GMMP configurations. If something breaks, please include your exact GMMP version and, if possible, the relevant GoneSmart logs.
 

@@ -12,6 +12,22 @@ THREAD_TEMPLATE = FORUM_DIR / "THREAD_START_TEMPLATE.bbcode"
 THREAD_OUTPUT = FORUM_DIR / "THREAD_START.bbcode"
 REPLY_OUTPUT = FORUM_DIR / "LATEST_RELEASE_REPLY.bbcode"
 
+FORBIDDEN_PROBOARDS_MARKUP = (
+    "[list",
+    "[/list]",
+    "[*]",
+    "[ul]",
+    "[/ul]",
+    "[li]",
+    "[/li]",
+    "<ul",
+    "</ul",
+    "<li",
+    "</li",
+    "<b",
+    "</b",
+)
+
 
 def read_version() -> str:
     text = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
@@ -37,49 +53,52 @@ def inline_bbcode(text: str) -> str:
     return text
 
 
+def validate_proboards_copy(text: str, label: str) -> None:
+    lower = text.lower()
+    found = [token for token in FORBIDDEN_PROBOARDS_MARKUP if token in lower]
+    if found:
+        raise RuntimeError(
+            f"{label} contains forum markup that is intentionally avoided for ProBoards paste compatibility: "
+            + ", ".join(found)
+        )
+
+    if text.count("[b]") != text.count("[/b]"):
+        raise RuntimeError(f"{label} contains unbalanced [b] tags")
+    if text.count("[i]") != text.count("[/i]"):
+        raise RuntimeError(f"{label} contains unbalanced [i] tags")
+    if text.count("[url=") != text.count("[/url]"):
+        raise RuntimeError(f"{label} contains unbalanced [url] tags")
+
+
 def markdown_release_to_bbcode(markdown: str) -> str:
     out: list[str] = []
-    list_open = False
     skip_section = False
-
-    def close_list() -> None:
-        nonlocal list_open
-        if list_open:
-            out.append("[/list]")
-            list_open = False
 
     for raw in markdown.splitlines():
         line = raw.rstrip()
         if line.startswith("# "):
             continue
         if line.startswith("## "):
-            close_list()
             title = line[3:].strip()
             skip_section = title.lower() == "installation"
             if skip_section:
                 continue
-            out.extend(["", f"[size=4][b]{inline_bbcode(title)}[/b][/size]", ""])
+            out.extend(["", f"[b]{inline_bbcode(title)}[/b]", ""])
             continue
         if skip_section:
             continue
         if line.startswith("### "):
-            close_list()
             out.extend(["", f"[b]{inline_bbcode(line[4:].strip())}[/b]", ""])
             continue
         if line.startswith("- "):
-            if not list_open:
-                out.append("[list]")
-                list_open = True
-            out.append(f"[*]{inline_bbcode(line[2:].strip())}")
+            out.append(f"• {inline_bbcode(line[2:].strip())}")
             continue
-        close_list()
         if not line or line == "---":
             if out and out[-1] != "":
                 out.append("")
             continue
         out.append(inline_bbcode(line))
 
-    close_list()
     while out and out[-1] == "":
         out.pop()
     return "\n".join(out).strip()
@@ -99,7 +118,7 @@ def render() -> tuple[str, str]:
 
     notes = (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8")
     body = markdown_release_to_bbcode(notes)
-    reply = f"""[size=5][b]GoneSmart v{version} released[/b][/size]
+    reply = f"""[b]GoneSmart v{version} released[/b]
 
 The new release is now available. I've updated the first post with the current compatibility information as well.
 
@@ -108,7 +127,12 @@ The new release is now available. I've updated the first post with the current c
 
 {body}
 """
-    return thread.rstrip() + "\n", reply.rstrip() + "\n"
+
+    thread = thread.rstrip() + "\n"
+    reply = reply.rstrip() + "\n"
+    validate_proboards_copy(thread, "THREAD_START.bbcode")
+    validate_proboards_copy(reply, "LATEST_RELEASE_REPLY.bbcode")
+    return thread, reply
 
 
 def main() -> int:
@@ -129,7 +153,7 @@ def main() -> int:
             for path in stale:
                 print(f" - {path}", file=sys.stderr)
             return 1
-        print("Forum copy is up to date.")
+        print("Forum copy is up to date and uses the conservative ProBoards-safe format.")
         return 0
 
     for path, content in expected.items():

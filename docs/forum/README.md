@@ -15,6 +15,10 @@ python3 scripts/generate_forum_posts.py
 
 Do not hand-edit the generated `THREAD_START.bbcode` or `LATEST_RELEASE_REPLY.bbcode`; edit the template and/or `RELEASE_NOTES.md`, then regenerate.
 
-The normal Build workflow checks that the generated files are current. The Release APK workflow regenerates them, uploads versioned BBCode copies as release assets, and on a manual release from `main` refreshes the generated files in the repository if necessary.
+## Pasting into ProBoards
+
+Paste the generated `.bbcode` contents into the forum editor's **BBCode/source view**, not the visual/WYSIWYG view. The generated copy deliberately uses a conservative subset of forum markup: `[b]`, `[i]`, `[url]` and plain `•` bullet characters. It intentionally avoids `[list]`, `[*]`, `[ul]` and `[li]` list markup because the visual editor can rewrite pasted list structures and produce broken closing tags or empty list items.
+
+The generator validates this conservative format, and the normal Build workflow checks that the generated files are current. The Release APK workflow regenerates them, uploads versioned BBCode copies as release assets, and on a manual release from `main` refreshes the generated files in the repository if necessary.
 
 Forum: https://gonemadmusicplayer.proboards.com/board/5/general-discussion
