@@ -63,6 +63,12 @@ No known enabled 4.2.1 feature still depends on an unsafe guessed state-changing
 - Playlist/Smart-Playlist features reuse native models/actions/writers where available and fail closed where a native boundary is unresolved.
 - Unknown future GMMP versions use the bundled compatibility workflow and are shown as untested until accepted.
 
+## Main integration audit
+
+The divergent `main` history was integrated with a real merge commit instead of being overwritten, squashed or force-updated. The post-merge audit explicitly checked for non-conflicting duplicate implementations as well as ordinary conflict markers. Three stale merge leftovers were removed: an older duplicate player-badge color method, a duplicate live multi-selection settings call and an obsolete diagnostic reporter; a second legacy `buildUiPage()` implementation was also removed after exact-head compilation detected it.
+
+For future divergent-branch integrations, a clean textual merge is not sufficient evidence by itself: run the full compile/test gate and inspect for duplicate methods or older parallel implementations that Git can merge without raising a conflict.
+
 ## Known release limitations
 
 - GoneSmart hooks obfuscated GMMP internals; versions other than 4.2.1 are not automatically supported.
