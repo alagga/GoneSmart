@@ -32,6 +32,10 @@ Use a version such as `0.5.0-beta1`, update release notes and dispatch **Release
 
 Before declaring a new GMMP version supported, follow `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: prove mutation boundaries, validate changed semantics on device, retire discovery/runtime overhead, update the tested-version source of truth and run exact-head CI.
 
+## Version checks and Obtainium
+
+The companion app queries GitHub's latest **stable** release on launch, rather than treating feature-branch or CI debug builds as published updates. After merging, bump `versionName` and `versionCode` before creating a new signed release, and use a matching `v<versionName>` release tag. The repository README and app have an **Add to Obtainium** link. Obtainium, not GoneSmart, handles future APK downloads and installation.
+
 ## Local development
 
 Keep the Last.fm key in ignored `local.properties`. For local release signing use ignored `keystore.properties` as described in `BUILDING.md`; never place signing secrets in source.

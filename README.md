@@ -389,6 +389,17 @@ The API key should belong to a registered Last.fm API application for GoneSmart.
 
 ---
 
+## Roadmap
+
+### Planned for 0.5.0
+
+- **More recommendation providers:** expand Smart Auto-DJ with additional recommendation sources, with Spotify, YouTube and YouTube Music among the planned options.
+- **Bluetooth device audio profiles:** automatically switch GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
+
+These items are planned and may change during development. See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
+
+---
+
 ## Building
 
 The project currently targets:

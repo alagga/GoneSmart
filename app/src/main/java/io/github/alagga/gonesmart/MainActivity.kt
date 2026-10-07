@@ -79,6 +79,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logCountText: TextView
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
+    private var ratingFallbackRow: LinearLayout? = null
+    private var ratingFallbackSubtitle: TextView? = null
+    private var ratingFallbackDefaultSubtitle: CharSequence? = null
 
     private val switches = linkedMapOf<String, SwitchMaterial>()
     private val settingRows = linkedMapOf<String, View>()
@@ -476,6 +479,41 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(GoneSmartSettingsKeys.KEY_TRACK_MIX, "♫", companionTrackAutoDjLabel(), "Start Auto-DJ from any song and fill a fresh queue with similar tracks.", COLOR_ACCENT),
             SettingSpec(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, "⇵", "Flip queue / Play flipped", "Reverse your entire queue while keeping the current song, or play any playlist or Smart-Playlist from its last song to its first.", COLOR_ACCENT)
         )))
+        refreshSettingsSwitches()
+        return scrollPage(container)
+    }
+
+    private fun buildUiPage(): View {
+        val container = pageContainer()
+        container.addView(pageTitle("UI"))
+        container.addView(sectionTitle("PLAYLISTS"))
+        container.addView(settingGroup(listOf(
+            SettingSpec(
+                GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
+                "✓",
+                "Multi-playlist selection",
+                "Long-press a playlist in GMMP's Add to Playlist dialog, select " +
+                    "multiple destinations, then confirm once. Uses GMMP's " +
+                    "native playlist writer, theme colors and translations.",
+                COLOR_ACCENT
+            )
+        )))
+        container.addView(verticalGap(16))
+        container.addView(infoCard(
+            title = "How to use",
+            body = "In GoneMAD Music Player, choose Add to Playlist for " +
+                "one or more tracks. Long-press the first destination, " +
+                "tap other playlists to select or deselect them, then tap " +
+                "the checkmark to add the same tracks to every selected " +
+                "playlist. Back cancels selection without closing the picker."
+        ))
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "Independent of Smart DJ",
+            body = "This feature is optional and works even when Smart DJ " +
+                "is disabled. The normal single-playlist tap and the " +
+                "plus button for creating a playlist are unchanged."
+        ))
         refreshSettingsSwitches()
         return scrollPage(container)
     }
