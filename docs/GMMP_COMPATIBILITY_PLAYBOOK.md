@@ -242,3 +242,10 @@ Track Auto-DJ is a special queue-root mutation: it preserves one native row and 
 Smart-DJ session tracking must consume the same passively verified current-position hint as queue mutation. If a refill read silently falls back to structural CURRENT discovery, generated rows can be misclassified as user anchors, which resets the recommendation pool on every skip. The correct steady state is one queue session plus pool hits/background top-up, not repeated `QUEUE SESSION ... new=true` cycles.
 
 For the explicit Track-Auto-DJ Initial-Size refill, network recommendation preparation is opportunistic rather than a playback gate. Use a short bounded smart wait, keep the fill future alive on timeout, and immediately pass the refill to native GMMP so the Next action exists while the recommendation pool continues warming.
+
+
+### 2026-10-07 — r43 Track Auto-DJ continuation after queue rebase
+
+- Device evidence disproved the assumption that a verified DAO rebase also resets GMMP 4.2.1's hidden queue-end/append state. After r42 normalized `1,5905,5906,5907,5908` to `1..5`, playback reached the tail and GMMP queried position 6, returned `next source null`, and did not call the native Auto-DJ refill boundary again.
+- Do not guess an obfuscated allocator field. For the Track-Auto-DJ-owned normalized session only, use the already passively verified CURRENT position event as the trigger, read the actual queue once, and call the existing native `qr.z(deficit)` boundary only when the real remaining count falls below GMMP's configured `upcoming` count.
+- The continuation is event-driven and deduplicated by verified queue position; only one managed refill may be in flight. Normal list playback disarms it.

@@ -100,6 +100,17 @@ internal class QueueFlipController {
     fun verifiedPositionWriter(autoDj: Any): NativeQueuePositionWriter? =
         positionWriterObserver.binding(autoDj)
 
+    private fun notifyTrackMixNaturalPosition(autoDj: Any?) {
+        val instance = autoDj ?: return
+        val position = runCatching {
+            verifiedPositionWriter(instance)?.read()
+        }.getOrNull()
+        TrackMixController.onVerifiedNaturalQueuePosition(
+            autoDj = instance,
+            currentPosition = position
+        )
+    }
+
     /**
      * Called by passive MusicService hooks. The original GMMP method always
      * runs exactly once. Observation merely compares the independent native
@@ -124,13 +135,15 @@ internal class QueueFlipController {
                 )
             }
         }
-        return positionWriterObserver.aroundNaturalInvocation(
+        val result = positionWriterObserver.aroundNaturalInvocation(
             service = service,
             method = method,
             argument = value,
             autoDj = autoDj,
             proceed = proceed
         )
+        notifyTrackMixNaturalPosition(autoDj)
+        return result
     }
 
     fun aroundNativePlaybackTransition(
@@ -168,13 +181,15 @@ internal class QueueFlipController {
                 )
             }
         }
-        return positionWriterObserver.aroundNaturalInvocation(
+        val result = positionWriterObserver.aroundNaturalInvocation(
             service = receiver,
             method = method,
             argument = value,
             autoDj = autoDj,
             proceed = proceed
         )
+        notifyTrackMixNaturalPosition(autoDj)
+        return result
     }
 
     private fun resolveNativeAutoDjFromService(service: Any): Any? {
