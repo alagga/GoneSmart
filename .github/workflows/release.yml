@@ -32,6 +32,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify manual releases run from main
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "main" || { echo "Manual releases must be dispatched from main."; exit 1; }
+
+      - name: Generate GMMP forum copy
+        run: python3 scripts/generate_forum_posts.py
+
       - name: Verify release secrets
         shell: bash
         run: |
@@ -83,11 +93,17 @@ jobs:
           TAG="v$VERSION"
           APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
           APK_NAME="GoneSmart-$TAG.apk"
+          FORUM_THREAD="GoneSmart-$TAG-forum-thread.bbcode.txt"
+          FORUM_REPLY="GoneSmart-$TAG-forum-reply.bbcode.txt"
           test -f "$APK_SOURCE" || { echo "Release APK not found at $APK_SOURCE"; exit 1; }
           cp "$APK_SOURCE" "$APK_NAME"
+          cp docs/forum/THREAD_START.bbcode "$FORUM_THREAD"
+          cp docs/forum/LATEST_RELEASE_REPLY.bbcode "$FORUM_REPLY"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "apk=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "forum_thread=$FORUM_THREAD" >> "$GITHUB_OUTPUT"
+          echo "forum_reply=$FORUM_REPLY" >> "$GITHUB_OUTPUT"
 
       - name: Create tag when started manually
         if: github.event_name == 'workflow_dispatch'
@@ -111,15 +127,32 @@ jobs:
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
           APK="${{ steps.meta.outputs.apk }}"
+          FORUM_THREAD="${{ steps.meta.outputs.forum_thread }}"
+          FORUM_REPLY="${{ steps.meta.outputs.forum_reply }}"
           TITLE="GoneSmart $TAG"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" --clobber
+            gh release upload "$TAG" "$APK" "$FORUM_THREAD" "$FORUM_REPLY" --clobber
             gh release edit "$TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
           else
             EXTRA=()
             if [ "$PRERELEASE" = "true" ]; then
               EXTRA+=(--prerelease)
             fi
-            gh release create "$TAG" "$APK" --title "$TITLE" --notes-file RELEASE_NOTES.md "${EXTRA[@]}"
+            gh release create "$TAG" "$APK" "$FORUM_THREAD" "$FORUM_REPLY" --title "$TITLE" --notes-file RELEASE_NOTES.md "${EXTRA[@]}"
           fi
+
+      - name: Refresh forum copy on main
+        if: github.event_name == 'workflow_dispatch' && github.ref_name == 'main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add docs/forum/THREAD_START.bbcode docs/forum/LATEST_RELEASE_REPLY.bbcode
+          if git diff --cached --quiet; then
+            echo "Forum copy already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: refresh GMMP forum copy for ${{ steps.meta.outputs.tag }} [skip ci]"
+          git push origin HEAD:main
