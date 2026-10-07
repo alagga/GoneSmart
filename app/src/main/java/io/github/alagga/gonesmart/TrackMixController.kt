@@ -685,7 +685,7 @@ internal class TrackMixController(
                     "${request.menuLabel} started, but the initial Auto-DJ queue " +
                         "could not be verified."
                 )
-                toast(request.context, request.menuLabel + " ✓")
+                toast(request.context, request.confirmation)
             } else {
                 managedSessionReady = true
                 Log.i(

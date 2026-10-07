@@ -564,8 +564,7 @@ internal class QueueFlipController {
                 toast(
                     context,
                     if (count > 1) {
-                        (nativeString(context, "queue") ?: "").trim()
-                            .takeIf(String::isNotBlank)?.plus(" ✓") ?: "✓"
+                        "Queue reversed"
                     } else {
                         NativeGmmpUiText.error(context, nativeString(context, "queue"))
                     }
