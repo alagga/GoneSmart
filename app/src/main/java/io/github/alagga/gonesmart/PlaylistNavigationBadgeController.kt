@@ -239,7 +239,8 @@ internal class PlaylistNavigationBadgeController {
         localizedNames: List<String>,
         originals: WeakHashMap<TextView, CharSequence>
     ): Boolean {
-        if (!isVisible(view) || insideClassicDrawer(view) ||
+        // Hidden during a pager transition is still the same native target.
+        if (!view.isAttachedToWindow || insideClassicDrawer(view) ||
             !hasClickableAncestor(view)
         ) return false
 

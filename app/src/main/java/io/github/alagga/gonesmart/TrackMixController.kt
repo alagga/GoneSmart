@@ -19,7 +19,6 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Proxy
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -74,7 +73,7 @@ internal class TrackMixController(
         val token: Long,
         val context: Context,
         val source: String,
-        val before: Snapshot?,
+        @Volatile var before: Snapshot?,
         val confirmation: String,
         val menuLabel: String,
         val createdAt: Long
@@ -104,6 +103,7 @@ internal class TrackMixController(
     private val nativeRefillAllowance = ThreadLocal<Int>()
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
+    private val queueReader = GmmpQueueReader()
 
     @Volatile private var pending: Pending? = null
     @Volatile private var nativeQueue: WeakReference<Any>? = null
@@ -327,43 +327,11 @@ internal class TrackMixController(
             return
         }
 
-        // GMMP Room forbids reads on the UI thread. Capture the old queue
-        // before native Play so an async callback cannot mistake it for
-        // the selected song's new queue.
-        val old = runCatching {
-            work.submit<Snapshot?> { queueSnapshot() }
-                .get(350, TimeUnit.MILLISECONDS)
-        }.getOrNull()
-
-        // Arm the refill barrier BEFORE native Play. Queue-row Play can
-        // synchronously move the current position to the end of the old
-        // queue, which makes GMMP request Auto-DJ immediately.
-        refillHold.set(true)
-
-        val request = Pending(
-            token = tokens.incrementAndGet(),
-            // Keep the actual GMMP menu/Activity Context during this
-            // bounded request: the player may override its own locale
-            // independently of Android's application default.
-            context = context,
-            source = source,
-            before = old,
-            confirmation = confirmation,
-            menuLabel = menuLabel,
-            createdAt = SystemClock.elapsedRealtime()
-        )
-        pending = request
-        nativeToastSuppressionUntilMs = request.createdAt + 8_000L
-        suppressedToastCount.set(0)
-
-        if (!enableSmartDj(context)) {
-            pending = null
-            refillHold.set(false)
-            fail("Smart DJ could not be enabled.", context)
-            return
-        }
-
-        val started = runCatching {
+        // Capture the pre-Play identity on the worker. The old implementation
+        // waited up to 350 ms on the UI thread for this Room read, which made
+        // the context-menu click visibly stall. Keep the ordering proof, but
+        // never block GMMP's main thread for it.
+        val nativePlayDispatch: () -> Boolean = runCatching {
             val callback = field(menu, "mCallback")
             val popup = callback?.let { field(it, "this$0") }
             val listener = popup?.let {
@@ -375,27 +343,65 @@ internal class TrackMixController(
                     it.parameterCount == 1 &&
                     it.parameterTypes[0].isAssignableFrom(nativePlay.javaClass)
             }
-            if (click != null) {
+            if (click != null && listener != null) {
                 click.isAccessible = true
-                click.invoke(listener, nativePlay) as? Boolean == true
+                ({ click.invoke(listener, nativePlay) as? Boolean == true })
             } else {
-                // AppCompat and non-PopupMenu native context menus can
-                // dispatch through MenuBuilder instead.
-                menu.performIdentifierAction(nativePlay.itemId, 0)
+                ({ menu.performIdentifierAction(nativePlay.itemId, 0) })
             }
-        }.onFailure { Log.e(TAG, "Native track Play failed", it) }
-            .getOrDefault(false)
-
-        if (!started) {
-            if (pending === request) pending = null
-            refillHold.set(false)
-            fail("Could not start this song.", context)
-            return
+        }.getOrElse { error ->
+            Log.e(TAG, "Could not capture native track Play dispatcher", error)
+            ({ false })
         }
 
-        request.nativePlayAccepted = true
-        Log.i(TAG, "MIX START | menu=$source | nativePlay=dispatched")
-        work.execute { runTrackMix(request) }
+        val request = Pending(
+            token = tokens.incrementAndGet(),
+            context = context,
+            source = source,
+            before = null,
+            confirmation = confirmation,
+            menuLabel = menuLabel,
+            createdAt = SystemClock.elapsedRealtime()
+        )
+        request.stage = "PREPARE"
+        pending = request
+
+        work.execute {
+            val old = queueSnapshot()
+            main.post {
+                if (!isCurrent(request)) return@post
+                request.before = old
+                request.stage = "WAIT_PLAY"
+
+                refillHold.set(true)
+                nativeToastSuppressionUntilMs =
+                    SystemClock.elapsedRealtime() + 8_000L
+                suppressedToastCount.set(0)
+
+                if (!enableSmartDj(context)) {
+                    if (pending === request) pending = null
+                    refillHold.set(false)
+                    fail("Smart DJ could not be enabled.", context)
+                    return@post
+                }
+
+                val started = runCatching {
+                    nativePlayDispatch()
+                }.onFailure { Log.e(TAG, "Native track Play failed", it) }
+                    .getOrDefault(false)
+
+                if (!started) {
+                    if (pending === request) pending = null
+                    refillHold.set(false)
+                    fail("Could not start this song.", context)
+                    return@post
+                }
+
+                request.nativePlayAccepted = true
+                Log.i(TAG, "MIX START | menu=$source | nativePlay=dispatched")
+                work.execute { runTrackMix(request) }
+            }
+        }
     }
 
     private fun runTrackMix(request: Pending) {
@@ -581,9 +587,11 @@ internal class TrackMixController(
         }
 
         val queue = nativeQueue?.get()
+            ?.takeIf { it.javaClass.name == "ex3" }
             ?: nativeAutoDj?.get()?.let { field(it, "q") }
+                ?.takeIf { it.javaClass.name == "ex3" }
             ?: run {
-                Log.e(TAG, "MIX ISOLATE | native queue not captured")
+                Log.e(TAG, "MIX ISOLATE | legacy ex3 queue not captured")
                 return null
             }
         val dao = field(queue, "r") ?: return null
@@ -905,23 +913,25 @@ internal class TrackMixController(
 
     private fun queueSnapshot(): Snapshot? = runCatching {
         nativeAutoDj?.get()?.let { autoDj ->
-            GmmpQueueReader().read(autoDj)?.let { context ->
-                val currentIndex = context.items.indexOfFirst {
-                    it.state == QueueItemState.CURRENT
-                }
-                if (currentIndex >= 0) {
-                    return@runCatching Snapshot(
-                        context.items.map { it.track.id },
-                        currentIndex,
-                        context.items.map { it.queueEntryId }
-                    )
-                }
+            // 4.2.1 can briefly have no uniquely resolvable CURRENT while
+            // native Play rebuilds the source. That is a retryable miss, not
+            // evidence that the 4.2.0 queue wrapper should be used.
+            val context = queueReader.read(autoDj) ?: return@runCatching null
+            val currentIndex = context.items.indexOfFirst {
+                it.state == QueueItemState.CURRENT
             }
+            if (currentIndex < 0) return@runCatching null
+            return@runCatching Snapshot(
+                context.items.map { it.track.id },
+                currentIndex,
+                context.items.map { it.queueEntryId }
+            )
         }
 
-        // Verified 4.2.0 fallback.
+        // Verified 4.2.0 fallback only. Never reinterpret a 4.2.1 Auto-DJ
+        // field (for example q, which may be byte[]) as this legacy wrapper.
         val queue = nativeQueue?.get()
-            ?: nativeAutoDj?.get()?.let { field(it, "q") }
+            ?.takeIf { it.javaClass.name == "ex3" }
             ?: return@runCatching null
         val dao = field(queue, "r") ?: return@runCatching null
         val raw = dao.javaClass.getMethod("H1").invoke(dao) as? List<*>

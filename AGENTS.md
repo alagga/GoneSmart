@@ -150,3 +150,13 @@ A development branch can be called complete only when:
 7. accepted-version discovery and UI diagnostics no longer impose obvious persistent hot-path cost.
 
 Before the 0.4.0 release, new features should be developed on a new branch from the chosen clean integration point, not appended indefinitely to a completed compatibility branch.
+
+## Runtime hot-path invariants
+
+- Full view-tree scans may remain as a bounded recovery path when a cached native target is detached/replaced, but must not run continuously during normal pager/layout waves.
+- `View.isShown == false` during a ViewPager transition does **not** invalidate a semantically verified native UI anchor. Treat visibility as a rendering/discovery condition, not target identity; only detach/replacement/resource mismatch should force structural rediscovery.
+- Version-specific legacy fallbacks must never be reached merely because the accepted-version reader has a transient unresolved state. In particular Track Mix on 4.2.1 must retry the semantic Queue reader when CURRENT is temporarily unresolved; it must not reinterpret an obfuscated Auto-DJ field as the 4.2.0 queue wrapper.
+- Pre-action Room/Queue reads used as race barriers must not block GMMP's main thread with `Future.get(...)`. Preserve before/after ordering by doing the read on a worker and dispatching the native action back to main afterward.
+- Smart Auto-DJ provider backoff is for **unproductive** recommendation fills, not successful fills. A successfully consumed session pool must be allowed to top up asynchronously before it empties; never make rapid skipping wait solely because an earlier successful fill happened less than a minute ago.
+- Keep the GoneSmart recommendation pool ahead of GMMP's visible Auto-DJ queue. Prefer background recommendation prewarm/low-water top-up over speculative early mutation of GMMP's playback queue. Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
+- Smart Auto-DJ latency diagnostics must distinguish queue-read-before, pool hit/fill, native refill, queue-read-after and total time so future regressions can be localized without multiple probe APKs.
