@@ -170,10 +170,6 @@ class GoneSmartModule : XposedModule() {
                     preferences
                 )
 
-            if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
-                playlistController.setEnabled(options.multiPlaylistEnabled)
-            }
-
             if (
                 key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ||
 

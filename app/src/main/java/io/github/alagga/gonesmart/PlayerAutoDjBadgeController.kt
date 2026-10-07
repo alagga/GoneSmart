@@ -730,19 +730,6 @@ class PlayerAutoDjBadgeController {
             invalidateSelf()
         }
 
-        /**
-         * GMMP can change colorAccent without recreating the playlist FAB.
-         * Update the existing overlay in place so its position, bounds,
-         * and click handling remain unchanged during a track transition.
-         */
-        fun updateColor(color: Int) {
-            if (badgeColor == color) return
-            badgeColor = color
-            fillPaint.color = color
-            highlightPaint.color = lighten(color, 0.58f)
-            invalidateSelf()
-        }
-
         override fun draw(canvas: Canvas) {
             val size = min(bounds.width(), bounds.height()).toFloat()
             if (size <= 0f) return
