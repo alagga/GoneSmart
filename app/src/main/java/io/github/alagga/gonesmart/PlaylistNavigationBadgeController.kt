@@ -28,6 +28,7 @@ internal class PlaylistNavigationBadgeController {
     companion object {
         private const val TAG = "GoneSmartPlaylist"
         private const val RESCAN_DEBOUNCE_MS = 350L
+        private const val INITIAL_RECOVERY_RESCAN_MS = 900L
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -45,7 +46,15 @@ internal class PlaylistNavigationBadgeController {
     private var lastRefreshElapsed = Long.MIN_VALUE
     private var cachedPlaylistTargets = emptyList<WeakReference<TextView>>()
     private var cachedSmartTargets = emptyList<WeakReference<TextView>>()
+    private var negativeDiscoverySettled = false
     private val adapterGetterCache = mutableMapOf<Class<*>, Method?>()
+
+    private val recoveryRescanRunnable = Runnable {
+        val activity = activityRef?.get() ?: return@Runnable
+        if (activity.isFinishing || activity.isDestroyed) return@Runnable
+        negativeDiscoverySettled = false
+        scheduleRefresh(force = true)
+    }
 
     private val globalLayoutListener =
         ViewTreeObserver.OnGlobalLayoutListener {
@@ -61,7 +70,11 @@ internal class PlaylistNavigationBadgeController {
                 smartEnabled != smartPlaylistFoldersEnabled
         playlistEnabled = playlistFoldersEnabled
         smartEnabled = smartPlaylistFoldersEnabled
-        if (changed) scheduleRefresh(force = true)
+        if (changed) {
+            negativeDiscoverySettled = false
+            scheduleRefresh(force = true)
+            scheduleInitialRecoveryRescan()
+        }
     }
 
     fun attach(activity: Activity) {
@@ -73,13 +86,27 @@ internal class PlaylistNavigationBadgeController {
                 ?.takeIf { it.isAlive }
                 ?.removeOnGlobalLayoutListener(globalLayoutListener)
             decorRef = WeakReference(decor)
+            negativeDiscoverySettled = false
+            cachedPlaylistTargets = emptyList()
+            cachedSmartTargets = emptyList()
             if (decor.viewTreeObserver.isAlive) {
                 decor.viewTreeObserver.addOnGlobalLayoutListener(
                     globalLayoutListener
                 )
             }
+            scheduleRefresh(force = true)
+            scheduleInitialRecoveryRescan()
+            return
         }
-        scheduleRefresh(force = true)
+        scheduleRefresh()
+    }
+
+    private fun scheduleInitialRecoveryRescan() {
+        main.removeCallbacks(recoveryRescanRunnable)
+        main.postDelayed(
+            recoveryRescanRunnable,
+            INITIAL_RECOVERY_RESCAN_MS
+        )
     }
 
     private fun scheduleRefresh(force: Boolean = false) {
@@ -91,6 +118,16 @@ internal class PlaylistNavigationBadgeController {
         // for future option changes, but make its steady-state callback free.
         if (!playlistEnabled && !smartEnabled &&
             playlistOriginals.isEmpty() && smartOriginals.isEmpty()
+        ) return
+
+        // Some GMMP navigation modes expose only the classic drawer. Once an
+        // initial scan plus one delayed recovery scan have proved that no
+        // alternate Playlist labels exist, global-layout waves must be free.
+        // A decor replacement, option change or invalidated cached target
+        // explicitly reopens structural discovery.
+        if (!force && negativeDiscoverySettled &&
+            cachedPlaylistTargets.isEmpty() &&
+            cachedSmartTargets.isEmpty()
         ) return
 
         forceRefreshPending = forceRefreshPending || force
@@ -183,6 +220,8 @@ internal class PlaylistNavigationBadgeController {
 
         cachedPlaylistTargets = playlistTargets.map(::WeakReference)
         cachedSmartTargets = smartTargets.map(::WeakReference)
+        negativeDiscoverySettled =
+            playlistTargets.isEmpty() && smartTargets.isEmpty()
 
         restoreMissing(playlistOriginals, playlistTargets)
         restoreMissing(smartOriginals, smartTargets)

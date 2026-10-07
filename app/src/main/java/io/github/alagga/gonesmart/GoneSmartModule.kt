@@ -464,7 +464,10 @@ class GoneSmartModule : XposedModule() {
     // Smart DJ and uses GMMP's documented native Auto-DJ command.
     private val trackMixController = TrackMixController(
         enableSmartDj = { context -> enableSmartDjForTrackMix(context) },
-        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) }
+        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) },
+        nativePositionWriterProvider = { autoDj ->
+            queueFlipController.verifiedPositionWriter(autoDj)
+        }
     )
 
     @Volatile

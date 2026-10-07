@@ -35,7 +35,8 @@ import kotlin.math.roundToInt
  */
 internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
-    private val requestNativeRefill: (Int) -> Boolean
+    private val requestNativeRefill: (Int) -> Boolean,
+    private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -568,8 +569,10 @@ internal class TrackMixController(
             val queue = field(autoDj, "q")
             if (queue?.javaClass?.name != "ex3") {
                 val isolated = runCatching {
-                    GmmpQueueMutationBridge(autoDj)
-                        .isolateCurrentTrack(selectedTrackId)
+                    GmmpQueueMutationBridge(
+                        autoDj = autoDj,
+                        verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+                    ).isolateCurrentTrack(selectedTrackId)
                 }.onFailure {
                     Log.e(
                         TAG,
@@ -763,7 +766,11 @@ internal class TrackMixController(
             )
 
         while (isCurrent(request) && SystemClock.elapsedRealtime() < deadline) {
-            Thread.sleep(160)
+            // Before selection is proven, sample quickly enough to catch the
+            // native Play transition. Afterwards the passively verified
+            // position writer owns CURRENT, so a slower structural cadence is
+            // sufficient and avoids repeatedly materializing a large queue.
+            Thread.sleep(if (targetIdentity == null) 160L else 400L)
             val current = queueSnapshot() ?: continue
             val currentTrack = current.currentId ?: continue
             val identity = TrackMixPlaybackIdentityPolicy.Identity(
@@ -913,10 +920,17 @@ internal class TrackMixController(
 
     private fun queueSnapshot(): Snapshot? = runCatching {
         nativeAutoDj?.get()?.let { autoDj ->
-            // 4.2.1 can briefly have no uniquely resolvable CURRENT while
-            // native Play rebuilds the source. That is a retryable miss, not
-            // evidence that the 4.2.0 queue wrapper should be used.
-            val context = queueReader.read(autoDj) ?: return@runCatching null
+            // Once Queue Flip has passively proved GMMP's real writable
+            // queue-position boundary, reuse that exact native readback here.
+            // This is stronger and much cheaper than repeatedly rediscovering
+            // CURRENT from every integer-looking getter while native Play is
+            // rebuilding a list. A missing proof remains a retryable miss and
+            // never falls through to the 4.2.0 ex3 shape.
+            val positionWriter = nativePositionWriterProvider(autoDj)
+            val context = queueReader.read(
+                autoDj,
+                positionWriter?.read()
+            ) ?: return@runCatching null
             val currentIndex = context.items.indexOfFirst {
                 it.state == QueueItemState.CURRENT
             }
