@@ -1,0 +1,100 @@
+# Track Auto-DJ — GMMP 4.2.0
+
+**Feature status:** Complete in the v0.4.x development branch following the maintainer's report that the latest Track Auto-DJ build works on-device. The companion app uses English **Track Auto-DJ**, while GMMP's own menus retain native translations. The maintainer subsequently confirmed the corrected build works when launching Track Auto-DJ from an existing queue, with no repeat error observed. That targeted regression check is considered passed; this confirmation is based on the maintainer's device test, not an independent review of the new Logcat output.
+
+**Earlier development diagnostics (24 September 2026):** The supplied phone log recorded six
+verified five-track starts and one intermittent queue-isolation failure from a
+queue-row Play action. Immediately after that Play action GMMP requested a
+refill of its existing Auto-DJ queue. The original implementation broadcast
+CLEAR_QUEUE and waited for the selected song to become the only queue entry.
+Because both that command and GMMP's in-flight refill are asynchronous, the
+verification could time out without proving which native callback won the race.
+
+**Root-level implementation change:** The new code does not resend CLEAR_QUEUE
+or retry it. After GMMP's native Play moves to the selected song, GoneSmart
+resolves the selected entry by its unique native queue_id (not merely song ID),
+checks that the native queue has not changed, then uses GMMP's native Room
+transaction (ex3.c with xx3.O and xx3.O0) to remove only the other entries
+and move that same current queue entry to position 1. GMMP's native next-position
+allocator and playback pointer are synchronized to 1. The write is verified
+BEFORE Auto-DJ is allowed to fill the new queue. An unexpected concurrent
+queue change aborts safely rather than deleting a different queue.
+
+The old pre-clear refill hook remains a safeguard against *new* old-session
+refills, but a refill already running when the user taps Play cannot be canceled
+retroactively. The direct native transaction eliminates repeated asynchronous
+clear attempts and the failure mode they caused. **The maintainer has retested Track Auto-DJ from an existing queue using the
+corrected build and observed no recurrence of the earlier failure.** This closes
+the targeted regression check. The earlier log remains historical evidence of
+the superseded implementation; the new run's Logcat was not independently
+reviewed in this chat.
+
+## User behavior
+
+The song action appears after **Play next** in single-song menus (library,
+queue, playlist details, search, file browser and shared tracks). It is
+independently switchable in **GoneSmart → UI**, and can enable Smart DJ
+when it was previously disabled. The chosen song plays as the first entry
+of a fresh queue and GMMP Auto-DJ fills the rest to **Initial Size**.
+
+The English-only GoneSmart companion app always displays **Track Auto-DJ**.
+The menu name inside GMMP is built from the installed player's own translations
+of its `track` and `auto_dj` resources in **every** player language.
+For example, native German: **Titel Auto-DJ**; native English: **Track Auto-DJ**.
+A localized native `started` resource is used for the one visible success
+confirmation where available; otherwise GoneSmart uses a checkmark
+rather than inventing a translation. If either necessary native `track` or `auto_dj` resource is absent,
+the new player menu action is omitted rather than showing an incomplete
+or mixed-language phrase. The companion remains English.
+
+Only one user-visible success confirmation should appear. GMMP's own
+Play/Clear/Auto-DJ status Toasts and Snackbars are suppressed during the
+short bounded transition. A genuine error still shows one warning;
+diagnostics go to **GoneSmart → Logs** and Logcat `GoneSmartTrackMix`.
+
+## Regression result and future smoke tests
+
+**Passed (maintainer report):** The corrected build was tested by starting
+Track Auto-DJ from an existing queue. The earlier queue-isolation failure
+did not recur. Other routine Track Auto-DJ starts were previously reported
+working, including the six verified five-track starts in the earlier log.
+No further targeted retest is required to close this issue.
+
+For future GMMP updates or the bundled v0.4.x release, a normal smoke test
+may cover both (1) a middle Queue row while Auto-DJ is already on and
+(2) an ordinary Library track with Smart DJ initially off. The selected track
+should be queue position 1, GMMP should fill to Initial Size, and one
+confirmation should appear.
+
+Useful new logs: `MIX ISOLATED` (unique row ID, number removed and native
+transaction verification), `MIX ISOLATE FAILED` (concurrent queue change or
+native write failure), `MIX VERIFIED` (new queue and selected song intact),
+`MIX POPUP` (intermediate status suppressed). No repeated manual trial cycles
+are necessary: if either case fails, send the filtered log once.
+
+
+## 28 September 2026 localization/native reuse source audit
+
+The action now fails closed when **either** required original GMMP `track` or `auto_dj` resource cannot be resolved. The one verified-success Toast uses native `started` or the original native composed action followed by a neutral checkmark; errors inside GMMP use original `error` and the action, with English diagnostic detail retained in the companion/Logcat. Original native track Play dispatch, native Room queue isolation (`ex3.c`, `xx3.O`, `xx3.O0`) and native Auto-DJ/refill remain unchanged. See [NATIVE_GMMP_AUDIT.md](NATIVE_GMMP_AUDIT.md). These new locale-source changes require a brief on-device locale smoke test; previous queue-isolation acceptance does not prove multilingual wording.
+
+
+## GMMP 4.2.1 r18 compatibility note
+
+The 2026-10-02 r17 device log shows that native Play does switch to the selected queue entry, but GMMP 4.2.1 continues asynchronously reshaping the rest of the queue. The previous whole-`Snapshot` stability check therefore produced a false `The selected song did not start` timeout even though playback had already changed. r18 treats a stable current queue-entry ID + track ID as the Play postcondition (track-ID fallback for the legacy path), then proceeds to the same guarded native queue-isolation and refill sequence. The identity policy is covered by a JVM regression test; the generated 4.2.1 Queue DAO mutation remains the only native integration boundary needing device confirmation.
+
+
+## GMMP 4.2.1 r22 queue-entity note
+
+The r21 device pass confirms native Play and the current-song postcondition before Track Auto-DJ fails: the selected track becomes current, but queue isolation cannot start because the shared 4.2.1 mutation bridge has no verified generated Queue entity set. r22 resolves the concrete entity family from the nearest queue-specific DAO array contract (`ww3[]` on the tested runtime), feeds that type witness into the bounded `W1()/X1()` reactive reader and permits cross-carrier partial aggregation only before the existing strict `queue_id + song_id + queue_position` correlation. Queue Flip uses the same bridge, so one combined host check covers both remaining features.
+
+
+## GMMP 4.2.1 r23 generated-entity fallback
+
+The r22 host log shows Track Auto-DJ now passes native Play/current-song verification: the requested Queue track is already reported as Current before isolation begins. The remaining failure is identical to Queue Flip: the 4.2.1 generated Queue DAO entities cannot be materialized from `W1()/X1()`. r23 uses the same generated Room fake-binder proof to reconstruct only fully validated `ww3` entities from the already-verified Cursor snapshot, then keeps the original native delete/update + Cursor-verification isolation sequence. No direct SQL mutation is introduced, and this remains one shared Track Auto-DJ/Queue Flip device boundary.
+
+
+## GMMP 4.2.1 r24 queue entity correction
+
+The latest host log verifies native Play and Current-song detection before Track Auto-DJ isolation fails. The remaining failure is the same generated Queue DAO entity boundary as Queue Flip: `ww3` is queue-specific but is not proven to be the writable Room row.
+
+r24 reads the actual runtime list materialized by `d85.W1()/X1()` without imposing `ww3`, then requires exact Cursor identity correlation before invoking any native writer. The existing isolation semantics remain unchanged: keep the selected current queue entry, remove only the other entries through GMMP's DAO, normalize the current position, verify the resulting one-row queue, and only then allow Auto-DJ refill.

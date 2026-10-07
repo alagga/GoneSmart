@@ -1,0 +1,104 @@
+package io.github.alagga.gonesmart
+
+/**
+ * Native GMMP's Initial Size includes the selected seed song.
+ * Never request an extra recommendation when the requested total is
+ * already met, and never treat a negative/empty queue as complete.
+ */
+internal object TrackMixPlan {
+    /** GoneSmart's own UI stays English, regardless of GMMP's language. */
+    const val COMPANION_LABEL = "Track Auto-DJ"
+
+    fun additionalTracksNeeded(initialSize: Int, actualQueueSize: Int): Int {
+        require(initialSize > 0) { "Initial queue size must be positive" }
+        require(actualQueueSize >= 0) { "Queue size must not be negative" }
+        return (initialSize - actualQueueSize).coerceAtLeast(0)
+    }
+
+    fun hasEnoughTracks(initialSize: Int, actualQueueSize: Int): Boolean =
+        additionalTracksNeeded(initialSize, actualQueueSize) == 0
+
+    /**
+     * Both words must come from the installed GMMP language resources.
+     * "Mix" is a GoneSmart-only word without a native translation, so
+     * use the same two native GMMP nouns for EVERY player language.
+     */
+    /**
+     * Never guess a missing GMMP translation: the caller may fail closed
+     * instead of injecting a mixed-language menu into the host player.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun localizedMenuLabel(
+        language: String,
+        nativeTrack: String?,
+        nativeAutoDj: String?
+    ): String {
+        val track = nativeTrack?.trim().orEmpty()
+        val dj = nativeAutoDj?.trim().orEmpty()
+        return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
+    }
+
+    /** Prefer GMMP `started`; otherwise use a readable GoneSmart fallback. */
+    @Suppress("UNUSED_PARAMETER")
+    fun localizedStartedMessage(
+        language: String,
+        menuLabel: String,
+        gmmpStarted: String?
+    ): String {
+        val native = gmmpStarted?.trim()?.takeIf(String::isNotBlank)
+        return "$menuLabel ${native ?: "started"}"
+    }
+
+    data class NativeQueueEntry(
+        val queueId: Long,
+        val trackId: Long,
+        val position: Int
+    )
+
+    data class NativeIsolationPlan(
+        val selectedEntryId: Long,
+        val originalPosition: Int,
+        val removeEntryIds: List<Long>
+    )
+
+    /**
+     * A selected queue ROW is identified by queue_id, not just track_id.
+     * This handles duplicate tracks and pre-existing playback history.
+     * Failure to identify the exact selected native row aborts the
+     * transaction rather than clearing an unrelated queue.
+     */
+    fun planNativeIsolation(
+        entries: List<NativeQueueEntry>,
+        currentPosition: Int,
+        selectedTrackId: Long
+    ): NativeIsolationPlan {
+        require(entries.isNotEmpty()) { "Native queue is empty" }
+        require(entries.map { it.queueId }.distinct().size == entries.size) {
+            "Native queue IDs are not unique"
+        }
+        require(entries.map { it.position }.distinct().size == entries.size) {
+            "Native queue positions are not unique"
+        }
+        val current = entries.singleOrNull { it.position == currentPosition }
+            ?: error("Native current queue entry unavailable")
+        require(current.trackId == selectedTrackId) {
+            "The current native song changed before isolation"
+        }
+        return NativeIsolationPlan(
+            selectedEntryId = current.queueId,
+            originalPosition = current.position,
+            removeEntryIds = entries.filter {
+                it.queueId != current.queueId
+            }.map { it.queueId }
+        )
+    }
+
+    /**
+     * A new native track menu must always put the action immediately
+     * after "Play next" without reordering any other native items.
+     */
+    fun insertionIndex(playNextIndex: Int, itemCount: Int): Int {
+        require(playNextIndex in 0 until itemCount)
+        return playNextIndex + 1
+    }
+}

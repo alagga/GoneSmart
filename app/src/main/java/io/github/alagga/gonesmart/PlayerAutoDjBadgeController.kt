@@ -32,6 +32,7 @@ class PlayerAutoDjBadgeController {
         private const val RED = 0xFFFF5C68.toInt()
         private const val RESCAN_DEBOUNCE_MS = 180L
         private const val PLAYBACK_MODE_CHECK_MS = 550L
+        private const val GLYPH_SAFETY_RECHECK_MS = 2000L
 
         // GMMP 4.2.0: visible only on the full Now Playing screen.
         // This is the upper button whose content description is
@@ -62,26 +63,55 @@ class PlayerAutoDjBadgeController {
         val looksLikeHeadphones: Boolean
     )
 
+    private data class GlyphCacheKey(
+        val drawableIdentity: Int,
+        val stateHash: Int,
+        val level: Int,
+        val intrinsicWidth: Int,
+        val intrinsicHeight: Int
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var currentMode = Mode.NONE
 
     private var targetRef: WeakReference<View>? = null
+    private var nowPlayingMarkerRef: WeakReference<View>? = null
     private var activityRef: WeakReference<Activity>? = null
     private var observedDecorRef: WeakReference<View>? = null
     private var overlayDrawable: SparkleBadgeDrawable? = null
     private var loggedMissingTarget = false
-    private var lastScanElapsedMs = Long.MIN_VALUE
     private var modeMonitorScheduled = false
     private var lastAutoDjDetection: Boolean? = null
     private var lastRenderedMode: Mode? = null
-    private var lastGlyphFingerprint: Int? = null
+    private var lastGlyphCacheKey: GlyphCacheKey? = null
+    private var lastGlyphAnalysis: GlyphAnalysis? = null
+    private var lastGlyphAnalysisElapsedMs = Long.MIN_VALUE
 
     private val globalLayoutListener =
         ViewTreeObserver.OnGlobalLayoutListener {
             scheduleRescan()
         }
+
+    private val rescanRunnable = Runnable {
+        val activity = activityRef?.get() ?: return@Runnable
+        if (activity.isFinishing || activity.isDestroyed) return@Runnable
+        val target = targetRef?.get()
+        val marker = nowPlayingMarkerRef?.get()
+        if (
+            isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
+            isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
+        ) {
+            if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                updateOverlayBounds(target!!)
+            } else {
+                clearOverlay()
+            }
+            return@Runnable
+        }
+        findAndAttach(activity, forceLog = false)
+    }
 
     private val modeMonitorRunnable = object : Runnable {
         override fun run() {
@@ -94,22 +124,23 @@ class PlayerAutoDjBadgeController {
             }
 
             val target = targetRef?.get()
+            val marker = nowPlayingMarkerRef?.get()
             if (
-                target != null &&
-                target.isAttachedToWindow &&
-                target.isShown &&
-                resourceName(target).equals(
-                    PLAYBACK_MODE_RESOURCE_NAME,
-                    ignoreCase = true
-                ) &&
-                isFullNowPlayingVisible(activity)
+                isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
+                isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
             ) {
-                refreshBadge(target)
+                if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                    refreshBadge(target!!)
+                } else {
+                    clearOverlay()
+                }
+                scheduleModeMonitor()
             } else {
-                findAndAttach(activity, forceLog = false)
+                // Missing Now Playing must not become an endless 550-ms
+                // full decor-tree scan while the Library pager is active.
+                clearOverlay()
+                scheduleRescan()
             }
-
-            scheduleModeMonitor()
         }
     }
 
@@ -118,17 +149,14 @@ class PlayerAutoDjBadgeController {
 
         val activity = activityRef?.get()
         val target = targetRef?.get()
+        val marker = nowPlayingMarkerRef?.get()
 
         if (
             activity != null &&
             target != null &&
-            target.isAttachedToWindow &&
-            target.isShown &&
-            resourceName(target).equals(
-                PLAYBACK_MODE_RESOURCE_NAME,
-                ignoreCase = true
-            ) &&
-            isFullNowPlayingVisible(activity)
+            marker != null &&
+            isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
+            isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
         ) {
             target.post { refreshBadge(target) }
         } else {
@@ -141,12 +169,9 @@ class PlayerAutoDjBadgeController {
 
         val decor = activity.window?.decorView ?: return
         installGlobalLayoutListener(decor)
-        scheduleModeMonitor()
-
-        decor.post { findAndAttach(activity, forceLog = false) }
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = false) }, 250L)
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = false) }, 900L)
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = true) }, 1800L)
+        // Discover once after layout quiet. A later Now-Playing creation
+        // produces its own layout event and schedules another bounded scan.
+        scheduleRescan()
     }
 
     private fun scheduleModeMonitor() {
@@ -173,17 +198,29 @@ class PlayerAutoDjBadgeController {
     }
 
     private fun scheduleRescan() {
-        val now = SystemClock.elapsedRealtime()
+        val activity = activityRef?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
+        val target = targetRef?.get()
+        val marker = nowPlayingMarkerRef?.get()
+
+        // ViewPager visibility changes do not invalidate a verified anchor.
         if (
-            lastScanElapsedMs != Long.MIN_VALUE &&
-            now - lastScanElapsedMs < RESCAN_DEBOUNCE_MS
+            isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
+            isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
         ) {
+            mainHandler.removeCallbacks(rescanRunnable)
+            if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                updateOverlayBounds(target!!)
+            } else {
+                clearOverlay()
+            }
             return
         }
 
-        lastScanElapsedMs = now
-        val activity = activityRef?.get() ?: return
-        mainHandler.post { findAndAttach(activity, forceLog = false) }
+        // True trailing debounce: continuous pager layout waves keep pushing
+        // the one structural recovery scan back until the UI is quiet.
+        mainHandler.removeCallbacks(rescanRunnable)
+        mainHandler.postDelayed(rescanRunnable, RESCAN_DEBOUNCE_MS)
     }
 
     private fun findAndAttach(
@@ -199,40 +236,23 @@ class PlayerAutoDjBadgeController {
         val views = mutableListOf<View>()
         collectViews(decor, views)
 
-        val nowPlayingVisible = views.any { view ->
-            view.isShown &&
-                view.width > 0 &&
-                view.height > 0 &&
-                resourceName(view).equals(
-                    NOW_PLAYING_MARKER_RESOURCE_NAME,
-                    ignoreCase = true
-                )
+        val nowPlayingMarker = views.firstOrNull { view ->
+            isUsableNativeView(view, NOW_PLAYING_MARKER_RESOURCE_NAME)
         }
 
-        if (!nowPlayingVisible) {
+        if (nowPlayingMarker == null) {
             detachTarget()
-            if (forceLog && !loggedMissingTarget) {
-                loggedMissingTarget = true
-                Log.i(
-                    TAG,
-                    "PLAYER BADGE HIDDEN | full Now Playing screen is not visible"
-                )
-            }
+            loggedMissingTarget = false
             return
         }
 
         val target = views.firstOrNull { view ->
-            view.isShown &&
-                view.width > 0 &&
-                view.height > 0 &&
-                resourceName(view).equals(
-                    PLAYBACK_MODE_RESOURCE_NAME,
-                    ignoreCase = true
-                )
+            isUsableNativeView(view, PLAYBACK_MODE_RESOURCE_NAME)
         }
 
         if (target == null) {
             detachTarget()
+            nowPlayingMarkerRef = WeakReference(nowPlayingMarker)
             if (forceLog && !loggedMissingTarget) {
                 loggedMissingTarget = true
                 Log.w(
@@ -247,47 +267,42 @@ class PlayerAutoDjBadgeController {
         val existing = targetRef?.get()
         if (existing === target) {
             loggedMissingTarget = false
+            nowPlayingMarkerRef = WeakReference(nowPlayingMarker)
             updateOverlayBounds(target)
             refreshBadge(target)
+            scheduleModeMonitor()
             return
         }
 
         detachTarget()
         loggedMissingTarget = false
+        nowPlayingMarkerRef = WeakReference(nowPlayingMarker)
         targetRef = WeakReference(target)
         lastAutoDjDetection = null
         lastRenderedMode = null
-        lastGlyphFingerprint = null
-
-        Log.i(
-            TAG,
-            "PLAYER BADGE PLAYBACK-MODE TARGET ATTACHED | ${describeView(target)}"
-        )
+        clearGlyphAnalysisCache()
 
         refreshBadge(target)
+        scheduleModeMonitor()
     }
 
-    private fun isFullNowPlayingVisible(activity: Activity): Boolean {
-        val decor = activity.window?.decorView ?: return false
-        val views = mutableListOf<View>()
-        collectViews(decor, views)
+    private fun isUsableNativeView(view: View?, expectedResourceName: String): Boolean {
+        return view != null &&
+            view.isAttachedToWindow &&
+            resourceName(view).equals(expectedResourceName, ignoreCase = true)
+    }
 
-        return views.any { view ->
+    private fun isVisibleNativeView(view: View?): Boolean =
+        view != null &&
+            view.isAttachedToWindow &&
             view.isShown &&
-                resourceName(view).equals(
-                    NOW_PLAYING_MARKER_RESOURCE_NAME,
-                    ignoreCase = true
-                )
-        }
-    }
+            view.width > 0 &&
+            view.height > 0
 
     private fun resourceName(view: View): String {
+        if (!NativeResourceIdPolicy.canResolveEntryName(view.id)) return ""
         return try {
-            if (view.id != View.NO_ID) {
-                view.resources.getResourceEntryName(view.id)
-            } else {
-                ""
-            }
+            view.resources.getResourceEntryName(view.id)
         } catch (_: Throwable) {
             ""
         }
@@ -298,16 +313,6 @@ class PlayerAutoDjBadgeController {
 
         if (lastAutoDjDetection != autoDjActive) {
             lastAutoDjDetection = autoDjActive
-            Log.i(
-                TAG,
-                "PLAYER BADGE PLAYBACK MODE | " +
-                    if (autoDjActive) {
-                        "AUTO-DJ"
-                    } else {
-                        "NOT AUTO-DJ"
-                    } +
-                    " | ${describeView(target)}"
-            )
         }
 
         val desiredMode =
@@ -372,22 +377,28 @@ class PlayerAutoDjBadgeController {
 
         val imageView = target as? ImageView ?: return false
         val drawable = imageView.drawable ?: return false
-        val analysis = analyzeGlyph(drawable)
-
-        if (lastGlyphFingerprint != analysis.fingerprint) {
-            lastGlyphFingerprint = analysis.fingerprint
-            Log.i(
-                TAG,
-                "PLAYER BADGE GLYPH | " +
-                    "autoDj=${analysis.looksLikeHeadphones} | " +
-                    "mirror=${format(analysis.mirrorIou)} | " +
-                    "top=${format(analysis.topCenter)} | " +
-                    "lowerCenter=${format(analysis.lowerCenter)} | " +
-                    "lowerLeft=${format(analysis.lowerLeft)} | " +
-                    "lowerRight=${format(analysis.lowerRight)} | " +
-                    "active=${format(analysis.activeFraction)} | " +
-                    "fp=${analysis.fingerprint}"
-            )
+        val cacheKey = GlyphCacheKey(
+            drawableIdentity = System.identityHashCode(drawable),
+            stateHash = drawable.state.contentHashCode(),
+            level = drawable.level,
+            intrinsicWidth = drawable.intrinsicWidth,
+            intrinsicHeight = drawable.intrinsicHeight
+        )
+        val now = SystemClock.elapsedRealtime()
+        val cached = lastGlyphAnalysis
+        val canReuse =
+            cached != null &&
+                lastGlyphCacheKey == cacheKey &&
+                lastGlyphAnalysisElapsedMs != Long.MIN_VALUE &&
+                now - lastGlyphAnalysisElapsedMs < GLYPH_SAFETY_RECHECK_MS
+        val analysis = if (canReuse) {
+            cached!!
+        } else {
+            analyzeGlyph(drawable).also {
+                lastGlyphCacheKey = cacheKey
+                lastGlyphAnalysis = it
+                lastGlyphAnalysisElapsedMs = now
+            }
         }
 
         return analysis.looksLikeHeadphones
@@ -616,9 +627,16 @@ class PlayerAutoDjBadgeController {
     private fun detachTarget() {
         clearOverlay()
         targetRef = null
+        nowPlayingMarkerRef = null
         lastAutoDjDetection = null
         lastRenderedMode = null
-        lastGlyphFingerprint = null
+        clearGlyphAnalysisCache()
+    }
+
+    private fun clearGlyphAnalysisCache() {
+        lastGlyphCacheKey = null
+        lastGlyphAnalysis = null
+        lastGlyphAnalysisElapsedMs = Long.MIN_VALUE
     }
 
     private fun clearOverlay() {
@@ -688,6 +706,15 @@ class PlayerAutoDjBadgeController {
 
         private var drawableAlpha = 255
         private var currentColorFilter: android.graphics.ColorFilter? = null
+        private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+        private val sparklePath = Path()
+        private var glowCx = Float.NaN
+        private var glowCy = Float.NaN
+        private var glowRadius = Float.NaN
+        private var glowColor = 0
+        private var glowAlpha = -1
 
         /**
          * GMMP can change colorAccent without recreating the playlist FAB.
@@ -699,6 +726,7 @@ class PlayerAutoDjBadgeController {
             badgeColor = color
             fillPaint.color = color
             highlightPaint.color = lighten(color, 0.58f)
+            invalidateGlowShader()
             invalidateSelf()
         }
 
@@ -733,12 +761,23 @@ class PlayerAutoDjBadgeController {
                 centerY - size * (if (badgeScale > 1.2f) 0.14f else 0.17f)
             }
 
-            val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.FILL
-                shader = RadialGradient(
+            val haloRadius = radius * 1.72f
+            if (glowPaint.shader == null ||
+                glowCx != cx ||
+                glowCy != cy ||
+                glowRadius != haloRadius ||
+                glowColor != badgeColor ||
+                glowAlpha != drawableAlpha
+            ) {
+                glowCx = cx
+                glowCy = cy
+                glowRadius = haloRadius
+                glowColor = badgeColor
+                glowAlpha = drawableAlpha
+                glowPaint.shader = RadialGradient(
                     cx,
                     cy,
-                    radius * 1.72f,
+                    haloRadius,
                     intArrayOf(
                         withAlpha(badgeColor, scaledAlpha(88)),
                         withAlpha(badgeColor, scaledAlpha(38)),
@@ -747,12 +786,12 @@ class PlayerAutoDjBadgeController {
                     floatArrayOf(0.0f, 0.46f, 1.0f),
                     Shader.TileMode.CLAMP
                 )
-                colorFilter = currentColorFilter
             }
+            glowPaint.colorFilter = currentColorFilter
             canvas.drawCircle(
                 cx,
                 cy,
-                radius * 1.72f,
+                haloRadius,
                 glowPaint
             )
 
@@ -802,7 +841,8 @@ class PlayerAutoDjBadgeController {
             val waist = radius * 0.16f
             val curve = radius * 0.52f
 
-            val path = Path().apply {
+            val path = sparklePath.apply {
+                reset()
                 moveTo(cx, cy - radius)
 
                 cubicTo(
@@ -849,6 +889,7 @@ class PlayerAutoDjBadgeController {
 
         override fun setAlpha(alpha: Int) {
             drawableAlpha = alpha.coerceIn(0, 255)
+            invalidateGlowShader()
             invalidateSelf()
         }
 
@@ -859,6 +900,14 @@ class PlayerAutoDjBadgeController {
 
         @Deprecated("Deprecated in Java")
         override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        private fun invalidateGlowShader() {
+            glowPaint.shader = null
+            glowCx = Float.NaN
+            glowCy = Float.NaN
+            glowRadius = Float.NaN
+            glowAlpha = -1
+        }
 
         private fun scaledAlpha(alpha: Int): Int {
             return (

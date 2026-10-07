@@ -42,6 +42,10 @@ class GmmpArtistCatalog {
             Set<String> =
         emptySet()
 
+    @Volatile
+    private var artistDaoMappingDiagnosed =
+        false
+
     /**
      * Lädt den Artist-Katalog einmalig über
      * GMMPs eigene Database-/DAO-Objekte.
@@ -69,15 +73,14 @@ class GmmpArtistCatalog {
         try {
 
             /*
-             * qr.t = GMDatabase
+             * GMMP 4.2.0: qr.t = GMDatabase.
+             * 4.2.1 remapped that field. Prefer the verified legacy field
+             * when it is still database-like, otherwise accept only one
+             * structurally unique GMDatabase/RoomDatabase instance field.
              */
             val database =
-                readObjectField(
-                    target =
-                        autoDjInstance,
-
-                    fieldName =
-                        "t"
+                resolveDatabaseInstance(
+                    autoDjInstance
                 )
 
             if (
@@ -88,6 +91,10 @@ class GmmpArtistCatalog {
                     TAG,
                     "GMMP artist catalog: " +
                             "GMDatabase not available"
+                )
+
+                diagnoseAutoDjDatabaseFields(
+                    autoDjInstance
                 )
 
                 return
@@ -122,6 +129,13 @@ class GmmpArtistCatalog {
                             "ArtistDao accessor not found"
                 )
 
+                diagnoseArtistDaoAccessor(
+                    database.javaClass
+                )
+                diagnoseAutoDjDatabaseFields(
+                    autoDjInstance
+                )
+
                 return
             }
 
@@ -147,44 +161,66 @@ class GmmpArtistCatalog {
             }
 
             /*
-             * tp4 =
-             *
-             * GMMP/Room SimpleSQLiteQuery.
-             *
-             * Wir erzeugen das Query-Objekt mit
-             * demselben ClassLoader wie GMMP.
+             * GMMP 4.2.0: ArtistDao.R1(tp4) where tp4 was the
+             * native Room RawQuery wrapper. 4.2.1 remapped the query type.
+             * Keep the verified native DAO method boundary first and derive
+             * the query class from its real parameter instead of hard-coding
+             * the obfuscated wrapper name.
              */
-            val classLoader =
-                database.javaClass.classLoader
+            val queryMethod =
+                findSingleArgMethodByName(
+                    startClass =
+                        artistDao.javaClass,
 
-            if (
-                classLoader == null
-            ) {
-
-                Log.w(
-                    TAG,
-                    "GMMP artist catalog: " +
-                            "GMMP ClassLoader unavailable"
+                    methodName =
+                        "R1"
                 )
+                    ?: run {
+                        diagnoseArtistQueryMethod(
+                            artistDao.javaClass
+                        )
+                        val fallback = loadAmpersandArtistsThroughCursor(
+                            autoDjInstance
+                        )
+                        if (fallback != null) {
+                            knownAmpersandArtists = fallback
+                            loaded = true
+                            Log.i(
+                                TAG,
+                                "GMMP artist catalog loaded through " +
+                                    "read-only database Cursor: " +
+                                    fallback.size +
+                                    " artist(s) containing '&'"
+                            )
+                        }
+                        return
+                    }
 
-                return
-            }
+            queryMethod.isAccessible =
+                true
 
             val queryClass =
-                classLoader.loadClass(
-                    "tp4"
-                )
+                queryMethod.parameterTypes
+                    .single()
 
             val objectArrayClass =
                 emptyArray<Any?>()
                     .javaClass
 
             val queryConstructor =
-                queryClass
-                    .getDeclaredConstructor(
-                        String::class.java,
-                        objectArrayClass
-                    )
+                runCatching {
+                    queryClass
+                        .getDeclaredConstructor(
+                            String::class.java,
+                            objectArrayClass
+                        )
+                }.getOrNull()
+                    ?: run {
+                        diagnoseArtistQueryClass(
+                            queryClass
+                        )
+                        return
+                    }
 
             queryConstructor.isAccessible =
                 true
@@ -197,43 +233,6 @@ class GmmpArtistCatalog {
 
                         emptyArray<Any?>()
                     )
-
-            /*
-             * ArtistDao.R1(tp4)
-             *
-             * =>
-             *
-             * List<Artist>
-             *
-             * Das ist eine echte GMMP-DAO-Funktion.
-             */
-            val queryMethod =
-                findSingleArgMethod(
-                    startClass =
-                        artistDao.javaClass,
-
-                    methodName =
-                        "R1",
-
-                    argumentClass =
-                        queryClass
-                )
-
-            if (
-                queryMethod == null
-            ) {
-
-                Log.w(
-                    TAG,
-                    "GMMP artist catalog: " +
-                            "ArtistDao.R1() not found"
-                )
-
-                return
-            }
-
-            queryMethod.isAccessible =
-                true
 
             val result =
                 queryMethod.invoke(
@@ -320,6 +319,221 @@ class GmmpArtistCatalog {
                 t
             )
         }
+    }
+
+    private fun loadAmpersandArtistsThroughCursor(
+        autoDjInstance: Any
+    ): Set<String>? = runCatching {
+        GmmpReadOnlySql.query(
+            autoDjInstance = autoDjInstance,
+            sql = AMPERSAND_ARTIST_QUERY.trimIndent()
+        ) { cursor ->
+            val index = cursor.getColumnIndex("artist")
+            require(index >= 0) {
+                "GMMP artist Cursor missing artist column"
+            }
+            buildSet {
+                while (cursor.moveToNext()) {
+                    if (!cursor.isNull(index)) {
+                        cursor.getString(index)
+                            ?.trim()
+                            ?.takeIf {
+                                it.isNotBlank() && it.contains("&")
+                            }
+                            ?.let(::add)
+                    }
+                }
+            }
+        }
+    }.onFailure {
+        Log.w(
+            TAG,
+            "GMMP artist catalog read-only Cursor fallback unavailable",
+            it
+        )
+    }.getOrNull()
+
+    private fun resolveDatabaseInstance(
+        autoDjInstance: Any
+    ): Any? {
+        fun isDatabaseLike(
+            declaredType: Class<*>,
+            value: Any?
+        ): Boolean {
+            if (
+                declaredType.name ==
+                    "gonemad.gmmp.data.database.GMDatabase"
+            ) {
+                return value != null
+            }
+
+            val runtimeClass =
+                value?.javaClass
+                    ?: return false
+
+            return generateSequence<Class<*>>(runtimeClass) {
+                it.superclass
+            }.any {
+                it.name == "androidx.room.RoomDatabase" ||
+                    it.name ==
+                        "gonemad.gmmp.data.database.GMDatabase"
+            }
+        }
+
+        findField(
+            startClass = autoDjInstance.javaClass,
+            fieldName = "t"
+        )?.let { legacy ->
+            legacy.isAccessible = true
+            val value =
+                runCatching {
+                    legacy.get(autoDjInstance)
+                }.getOrNull()
+
+            if (
+                isDatabaseLike(
+                    legacy.type,
+                    value
+                )
+            ) {
+                return value
+            }
+        }
+
+        val candidates =
+            generateSequence<Class<*>>(autoDjInstance.javaClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .mapNotNull { field ->
+                    field.isAccessible = true
+                    val value =
+                        runCatching {
+                            field.get(autoDjInstance)
+                        }.getOrNull()
+
+                    if (
+                        isDatabaseLike(
+                            field.type,
+                            value
+                        )
+                    ) {
+                        field to value
+                    } else {
+                        null
+                    }
+                }
+                .toList()
+
+        val resolved =
+            candidates.singleOrNull()
+                ?: return null
+
+        val field =
+            resolved.first
+
+        val database =
+            resolved.second
+                ?: return null
+
+        Log.w(
+            TAG,
+            "GMMP DATABASE MAPPING | legacy=qr.t unavailable" +
+                " | structurally resolved=" +
+                field.name + ":" +
+                field.type.name + "->" +
+                database.javaClass.name
+        )
+
+        return database
+    }
+
+    private fun diagnoseAutoDjDatabaseFields(
+        autoDjInstance: Any
+    ) {
+        val fields =
+            generateSequence<Class<*>>(autoDjInstance.javaClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .distinctBy { it.name }
+                .sortedBy { it.name }
+                .toList()
+
+        val entries =
+            fields.take(32).map { field ->
+                field.isAccessible = true
+                val runtimeType =
+                    runCatching {
+                        field.get(autoDjInstance)
+                            ?.javaClass
+                            ?.name
+                    }.getOrNull()
+                        ?: "null"
+
+                val roomLike =
+                    runCatching {
+                        field.get(autoDjInstance)
+                    }.getOrNull()
+                        ?.let { value ->
+                            generateSequence<Class<*>>(
+                                value.javaClass
+                            ) { it.superclass }
+                                .any {
+                                    it.name ==
+                                        "androidx.room.RoomDatabase"
+                                }
+                        } == true
+
+                field.name + ":" +
+                    field.type.name + "->" +
+                    runtimeType +
+                    if (roomLike) "[RoomDatabase]" else ""
+            }
+
+        Log.w(
+            TAG,
+            "GMMP DATABASE FIELD MAPPING | autoDj=" +
+                autoDjInstance.javaClass.name +
+                " | fields=" +
+                entries.joinToString(",").ifBlank { "none" } +
+                " | fieldCount=" + fields.size
+        )
+    }
+
+    private fun diagnoseArtistDaoAccessor(
+        databaseClass: Class<*>
+    ) {
+        if (artistDaoMappingDiagnosed) return
+        artistDaoMappingDiagnosed = true
+
+        val methods =
+            generateSequence<Class<*>>(databaseClass) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter {
+                    it.parameterTypes.isEmpty() &&
+                        it.returnType != java.lang.Void.TYPE
+                }
+                .distinctBy { it.name + "|" + it.returnType.name }
+                .sortedBy { it.name }
+                .toList()
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST DAO MAPPING | expected=" +
+                databaseClass.name + ".y() unavailable" +
+                " | noArgMethods=" +
+                methods.take(24).joinToString(",") {
+                    it.name + "():" + it.returnType.name
+                }.ifBlank { "none" } +
+                " | noArgMethodCount=" + methods.size
+        )
     }
 
     /**
@@ -477,6 +691,86 @@ class GmmpArtistCatalog {
         }
 
         return null
+    }
+
+    private fun findSingleArgMethodByName(
+        startClass: Class<*>,
+        methodName: String
+    ): Method? {
+        val candidates =
+            generateSequence<Class<*>>(startClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter {
+                    it.name == methodName &&
+                        it.parameterTypes.size == 1
+                }
+                .toList()
+
+        return candidates.singleOrNull()
+    }
+
+    private fun diagnoseArtistQueryMethod(
+        artistDaoClass: Class<*>
+    ) {
+        val methods =
+            generateSequence<Class<*>>(artistDaoClass) {
+                it.superclass
+            }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter { it.parameterTypes.size == 1 }
+                .distinctBy {
+                    it.name + "|" +
+                        it.parameterTypes.single().name + "|" +
+                        it.returnType.name
+                }
+                .sortedBy { it.name }
+                .toList()
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST QUERY MAPPING | expected=" +
+                artistDaoClass.name + ".R1/1 unavailable" +
+                " | oneArgMethods=" +
+                methods.take(24).joinToString(",") {
+                    it.declaringClass.name + "." +
+                        it.name + "(" +
+                        it.parameterTypes.single().name +
+                        "):" + it.returnType.name +
+                        "<" + it.genericReturnType.typeName + ">" +
+                        if (
+                            java.lang.reflect.Modifier
+                                .isAbstract(it.modifiers)
+                        ) {
+                            "[abstract]"
+                        } else {
+                            ""
+                        }
+                }.ifBlank { "none" } +
+                " | oneArgMethodCount=" + methods.size
+        )
+    }
+
+    private fun diagnoseArtistQueryClass(
+        queryClass: Class<*>
+    ) {
+        val constructors =
+            queryClass.declaredConstructors
+                .sortedBy { it.parameterTypes.size }
+
+        Log.w(
+            TAG,
+            "GMMP ARTIST QUERY CLASS | type=" +
+                queryClass.name +
+                " | constructors=" +
+                constructors.take(12).joinToString(",") { constructor ->
+                    "(" +
+                        constructor.parameterTypes
+                            .joinToString(",") { it.name } +
+                        ")"
+                }.ifBlank { "none" }
+        )
     }
 
     private fun findSingleArgMethod(

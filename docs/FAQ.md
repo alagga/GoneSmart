@@ -40,7 +40,7 @@ A successful pipeline produces multiple ranked local track IDs. GMMP then consum
 
 ## What does Rating fallback do?
 
-When hard Minimum/Smart rating filters are the reason no suitable track remains, GoneSmart can retry the same recommendation candidates without those two filters. Other rules, including Exclude 0.5-star tracks, still apply. A status message is shown when this fallback is used.
+The **Rating fallback** switch is available only when Minimum rating is above zero or Smart rating is enabled. If neither threshold is active, the switch is greyed out and reset to off. When hard Minimum/Smart rating filters are the reason no suitable track remains, GoneSmart can retry the same recommendation candidates without those two filters. Other rules, including Exclude 0.5-star tracks, still apply. A status message is shown when this fallback is used.
 
 ## What does the native GMMP fallback do?
 
@@ -66,22 +66,71 @@ GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or f
 
 ## Does changing settings require a restart?
 
-No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
-
-## Why is Rating fallback greyed out?
-
-Rating fallback only makes sense when **Minimum rating** is above 0 or **Smart rating** is enabled. Until at least one of those restrictions is active, the Smart DJ switch is disabled and its existing preference is remembered. It becomes available immediately when you activate either rating restriction. Turning both restrictions off disables the control again; Smart DJ already skips rating fallback when no rating restriction is active.
+**Home → Settings** explains the shared live behavior for both feature tabs. No restart is needed for ordinary **Smart DJ** or **UI** setting changes: both are sent to the running GMMP process. Recommendation-related changes invalidate the current pool so the next refill uses the new settings without interrupting playback. UI tweaks can be switched on or off independently of Smart DJ. Restart GMMP after installing or updating the module, changing its scope, or when troubleshooting hook state.
 
 ## How do I add several tracks to several playlists?
 
-Enable **Multi-playlist selection** under GoneSmart's **UI** tab. In GMMP's Add to Playlist dialog, long-press the first destination and tap further destinations. The confirmation checkmark adds all original source files to each selected playlist using GMMP's own playlist writer. The confirmation appears once, with the number of files and successfully updated destinations. Press Back to cancel selection without dismissing the picker.
+Enable **UI → Playlists → Multi-selection**. In GMMP's Add to Playlist dialog, long-press the first destination and tap further destinations. The confirmation checkmark adds all original source files to each selected playlist using GMMP's own playlist writer. The confirmation appears once, with the number of files and successfully updated destinations. Press Back to cancel selection without dismissing the picker.
 
 The selected rows and action bar follow GMMP's dynamic colors. GoneSmart reuses GMMP's own localized strings for this feature; another GMMP language does not require a separate GoneSmart translation. Normal taps and GMMP's create-playlist plus button remain unchanged.
 
 ## Can I use the UI feature without Smart DJ?
 
-Yes. Multi-playlist selection has its own switch and works when Smart DJ is turned off, provided the module is enabled for GMMP.
+Yes. Playlist/Smart-Playlist folders, both multi-selection options, Playlist Link, Flip and Track Auto-DJ are UI extensions that do not require Smart DJ to be enabled unless the feature itself explicitly starts Smart DJ (Track Auto-DJ).
+
+## How does Track Auto-DJ work, and can I turn it off?
+
+**Track Auto-DJ** appears after **Play next** in an individual song's three-dot menu. It starts that song, keeps it as the first entry of a fresh queue, enables Smart DJ if necessary and lets GMMP Auto-DJ fill the queue to its configured Initial Size. Turn this feature on or off independently under **GoneSmart → UI → Track Auto-DJ**. It is enabled by default for existing users.
+
+After a successful, verified mix, GoneSmart displays just **one short confirmation**. GMMP's intermediate Play/Auto-DJ Toasts and Snackbars—including delayed Auto-DJ-rules-changed status UI—are suppressed only during the bounded Track Auto-DJ startup window. A genuine error still produces one warning and detailed information in the Logs tab. If Auto-DJ starts refilling the old queue while a mix is being prepared, GoneSmart temporarily defers further old-session refills, then atomically removes the other native queue entries by their unique queue IDs. No repeated asynchronous queue-clearing commands are needed; the selected song and native playback pointer are verified before filling.
+
+## Why does the GoneSmart app say “Track Auto-DJ” when GMMP is German?
+
+GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it shows a language-neutral checkmark. No copied GMMP translations are maintained in GoneSmart.
 
 ## How are GoneSmart updates handled?
 
 The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.
+
+
+## How do Playlist folders work?
+
+Enable **UI → Playlists → Folders**. GMMP's original Playlists navigation entry gains a lilac GoneSmart sparkle. Both the main Playlists tab and Add to Playlist picker show real nested physical folders before loose playlists. **Group external playlists** and **Group root playlists** independently determine which entries appear in the virtual **Other Locations** folder; a real physical directory of the same name is independent. The main tab remembers its folder, while every newly opened Add picker starts in root. Android Back and the picker's top-left Back button navigate up one folder at a time before closing the picker from root.
+
+## Where are new playlists and folders created?
+
+GoneSmart reuses GMMP's original creation and native playlist-writing functionality. The current physical folder is the new playlist's destination. With **Group root playlists** on, root playlists are created from virtual Other Locations; with that option off, they are created directly from the root view. Folder creation/deletion operates on supported physical folders, not on the virtual grouping node. The main tab hides only its native **Add** menu entry when the location forbids creating a playlist, while leaving the other overflow actions intact. The Add picker offers native-styled new-playlist and new-folder choices while keeping multi-selection confirmation available.
+
+## Can I move several playlists between folders?
+
+Yes. In the main Playlists tab, long-press the first playlist and select additional playlists, choose **Move**, navigate to an eligible destination and tap the white checkmark. The destination FAB follows GMMP's native theme and stays above the mini-player. GoneSmart stages originals privately, uses GMMP's original playlist deletion and library-scan operations, verifies the native playlist index and can recover from a partially completed operation. It does not perform a blind file rename or direct database manipulation. Successful moves update the native list without an extra Toast; genuine errors remain visible. Use disposable playlists when testing a new GMMP version.
+
+## How do Smart-Playlist folders work?
+
+Enable **UI → Smart-Playlists → Folders**. GMMP's original Smart-Playlist rows remain native; GoneSmart adds the physical-folder header, breadcrumb and folder actions. **Group root Smart-Playlists** optionally places root `.spl` files in virtual **Other Locations**.
+
+Enable **Multi-selection** in the same section to long-press one native Smart-Playlist row, select more rows and move them together. This selection mode is provided by GoneSmart on the tested GMMP 4.2.0 runtime because native Smart-row long press does not actually start GMMP's generic selection ActionMode there.
+
+## Can I move Smart-Playlists between folders?
+
+Yes. Use **Move** from an individual Smart-Playlist menu or select several Smart-Playlists with **UI → Smart-Playlists → Multi-selection**. GoneSmart restricts moves to verified `.spl` files inside the configured Smart root, never overwrites an existing destination and rolls earlier files back if a later multi-move fails.
+
+Before moving, GoneSmart checks native linked-Smart rules across the Smart root. If another native Smart-Playlist references a selected source by absolute path, the move is blocked instead of silently breaking that link.
+
+## What is Playlist Link?
+
+Enable **UI → Smart-Playlists → Playlist Link**. Playlist Link extends the Smart-Playlist editor's existing Link action. Choose **Playlist** to use the current membership of an ordinary GMMP playlist as a Smart-rule source. GoneSmart reads that source through GMMP's native playlist parser and compiles it through GMMP's native Smart query predicates, so changing the ordinary playlist changes later Smart-Playlist results without copying a snapshot.
+
+## What happens to existing Playlist Link rules if Playlist Link or GoneSmart is disabled?
+
+Saved Playlist Link rules are not deleted. They remain visible inside the Smart-Playlist, and GMMP can still open and use that Smart-Playlist. The persisted V2 Playlist Link representation contains a native boolean-neutral linked-`.spl` compatibility rule, so while **UI → Smart-Playlists → Playlist Link** is off — or when GoneSmart itself is unavailable — the Link leaves stop contributing membership instead of breaking the Smart-Playlist. The remaining native rules continue to work. Re-enabling Playlist Link restores live membership from the ordinary playlists.
+
+Both the disabled-GoneSmart compatibility and the separate live Playlist Link switch have now been confirmed on the maintainer's GMMP 4.2.0 setup. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
+
+## Does Playlist Link survive moving or renaming its source playlist?
+
+Playlist Link identifies the ordinary source by its stored path. If that source is moved or renamed outside a Playlist-Link-aware migration, GoneSmart does not guess a replacement from the display name; the source is treated as unavailable and the Link rule fails closed. Edit the Link rule and choose the intended source again.
+
+## Why does Move have a separate translation table?
+
+GMMP 4.2.0 has localized resources for its built-in playlist/folder actions, but no suitable native **Move** resource for GoneSmart's new playlist relocation action. GoneSmart resolves other injected player text from the installed GMMP's resources and uses one central host-locale translation for **Move**, covering the known GMMP 4.2.0 language codes. The additional feature-owned virtual **Other Locations** name also has host-language fallbacks when no installed native translation exists. Unknown future languages fall back to English. This is distinct from the **English-only** GoneSmart companion UI; these custom translations still need independent native-speaker review before broader release claims.

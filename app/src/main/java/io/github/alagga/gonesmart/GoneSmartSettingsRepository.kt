@@ -29,6 +29,27 @@ class GoneSmartSettingsRepository(
             .putBoolean(GoneSmartSettingsKeys.KEY_INITIALIZED, true)
             .putBoolean(GoneSmartSettingsKeys.KEY_ENABLED, local.enabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, local.multiPlaylistEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, local.playlistFoldersEnabled)
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
+                local.smartPlaylistFoldersEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                local.smartMultiPlaylistEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                local.playlistBridgeEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                local.smartGroupRootPlaylists
+            )
+            .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, local.groupExternalPlaylists)
+            .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, local.groupRootPlaylists)
+            .putBoolean(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, local.flipQueueEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_TRACK_MIX, local.trackMixEnabled)
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                 local.preferHigherRatedMatches
@@ -91,9 +112,14 @@ class GoneSmartSettingsRepository(
         key: String,
         value: Boolean
     ) {
-        localPreferences.edit()
+        val editor = localPreferences.edit()
             .putBoolean(key, value)
-            .apply()
+        // A later explicit user choice overrides Track Mix's queued
+        // auto-enable command if the Xposed service was not yet bound.
+        if (key == GoneSmartSettingsKeys.KEY_ENABLED && !value) {
+            editor.remove("pending_track_mix_enable")
+        }
+        editor.apply()
 
         remotePreferences()
             ?.edit()
@@ -135,6 +161,27 @@ class GoneSmartSettingsRepository(
         localPreferences.edit()
             .putBoolean(GoneSmartSettingsKeys.KEY_ENABLED, options.enabled)
             .putBoolean(GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST, options.multiPlaylistEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS, options.playlistFoldersEnabled)
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
+                options.smartPlaylistFoldersEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                options.smartMultiPlaylistEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                options.playlistBridgeEnabled
+            )
+            .putBoolean(
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                options.smartGroupRootPlaylists
+            )
+            .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, options.groupExternalPlaylists)
+            .putBoolean(GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS, options.groupRootPlaylists)
+            .putBoolean(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
+            .putBoolean(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
             .putBoolean(
                 GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                 options.preferHigherRatedMatches

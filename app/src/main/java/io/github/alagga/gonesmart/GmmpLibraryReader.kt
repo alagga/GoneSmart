@@ -168,6 +168,13 @@ class GmmpLibraryReader {
             Long =
         0L
 
+    @Volatile
+    private var deterministicMappingFailure =
+        false
+
+    fun hasDeterministicMappingFailure(): Boolean =
+        deterministicMappingFailure
+
     fun read(
         autoDjInstance: Any,
         forceRefresh: Boolean = false
@@ -302,11 +309,21 @@ class GmmpLibraryReader {
                 )
 
         val queryMethod =
-            findMethod(
-                type = trackDao.javaClass,
-                name = "g2",
-                parameterCount = 1
-            )
+            runCatching {
+                resolveLibraryQueryMethod(trackDao)
+            }.getOrElse { mappingError ->
+                if (mappingError !is NoSuchMethodException &&
+                    mappingError.cause !is AbstractMethodError
+                ) {
+                    throw mappingError
+                }
+                val tracks = loadLibraryThroughCursor(
+                    autoDjInstance,
+                    startTime
+                )
+                deterministicMappingFailure = false
+                return tracks
+            }
 
         queryMethod.isAccessible =
             true
@@ -338,13 +355,28 @@ class GmmpLibraryReader {
                     emptyArray<Any>()
                 )
 
+        val queryResult =
+            try {
+                queryMethod.invoke(
+                    trackDao,
+                    query
+                )
+            } catch (t: java.lang.reflect.InvocationTargetException) {
+                if (t.cause is AbstractMethodError) {
+                    deterministicMappingFailure = true
+                }
+                throw t
+            }
+
         @Suppress("UNCHECKED_CAST")
         val rows =
-            queryMethod.invoke(
-                trackDao,
-                query
-            ) as? List<Any?>
-                ?: emptyList()
+            queryResult as? List<Any?>
+                ?: run {
+                    deterministicMappingFailure = true
+                    throw IllegalStateException(
+                        "Resolved GMMP library query did not return a List"
+                    )
+                }
 
         val tracks =
             rows
@@ -378,6 +410,88 @@ class GmmpLibraryReader {
                     "durationMs=$elapsedMs"
         )
 
+        return tracks
+    }
+
+    private fun loadLibraryThroughCursor(
+        autoDjInstance: Any,
+        startTime: Long
+    ): List<GmmpLibraryTrack> {
+        val tracks = GmmpReadOnlySql.query(
+            autoDjInstance = autoDjInstance,
+            sql = LIBRARY_QUERY.trimIndent()
+        ) { cursor ->
+            fun column(name: String): Int {
+                val index = cursor.getColumnIndex(name)
+                require(index >= 0) {
+                    "GMMP library Cursor missing column " + name
+                }
+                return index
+            }
+
+            val id = column("song_id")
+            val title = column("track_name")
+            val path = column("track_uri")
+            val artist = column("artist")
+            val albumArtist = column("albumartist")
+            val year = column("track_year")
+            val rating = column("song_rating")
+            val playCount = column("playcount")
+            val skipCount = column("skipcount")
+            val dateAdded = column("track_date_added")
+            val dateUpdated = column("track_date_updated")
+            val lastPlayed = column("track_last_played")
+
+            buildList {
+                while (cursor.moveToNext()) {
+                    val trackId = cursor.getLong(id)
+                    add(
+                        GmmpLibraryTrack(
+                            track = TrackInfo(
+                                id = trackId,
+                                title = if (cursor.isNull(title)) null
+                                    else cursor.getString(title),
+                                artist = if (cursor.isNull(artist)) null
+                                    else cursor.getString(artist),
+                                albumArtist =
+                                    if (cursor.isNull(albumArtist)) null
+                                    else cursor.getString(albumArtist),
+                                path = if (cursor.isNull(path)) null
+                                    else cursor.getString(path)
+                            ),
+                            year = if (cursor.isNull(year)) 0
+                                else cursor.getInt(year),
+                            ratingRaw = if (cursor.isNull(rating)) 0
+                                else cursor.getInt(rating),
+                            playCount = if (cursor.isNull(playCount)) 0
+                                else cursor.getInt(playCount),
+                            skipCount = if (cursor.isNull(skipCount)) 0
+                                else cursor.getInt(skipCount),
+                            dateAddedEpochMs =
+                                if (cursor.isNull(dateAdded)) null
+                                else cursor.getLong(dateAdded)
+                                    .takeIf { it > 0L },
+                            dateUpdatedEpochMs =
+                                if (cursor.isNull(dateUpdated)) null
+                                else cursor.getLong(dateUpdated)
+                                    .takeIf { it > 0L },
+                            lastPlayedEpochMs =
+                                if (cursor.isNull(lastPlayed)) null
+                                else cursor.getLong(lastPlayed)
+                                    .takeIf { it > 0L }
+                        )
+                    )
+                }
+            }
+        }
+
+        val elapsedMs =
+            (System.nanoTime() - startTime) / 1_000_000L
+        Log.i(
+            TAG,
+            "GMMP library loaded through read-only database Cursor: " +
+                tracks.size + " track(s) | durationMs=" + elapsedMs
+        )
         return tracks
     }
 
@@ -693,6 +807,273 @@ class GmmpLibraryReader {
 
         throw NoSuchFieldException(
             "${type.name}.$name"
+        )
+    }
+
+    private fun resolveLibraryQueryMethod(
+        trackDao: Any
+    ): Method {
+        val type =
+            trackDao.javaClass
+        runCatching {
+            findMethod(
+                type = type,
+                name = "g2",
+                parameterCount = 1
+            )
+        }.getOrNull()?.let {
+            return it
+        }
+
+        val objectArrayClass =
+            arrayOfNulls<Any>(0).javaClass
+
+        val oneArgMethods =
+            (
+                generateSequence<Class<*>>(type) { it.superclass }
+                    .flatMap { it.declaredMethods.asSequence() } +
+                    type.methods.asSequence()
+                )
+                .filter { it.parameterTypes.size == 1 }
+                .distinctBy { method ->
+                    method.declaringClass.name + "|" +
+                        method.name + "|" +
+                        method.parameterTypes.joinToString(",") { it.name } + "|" +
+                        method.returnType.name
+                }
+                .sortedWith(
+                    compareBy<Method>(
+                        { it.name },
+                        { it.declaringClass.name }
+                    )
+                )
+                .toList()
+
+        val listCandidates =
+            oneArgMethods.filter {
+                java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+
+        fun hasRawQueryConstructor(method: Method): Boolean {
+            val queryClass = method.parameterTypes.single()
+            return runCatching {
+                queryClass.getDeclaredConstructor(
+                    String::class.java,
+                    objectArrayClass
+                )
+            }.isSuccess
+        }
+
+        val rawQueryMethods =
+            oneArgMethods.filter(::hasRawQueryConstructor)
+
+        val concreteRawQueryMethods =
+            rawQueryMethods.filter {
+                !java.lang.reflect.Modifier.isAbstract(it.modifiers)
+            }
+
+        val concreteListCandidates =
+            concreteRawQueryMethods.filter {
+                java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+
+        val abstractListContracts =
+            rawQueryMethods.filter {
+                java.lang.reflect.Modifier.isAbstract(it.modifiers) &&
+                    java.util.List::class.java.isAssignableFrom(it.returnType)
+            }
+
+        fun signature(method: Method): String =
+            method.declaringClass.name + "." +
+                method.name + "(" +
+                method.parameterTypes.joinToString(",") { it.name } +
+                "):" + method.returnType.name +
+                if (java.lang.reflect.Modifier.isAbstract(method.modifiers)) {
+                    "[abstract]"
+                } else {
+                    ""
+                }
+
+        val resolved =
+            when {
+                concreteListCandidates.size == 1 ->
+                    concreteListCandidates.single()
+
+                abstractListContracts.size == 1 -> {
+                    val contractParam =
+                        abstractListContracts.single()
+                            .parameterTypes
+                            .single()
+
+                    val concreteForContract =
+                        concreteRawQueryMethods.filter {
+                            it.parameterTypes.single() == contractParam &&
+                                (
+                                    it.returnType == Any::class.java ||
+                                        java.util.List::class.java
+                                            .isAssignableFrom(it.returnType)
+                                    )
+                        }
+
+                    concreteForContract.singleOrNull()
+                }
+
+                else -> null
+            }
+
+        if (resolved != null) {
+            Log.w(
+                TAG,
+                "GMMP LIBRARY MAPPING | expected=" + type.name +
+                    ".g2/1 unavailable | structurally resolved=" +
+                    signature(resolved) +
+                    " | abstractContract=" +
+                    abstractListContracts.singleOrNull()
+                        ?.let(::signature)
+                        .orEmpty()
+                        .ifBlank { "none" }
+            )
+            return resolved
+        }
+
+        deterministicMappingFailure = true
+
+        Log.w(
+            TAG,
+            "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
+                " | concreteRawQuery=" +
+                concreteRawQueryMethods.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | abstractContracts=" +
+                abstractListContracts.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | listCandidates=" +
+                listCandidates.take(12).joinToString(",") { signature(it) }
+                    .ifBlank { "none" } +
+                " | oneArgMethodCount=" + oneArgMethods.size
+        )
+
+        diagnoseTrackDaoStructure(
+            trackDao
+        )
+
+        throw NoSuchMethodException(
+            type.name + ".g2/1 is unavailable; GMMP library mapping is unverified"
+        )
+    }
+
+    private fun diagnoseTrackDaoStructure(
+        trackDao: Any
+    ) {
+        val type =
+            trackDao.javaClass
+
+        val hierarchy =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .take(8)
+                .map { it.name }
+                .toList()
+
+        val interfaces =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .flatMap { it.interfaces.asSequence() }
+                .map { it.name }
+                .distinct()
+                .take(16)
+                .toList()
+
+        val instanceFields =
+            generateSequence<Class<*>>(type) {
+                it.superclass
+            }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                .distinctBy {
+                    it.name + "|" + it.type.name
+                }
+                .take(24)
+                .toList()
+
+        val fields =
+            instanceFields.map { field ->
+                field.isAccessible = true
+                val runtimeType =
+                    runCatching {
+                        field.get(trackDao)
+                            ?.javaClass
+                            ?.name
+                    }.getOrNull()
+
+                field.name + ":" +
+                    field.type.name +
+                    if (runtimeType == null) {
+                        ""
+                    } else {
+                        "->" + runtimeType
+                    }
+            }
+
+        val delegates =
+            instanceFields
+                .mapNotNull { field ->
+                    field.isAccessible = true
+                    val value =
+                        runCatching {
+                            field.get(trackDao)
+                        }.getOrNull()
+                            ?: return@mapNotNull null
+
+                    val runtimeType =
+                        value.javaClass
+
+                    if (
+                        runtimeType == type ||
+                        runtimeType.name.startsWith("java.") ||
+                        runtimeType.name.startsWith("android.") ||
+                        runtimeType.name.startsWith("androidx.") ||
+                        runtimeType.isPrimitive ||
+                        Number::class.java.isAssignableFrom(runtimeType)
+                    ) {
+                        return@mapNotNull null
+                    }
+
+                    val oneArg =
+                        GmmpReflectionDiagnostics.methods(
+                            type = runtimeType,
+                            limit = 12
+                        ) {
+                            it.parameterTypes.size == 1
+                        }
+
+                    field.name + "->" +
+                        runtimeType.name +
+                        "{" + oneArg + "}"
+                }
+                .take(6)
+
+        Log.w(
+            TAG,
+            "GMMP TRACK DAO STRUCTURE | class=" +
+                type.name +
+                " | hierarchy=" +
+                hierarchy.joinToString(">") +
+                " | interfaces=" +
+                interfaces.joinToString(",")
+                    .ifBlank { "none" } +
+                " | fields=" +
+                fields.joinToString(",")
+                    .ifBlank { "none" } +
+                " | delegates=" +
+                delegates.joinToString(";")
+                    .ifBlank { "none" }
         )
     }
 

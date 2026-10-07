@@ -1,10 +1,8 @@
 # Releasing GoneSmart
 
-GoneSmart releases are built and published by GitHub Actions so the public APK is reproducible from the tagged source.
+GoneSmart public APKs are built and published by GitHub Actions from tagged source.
 
-## One-time repository setup
-
-Configure these repository secrets under **Settings → Secrets and variables → Actions**:
+## Required repository secrets
 
 - `LASTFM_API_KEY`
 - `ANDROID_KEYSTORE_BASE64`
@@ -12,30 +10,27 @@ Configure these repository secrets under **Settings → Secrets and variables �
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-Keep the original release keystore backed up offline. Every future APK update must be signed with the same key.
+Keep the original release keystore backed up offline; every update must use the same signing key.
 
-## Normal release flow
+## Stable release flow
 
-1. Make changes on a feature branch.
-2. Open/review a pull request and merge it into `main`.
-3. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
-4. Update `RELEASE_NOTES.md`.
-5. Confirm the **Build** workflow is green on `main`.
-6. Open **Actions → Release APK → Run workflow**.
-7. Leave **prerelease** disabled for a stable release, or enable it for a testing release.
+1. Finish code and documentation on the active feature branch.
+2. Set `versionCode` / `versionName` in `app/build.gradle.kts` and finalize `RELEASE_NOTES.md`.
+3. Confirm the normal **Build** workflow is green on the exact feature head.
+4. Open/review the feature → `main` pull request and merge it without discarding unrelated `main` history.
+5. Confirm the normal **Build** workflow is green on the exact merged `main` head.
+6. Open **Actions → Release APK → Run workflow** with **prerelease** disabled.
+7. Verify the resulting `v<versionName>` tag, GitHub Release and signed APK asset.
 
-The release workflow:
-
-- verifies the provider/signing secrets,
-- builds a signed release APK,
-- derives `v<versionName>` from Gradle,
-- creates the tag when manually dispatched,
-- uploads `GoneSmart-v<version>.apk`,
-- publishes `RELEASE_NOTES.md` as the GitHub Release notes.
+The release workflow verifies secrets, restores the release keystore, builds the signed APK, derives the tag from Gradle, creates the tag for a manual dispatch, uploads `GoneSmart-v<version>.apk` and uses `RELEASE_NOTES.md` as the release body.
 
 ## Prereleases
 
-For alpha/beta builds, use a version name such as `0.4.0-beta1`, update the release notes, then manually run **Release APK** with **prerelease** enabled.
+Use a version such as `0.5.0-beta1`, update release notes and dispatch **Release APK** with **prerelease** enabled.
+
+## Compatibility gate
+
+Before declaring a new GMMP version supported, follow `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: prove mutation boundaries, validate changed semantics on device, retire discovery/runtime overhead, update the tested-version source of truth and run exact-head CI.
 
 ## Version checks and Obtainium
 
@@ -43,20 +38,4 @@ The companion app queries GitHub's latest **stable** release on launch, rather t
 
 ## Local development
 
-After cloning the repository, put your local Last.fm application key in the ignored `local.properties` file. Do not copy the GitHub signing secrets into source files.
-
-For local release signing, use an ignored `keystore.properties` as described in [BUILDING.md](BUILDING.md).
-
-## Compatibility discipline
-
-GoneSmart hooks internal GMMP implementation details. Before marking a new GMMP version as supported:
-
-1. test normal Smart Auto-DJ selection,
-2. test recommendation-pool reuse,
-3. test new-session invalidation,
-4. test offline/native fallback,
-5. test the green/red player sparkle,
-6. test rating and broad-search fallbacks,
-7. test normal single-playlist and optional multi-playlist selection, including multi-file adds, the aggregate Toast, scrolling, theme changes and returning to the original screen,
-8. verify the in-app version check against the published stable GitHub Release and the Obtainium hand-off,
-9. update compatibility documentation only after verification.
+Keep the Last.fm key in ignored `local.properties`. For local release signing use ignored `keystore.properties` as described in `BUILDING.md`; never place signing secrets in source.

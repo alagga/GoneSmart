@@ -9,6 +9,8 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.io.File
+import java.lang.ref.WeakReference
 import java.util.ArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -26,6 +28,31 @@ class GoneSmartModule : XposedModule() {
 
         private const val GMMP_PACKAGE =
             "gonemad.gmmp"
+
+        private const val PLAYLIST_BRIDGE_TAG =
+            "GoneSmartPlaylistBridge"
+
+        private const val COMPAT_PROBE_REVISION =
+            "gmmp421-r25"
+
+
+        // Broad reflection/recycler inventories were needed while 4.2.1
+        // was unknown. Keep the machinery for a future compatibility
+        // investigation, but do not flood normal accepted-version logs.
+        private const val ENABLE_DEEP_COMPAT_DIAGNOSTICS = false
+        // r14 retires the deep Playlist/Smart-list inventories: their
+        // 4.2.1 adapter/holder/model ownership is device-proven and encoded
+        // in semantic resolvers/tests. Keep only still-open boundaries here;
+        // the normal runtime surface hooks below remain installed regardless
+        // of this diagnostic allow-list.
+        private val COMPAT_RELEVANT_RECYCLER_IDS =
+            setOf(
+                "smartRuleListRecyclerView",
+                "queueRecyclerView"
+            )
+
+        private const val MAX_COMPAT_RECYCLER_SURFACES =
+            64
 
         private const val MAX_RECORDING_MATCHES_TO_TRY =
             5
@@ -50,6 +77,13 @@ class GoneSmartModule : XposedModule() {
 
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
+
+        // Track Auto-DJ must never strand playback on the isolated seed while
+        // the network recommendation pipeline takes many seconds. Give the
+        // smart pool a short head start, then let native GMMP fill Initial
+        // Size immediately while the same pool preparation keeps running.
+        private const val TRACK_MIX_INITIAL_SMART_WAIT_MS =
+            1_500L
 
         private const val RECENT_DUPLICATE_HISTORY_LIMIT =
             8
@@ -88,6 +122,39 @@ class GoneSmartModule : XposedModule() {
     private var options =
         GoneSmartOptions()
 
+    private val compatibilityRecyclerProbeSurfaces =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityStaticProbeStarted =
+        AtomicBoolean(false)
+
+    private val compatibilityRecyclerSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityRecyclerHolderSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityNestedHolderSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityRuntimeInstanceSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
+    private val compatibilityRuntimeNestedSnapshots =
+        java.util.Collections.synchronizedSet(
+            mutableSetOf<String>()
+        )
+
     private var remoteSettingsPreferences:
             SharedPreferences? =
         null
@@ -103,13 +170,134 @@ class GoneSmartModule : XposedModule() {
                     preferences
                 )
 
+            if (
+                key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ||
+
+                    key == GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS ||
+                    key == GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS
+            ) {
+                val next = options
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    playlistFolderPreview.setOptions(
+                        next.playlistFoldersEnabled,
+                        next.groupExternalPlaylists,
+                        next.groupRootPlaylists
+                    )
+                    playlistNavigationBadgeController.setOptions(
+                        next.playlistFoldersEnabled,
+                        next.smartPlaylistFoldersEnabled
+                    )
+                }
+            }
+            if (
+                key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS ||
+                key == GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ||
+                key == GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS
+            ) {
+                val next = options
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    smartPlaylistFolderController.setOptions(
+                        next.smartPlaylistFoldersEnabled,
+                        next.smartGroupRootPlaylists,
+                        next.smartMultiPlaylistEnabled
+                    )
+                    playlistFolderPreview.setSmartFolderBadgeEnabled(
+                        next.smartPlaylistFoldersEnabled
+                    )
+                    playlistNavigationBadgeController.setOptions(
+                        next.playlistFoldersEnabled,
+                        next.smartPlaylistFoldersEnabled
+                    )
+                }
+            }
+
+            val uiToggle = when (key) {
+                GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS ->
+                    "Playlist folders" to
+                        (previous.playlistFoldersEnabled to options.playlistFoldersEnabled)
+                GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS ->
+                    "Group external playlists" to
+                        (previous.groupExternalPlaylists to options.groupExternalPlaylists)
+                GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS ->
+                    "Group root playlists" to
+                        (previous.groupRootPlaylists to options.groupRootPlaylists)
+                GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS ->
+                    "Smart-Playlist folders" to
+                        (previous.smartPlaylistFoldersEnabled to
+                            options.smartPlaylistFoldersEnabled)
+                GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE ->
+                    "Playlist Link" to
+                        (previous.playlistBridgeEnabled to options.playlistBridgeEnabled)
+                GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST ->
+                    "Smart-Playlist multi-selection" to
+                        (previous.smartMultiPlaylistEnabled to
+                            options.smartMultiPlaylistEnabled)
+                GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS ->
+                    "Group root Smart-Playlists" to
+                        (previous.smartGroupRootPlaylists to
+                            options.smartGroupRootPlaylists)
+                else -> null
+            }
+            uiToggle?.let { (label, state) ->
+                if (state.first != state.second) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "$label ${if (state.second) "enabled." else "disabled."}"
+                    )
+                }
+            }
+
+            if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE) {
+                playlistBridgeController.setEnabled(options.playlistBridgeEnabled)
+            }
+
             if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
                 playlistController.setEnabled(options.multiPlaylistEnabled)
+                if (previous.multiPlaylistEnabled != options.multiPlaylistEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "Playlist multi-selection " +
+                            if (options.multiPlaylistEnabled) "enabled." else "disabled."
+                    )
+                }
+            }
+            if (key == GoneSmartSettingsKeys.KEY_TRACK_MIX) {
+                trackMixController.setEnabled(options.trackMixEnabled)
+                if (previous.trackMixEnabled != options.trackMixEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        if (options.trackMixEnabled)
+                            "Track Mix enabled." else "Track Mix disabled."
+                    )
+                }
+            }
+            if (key == GoneSmartSettingsKeys.KEY_FLIP_QUEUE) {
+                queueFlipController.setEnabled(options.flipQueueEnabled)
+                if (previous.flipQueueEnabled != options.flipQueueEnabled) {
+                    runtimeReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_UI,
+                        "Flip queue / Play flipped " +
+                            if (options.flipQueueEnabled) "enabled." else "disabled."
+                    )
+                }
             }
 
             if (
                 key != GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES &&
-                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST
+                key != GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST &&
+                key != GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS &&
+                key != GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST &&
+                key != GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE &&
+                key != GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS &&
+                key != GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS &&
+                key != GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS &&
+                key != GoneSmartSettingsKeys.KEY_FLIP_QUEUE &&
+                key != GoneSmartSettingsKeys.KEY_TRACK_MIX &&
+                // Persisting Track Mix's already-active Smart DJ switch
+                // must not discard its first live recommendation pool.
+                !(key == GoneSmartSettingsKeys.KEY_ENABLED &&
+                    previous.enabled == options.enabled)
             ) {
 
                 pipelineGeneration
@@ -251,6 +439,47 @@ class GoneSmartModule : XposedModule() {
     private val playlistController =
         PlaylistMultiSelectController()
 
+    private val playlistFolderPreview =
+        PlaylistFolderPreviewController(playlistController)
+
+    private val playlistNavigationBadgeController =
+        PlaylistNavigationBadgeController()
+
+    private val smartPlaylistFolderController =
+        SmartPlaylistFolderController(playlistController)
+
+    private val smartPlaylistSaveRedirectDepth =
+        ThreadLocal.withInitial { 0 }
+
+    private val smartPlaylistSaveHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private val nativePlaylistDestinationScope =
+        NativePlaylistDestinationScope()
+
+    private val playlistBridgeController =
+        PlaylistBridgeController()
+
+    private val playlistBridgeSmartChooserTitleDepth =
+        ThreadLocal.withInitial { 0 }
+
+    private val queueFlipController =
+        QueueFlipController()
+
+    // Track Mix is always available from single-song context menus,
+    // even while Smart DJ is disabled. Clicking it explicitly enables
+    // Smart DJ and uses GMMP's documented native Auto-DJ command.
+    private val trackMixController = TrackMixController(
+        enableSmartDj = { context -> enableSmartDjForTrackMix(context) },
+        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) },
+        nativePositionWriterProvider = { autoDj ->
+            queueFlipController.verifiedPositionWriter(autoDj)
+        }
+    )
+
+    @Volatile
+    private var trackMixAutoDj: WeakReference<Any>? = null
+
     private val recommendationPool =
         SessionRecommendationPool()
 
@@ -268,6 +497,11 @@ class GoneSmartModule : XposedModule() {
 
     private val startupExecutor =
         Executors.newSingleThreadExecutor()
+
+    private val compatibilityExecutor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "GoneSmart-Compat").apply { isDaemon = true }
+        }
 
     private val poolFillLock =
         Any()
@@ -336,15 +570,29 @@ class GoneSmartModule : XposedModule() {
         }
 
         initializeRemoteSettings()
+        trackMixController.setEnabled(options.trackMixEnabled)
 
         Log.i(
             TAG,
-            "GoneMAD Music Player detected - Build 45"
+            "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
+
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                " | moduleVersion=${BuildConfig.VERSION_NAME}" +
+                " | buildDebug=${BuildConfig.DEBUG}"
+        )
+        compatibilityExecutor.execute {
+            if (ENABLE_DEEP_COMPAT_DIAGNOSTICS) {
+                logCompatibilityStaticInventory(param.classLoader)
+            }
+            logCompatibilitySelfTest(param.classLoader)
+        }
 
         runtimeReporter.report(
             mode = GoneSmartRuntimeContract.MODE_NONE,
-            message = "GoneSmart Build 45 loaded in GoneMAD Music Player.",
+            message = "GoneSmart v${BuildConfig.VERSION_NAME} loaded in GoneMAD Music Player.",
             appendEvent = true
         )
 
@@ -362,18 +610,48 @@ class GoneSmartModule : XposedModule() {
         log(
             Log.INFO,
             TAG,
-            "GoneMAD Music Player detected - Build 45"
+            "GoneSmart v${BuildConfig.VERSION_NAME} injected into GoneMAD Music Player"
         )
 
         try {
 
-            installAutoDjRefillHook(
-                param
-            )
+            var smartDjCoreHooksHealthy = true
 
-            installAutoDjSelectionHook(
-                param
-            )
+            runCatching {
+                installAutoDjRefillHook(
+                    param
+                )
+            }.onFailure { refillHookError ->
+                smartDjCoreHooksHealthy = false
+                Log.w(
+                    TAG,
+                    "Auto-DJ refill hook unavailable; continuing with independent GoneSmart features",
+                    refillHookError
+                )
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                    message = "GoneSmart Smart DJ refill hook is unavailable for this GMMP build. Independent UI features can still load.",
+                    appendEvent = true
+                )
+            }
+
+            runCatching {
+                installAutoDjSelectionHook(
+                    param
+                )
+            }.onFailure { selectionHookError ->
+                smartDjCoreHooksHealthy = false
+                Log.w(
+                    TAG,
+                    "Auto-DJ selection hook unavailable; continuing with independent GoneSmart features",
+                    selectionHookError
+                )
+                runtimeReporter.report(
+                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                    message = "GoneSmart Smart DJ selection hook is unavailable for this GMMP build. Independent UI features can still load.",
+                    appendEvent = true
+                )
+            }
 
             try {
 
@@ -408,22 +686,222 @@ class GoneSmartModule : XposedModule() {
             // Native playlist UI is opt-in through the companion app and
             // remains independent of the Smart Auto-DJ recommendation mode.
             // Hook registration is available in release builds too.
-            if (true) {
-                try {
-                    playlistController.setEnabled(options.multiPlaylistEnabled)
+            playlistController.setEnabled(options.multiPlaylistEnabled)
+            val multiPlaylistHooksReady =
+                runCatching {
                     installPlaylistMultiSelectHooks(param)
-                } catch (playlistHookError: Throwable) {
+                }.onFailure { playlistHookError ->
                     Log.w(
                         TAG,
-                        "Experimental playlist hooks unavailable; native picker unaffected",
+                        "Playlist multi-selection hooks unavailable; continuing with independent Playlist features",
                         playlistHookError
                     )
+                }.getOrDefault(false)
+
+            // fo3's create callback also operates without Multi-selection or
+            // Playlist folders. A remapped picker lifecycle must never prevent
+            // native playlist creation/folder-create routing from registering.
+            runCatching {
+                installNativePlaylistCreationHooks(param)
+            }.onFailure { createHookError ->
+                Log.w(
+                    TAG,
+                    "Native playlist creation hooks unavailable; continuing with independent Playlist features",
+                    createHookError
+                )
+            }
+
+            if (options.multiPlaylistEnabled && multiPlaylistHooksReady) {
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                    "Playlist multi-selection is available."
+                )
+            }
+
+            // Playlist Bridge passed the dedicated GMMP 4.2.0 device flow,
+            // including save/reopen, dynamic source updates and disabled-
+            // module compatibility. Hooks stay installed so its own UI
+            // switch can take effect live; the controller becomes a no-op
+            // when disabled and native V2 compatibility rules stay neutral.
+            playlistBridgeController.setEnabled(options.playlistBridgeEnabled)
+            runCatching {
+                installPlaylistBridgeHooks(param)
+            }.onFailure {
+                Log.w(
+                    PLAYLIST_BRIDGE_TAG,
+                    "BRIDGE HOOKS UNAVAILABLE | native GMMP behavior unchanged",
+                    it
+                )
+            }
+
+            // Accepted folder functionality is available in debug AND
+            // future release builds; optional diagnostics remain debug-only.
+            // GMMP's original adapter still owns every native action.
+            try {
+                run {
+                    playlistFolderPreview.setOptions(
+                        options.playlistFoldersEnabled,
+                        options.groupExternalPlaylists,
+                        options.groupRootPlaylists
+                    )
+                    playlistFolderPreview.setNativeFolderCreator(param.classLoader)
+                    playlistFolderPreview.setNativePlaylistMover(param.classLoader)
+
+                    smartPlaylistFolderController.setModelWriterHookInstaller {
+                        method -> installSmartPlaylistSaveMethodHook(method)
+                    }
+                    smartPlaylistFolderController.configure(param.classLoader)
+                    smartPlaylistFolderController.setNativeFolderCreator(
+                        param.classLoader
+                    )
+                    smartPlaylistFolderController.setOptions(
+                        options.smartPlaylistFoldersEnabled,
+                        options.smartGroupRootPlaylists,
+                        options.smartMultiPlaylistEnabled
+                    )
+                    playlistFolderPreview.setSmartFolderBadgeEnabled(
+                        options.smartPlaylistFoldersEnabled
+                    )
+                    playlistNavigationBadgeController.setOptions(
+                        options.playlistFoldersEnabled,
+                        options.smartPlaylistFoldersEnabled
+                    )
+                    installPlaylistNavigationBadgeHook(param)
+                    installSmartPlaylistFolderFeatureHooks(param)
+
+                    // py0.b() shows its native MaterialDialog synchronously.
+                    // Observe the ORIGINAL show() after it returns; alter
+                    // only the already-rendered path label for this thread's
+                    // verified GoneSmart folder deletion, never the dialog
+                    // buttons or the native delete worker.
+                    runCatching {
+                        val nativeDialog = param.classLoader.loadClass(
+                            "com.afollestad.materialdialogs.MaterialDialog"
+                        )
+                        // The exact private GMMP 4.2.0 DEX has a declared
+                        // MaterialDialog.show():void (v3, not v0.9). Hook
+                        // precisely that method, not an inherited/overloaded
+                        // reflection candidate. Ordinary folder-delete and
+                        // host dialogs still proceed through GMMP untouched.
+                        val nativeShow = nativeDialog.getDeclaredMethod("show")
+                            .apply { isAccessible = true }
+                        hook(nativeShow).intercept { chain ->
+                            val originalDialog = chain.getThisObject()
+                                ?.takeIf(nativeDialog::isInstance)
+                                as? android.app.Dialog
+                            if (originalDialog != null &&
+                                playlistFolderPreview
+                                    .onOriginalPlaylistMoveDialogBeforeShow(
+                                        originalDialog
+                                    )
+                            ) {
+                                // The original v3 positive-action dispatcher
+                                // was already invoked on THIS exact dialog,
+                                // on THIS verified staged move's thread.
+                                // No second visible GMMP delete prompt.
+                                null
+                            } else {
+                                val creationKind = originalDialog?.let {
+                                    NativeGmmpFolderCreator.classifyBeforeShow(it)
+                                } ?: NativeGmmpFolderCreator.DialogKind.NONE
+
+                                when (creationKind) {
+                                    NativeGmmpFolderCreator.DialogKind.PLAYLIST_SHELL ->
+                                        originalDialog?.let {
+                                            // Text only. Native GMMP owns all
+                                            // colors/focus/IME behavior.
+                                            NativeGmmpCreationDialogLocalizer
+                                                .localizeFolderShellTextOnly(it)
+                                        }
+                                    NativeGmmpFolderCreator.DialogKind.LEGACY_FOLDER ->
+                                        originalDialog?.let {
+                                            NativeGmmpCreationDialogLocalizer
+                                                .prepareBeforeShow(it)
+                                        }
+                                    NativeGmmpFolderCreator.DialogKind.NONE -> Unit
+                                }
+
+                                val result = chain.proceed()
+                                originalDialog?.let {
+                                    when (creationKind) {
+                                        NativeGmmpFolderCreator.DialogKind.PLAYLIST_SHELL -> {
+                                            NativeGmmpFolderCreator
+                                                .onPlaylistShellShown(it)
+                                        }
+                                        NativeGmmpFolderCreator.DialogKind.LEGACY_FOLDER -> {
+                                            NativeGmmpCreationDialogLocalizer
+                                                .finishAfterShow(it)
+                                            NativeGmmpCreationDialogLocalizer
+                                                .localizeWhenReady(it)
+                                        }
+                                        NativeGmmpFolderCreator.DialogKind.NONE -> Unit
+                                    }
+                                    playlistFolderPreview
+                                        .onOriginalFolderDeleteDialogShown(it)
+                                    smartPlaylistFolderController
+                                        .onOriginalFolderDeleteDialogShown(it)
+                                }
+                                result
+                            }
+                        }
+                        Log.i(
+                            "GoneSmartPlaylist",
+                            "FOLDER DELETE DIALOG | v3 native show observer ready; " +
+                                "scoped pre-show playlist move dispatch ready"
+                        )
+                    }.onFailure {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "FOLDER DELETE DIALOG | original show observer unavailable",
+                            it
+                        )
+                    }
+                    installPlaylistSurfaceHooks(param)
                 }
+            } catch (folderDiscoveryError: Throwable) {
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "FOLDER SURFACE | RecyclerView observer unavailable",
+                    folderDiscoveryError
+                )
+            }
+
+            // Native queue and reverse-playlist playback hooks are
+            // independently controlled by the companion UI setting.
+            // Install even while disabled so it can be enabled live.
+            try {
+                queueFlipController.setEnabled(options.flipQueueEnabled)
+                installQueueFlipHooks(param)
+            } catch (flipHookError: Throwable) {
+                Log.w(
+                    TAG,
+                    "Queue Flip hooks unavailable; native menus unaffected",
+                    flipHookError
+                )
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_FLIP,
+                    "Flip unavailable: GMMP hooks could not be installed."
+                )
+            }
+
+            if (smartDjCoreHooksHealthy) {
+                Log.i(
+                    TAG,
+                    "GoneSmart hook registration pass completed; " +
+                        "GMMP compatibility remains feature-scoped"
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "GoneSmart loaded with degraded Smart DJ hooks; independent UI hooks were still attempted"
+                )
             }
 
             Log.i(
-                TAG,
-                "All GoneSmart core hooks installed successfully"
+                "GoneSmartCompat",
+                "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
+                    " | hookRegistration=complete" +
+                    " | buildDebug=${BuildConfig.DEBUG}"
             )
 
         } catch (t: Throwable) {
@@ -437,20 +915,2600 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * Debug-only experimental multi-destination playlist picker for GMMP 4.2.0.
-     * Hooks only native picker methods and the three verified UI callbacks.
-     * The native io3 handler performs all actual playlist writes.
+     * GMMP 4.2.0 menu resources verified from its own APK:
+     * - menu_gm_queue: Queue overflow; Remove duplicates is the anchor.
+     * - menu_gm_context_playlist_list: playlist three-dot popup.
+     * - menu_gm_context_smart: Smart Playlist three-dot popup.
+     *
+     * Fully implemented queue and reverse-playlist playback; companion
+     * settings control these hooks independently of Smart DJ.
      */
-    private fun installPlaylistMultiSelectHooks(
+    private fun enableSmartDjForTrackMix(
+        context: android.content.Context
+    ): Boolean {
+        return runCatching {
+            if (!options.enabled) {
+                // Immediate activation in this GMMP process: don't wait
+                // for a cross-process preferences notification to let
+                // the very first auto-DJ refill select GoneSmart songs.
+                options = options.copy(enabled = true)
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_UI,
+                    "Smart DJ enabled by song-based Auto-DJ."
+                )
+                val intent = android.content.Intent(
+                    GoneSmartRuntimeContract.ACTION_ENABLE_SMART_DJ_FOR_MIX
+                ).setClassName(
+                    "io.github.alagga.gonesmart",
+                    "io.github.alagga.gonesmart.GoneSmartEventReceiver"
+                )
+                context.applicationContext.sendBroadcast(intent)
+            }
+            trackMixAutoDj?.get()?.let { startStartupPrewarm(it) }
+            true
+        }.onFailure {
+            Log.e(TAG, "Track Mix could not enable Smart DJ", it)
+        }.getOrDefault(false)
+    }
+
+    private fun requestNativeTrackMixRefill(count: Int): Boolean {
+        if (count <= 0) return true
+        val manager = trackMixAutoDj?.get() ?: return false
+        return runCatching {
+            manager.javaClass.getDeclaredMethod(
+                "z", Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+                .invoke(manager, count)
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX REQUEST REFILL | requested=$count"
+            )
+            true
+        }.onFailure {
+            Log.e(TAG, "Track Mix native refill unavailable", it)
+        }.getOrDefault(false)
+    }
+
+    private fun installQueueFlipHooks(param: PackageReadyParam) {
+        val menuInflaterClasses = listOf(
+            android.view.MenuInflater::class.java,
+            param.classLoader.loadClass(
+                "androidx.appcompat.view.SupportMenuInflater"
+            )
+        )
+        var installed = 0
+        for (inflaterClass in menuInflaterClasses) {
+            runCatching {
+                val method = inflaterClass.getDeclaredMethod(
+                    "inflate",
+                    Int::class.javaPrimitiveType,
+                    android.view.Menu::class.java
+                ).apply { isAccessible = true }
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    try {
+                        queueFlipController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Flip menu observation failed", error)
+                    }
+                    try {
+                        trackMixController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Track Mix menu insertion failed", error)
+                    }
+                    runCatching {
+                        playlistBridgeController.onMenuInflated(
+                            chain.getArg(0) as? Int ?: 0,
+                            chain.getArg(1) as? android.view.Menu,
+                            chain.getThisObject()
+                        )
+                    }.onFailure {
+                        Log.w(
+                            PLAYLIST_BRIDGE_TAG,
+                            "BRIDGE MENU FAILED | native menu untouched",
+                            it
+                        )
+                    }
+                    runCatching {
+                            playlistFolderPreview.onMenuInflated(
+                                chain.getArg(0) as? Int ?: 0,
+                                chain.getArg(1) as? android.view.Menu,
+                                chain.getThisObject()
+                            )
+                            smartPlaylistFolderController.onMenuInflated(
+                                chain.getArg(0) as? Int ?: 0,
+                                chain.getArg(1) as? android.view.Menu,
+                                chain.getThisObject()
+                            )
+                        }.onFailure {
+                            Log.w(
+                                "GoneSmartPlaylist",
+                                "FOLDER NATIVE MENU | observer failed",
+                                it
+                            )
+                        }
+                    result
+                }
+                installed++
+            }.onFailure { error ->
+                Log.w(
+                    TAG,
+                    "Flip menu inflater hook unavailable: " +
+                        inflaterClass.name,
+                    error
+                )
+            }
+        }
+
+        runCatching {
+            val queueClass = param.classLoader.loadClass("ex3")
+
+            val constructor = queueClass.declaredConstructors.firstOrNull {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == android.content.Context::class.java
+            }
+            if (constructor != null) {
+                hook(constructor.apply { isAccessible = true })
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        queueFlipController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
+                        trackMixController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
+                        result
+                    }
+            }
+
+            // Fallback if GMMP constructed its queue before hooks were
+            // registered. This method is observed during normal queue UI.
+            val queuePosition = queueClass.getDeclaredMethod("D")
+                .apply { isAccessible = true }
+            hook(queuePosition).intercept { chain ->
+                queueFlipController.captureNativeQueue(
+                    chain.getThisObject()
+                )
+                trackMixController.captureNativeQueue(
+                    chain.getThisObject()
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartFlip",
+                "FLIP QUEUE READY | native ex3 capture installed"
+            )
+        }.onFailure {
+            Log.w(TAG, "Flip queue capture hooks unavailable", it)
+            runCatching {
+                val queueClass = param.classLoader.loadClass("ex3")
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP QUEUE MAPPING | hierarchy=" +
+                        GmmpReflectionDiagnostics.hierarchy(queueClass) +
+                        " | interfaces=" +
+                        GmmpReflectionDiagnostics.interfaces(queueClass) +
+                        " | constructors=" +
+                        GmmpReflectionDiagnostics.constructors(
+                            queueClass,
+                            limit = 20
+                        ) +
+                        " | fields=" +
+                        GmmpReflectionDiagnostics.fields(
+                            queueClass,
+                            limit = 40
+                        )
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP QUEUE METHODS | noArgMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 32
+                        ) {
+                            it.parameterTypes.isEmpty()
+                        } +
+                        " | declaredMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 64
+                        ) {
+                            it.declaringClass == queueClass
+                        }
+                )
+            }
+        }
+
+        // Native playback from ordinary track lists may replace the
+        // queue through ex3.w(List), while Play on an existing queue
+        // row may only seek to a new absolute position via ex3.b2().
+        // These are passive, short-circuit-free notifications for the
+        // ONE pending Track Mix request, never global queue mutations.
+        runCatching {
+            val queueClass = param.classLoader.loadClass("ex3")
+            val queueWrite = queueClass.declaredMethods.firstOrNull {
+                it.name == "w" &&
+                    it.parameterCount == 1 &&
+                    java.util.List::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    )
+            }
+            if (queueWrite != null) {
+                hook(queueWrite.apply { isAccessible = true })
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        trackMixController.captureNativeQueue(
+                            chain.getThisObject()
+                        )
+                        trackMixController.onNativePlaybackQueueUpdated(
+                            "ex3.w"
+                        )
+                        result
+                    }
+            } else {
+                Log.w(TAG, "Track Mix ex3.w observer unavailable")
+            }
+            val positionSet = queueClass.getDeclaredMethod(
+                "b2", Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+            hook(positionSet).intercept { chain ->
+                val result = chain.proceed()
+                trackMixController.captureNativeQueue(
+                    chain.getThisObject()
+                )
+                trackMixController.onNativePlaybackQueueUpdated(
+                    "ex3.b2"
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX QUEUE OBSERVERS READY | queue-write and position"
+            )
+        }.onFailure {
+            Log.w(TAG, "Track Mix native queue observers unavailable", it)
+            runCatching {
+                val queueClass = param.classLoader.loadClass("ex3")
+                Log.w(
+                    "GoneSmartTrackMix",
+                    "MIX QUEUE MAPPING | intMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 24
+                        ) {
+                            it.parameterTypes.size == 1 &&
+                                it.parameterTypes[0] == Integer.TYPE
+                        } +
+                        " | listMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = queueClass,
+                            limit = 24
+                        ) {
+                            it.parameterTypes.size == 1 &&
+                                java.util.List::class.java
+                                    .isAssignableFrom(it.parameterTypes[0])
+                        }
+                )
+            }
+        }
+
+        // r40: observe the real 4.2.1 playback-position boundary passively.
+        // r39 proved that the natural title transition bypasses the three
+        // one-Int MusicService commands and also disproved qr.t/ur.b as the
+        // current queue_position. Bundle service-event and Auto-DJ child
+        // writer observation in one device pass. No candidate is invoked by
+        // discovery; every hook only wraps a call GMMP makes naturally.
+        runCatching {
+            val serviceClass = param.classLoader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val methodKey: (Method) -> String = { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name } + "|" +
+                    method.returnType.name
+            }
+
+            val positionCandidates = GmmpReflectionPolicy
+                .callableMethods(serviceClass)
+                .filter { method ->
+                    method.declaringClass == serviceClass &&
+                        !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        !java.lang.reflect.Modifier.isAbstract(method.modifiers) &&
+                        method.parameterCount == 1 &&
+                        (method.parameterTypes[0] == Integer.TYPE ||
+                            method.parameterTypes[0] == Integer::class.java) &&
+                        method.returnType == Void.TYPE
+                }
+                .distinctBy(methodKey)
+            positionCandidates.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    queueFlipController.aroundNativePositionCommand(
+                        service = chain.getThisObject(),
+                        method = method,
+                        value = (chain.getArg(0) as? Number)?.toInt()
+                    ) {
+                        chain.proceed()
+                    }
+                }
+            }
+
+            val positionKeys = positionCandidates.map(methodKey).toSet()
+            val playbackCandidates = NativeQueuePlaybackDiagnostics
+                .playbackMethods(serviceClass)
+                .filter { methodKey(it) !in positionKeys }
+            playbackCandidates.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val args = (0 until method.parameterCount).map { index ->
+                        chain.getArg(index)
+                    }
+                    queueFlipController.aroundNativePlaybackTransition(
+                        service = chain.getThisObject(),
+                        method = method,
+                        args = args
+                    ) {
+                        chain.proceed()
+                    }
+                }
+            }
+
+            val autoDjClass = param.classLoader.loadClass("qr")
+            val stateWriterCandidates = NativeQueuePlaybackDiagnostics
+                .stateWriterMethods(autoDjClass)
+            stateWriterCandidates.forEach { method ->
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    queueFlipController.aroundNativeStatePositionCommand(
+                        receiver = chain.getThisObject(),
+                        method = method,
+                        value = (chain.getArg(0) as? Number)?.toInt()
+                    ) {
+                        chain.proceed()
+                    }
+                }
+            }
+
+            Log.i(
+                "GoneSmartFlip",
+                "QUEUE PLAYBACK OBSERVER READY | serviceInt=" +
+                    positionCandidates.size +
+                    " | playback=" + playbackCandidates.size +
+                    " | stateWriters=" + stateWriterCandidates.size +
+                    " | writerSignatures=" +
+                    NativeQueuePlaybackDiagnostics.signatures(
+                        stateWriterCandidates
+                    ).ifBlank { "none" }
+            )
+        }.onFailure { error ->
+            Log.w(
+                "GoneSmartFlip",
+                "QUEUE PLAYBACK OBSERVER UNAVAILABLE | passive discovery disabled",
+                error
+            )
+        }
+
+        // Playlist and Smart Playlist both use MusicService.w1(action=0)
+        // to replace the queue with a fully resolved list of native rm3
+        // tracks. Invoke GMMP's normal Play listener on the selected row,
+        // then reverse THAT list synchronously at its native entry point,
+        // before any queue reset or first-track playback can occur.
+        runCatching {
+            val serviceClass = param.classLoader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val candidates = GmmpReflectionPolicy
+                .callableMethods(serviceClass)
+                .filter { method ->
+                    val p = method.parameterTypes
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.returnType == java.lang.Void.TYPE &&
+                        p.size == 3 &&
+                        p.count { it == Int::class.javaPrimitiveType } == 1 &&
+                        p.count {
+                            java.util.List::class.java.isAssignableFrom(it)
+                        } == 1 &&
+                        p.count { !it.isPrimitive } == 2
+                }
+            val playListMethod = candidates.singleOrNull {
+                it.name == "w1"
+            } ?: candidates.singleOrNull()
+                ?: error(
+                    "GMMP playlist playback boundary is not unique: " +
+                        candidates.joinToString(",") { it.name }
+                )
+            playListMethod.isAccessible = true
+            val actionIndex = playListMethod.parameterTypes.indexOfFirst {
+                it == Int::class.javaPrimitiveType
+            }
+            val listIndex = playListMethod.parameterTypes.indexOfFirst {
+                java.util.List::class.java.isAssignableFrom(it)
+            }
+            hook(playListMethod).intercept { chain ->
+                val action = chain.getArg(actionIndex) as? Int
+                val originalList = chain.getArg(listIndex) as? List<*>
+                val reversed = queueFlipController
+                    .consumeReversePlaylistForNativePlay(
+                        action,
+                        originalList
+                    )
+                if (reversed == null) {
+                    val result = chain.proceed()
+                    trackMixController.onNativePlaybackMethodFinished(action)
+                    result
+                } else {
+                    val args = Array<Any?>(playListMethod.parameterCount) {
+                        chain.getArg(it)
+                    }
+                    args[listIndex] = reversed.tracks
+                    Log.i(
+                        "GoneSmartFlip",
+                        "FLIP SERVICE | method=" + playListMethod.name +
+                            " | action=" + action +
+                            " | originalCount=" + originalList?.size +
+                            " | reversedCount=" + reversed.tracks.size
+                    )
+                    val result = playListMethod.invoke(
+                        chain.getThisObject(),
+                        *args
+                    )
+                    queueFlipController.verifyNativePlaylistPlayback(
+                        reversed.tracks,
+                        reversed.sourceKind
+                    )
+                    result
+                }
+            }
+            queueFlipController.setNativePlaylistInterceptorReady(true)
+            Log.i(
+                "GoneSmartFlip",
+                "FLIP PLAY HOOK READY | MusicService.w1 native reversed list"
+            )
+        }.onFailure { error ->
+            queueFlipController.setNativePlaylistInterceptorReady(false)
+            Log.e(TAG, "Flip native Playlist Play hook unavailable", error)
+            runCatching {
+                val serviceClass = param.classLoader.loadClass(
+                    "gonemad.gmmp.playback.service.MusicService"
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP SERVICE MAPPING | hierarchy=" +
+                        GmmpReflectionDiagnostics.hierarchy(serviceClass) +
+                        " | interfaces=" +
+                        GmmpReflectionDiagnostics.interfaces(serviceClass) +
+                        " | fields=" +
+                        GmmpReflectionDiagnostics.fields(
+                            serviceClass,
+                            limit = 48
+                        )
+                )
+                Log.w(
+                    "GoneSmartFlip",
+                    "FLIP SERVICE CANDIDATES | intOrListMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = serviceClass,
+                            limit = 64
+                        ) { method ->
+                            method.declaringClass == serviceClass &&
+                                (
+                                    method.parameterTypes.any { parameter ->
+                                        parameter == Integer.TYPE ||
+                                            java.util.List::class.java
+                                                .isAssignableFrom(parameter)
+                                    } ||
+                                        method.returnType == Integer.TYPE ||
+                                        java.util.List::class.java
+                                            .isAssignableFrom(
+                                                method.returnType
+                                            )
+                                    )
+                        } +
+                        " | threeArgDeclared=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = serviceClass,
+                            limit = 64
+                        ) {
+                            it.declaringClass == serviceClass &&
+                                it.parameterTypes.size == 3
+                        }
+                )
+            }
+        }
+
+        Log.i(
+            "GoneSmartFlip",
+            "FLIP READY | menuInflaters=$installed | " +
+                "enabled=${options.flipQueueEnabled} | " +
+                "phase=native-flip"
+        )
+        if (options.flipQueueEnabled) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Flip Queue and reverse playlist playback are available."
+            )
+        }
+        Log.i(
+            "GoneSmartTrackMix",
+            "MIX READY | menuInflaters=$installed | " +
+                "scope=individual-track-menus | initialSize=GMMP"
+        )
+        if (installed > 0) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Song-based Auto-DJ is available in song menus."
+            )
+        }
+    }
+
+    private fun logCompatibilitySelfTest(
+        loader: ClassLoader
+    ) {
+        fun result(block: () -> String): String =
+            runCatching(block).getOrElse {
+                "UNRESOLVED(" + it.javaClass.simpleName + ")"
+            }
+
+        fun fields(type: Class<*>): List<Field> =
+            generateSequence<Class<*>>(type) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .toList()
+
+        fun methods(type: Class<*>): List<Method> =
+            generateSequence<Class<*>>(type) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }
+                .filter { !java.lang.reflect.Modifier.isAbstract(it.modifiers) }
+                .toList()
+
+        fun smartModelShape(type: Class<*>): Boolean {
+            val fs = fields(type)
+            val ctor = type.declaredConstructors.any {
+                val p = it.parameterTypes
+                p.size == 6 &&
+                    p[0] == String::class.java &&
+                    p[1] == Integer.TYPE &&
+                    p[2] == Integer.TYPE &&
+                    p[3] == Integer.TYPE &&
+                    java.util.ArrayList::class.java.isAssignableFrom(p[4]) &&
+                    p[5] == Integer.TYPE
+            }
+            val reader = methods(type).count {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    it.returnType == java.lang.Void.TYPE
+            } == 1
+            return ctor && reader &&
+                fs.count { File::class.java.isAssignableFrom(it.type) } == 1 &&
+                fs.count { it.type == String::class.java } == 1
+        }
+
+        fun cursorBoundaries(type: Class<*>): List<java.lang.reflect.Method> =
+            GmmpReflectionPolicy.callableMethods(type).filter {
+                it.parameterCount == 1 &&
+                    (
+                        android.database.Cursor::class.java
+                            .isAssignableFrom(it.returnType) ||
+                            it.returnType.name == "android.database.Cursor"
+                    )
+            }
+
+        fun hasReadOnlyQueryFactory(query: Class<*>): Boolean =
+            GmmpReadOnlyQueryShape.supported(query)
+
+        val checks = linkedMapOf<String, String>()
+
+        checks["autoDjRefill"] = result {
+            val type = loader.loadClass("qr")
+            require(type.declaredMethods.any {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    it.returnType == java.lang.Void.TYPE
+            })
+            "READY"
+        }
+
+        checks["queueReader"] = result {
+            val legacy = runCatching {
+                val queueType = loader.loadClass("ex3")
+                queueType.declaredMethods.any {
+                    it.name == "D" && it.parameterCount == 0
+                }
+            }.getOrDefault(false)
+            if (legacy) {
+                "READY_LEGACY"
+            } else {
+                val db = loader.loadClass("f94")
+                val cursorMethods = cursorBoundaries(db)
+                require(cursorMethods.size == 1)
+                val query = cursorMethods.single().parameterTypes.single()
+                require(hasReadOnlyQueryFactory(query))
+                "READY_CURSOR_RUNTIME_POINTER"
+            }
+        }
+
+        checks["libraryReader"] = result {
+            val dao = loader.loadClass("kr")
+            val objectArray = arrayOfNulls<Any>(0).javaClass
+            val raw = GmmpReflectionPolicy.concreteMethods(dao).filter { method ->
+                method.parameterCount == 1 &&
+                    java.util.List::class.java
+                        .isAssignableFrom(method.returnType) &&
+                    runCatching {
+                        method.parameterTypes[0].getDeclaredConstructor(
+                            String::class.java,
+                            objectArray
+                        )
+                    }.isSuccess
+            }
+            if (raw.size == 1) {
+                "READY_STRUCTURAL"
+            } else {
+                val db = loader.loadClass("f94")
+                val cursorMethods = cursorBoundaries(db)
+                require(cursorMethods.size == 1)
+                val query = cursorMethods.single().parameterTypes.single()
+                require(hasReadOnlyQueryFactory(query))
+                "READY_CURSOR_STRUCTURAL"
+            }
+        }
+
+        checks["playlistFolders"] = result {
+            val adapter = loader.loadClass("ao3")
+            require(
+                GmmpPlaylistAdapterPolicy.isVerified(adapter.name) &&
+                    GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(adapter.name)
+            )
+            "READY_RUNTIME_MODEL"
+        }
+
+        checks["playlistCreate"] = result {
+            val creator = loader.loadClass(
+                "com.afollestad.materialdialogs.files.DialogFileChooserExtKt"
+            )
+            val candidates = creator.declaredMethods.filter { method ->
+                val p = method.parameterTypes
+                java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    p.size == 4 &&
+                    File::class.java.isAssignableFrom(p[1]) &&
+                    (p[2] == Integer::class.java || p[2] == Integer.TYPE) &&
+                    p[3].isInterface
+            }
+            require(
+                candidates.count { it.name == "showNewFolderCreator" } == 1 ||
+                    candidates.size == 1
+            )
+            val unitType = loader.loadClass("uf5")
+            require(unitType.declaredFields.count {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    unitType.isAssignableFrom(it.type)
+            } == 1)
+            "READY_STRUCTURAL"
+        }
+
+        checks["playlistMove"] = result {
+            val delete = loader.loadClass("py0").declaredMethods.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    android.content.Context::class.java
+                        .isAssignableFrom(it.parameterTypes[0]) &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.parameterTypes[1])
+            }
+            require(delete.isNotEmpty())
+            val scanner = loader.loadClass("t6").declaredMethods.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 2 &&
+                    android.content.Context::class.java
+                        .isAssignableFrom(it.parameterTypes[0]) &&
+                    it.parameterTypes[1].isArray &&
+                    it.parameterTypes[1].componentType == String::class.java
+            }
+            require(scanner.size == 1 || scanner.any { it.name == "f" })
+            "READY_STRUCTURAL"
+        }
+
+        checks["smartFolders"] = result {
+            val models = listOf("ws4", "ts4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }.filter(::smartModelShape)
+            require(models.size == 1)
+            val adapters = listOf("ls4", "is4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }
+            val hasDifferField = adapters.any { type ->
+                generateSequence<Class<*>>(type) { it.superclass }
+                    .flatMap { it.declaredFields.asSequence() }
+                    .any { field ->
+                        !java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                            field.type.name.startsWith(
+                                "androidx.recyclerview.widget."
+                            )
+                    }
+            }
+            require(hasDifferField)
+            "RUNTIME_ROW_DIFFER"
+        }
+
+        checks["smartWriter"] = result {
+            val models = listOf("ws4", "ts4").mapNotNull { name ->
+                runCatching { loader.loadClass(name) }.getOrNull()
+            }.filter(::smartModelShape)
+            val model = models.single()
+            val readers = methods(model).filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    it.returnType == java.lang.Void.TYPE
+            }
+            val writers = methods(model).filter {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == File::class.java &&
+                    (it.returnType == java.lang.Boolean.TYPE ||
+                        it.returnType == java.lang.Boolean::class.java)
+            }
+            require(readers.size == 1 && writers.size == 1)
+            "READY_STRUCTURAL"
+        }
+
+        checks["playlistLink"] = result {
+            val leaf = loader.loadClass("ft4")
+            require(leaf.declaredConstructors.any {
+                val p = it.parameterTypes
+                p.size == 4 &&
+                    p[0] == Integer.TYPE &&
+                    p[1] == Integer.TYPE &&
+                    p[2] == String::class.java &&
+                    p[3] == Integer.TYPE
+            })
+            "READY_LEGACY"
+        }
+
+        checks["flipQueue"] = "OPEN_CURRENT_POSITION_WRITER"
+
+        checks["playlistPlayback"] = result {
+            val service = loader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val candidates = GmmpReflectionPolicy.callableMethods(service)
+                .filter { method ->
+                    val p = method.parameterTypes
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.returnType == java.lang.Void.TYPE &&
+                        p.size == 3 &&
+                        p.count { it == Integer.TYPE } == 1 &&
+                        p.count {
+                            java.util.List::class.java.isAssignableFrom(it)
+                        } == 1 &&
+                        p.count { !it.isPrimitive } == 2
+                }
+            require(
+                candidates.count { it.name == "w1" } == 1 ||
+                    candidates.size == 1
+            )
+            "READY_STRUCTURAL"
+        }
+
+        checks["trackMix"] = result {
+            val type = loader.loadClass("qr")
+            require(type.declaredMethods.any {
+                it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    it.returnType == java.lang.Void.TYPE
+            })
+            "READY_REFILL"
+        }
+
+        checks["liveAccent"] = result {
+            val utility = loader.loadClass("oy0")
+            val candidates = utility.declaredMethods.filter {
+                val p = it.parameterTypes
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    p.size == 3 &&
+                    p[1] == String::class.java &&
+                    it.returnType != java.lang.Void.TYPE
+            }
+            require(candidates.isNotEmpty())
+            "RUNTIME_THEME_BINDING"
+        }
+
+        Log.i(
+            "GoneSmartCompat",
+            "COMPAT SELF TEST | revision=$COMPAT_PROBE_REVISION | " +
+                checks.entries.joinToString(" | ") {
+                    it.key + "=" + it.value
+                }
+        )
+    }
+
+    private fun logCompatibilityStaticInventory(
+        loader: ClassLoader
+    ) {
+        if (!compatibilityStaticProbeStarted.compareAndSet(false, true)) {
+            return
+        }
+
+        listOf(
+            "bo3",
+            "go3",
+            "ho3",
+            "io3",
+            "zn3",
+            "ao3",
+            "qp3",
+            "op3",
+            "tp3",
+            "eo3",
+            "co3",
+            "ft4",
+            "ds4",
+            "os2",
+            "ws4",
+            "ss4",
+            "os4",
+            "ls4",
+            "is4",
+            "ps4",
+            "vs4",
+            "ou4",
+            "nt4",
+            "zr4",
+            "tr4",
+            "sr4",
+            "ex3",
+            "fx3",
+            "ey3",
+            "s6",
+            "as4",
+            // r8: focused unresolved 4.2.1 boundaries only.
+            "d85",
+            "p94",
+            "f94",
+            "py0",
+            "th1",
+            "t6",
+            "qs4",
+            "ns4",
+            "tx4",
+            "rx4",
+            "zu4",
+            "ct4",
+            "vw3",
+            "qw3",
+            "uf5",
+            "qr",
+            "kr",
+            "fn",
+            "gonemad.gmmp.playback.service.MusicService"
+        ).forEach { requestedName ->
+            runCatching {
+                val type = loader.loadClass(requestedName)
+                logCompatibilityClassStructure(
+                    marker = "GMMP COMPAT CLASS",
+                    requestedName = requestedName,
+                    type = type
+                )
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartCompat",
+                    "GMMP COMPAT CLASS | requested=$requestedName" +
+                        " | unavailable=${error.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
+    private fun logCompatibilityClassStructure(
+        marker: String,
+        requestedName: String,
+        type: Class<*>,
+        instance: Any? = null
+    ) {
+        Log.i(
+            "GoneSmartCompat",
+            "$marker | requested=$requestedName" +
+                " | runtime=${type.name}" +
+                " | hierarchy=${GmmpReflectionDiagnostics.hierarchy(type)}" +
+                " | interfaces=${GmmpReflectionDiagnostics.interfaces(type)}"
+        )
+        Log.i(
+            "GoneSmartCompat",
+            "$marker CTORS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.constructors(
+                    type = type,
+                    limit = 20
+                )
+        )
+        Log.i(
+            "GoneSmartCompat",
+            "$marker FIELDS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.fields(
+                    type = type,
+                    limit = 40
+                )
+        )
+        if (instance != null) {
+            Log.i(
+                "GoneSmartCompat",
+                "$marker RUNTIME FIELDS | requested=$requestedName | " +
+                    GmmpReflectionDiagnostics.runtimeFieldTypes(
+                        instance = instance,
+                        limit = 40
+                    )
+            )
+        }
+        Log.i(
+            "GoneSmartCompat",
+            "$marker METHODS | requested=$requestedName | " +
+                GmmpReflectionDiagnostics.methods(
+                    type = type,
+                    limit = 64
+                ) {
+                    it.declaringClass == type
+                }
+        )
+    }
+
+    private fun logCompatibilityRuntimeInstance(
+        marker: String,
+        instance: Any?
+    ) {
+        instance ?: return
+        val fields = GmmpReflectionDiagnostics.runtimeFieldTypes(
+            instance = instance,
+            limit = 48
+        )
+        val collections =
+            GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                instance = instance,
+                limitFields = 24,
+                limitTypesPerField = 8
+            )
+        val key = marker + "|" + instance.javaClass.name + "|" +
+            fields + "|" + collections
+        val shouldLog = synchronized(compatibilityRuntimeInstanceSnapshots) {
+            compatibilityRuntimeInstanceSnapshots.add(key)
+        }
+        if (!shouldLog) return
+
+        Log.i(
+            "GoneSmartCompat",
+            marker + " | runtime=" + instance.javaClass.name +
+                " | hierarchy=" +
+                GmmpReflectionDiagnostics.hierarchy(instance.javaClass) +
+                " | runtimeFields=" + fields +
+                " | collections=" + collections
+        )
+    }
+
+    private fun logCompatibilityRuntimeNestedObjects(
+        marker: String,
+        instance: Any?
+    ) {
+        instance ?: return
+        generateSequence<Class<*>>(instance.javaClass) { it.superclass }
+            .flatMap { owner -> owner.declaredFields.asSequence() }
+            .filter {
+                !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    !it.isSynthetic
+            }
+            .mapNotNull { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(instance)
+                }.getOrNull() ?: return@mapNotNull null
+                if (isCompatibilityPlatformType(value.javaClass) ||
+                    value.javaClass.name ==
+                        "gonemad.gmmp.data.database.GMDatabase_Impl"
+                ) {
+                    return@mapNotNull null
+                }
+                field to value
+            }
+            .distinctBy { it.second.javaClass.name }
+            .take(6)
+            .forEach { (field, value) ->
+                val key = marker + "|" + instance.javaClass.name + "|" +
+                    field.declaringClass.name + "." + field.name + "|" +
+                    value.javaClass.name
+                val shouldLog = synchronized(
+                    compatibilityRuntimeNestedSnapshots
+                ) {
+                    compatibilityRuntimeNestedSnapshots.add(key)
+                }
+                if (!shouldLog) return@forEach
+                Log.i(
+                    "GoneSmartCompat",
+                    "$marker NESTED | owner=" + instance.javaClass.name +
+                        " | field=" + field.declaringClass.name +
+                        "." + field.name +
+                        " | runtime=" + value.javaClass.name +
+                        " | runtimeFields=" +
+                        GmmpReflectionDiagnostics.runtimeFieldTypes(
+                            value,
+                            limit = 32
+                        ) +
+                        " | collections=" +
+                        GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                            value,
+                            limitFields = 16,
+                            limitTypesPerField = 6
+                        )
+                )
+                logCompatibilityClassStructure(
+                    marker = "$marker NESTED CLASS",
+                    requestedName = value.javaClass.name,
+                    type = value.javaClass,
+                    instance = value
+                )
+            }
+    }
+
+    private fun scheduleCompatibilityRuntimeInstance(
+        marker: String,
+        instance: Any?
+    ) {
+        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
+        instance ?: return
+        val weak = WeakReference(instance)
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        listOf(0L, 400L, 1_200L, 3_000L).forEach { delay ->
+            handler.postDelayed({
+                val current = weak.get()
+                logCompatibilityRuntimeInstance(marker, current)
+                if (marker == "GMMP QUEUE RUNTIME" ||
+                    marker == "GMMP TRACK DAO RUNTIME"
+                ) {
+                    logCompatibilityRuntimeNestedObjects(marker, current)
+                }
+            }, delay)
+        }
+    }
+
+    private fun isCompatibilityPlatformType(type: Class<*>): Boolean {
+        val name = type.name
+        return name.startsWith("java.") ||
+            name.startsWith("javax.") ||
+            name.startsWith("android.") ||
+            name.startsWith("androidx.") ||
+            name.startsWith("kotlin.") ||
+            name.startsWith("kotlinx.") ||
+            name.startsWith("com.google.") ||
+            name.startsWith("com.afollestad.")
+    }
+
+    private fun logCompatibilityHolderNestedObjects(
+        holder: Any,
+        adapterClassName: String,
+        resourceName: String
+    ) {
+        val candidates =
+            generateSequence<Class<*>>(holder.javaClass) { it.superclass }
+                .flatMap { owner -> owner.declaredFields.asSequence() }
+                .filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        !it.isSynthetic
+                }
+                .mapNotNull { field ->
+                    val value = runCatching {
+                        field.isAccessible = true
+                        field.get(holder)
+                    }.getOrNull() ?: return@mapNotNull null
+                    if (isCompatibilityPlatformType(value.javaClass)) {
+                        return@mapNotNull null
+                    }
+                    val holderOwned = field.declaringClass == holder.javaClass
+                    val collectionCarrier =
+                        generateSequence<Class<*>>(value.javaClass) {
+                            it.superclass
+                        }.flatMap { it.declaredFields.asSequence() }
+                            .any {
+                                !java.lang.reflect.Modifier.isStatic(
+                                    it.modifiers
+                                ) && (
+                                    java.util.Collection::class.java
+                                        .isAssignableFrom(it.type) ||
+                                        java.util.Map::class.java
+                                            .isAssignableFrom(it.type) ||
+                                        it.type.isArray
+                                )
+                            }
+                    if (!holderOwned && !collectionCarrier) {
+                        return@mapNotNull null
+                    }
+                    Triple(field, value, holderOwned)
+                }
+                .take(4)
+                .toList()
+
+        candidates.forEach { (field, value, holderOwned) ->
+            val role =
+                if (holderOwned) "holder-owned" else "collection-carrier"
+            val key = resourceName + "|" + adapterClassName + "|" +
+                holder.javaClass.name + "|" + field.declaringClass.name +
+                "." + field.name + "|" + value.javaClass.name + "|" + role
+            val shouldLog = synchronized(compatibilityNestedHolderSnapshots) {
+                compatibilityNestedHolderSnapshots.add(key)
+            }
+            if (!shouldLog) return@forEach
+
+            Log.i(
+                "GoneSmartCompat",
+                "GMMP RECYCLER NESTED | resource=" + resourceName +
+                    " | adapter=" + adapterClassName +
+                    " | holder=" + holder.javaClass.name +
+                    " | role=" + role +
+                    " | field=" + field.declaringClass.name +
+                    "." + field.name +
+                    " | runtime=" + value.javaClass.name +
+                    " | runtimeFields=" +
+                    GmmpReflectionDiagnostics.runtimeFieldTypes(
+                        instance = value,
+                        limit = 36
+                    ) +
+                    " | collections=" +
+                    GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                        instance = value,
+                        limitFields = 24,
+                        limitTypesPerField = 8
+                    )
+            )
+            logCompatibilityClassStructure(
+                marker = "GMMP RECYCLER NESTED CLASS",
+                requestedName = value.javaClass.name,
+                type = value.javaClass,
+                instance = value
+            )
+        }
+    }
+
+    private fun logCompatibilityRecyclerHolder(
+        view: android.view.View,
+        adapterClassName: String,
+        resourceName: String
+    ) {
+        val group = view as? android.view.ViewGroup ?: return
+        if (group.childCount <= 0) return
+        val child = group.getChildAt(0) ?: return
+        val holder = runCatching {
+            view.javaClass.methods
+                .firstOrNull { method ->
+                    method.name == "getChildViewHolder" &&
+                        method.parameterCount == 1 &&
+                        android.view.View::class.java.isAssignableFrom(
+                            method.parameterTypes[0]
+                        )
+                }
+                ?.invoke(view, child)
+        }.getOrNull() ?: return
+
+        val key = resourceName + "|" + adapterClassName + "|" +
+            holder.javaClass.name
+        val shouldLog = synchronized(compatibilityRecyclerHolderSnapshots) {
+            compatibilityRecyclerHolderSnapshots.add(key)
+        }
+        if (!shouldLog) return
+
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP RECYCLER HOLDER | resource=" + resourceName +
+                " | adapter=" + adapterClassName +
+                " | holder=" + holder.javaClass.name +
+                " | runtimeFields=" +
+                GmmpReflectionDiagnostics.runtimeFieldTypes(
+                    instance = holder,
+                    limit = 48
+                ) +
+                " | collections=" +
+                GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                    instance = holder,
+                    limitFields = 24,
+                    limitTypesPerField = 8
+                )
+        )
+        logCompatibilityClassStructure(
+            marker = "GMMP RECYCLER HOLDER CLASS",
+            requestedName = holder.javaClass.name,
+            type = holder.javaClass,
+            instance = holder
+        )
+        logCompatibilityHolderNestedObjects(
+            holder = holder,
+            adapterClassName = adapterClassName,
+            resourceName = resourceName
+        )
+
+        if (resourceName == "playlistListRecyclerView") {
+            val adapter = runCatching {
+                view.javaClass.methods
+                    .firstOrNull {
+                        it.name == "getAdapter" &&
+                            it.parameterCount == 0
+                    }
+                    ?.invoke(view)
+            }.getOrNull()
+            if (adapter != null) {
+                val resolved =
+                    NativePlaylistRuntimeBinding.observeBoundRow(
+                        adapter = adapter,
+                        holder = holder
+                    )
+                if (resolved != null) {
+                    val itemCount = runCatching {
+                        adapter.javaClass.methods
+                            .firstOrNull {
+                                it.name == "getItemCount" &&
+                                    it.parameterCount == 0
+                            }
+                            ?.invoke(adapter) as? Int
+                    }.getOrNull() ?: -1
+                    val complete =
+                        if (itemCount > 0) {
+                            NativePlaylistRuntimeBinding.readAll(
+                                adapter,
+                                itemCount
+                            )?.size
+                        } else {
+                            null
+                        }
+                    Log.i(
+                        "GoneSmartCompat",
+                        "GMMP PLAYLIST MODEL SOURCE | resolved=true" +
+                            " | adapter=" + resolved.adapterClass +
+                            " | holder=" + resolved.holderClass +
+                            " | model=" + resolved.modelClass +
+                            " | getter=" + resolved.getter +
+                            " | holderField=" + resolved.holderField +
+                            " | pathField=" + resolved.pathField +
+                            " | titleField=" + resolved.titleField +
+                            " | pathKind=" + resolved.samplePathKind +
+                            " | rows=" + itemCount +
+                            " | completeRows=" + (complete ?: -1)
+                    )
+                } else {
+                    Log.w(
+                        "GoneSmartCompat",
+                        "GMMP PLAYLIST MODEL SOURCE | resolved=false" +
+                            " | adapter=" + adapterClassName +
+                            " | holder=" + holder.javaClass.name
+                    )
+                }
+            }
+        }
+    }
+
+    private fun scheduleCompatibilityRecyclerSnapshots(
+        view: android.view.View,
+        expectedAdapter: Any,
+        resourceName: String
+    ) {
+        if (resourceName !in COMPAT_RELEVANT_RECYCLER_IDS) return
+        val weakView = WeakReference(view)
+        val expectedClassName = expectedAdapter.javaClass.name
+        // One early and one settled snapshot are enough once a surface has
+        // already been structurally identified. The former four-pass probe
+        // caused visible frame skips in debug builds.
+        listOf(300L, 1_200L).forEach { delay ->
+            view.postDelayed({
+                val current = weakView.get() ?: return@postDelayed
+                val adapter = runCatching {
+                    current.javaClass.methods
+                        .firstOrNull {
+                            it.name == "getAdapter" &&
+                                it.parameterCount == 0
+                        }
+                        ?.invoke(current)
+                }.getOrNull() ?: return@postDelayed
+                if (adapter.javaClass.name != expectedClassName) {
+                    return@postDelayed
+                }
+                val itemCount = runCatching {
+                    adapter.javaClass.methods
+                        .firstOrNull {
+                            it.name == "getItemCount" &&
+                                it.parameterCount == 0
+                        }
+                        ?.invoke(adapter)
+                }.getOrNull()?.toString() ?: "unknown"
+                val collections =
+                    GmmpReflectionDiagnostics.runtimeCollectionElementTypes(
+                        instance = adapter,
+                        limitFields = 24,
+                        limitTypesPerField = 8
+                    )
+                val key = resourceName + "|" + expectedClassName + "|" +
+                    itemCount + "|" + collections
+                val shouldLog = synchronized(compatibilityRecyclerSnapshots) {
+                    compatibilityRecyclerSnapshots.add(key)
+                }
+                if (shouldLog) {
+                    Log.i(
+                        "GoneSmartCompat",
+                        "GMMP RECYCLER SNAPSHOT | resource=" + resourceName +
+                            " | adapter=" + expectedClassName +
+                            " | itemCount=" + itemCount +
+                            " | collections=" + collections
+                    )
+                }
+                if (itemCount != "0" && itemCount != "unknown") {
+                    logCompatibilityRecyclerHolder(
+                        view = current,
+                        adapterClassName = expectedClassName,
+                        resourceName = resourceName
+                    )
+                }
+            }, delay)
+        }
+    }
+
+    private fun compatibilityResourceName(
+        view: android.view.View
+    ): String {
+        if (view.id == android.view.View.NO_ID) {
+            return "none"
+        }
+        return runCatching {
+            view.resources.getResourceEntryName(view.id)
+        }.getOrElse {
+            "id:" + view.id
+        }
+    }
+
+    private fun compatibilityViewPath(
+        view: android.view.View,
+        limit: Int = 6
+    ): String {
+        val path = ArrayList<String>()
+        var current: android.view.View? = view
+        repeat(limit) {
+            val node = current ?: return@repeat
+            path.add(
+                node.javaClass.name + "#" +
+                    compatibilityResourceName(node)
+            )
+            current = node.parent as? android.view.View
+        }
+        return path.joinToString(">")
+    }
+
+    private fun logCompatibilityRecyclerAdapter(
+        view: android.view.View?,
+        adapterHint: Any?,
+        source: String
+    ) {
+        if (!ENABLE_DEEP_COMPAT_DIAGNOSTICS) return
+        if (view == null) {
+            return
+        }
+
+        val adapter = adapterHint ?: runCatching {
+            view.javaClass.methods
+                .firstOrNull {
+                    it.name == "getAdapter" &&
+                        it.parameterCount == 0
+                }
+                ?.invoke(view)
+        }.getOrNull() ?: return
+
+        val resourceName = compatibilityResourceName(view)
+        if (resourceName !in COMPAT_RELEVANT_RECYCLER_IDS) {
+            return
+        }
+        val surfaceKey = adapter.javaClass.name + "|" + resourceName
+        val shouldLog = synchronized(compatibilityRecyclerProbeSurfaces) {
+            if (compatibilityRecyclerProbeSurfaces.size >=
+                MAX_COMPAT_RECYCLER_SURFACES
+            ) {
+                false
+            } else {
+                compatibilityRecyclerProbeSurfaces.add(surfaceKey)
+            }
+        }
+        if (!shouldLog) {
+            return
+        }
+
+        val itemCount = runCatching {
+            adapter.javaClass.methods
+                .firstOrNull {
+                    it.name == "getItemCount" &&
+                        it.parameterCount == 0
+                }
+                ?.invoke(adapter)
+        }.getOrNull()?.toString() ?: "unknown"
+
+        Log.i(
+            "GoneSmartCompat",
+            "GMMP RECYCLER ADAPTER | source=$source" +
+                " | view=${view.javaClass.name}" +
+                " | resource=$resourceName" +
+                " | path=${compatibilityViewPath(view)}" +
+                " | adapter=${adapter.javaClass.name}" +
+                " | itemCount=$itemCount"
+        )
+        logCompatibilityClassStructure(
+            marker = "GMMP RECYCLER ADAPTER CLASS",
+            requestedName = adapter.javaClass.name,
+            type = adapter.javaClass,
+            instance = adapter
+        )
+
+        scheduleCompatibilityRecyclerSnapshots(
+            view = view,
+            expectedAdapter = adapter,
+            resourceName = resourceName
+        )
+    }
+
+    /**
+     * Observe the host RecyclerView lifecycle used by both folder surfaces.
+     * The original native methods always run; GoneSmart only attaches its
+     * already-verified folder chrome to the matching visible surface.
+     */
+    private fun installPlaylistSurfaceHooks(
         param: PackageReadyParam
     ) {
+        val recycler = param.classLoader.loadClass(
+            "androidx.recyclerview.widget.RecyclerView"
+        )
+        val setAdapter = recycler.declaredMethods.firstOrNull {
+            it.name == "setAdapter" && it.parameterCount == 1
+        } ?: throw NoSuchMethodException("RecyclerView.setAdapter")
+        setAdapter.isAccessible = true
+        hook(setAdapter).intercept { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val list = chain.getThisObject() as? android.view.View
+                logCompatibilityRecyclerAdapter(
+                    view = list,
+                    adapterHint = chain.getArg(0),
+                    source = "setAdapter"
+                )
+                playlistFolderPreview.onNativeRecyclerObserved(list)
+                smartPlaylistFolderController.onNativeRecyclerObserved(list)
+            }.onFailure {
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | adapter observation failed", it)
+            }
+            result
+        }
+
+        val attach = recycler.declaredMethods.firstOrNull {
+            it.name == "onAttachedToWindow" && it.parameterCount == 0
+        } ?: throw NoSuchMethodException("RecyclerView.onAttachedToWindow")
+        attach.isAccessible = true
+        hook(attach).intercept { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val list = chain.getThisObject() as? android.view.View
+                logCompatibilityRecyclerAdapter(
+                    view = list,
+                    adapterHint = null,
+                    source = "attach"
+                )
+                playlistFolderPreview.onNativeRecyclerObserved(list)
+                smartPlaylistFolderController.onNativeRecyclerObserved(list)
+            }.onFailure {
+                Log.w("GoneSmartPlaylist", "FOLDER SURFACE | attach observation failed", it)
+            }
+            result
+        }
+
+        // The host and module can load AndroidX RecyclerView through separate
+        // classloaders. Observe GMMP's ORIGINAL host callbacks here instead
+        // of adding module RecyclerView listeners that can never attach to
+        // the native AestheticRecyclerView instance.
+        runCatching {
+            val onScrolled = recycler.declaredMethods.firstOrNull {
+                it.name == "onScrolled" &&
+                    it.parameterCount == 2 &&
+                    it.parameterTypes.all { type ->
+                        type == Int::class.javaPrimitiveType
+                    }
+            } ?: throw NoSuchMethodException("RecyclerView.onScrolled(int,int)")
+            onScrolled.isAccessible = true
+            hook(onScrolled).intercept { chain ->
+                val result = chain.proceed()
+                smartPlaylistFolderController.onNativeRecyclerScrolled(
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(1) as? Int ?: 0
+                )
+                result
+            }
+
+            val onTouch = recycler.declaredMethods.firstOrNull {
+                it.name == "onTouchEvent" &&
+                    it.parameterCount == 1 &&
+                    android.view.MotionEvent::class.java.isAssignableFrom(
+                        it.parameterTypes[0]
+                    )
+            } ?: throw NoSuchMethodException("RecyclerView.onTouchEvent(MotionEvent)")
+            onTouch.isAccessible = true
+            hook(onTouch).intercept { chain ->
+                smartPlaylistFolderController.onNativeRecyclerTouch(
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(0) as? android.view.MotionEvent
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOST RECYCLER | onScrolled/onTouchEvent hooks ready"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOST RECYCLER | hooks unavailable",
+                it
+            )
+        }
+        // DEX-confirmed on the supplied GMMP 4.2.0 APK, not a guess:
+        // zn3 -> bw -> zw -> yw -> RecyclerView$h (native Adapter).
+        // Hook ONLY the actual native Adapter's existing notification
+        // methods and observe zn3 instances. This does not mutate GMMP
+        // model lists, force refresh, or manufacture a fake UI event.
+        runCatching {
+            installNativePlaylistAdapterChangeHooks(param)
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | hooks unavailable;" +
+                    " keeping pre-draw fallback",
+                it
+            )
+        }
+
+        // APK-proven: native playlist ActionMode callback yn3 extends n3.
+        // Original n3.onDestroyActionMode invokes its own native reset.
+        // Observe AFTER the original callback returns to clear our
+        // presentation-only selection mirror on toolbar Back, Android
+        // Back and completed original bulk actions alike.
+        runCatching {
+            val nativeBase = param.classLoader.loadClass("n3")
+            val nativePlaylistMode = param.classLoader.loadClass("yn3")
+            val nativeActionMode = param.classLoader.loadClass(
+                "androidx.appcompat.view.ActionMode"
+            )
+            // Capture the actual host ActionMode so GoneSmart's newly
+            // added Move menu can close GMMP's original selection without
+            // leaving an orphan contextual toolbar. A native callback may
+            // be inherited from n3; never instantiate a synthetic mode.
+            listOf("onCreateActionMode", "onPrepareActionMode").forEach { name ->
+                runCatching {
+                    val observed = nativeBase.declaredMethods.firstOrNull {
+                        it.name == name && it.parameterCount == 2 &&
+                            it.parameterTypes[0] == nativeActionMode
+                    } ?: return@runCatching
+                    observed.isAccessible = true
+                    hook(observed).intercept { chain ->
+                        val original = chain.proceed()
+                        if (nativePlaylistMode.isInstance(chain.getThisObject())) {
+                            playlistFolderPreview.observeNativePlaylistActionMode(
+                                chain.getArg(0)
+                            )
+                        }
+                        original
+                    }
+                }.onFailure {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "PLAYLIST MOVE | native ActionMode capture unavailable: " +
+                            name, it
+                    )
+                }
+            }
+            val destroy = nativeBase.getDeclaredMethod(
+                "onDestroyActionMode", nativeActionMode
+            ).apply { isAccessible = true }
+            hook(destroy).intercept { chain ->
+                val playlistSelection =
+                    nativePlaylistMode.isInstance(chain.getThisObject())
+                val result = chain.proceed()
+                if (playlistSelection) {
+                    playlistFolderPreview.onNativeMainActionModeDestroyed()
+                }
+                result
+            }
+            Log.i("GoneSmartPlaylist", "FOLDER MAIN SELECT | native finish hook ready")
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER MAIN SELECT | native finish hook unavailable",
+                it
+            )
+        }
+
+        Log.i(
+            "GoneSmartPlaylist",
+            "FOLDER SURFACE READY | native RecyclerView setAdapter/attach hooks"
+        )
+    }
+
+
+    /**
+     * Native GMMP RecyclerView's R8-renamed Adapter class is
+     * androidx.recyclerview.widget.RecyclerView$h in the supplied
+     * GMMP 4.2.0 APK. Its original public final notify* methods send
+     * real update events, including when the player is idle and no
+     * PreDraw callback runs for many seconds. Observing their RETURN is
+     * safer than guessed polling intervals or synthetic notifications.
+     */
+    private fun installNativePlaylistAdapterChangeHooks(
+        param: PackageReadyParam
+    ) {
+        val adapterBase = param.classLoader.loadClass(
+            "androidx.recyclerview.widget.RecyclerView\$h"
+        )
+        val nativePlaylistClasses =
+            GmmpPlaylistAdapterPolicy.verifiedClassNames.mapNotNull { name ->
+                runCatching {
+                    param.classLoader.loadClass(name)
+                }.getOrNull()?.takeIf(adapterBase::isAssignableFrom)
+            }
+        check(nativePlaylistClasses.isNotEmpty()) {
+            "No verified GMMP playlist Adapter candidate is available"
+        }
+        var installed = 0
+        for ((name, argCount) in NativePlaylistAdapterEventPolicy.nativeMethods) {
+            val method = adapterBase.declaredMethods.firstOrNull {
+                it.name == name && it.parameterCount == argCount
+            } ?: continue
+            method.isAccessible = true
+            hook(method).intercept { chain ->
+                val result = chain.proceed()
+                val instance = chain.getThisObject()
+                if (nativePlaylistClasses.any { it.isInstance(instance) }) {
+                    runCatching {
+                        playlistFolderPreview.onNativePlaylistAdapterEvent(
+                            instance, name
+                        )
+                    }.onFailure {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "FOLDER NATIVE ADAPTER EVENT | observer failed",
+                            it
+                        )
+                    }
+                }
+                result
+            }
+            installed++
+        }
+        if (installed != NativePlaylistAdapterEventPolicy.nativeMethods.size) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | installed=" + installed +
+                    "/" + NativePlaylistAdapterEventPolicy.nativeMethods.size +
+                    "; pre-draw fallback still active"
+            )
+        } else {
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER NATIVE ADAPTER EVENT | hooks installed=" + installed
+            )
+        }
+    }
+
+    /**
+     * This GMMP version's vp3.F lazy delegate resolves the configured
+     * playlist_saveLocation via va4.getValue(). Unlike changing the global
+     * setting or moving a newly-written M3U, a targeted thread-local
+     * override affects ONLY the original create lambda's File(parent,name).
+     * File writing (hp3.d) and GMMP's own rescan (t6.f) run untouched.
+     */
+    private fun aroundNativePhysicalCreation(
+        param: PackageReadyParam,
+        surface: String,
+        nativeLambda: Any,
+        proceed: () -> Any?
+    ): Any? {
+        val picker = surface == "picker"
+        val target = playlistFolderPreview.physicalCreationTarget(picker)
+            ?: return proceed()
+        fun cancel(): Any? {
+            playlistFolderPreview.blockUnsafeNativeCreation(picker)
+            return runCatching {
+                param.classLoader.loadClass("uf5")
+                    .getDeclaredField("a").apply { isAccessible = true }
+                    .get(null)
+            }.getOrNull()
+        }
+        if (!playlistFolderPreview.nativeCreateRedirectReady(picker) ||
+            !File(target.destination).isDirectory
+        ) return cancel()
+
+        val delegate = runCatching {
+            val owner = nativeLambda.javaClass.getDeclaredField("o")
+                .apply { isAccessible = true }
+                .get(nativeLambda) ?: return@runCatching null
+            var holder: Class<*>? = owner.javaClass
+            var state: Any? = null
+            while (holder != null && state == null) {
+                val type = holder
+                state = runCatching {
+                    type.getDeclaredField("x")
+                        .apply { isAccessible = true }
+                        .get(owner)
+                }.getOrNull()
+                holder = type.superclass
+            }
+            if (state?.javaClass?.name != "vp3") {
+                return@runCatching null
+            }
+            val lazy = state.javaClass.getDeclaredField("F")
+                .apply { isAccessible = true }.get(state)
+                ?: return@runCatching null
+            val nativeRootDelegate = lazy.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }.invoke(lazy)
+            nativeRootDelegate?.takeIf { it.javaClass.name == "va4" }
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | configured root delegate unavailable",
+                it
+            )
+        }.getOrNull() ?: return cancel()
+
+        val originalRoot = runCatching {
+            delegate.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }
+                .invoke(delegate) as? String
+        }.getOrNull() ?: return cancel()
+        if (originalRoot.contains("://") ||
+            runCatching { File(originalRoot).canonicalPath }
+                .getOrNull() != target.nativeRoot
+        ) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | actual GMMP root differs from indexed root"
+            )
+            return cancel()
+        }
+
+        // Check that the precisely targeted native getter is REALLY hooked,
+        // before executing the original callback that would write a file.
+        val probe = nativePlaylistDestinationScope.withDestination(
+            delegate, originalRoot, target.destination
+        ) {
+            delegate.javaClass.getDeclaredMethod("getValue")
+                .apply { isAccessible = true }.invoke(delegate)
+        }
+        if (probe.value != target.destination || probe.substitutions == 0) {
+            Log.w("GoneSmartPlaylist", "FOLDER CREATE | getter probe failed")
+            return cancel()
+        }
+
+        val operation = nativePlaylistDestinationScope.withDestination(
+            delegate, originalRoot, target.destination, proceed
+        )
+        if (operation.substitutions == 0) {
+            // Not a false success: investigate if the native create callback
+            // changes in a future GMMP version. Never move the file after.
+            Log.e(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | native callback did not read intended delegate"
+            )
+        } else {
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | native destination substituted | surface=" +
+                    surface
+            )
+        }
+        return operation.value
+    }
+
+    /**
+     * Version-checked GMMP 4.2.0 native create hooks. The two presenters each construct
+     * a separate File(parent, name + ".m3u") inside this lambda. Do not
+     * redirect either destination before both native transactions are known.
+     * No user-entered name, path or playlist contents are logged.
+     */
+    private fun installNativePlaylistCreationHooks(
+        param: PackageReadyParam
+    ) {
+        runCatching {
+            val presenterType = param.classLoader.loadClass("tp3")
+            val constructors = presenterType.declaredConstructors
+            require(constructors.isNotEmpty()) {
+                "tp3 has no declared constructors"
+            }
+            constructors.forEach { constructor ->
+                constructor.isAccessible = true
+                hook(constructor).intercept { chain ->
+                    val result = chain.proceed()
+                    NativeGmmpFolderCreator.observeMainPlaylistPresenter(
+                        chain.getThisObject()
+                    )
+                    result
+                }
+            }
+
+            // Secondary only. The device showed y2 alone can miss the live
+            // presenter even though tp3 is already serving the Playlist tab.
+            runCatching {
+                val lifecycle = presenterType.getDeclaredMethod("y2")
+                    .apply { isAccessible = true }
+                hook(lifecycle).intercept { chain ->
+                    NativeGmmpFolderCreator.observeMainPlaylistPresenter(
+                        chain.getThisObject()
+                    )
+                    chain.proceed()
+                }
+            }
+
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE SHELL | tp3 constructor observer installed" +
+                    " | constructors=" + constructors.size
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE SHELL | tp3 constructor observer unavailable",
+                it
+            )
+        }
+
+        val kotlinUnit = runCatching {
+            val unitType = param.classLoader.loadClass("uf5")
+            val field = unitType.declaredFields.filter {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    unitType.isAssignableFrom(it.type)
+            }.singleOrNull() ?: error(
+                "Kotlin Unit singleton field is not structurally unique"
+            )
+            field.isAccessible = true
+            field.get(null) ?: error("Kotlin Unit singleton is null")
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "NATIVE CREATE | Kotlin Unit singleton unavailable",
+                it
+            )
+        }.getOrNull()
+
+        val getterReady = runCatching {
+            val nativeGetter = param.classLoader.loadClass("va4")
+                .getDeclaredMethod("getValue").apply { isAccessible = true }
+            hook(nativeGetter).intercept { chain ->
+                nativePlaylistDestinationScope.overrideNativeGetter(
+                    chain.getThisObject()
+                ) { chain.proceed() }
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | scoped native getter hook installed"
+            )
+            true
+        }.onFailure {
+            Log.e(
+                "GoneSmartPlaylist",
+                "FOLDER CREATE | scoped native getter unavailable",
+                it
+            )
+        }.getOrDefault(false)
+        val installedSurfaces = mutableSetOf<String>()
+        listOf("sp3" to "main", "fo3" to "picker").forEach { (name, surface) ->
+            runCatching {
+                val native = param.classLoader.loadClass(name)
+                // DEX confirms Kotlin Function2: two Object arguments,
+                // one Object return. The earlier three-argument lookup
+                // could never install either probe on GMMP 4.2.0.
+                val invoke = native.getDeclaredMethod(
+                    "invoke",
+                    Any::class.java,
+                    Any::class.java
+                ).apply { isAccessible = true }
+                hook(invoke).intercept { chain ->
+                    Log.i(
+                        "GoneSmartPlaylist",
+                        "NATIVE CREATE | surface=$surface | entered"
+                    )
+                    try {
+                        if (surface == "main" &&
+                            kotlinUnit != null &&
+                            NativeGmmpFolderCreator
+                                .interceptNativeMainPlaylistCreate(
+                                    chain.getThisObject(),
+                                    chain.getArg(0),
+                                    chain.getArg(1)
+                                )
+                        ) {
+                            Log.i(
+                                "GoneSmartPlaylist",
+                                "NATIVE CREATE | surface=main | " +
+                                    "consumed by folder shell"
+                            )
+                            return@intercept kotlinUnit
+                        }
+
+                        val createOnly = surface == "picker" &&
+                            playlistController.canCreatePlaylistWithoutAdding()
+                        val result = aroundNativePhysicalCreation(
+                            param, surface, chain.getThisObject()
+                        ) {
+                        if (!createOnly) {
+                            chain.proceed()
+                        } else {
+                            // fo3.invoke ALWAYS copies ho3.a into hp3.r,
+                            // regardless of go3.z. Temporarily substitute an
+                            // empty source-list for THIS synchronous original
+                            // GMMP create transaction and restore in finally.
+                            // This preserves hp3.d, t6.f and GMMP's own
+                            // filename validation / DB registration.
+                            val target = runCatching {
+                                val owner = chain.getThisObject().javaClass
+                                    .getDeclaredField("o")
+                                    .apply { isAccessible = true }
+                                    .get(chain.getThisObject())
+                                if (owner?.javaClass?.name != "go3") {
+                                    return@runCatching null
+                                }
+                                val source = owner.javaClass
+                                    .getDeclaredField("A")
+                                    .apply { isAccessible = true }
+                                    .get(owner)
+                                if (source?.javaClass?.name != "ho3") {
+                                    return@runCatching null
+                                }
+                                val field = source.javaClass
+                                    .getDeclaredField("a")
+                                    .apply { isAccessible = true }
+                                val original = field.get(source) as? List<*>
+                                    ?: return@runCatching null
+                                Triple(source, field, original)
+                            }.onFailure {
+                                Log.w(
+                                    "GoneSmartPlaylist",
+                                    "PICKER CREATE ONLY | native source unavailable",
+                                    it
+                                )
+                            }.getOrNull()
+
+                            if (target == null) {
+                                Log.w(
+                                    "GoneSmartPlaylist",
+                                    "PICKER CREATE ONLY | retaining native fallback"
+                                )
+                                chain.proceed()
+                            } else {
+                                val (source, field, original) = target
+                                val substituted = runCatching {
+                                    field.set(source, emptyList<Any>())
+                                    (field.get(source) as? List<*>)?.isEmpty() == true
+                                }.getOrElse {
+                                    Log.w(
+                                        "GoneSmartPlaylist",
+                                        "PICKER CREATE ONLY | source substitution blocked",
+                                        it
+                                    )
+                                    false
+                                }
+                                if (!substituted) {
+                                    runCatching { field.set(source, original) }
+                                    chain.proceed()
+                                } else {
+                                    Log.i(
+                                        "GoneSmartPlaylist",
+                                        "PICKER CREATE ONLY | native source emptied for create"
+                                    )
+                                    try {
+                                        playlistController.aroundPickerCreateOnly {
+                                            chain.proceed()
+                                        }
+                                    } finally {
+                                        runCatching {
+                                            field.set(source, original)
+                                        }.onFailure {
+                                            Log.e(
+                                                "GoneSmartPlaylist",
+                                                "PICKER CREATE ONLY | restore source selection",
+                                                it
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        }
+                        Log.i(
+                            "GoneSmartPlaylist",
+                            "NATIVE CREATE | surface=$surface | returned"
+                        )
+                        result
+                    } catch (error: Throwable) {
+                        Log.w(
+                            "GoneSmartPlaylist",
+                            "NATIVE CREATE | surface=$surface | native exception",
+                            error
+                        )
+                        throw error
+                    }
+                }
+                installedSurfaces.add(surface)
+                Log.i(
+                    "GoneSmartPlaylist",
+                    "NATIVE CREATE | surface=$surface | hook installed"
+                )
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "NATIVE CREATE | surface=$surface | unavailable",
+                    error
+                )
+            }
+        }
+        playlistFolderPreview.setNativeCreateRedirectReady(
+            main = getterReady && "main" in installedSurfaces,
+            picker = getterReady && "picker" in installedSurfaces
+        )
+    }
+
+    private fun installSmartPlaylistFolderFeatureHooks(
+        param: PackageReadyParam
+    ) {
+        val loader = param.classLoader
+
+        runCatching {
+            val presenter = loader.loadClass("ss4")
+            val view = loader.loadClass("fo2")
+            val method = presenter.getDeclaredMethod("P1", view)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                smartPlaylistFolderController.capturePresenter(
+                    chain.getThisObject()
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | ss4.P1 presenter capture"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | ss4.P1",
+                it
+            )
+        }
+
+        runCatching {
+            // Native item path proven from GMMP 4.2.0:
+            // ss4 -> j7 -> os4.j2(List<ws4>) -> ls4.y differ.b(List).
+            // ls4.U(List) is List<t23> metadata configuration instead.
+            val fragment = loader.loadClass("os4")
+            val method = fragment.getDeclaredMethod(
+                "j2",
+                java.util.List::class.java
+            ).apply { isAccessible = true }
+            val canSuppressRootSubmit =
+                method.returnType == java.lang.Void.TYPE
+            hook(method).intercept { chain ->
+                if (canSuppressRootSubmit &&
+                    smartPlaylistFolderController
+                        .shouldSuppressNativeSmartRootSubmission()
+                ) {
+                    smartPlaylistFolderController
+                        .onNativeSmartRootSubmissionSuppressed()
+                    null
+                } else {
+                    smartPlaylistFolderController.onNativeSmartListSubmitting()
+                    val result = chain.proceed()
+                    smartPlaylistFolderController.onNativeSmartListSubmitted()
+                    result
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | os4.j2 native ws4 submit"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | os4.j2",
+                it
+            )
+        }
+
+        runCatching {
+            // r24: GMMP 4.2.1 can bypass os4.j2 on detail->Back and write its
+            // physical Smart root straight into is4.x's AsyncListDiffer.
+            // Hook only List->void boundaries owned by the AndroidX differ
+            // field types of is4; runtime identity filtering in the controller
+            // means unrelated AsyncListDiffer instances always proceed.
+            val adapter = loader.loadClass("is4")
+            val differTypes =
+                generateSequence<Class<*>>(adapter) { it.superclass }
+                    .flatMap { it.declaredFields.asSequence() }
+                    .map { it.type }
+                    .filter {
+                        it.name.startsWith("androidx.recyclerview.widget.")
+                    }
+                    .distinct()
+                    .toList()
+            val submitMethods = differTypes.flatMap { type ->
+                GmmpReflectionPolicy.callableMethods(type).filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                        it.parameterCount == 1 &&
+                        java.util.List::class.java
+                            .isAssignableFrom(it.parameterTypes[0]) &&
+                        it.returnType == java.lang.Void.TYPE
+                }
+            }.distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" +
+                    it.parameterTypes[0].name
+            }
+            require(submitMethods.isNotEmpty()) {
+                "Smart AsyncListDiffer submit boundary unavailable"
+            }
+            submitMethods.forEach { submit ->
+                submit.isAccessible = true
+                hook(submit).intercept { chain ->
+                    val incoming =
+                        (chain.getArg(0) as? java.util.List<*>)
+                            ?.toList()
+                    if (incoming != null &&
+                        smartPlaylistFolderController
+                            .shouldSuppressNativeSmartDifferSubmission(
+                                chain.getThisObject(),
+                                incoming
+                            )
+                    ) {
+                        smartPlaylistFolderController
+                            .onNativeSmartDifferSubmissionSuppressed(
+                                chain.getThisObject(),
+                                incoming.size
+                            )
+                        null
+                    } else {
+                        chain.proceed()
+                    }
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | direct differ submit guard=" +
+                    submitMethods.joinToString(",") {
+                        it.declaringClass.name + "." + it.name
+                    }
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | direct differ submit guard",
+                it
+            )
+        }
+
+        runCatching {
+            val callback = loader.loadClass("ss4\$b")
+            val method = callback.getDeclaredMethod("invoke")
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                smartPlaylistFolderController.markNativeCreateRequested()
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK READY | original Smart add destination"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS HOOK MISSING | ss4\$b.invoke",
+                it
+            )
+        }
+
+        runCatching {
+            // APK-proven Smart context dispatch: nt4.c(Context, zn0, MenuItem)
+            // receives the exact vs4 holder and therefore its exact ws4 model.
+            val behavior = loader.loadClass("nt4")
+            val holderBase = loader.loadClass("zn0")
+            val method = behavior.getDeclaredMethod(
+                "c",
+                android.content.Context::class.java,
+                holderBase,
+                android.view.MenuItem::class.java
+            ).apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (smartPlaylistFolderController.interceptNativeContextMove(
+                        chain.getArg(0) as? android.content.Context,
+                        chain.getArg(1),
+                        chain.getArg(2) as? android.view.MenuItem
+                    )
+                ) {
+                    true
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK READY | nt4.c native context dispatch"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK MISSING | nt4.c",
+                it
+            )
+        }
+
+        runCatching {
+            // APK-proven generic native selection: n3 stores selected ws4
+            // models in s3.c -> s3$a.b and calls onActionItemClicked.
+            val base = loader.loadClass("n3")
+            val nativeMode = loader.loadClass(
+                "androidx.appcompat.view.ActionMode"
+            )
+            val create = base.getDeclaredMethod(
+                "onCreateActionMode",
+                nativeMode,
+                android.view.Menu::class.java
+            ).apply { isAccessible = true }
+            hook(create).intercept { chain ->
+                val result = chain.proceed()
+                smartPlaylistFolderController.onNativeSmartActionModeCreated(
+                    chain.getThisObject(),
+                    chain.getArg(1) as? android.view.Menu
+                )
+                result
+            }
+            val click = base.getDeclaredMethod(
+                "onActionItemClicked",
+                nativeMode,
+                android.view.MenuItem::class.java
+            ).apply { isAccessible = true }
+            hook(click).intercept { chain ->
+                if (smartPlaylistFolderController
+                        .interceptNativeSmartActionModeMove(
+                            chain.getThisObject(),
+                            chain.getArg(0),
+                            chain.getArg(1) as? android.view.MenuItem
+                        )
+                ) {
+                    true
+                } else {
+                    chain.proceed()
+                }
+            }
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK READY | native n3 ActionMode selection"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartSmartFolders",
+                "SMART MOVE HOOK MISSING | native n3 ActionMode",
+                it
+            )
+        }
+    }
+
+    /**
+     * Single writer hook for both independently-scoped features:
+     * Smart-Playlist folders may retarget ONLY a brand-new root save,
+     * then Playlist Bridge temporarily rewrites Bridge q-values for stock
+     * GMMP compatibility. Re-entry is bounded and the native writer remains
+     * the only code that serializes .spl files.
+     */
+    private fun installSmartPlaylistSaveMethodHook(
+        method: Method
+    ) {
+        require(
+            method.parameterCount == 1 &&
+                method.parameterTypes[0] == File::class.java
+        ) {
+            "Resolved Smart writer does not accept exactly one File"
+        }
+        require(
+            method.returnType == java.lang.Boolean.TYPE ||
+                method.returnType == java.lang.Boolean::class.java ||
+                method.returnType == java.lang.Void.TYPE
+        ) {
+            "Resolved Smart writer has unexpected return type"
+        }
+        method.isAccessible = true
+        val key = method.declaringClass.name + "|" + method.name + "|" +
+            method.returnType.name
+        if (!smartPlaylistSaveHookKeys.add(key)) return
+
+        runCatching {
+            hook(method).intercept { chain ->
+                val originalDestination = chain.getArg(0) as? File
+                val depth = smartPlaylistSaveRedirectDepth.get()
+
+                if (depth == 0) {
+                    val redirected = smartPlaylistFolderController
+                        .consumeRedirectedSaveDestination(originalDestination)
+                    if (redirected != null &&
+                        originalDestination != null &&
+                        redirected.path != originalDestination.path
+                    ) {
+                        smartPlaylistSaveRedirectDepth.set(1)
+                        try {
+                            return@intercept method.invoke(
+                                chain.getThisObject(),
+                                redirected
+                            )
+                        } finally {
+                            smartPlaylistSaveRedirectDepth.set(0)
+                        }
+                    }
+                }
+
+                val token = runCatching {
+                    playlistBridgeController.preparePortableSave(
+                        chain.getThisObject(),
+                        originalDestination
+                    )
+                }.onFailure {
+                    Log.w(
+                        PLAYLIST_BRIDGE_TAG,
+                        "BRIDGE SAVE | current Smart model mapping unavailable; " +
+                            "native writer continues",
+                        it
+                    )
+                }.getOrNull()
+                try {
+                    chain.proceed()
+                } finally {
+                    if (token != null) {
+                        playlistBridgeController.restorePortableSave(token)
+                    }
+                }
+            }
+
+            Log.i(
+                "GoneSmartSmartFolders",
+                "SMART FOLDERS SAVE READY | writer=" +
+                    method.declaringClass.name + "." + method.name +
+                    " | return=" + method.returnType.name
+            )
+        }.onFailure {
+            smartPlaylistSaveHookKeys.remove(key)
+            throw it
+        }
+    }
+
+    private fun installPlaylistBridgeHooks(
+        param: PackageReadyParam
+    ) {
+        val loader = param.classLoader
+        val bindingsReady = playlistBridgeController.configure(loader)
+        var installed = 0
+        installed += installPlaylistBridgeEditorHooks(loader)
+        installed += installPlaylistBridgeEvaluationHook(loader)
+
+        playlistBridgeInfo(
+            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady"
+        )
+        if (bindingsReady && playlistBridgeController.isEnabled()) {
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SYSTEM,
+                "Playlist Link is available in the Smart-Playlist editor."
+            )
+        }
+    }
+
+    private fun installPlaylistBridgeEditorHooks(
+        loader: ClassLoader
+    ): Int {
+        var installed = 0
+
+        runCatching {
+            val presenterClass = loader.loadClass("ds4")
+            val constructor = presenterClass
+                .getDeclaredConstructor(
+                    android.content.Context::class.java,
+                    android.os.Bundle::class.java
+                )
+                .apply { isAccessible = true }
+            hook(constructor).intercept { chain ->
+                val context = chain.getArg(0) as? android.content.Context
+                val result = chain.proceed()
+                playlistBridgeController.capturePresenter(
+                    chain.getThisObject(),
+                    context
+                )
+                result
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart editor presenter hook unavailable", it)
+        }
+
+        runCatching {
+            val presenterClass = loader.loadClass("ds4")
+            val method = presenterClass
+                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val edit = chain.getArg(0) as? Boolean == true
+                if (
+                    playlistBridgeController.interceptNativeLinkedEditor(
+                        chain.getThisObject(),
+                        edit
+                    )
+                ) {
+                    null
+                } else {
+                    chain.proceed()
+                }
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart link chooser hook unavailable", it)
+        }
+
+        runCatching {
+            val consumerClass = loader.loadClass("ds4\$g")
+            val method = consumerClass
+                .getDeclaredMethod("accept", Any::class.java)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val previous = playlistBridgeSmartChooserTitleDepth.get()
+                playlistBridgeSmartChooserTitleDepth.set(previous + 1)
+                try {
+                    chain.proceed()
+                } finally {
+                    playlistBridgeSmartChooserTitleDepth.set(previous)
+                }
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart chooser title scope unavailable", it)
+        }
+
+        runCatching {
+            val basePresenterClass = loader.loadClass("bx")
+            val method = basePresenterClass
+                .getDeclaredMethod("K0", Integer.TYPE)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                if (playlistBridgeSmartChooserTitleDepth.get() > 0) {
+                    val id = chain.getArg(0) as? Int ?: 0
+                    val context = playlistBridgeController.currentContext()
+                    val resourceName = context?.takeIf {
+                        NativeResourceIdPolicy.canResolveEntryName(id)
+                    }?.let {
+                        runCatching {
+                            it.resources.getResourceEntryName(id)
+                        }.getOrNull()
+                    }
+                    if (resourceName == "link_playlist") {
+                        playlistBridgeController
+                            .nativeSmartPlaylistLinkTitle()
+                            ?.let { return@intercept it }
+                    }
+                }
+                chain.proceed()
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart chooser title hook unavailable", it)
+        }
+
+        runCatching {
+            val metadataTextClass = loader.loadClass("os2")
+            val baseRuleClass = loader.loadClass("gt4")
+            val method = metadataTextClass
+                .getDeclaredMethod("U", baseRuleClass)
+                .apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                val original = chain.proceed() as? String
+                playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
+                    chain.getArg(0),
+                    original
+                )
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart rule label hook unavailable", it)
+        }
+
+        return installed
+    }
+
+    private fun installPlaylistBridgeEvaluationHook(
+        loader: ClassLoader
+    ): Int {
+        return runCatching {
+            val smartRuleClass = loader.loadClass("ft4")
+            val whereClass = loader.loadClass("ww3")
+            val method = smartRuleClass
+                .getDeclaredMethod(
+                    "z",
+                    java.util.LinkedHashSet::class.java,
+                    java.lang.Integer::class.java
+                )
+                .apply { isAccessible = true }
+            require(method.returnType == whereClass) {
+                "Unexpected ft4.z return type " + method.returnType.name
+            }
+
+            hook(method).intercept { chain ->
+                val rule = chain.getThisObject()
+                if (!playlistBridgeController.isBridgeRule(rule) ||
+                    !playlistBridgeController.isEnabled()
+                ) {
+                    return@intercept chain.proceed()
+                }
+
+                val started = SystemClock.elapsedRealtimeNanos()
+                val result = runCatching {
+                    playlistBridgeController.compile(rule)
+                }.onFailure {
+                    playlistBridgeWarn(
+                        "Bridge rule compilation failed; using false predicate",
+                        it
+                    )
+                }.getOrNull()
+                    ?: playlistBridgeController.failClosedPredicate()
+                    ?: throw IllegalStateException(
+                        "Playlist Bridge fail-closed predicate unavailable"
+                    )
+
+                playlistBridgeInfo(
+                    "RULE COMPILED | result=" + result.javaClass.name +
+                        " | elapsedMs=" +
+                        ((SystemClock.elapsedRealtimeNanos() - started) /
+                            1_000_000L)
+                )
+                result
+            }
+            1
+        }.getOrElse {
+            playlistBridgeWarn("Bridge evaluation hook unavailable", it)
+            0
+        }
+    }
+
+    private fun playlistBridgeInfo(message: String) {
+        Log.i(PLAYLIST_BRIDGE_TAG, message)
+    }
+
+    private fun playlistBridgeWarn(
+        message: String,
+        error: Throwable
+    ) {
+        Log.w(PLAYLIST_BRIDGE_TAG, message, error)
+    }
+
+    private fun installPlaylistMultiSelectHooks(
+        param: PackageReadyParam
+    ): Boolean {
         val pickerClass = param.classLoader.loadClass("bo3")
 
+        val installedPickerMethods = mutableSetOf<String>()
         listOf("I3", "k2", "D1").forEach { name ->
             val method = pickerClass.declaredMethods
                 .firstOrNull {
                     it.name == name && it.parameterCount == 0
-                } ?: throw NoSuchMethodException("bo3.$name()")
+                }
+
+            if (method == null) {
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "PLAYLIST PICKER MAPPING | missing=bo3.$name()" +
+                        " | noArgMethods=" +
+                        GmmpReflectionDiagnostics.methods(
+                            type = pickerClass,
+                            limit = 28
+                        ) {
+                            it.parameterTypes.isEmpty()
+                        }
+                )
+                return@forEach
+            }
 
             method.isAccessible = true
             hook(method).intercept { chain ->
@@ -475,26 +3533,75 @@ class GoneSmartModule : XposedModule() {
                 }
                 result
             }
+            installedPickerMethods.add(name)
+        }
+
+        val missingPickerMethods =
+            listOf("I3", "k2", "D1")
+                .filterNot(installedPickerMethods::contains)
+        if (missingPickerMethods.isNotEmpty()) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "PLAYLIST PICKER MAPPING SUMMARY | missing=" +
+                    missingPickerMethods.joinToString(",") +
+                    " | hierarchy=" +
+                    GmmpReflectionDiagnostics.hierarchy(pickerClass) +
+                    " | constructors=" +
+                    GmmpReflectionDiagnostics.constructors(
+                        pickerClass,
+                        limit = 20
+                    ) +
+                    " | fields=" +
+                    GmmpReflectionDiagnostics.fields(
+                        pickerClass,
+                        limit = 40
+                    ) +
+                    " | declaredMethods=" +
+                    GmmpReflectionDiagnostics.methods(
+                        type = pickerClass,
+                        limit = 64
+                    ) {
+                        it.declaringClass == pickerClass
+                    }
+            )
         }
 
         // go3.y2() constructs this native handler using the original
-        // source selection (ho3). Capture it during picker startup.
-        val handlerClass = param.classLoader.loadClass("io3")
-        val nativeConstructor = handlerClass.declaredConstructors
-            .firstOrNull {
-                it.parameterTypes.size == 2 &&
-                    it.parameterTypes[0].name == "ho3" &&
-                    it.parameterTypes[1] == Boolean::class.javaPrimitiveType
-            } ?: throw NoSuchMethodException("io3(ho3, boolean)")
+        // source selection (ho3). Capture it during picker startup. Keep this
+        // independent from the remapped bo3 lifecycle so one missing boundary
+        // cannot hide the rest of the 4.2.1 compatibility evidence.
+        val nativeHandlerReady =
+            runCatching {
+                val handlerClass = param.classLoader.loadClass("io3")
+                val nativeConstructor = handlerClass.declaredConstructors
+                    .firstOrNull {
+                        it.parameterTypes.size == 2 &&
+                            it.parameterTypes[0].name == "ho3" &&
+                            it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+                    } ?: throw NoSuchMethodException("io3(ho3, boolean)")
 
-        nativeConstructor.isAccessible = true
-        hook(nativeConstructor).intercept { chain ->
-            val result = chain.proceed()
-            playlistController.onNativeHandler(
-                chain.getThisObject()
-            )
-            result
-        }
+                nativeConstructor.isAccessible = true
+                hook(nativeConstructor).intercept { chain ->
+                    val result = chain.proceed()
+                    playlistController.onNativeHandler(
+                        chain.getThisObject()
+                    )
+                    result
+                }
+                true
+            }.onFailure { error ->
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "PLAYLIST PICKER HANDLER MAPPING | io3(ho3,boolean) unavailable" +
+                        " | constructors=" +
+                        runCatching {
+                            GmmpReflectionDiagnostics.constructors(
+                                param.classLoader.loadClass("io3")
+                            )
+                        }.getOrDefault("class unavailable"),
+                    error
+                )
+            }.getOrDefault(false)
 
         // GMMP io3.r() builds one jd(mode=4) completion callback per
         // playlist. Each successful callback posts j83 to the activity,
@@ -538,16 +3645,17 @@ class GoneSmartModule : XposedModule() {
             ).apply { isAccessible = true }
 
             hook(emitEvent).intercept { chain ->
+                val event = chain.getArg(0)
                 if (
-                    playlistController.shouldSuppressNativeCloseEvent(
-                        chain.getArg(0)
-                    )
+                    playlistController.shouldSuppressPickerCreateCloseEvent(event) ||
+                    playlistController.shouldSuppressNativeCloseEvent(event)
                 ) {
                     null
                 } else {
                     chain.proceed()
                 }
             }
+            playlistController.setPickerCloseGuardReady(true)
 
             Log.i(
                 "GoneSmartPlaylist",
@@ -558,6 +3666,39 @@ class GoneSmartModule : XposedModule() {
                 TAG,
                 "Playlist native navigation guard unavailable",
                 error
+            )
+        }
+
+        // Track GMMP's native 0-file message at Toast.makeText() only
+        // when an EMPTY playlist was intentionally created in our picker.
+        // The actual Toast.show() suppression stays identity-scoped so
+        // unrelated native messages and normal playlist adds are untouched.
+        runCatching {
+            val nativeMakeText = android.widget.Toast::class.java
+                .getDeclaredMethod(
+                    "makeText",
+                    android.content.Context::class.java,
+                    CharSequence::class.java,
+                    Int::class.javaPrimitiveType
+                ).apply { isAccessible = true }
+            hook(nativeMakeText).intercept { chain ->
+                val result = chain.proceed()
+                playlistController.onNativeToastConstructed(
+                    result as? android.widget.Toast,
+                    chain.getArg(0) as? android.content.Context,
+                    chain.getArg(1) as? CharSequence
+                )
+                result
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "PICKER CREATE ONLY | localized toast observer ready"
+            )
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "PICKER CREATE ONLY | native Toast construction unavailable",
+                it
             )
         }
 
@@ -572,7 +3713,15 @@ class GoneSmartModule : XposedModule() {
                 .getDeclaredMethod("show")
                 .apply { isAccessible = true }
             hook(nativeToastShow).intercept { chain ->
-                if (playlistController.shouldSuppressNativeResultToast()) {
+                if (playlistController.shouldSuppressNativeResultToast(
+                        chain.getThisObject() as? android.widget.Toast
+                    )
+                ) {
+                    null
+                } else if (trackMixController.shouldSuppressNativeToast(
+                        chain.getThisObject() as? android.widget.Toast
+                    )
+                ) {
                     null
                 } else {
                     chain.proceed()
@@ -590,66 +3739,196 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
-        val clickClass = param.classLoader.loadClass("xj5\$a")
-        val clickMethod = clickClass.getDeclaredMethod(
-            "onClick",
-            android.view.View::class.java
-        )
-        clickMethod.isAccessible = true
-        hook(clickMethod).intercept { chain ->
-            val view = chain.getArg(0) as? android.view.View
-            val intercepted = runCatching {
-                playlistController.onClick(view)
-            }.getOrElse { error ->
-                Log.e(TAG, "Playlist click interception failed", error)
-                false
+        // GMMP can display the Auto-DJ rules-changed notification as a
+        // Material Snackbar, not only as an Android Toast. Hide only its
+        // short Track Mix transition window. Ordinary settings changes
+        // and all notifications outside that window are untouched.
+        runCatching {
+            val snackClass = param.classLoader.loadClass(
+                "com.google.android.material.snackbar.BaseTransientBottomBar"
+            )
+            val show = snackClass.getDeclaredMethod("show")
+                .apply { isAccessible = true }
+            hook(show).intercept { chain ->
+                if (trackMixController.shouldSuppressNativeSnackbar()) {
+                    Log.i(
+                        "GoneSmartTrackMix",
+                        "MIX POPUP | intermediate GMMP snackbar hidden"
+                    )
+                    null
+                } else {
+                    chain.proceed()
+                }
             }
-
-            if (intercepted) null else chain.proceed()
+            Log.i("GoneSmartTrackMix", "MIX POPUP | snackbar guard ready")
+        }.onFailure {
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX POPUP | GMMP has no compatible snackbar hook"
+            )
         }
 
-        val longClickClass = param.classLoader.loadClass("rk5\$a")
-        val longClickMethod = longClickClass.getDeclaredMethod(
-            "onLongClick",
-            android.view.View::class.java
-        )
-        longClickMethod.isAccessible = true
-        hook(longClickMethod).intercept { chain ->
-            val view = chain.getArg(0) as? android.view.View
-            val intercepted = runCatching {
-                playlistController.onLongClick(view)
-            }.getOrElse { error ->
-                Log.e(TAG, "Playlist long-click interception failed", error)
-                false
+        // 4.2.0 fast paths. These class names are explicitly optional:
+        // a 4.2.1 R8 rename must NOT abort installation of the semantic
+        // View dispatch hooks below.
+        runCatching {
+            val clickClass = param.classLoader.loadClass("xj5\$a")
+            val clickMethod = clickClass.getDeclaredMethod(
+                "onClick",
+                android.view.View::class.java
+            )
+            clickMethod.isAccessible = true
+            hook(clickMethod).intercept { chain ->
+                val view = chain.getArg(0) as? android.view.View
+                val intercepted = runCatching {
+                    playlistFolderPreview.interceptPickerOverlayClick(view) ||
+                        playlistController.onClick(view) ||
+                        playlistFolderPreview.interceptNativePickerFabClick(view)
+                }.getOrElse { error ->
+                    Log.e(TAG, "Playlist click interception failed", error)
+                    false
+                }
+    
+                if (intercepted) null else chain.proceed()
+            }
+    
+            val longClickClass = param.classLoader.loadClass("rk5\$a")
+            val longClickMethod = longClickClass.getDeclaredMethod(
+                "onLongClick",
+                android.view.View::class.java
+            )
+            longClickMethod.isAccessible = true
+            hook(longClickMethod).intercept { chain ->
+                val view = chain.getArg(0) as? android.view.View
+                val intercepted = runCatching {
+                    playlistFolderPreview.interceptPickerOverlayLongClick(view) ||
+                        playlistController.onLongClick(view)
+                }.getOrElse { error ->
+                    Log.e(TAG, "Playlist long-click interception failed", error)
+                    false
+                }
+    
+                if (intercepted) true else chain.proceed()
+            }
+    
+    
+        }.onFailure {
+            Log.i(
+                "GoneSmartPlaylist",
+                "PLAYLIST INPUT MAPPING | legacy listener names unavailable; " +
+                    "using semantic View dispatch"
+            )
+        }
+
+        // 4.2.1 remapped the concrete OnClick/OnLongClick listener
+        // classes. Hook Android's semantic dispatch boundary as a fallback:
+        // the controller immediately rejects unrelated Views, while the
+        // native listener still runs unchanged when GoneSmart returns false.
+        runCatching {
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick")
+                .apply { isAccessible = true }
+            hook(performClick).intercept { chain ->
+                val view = chain.getThisObject() as? android.view.View
+                val intercepted = runCatching {
+                    playlistFolderPreview.interceptPickerOverlayClick(view) ||
+                        playlistController.onClick(view) ||
+                        playlistFolderPreview
+                            .interceptNativePickerFabClick(view)
+                }.getOrElse { error ->
+                    Log.e(
+                        TAG,
+                        "Playlist semantic click interception failed",
+                        error
+                    )
+                    false
+                }
+                if (intercepted) {
+                    true
+                } else {
+                    val result = chain.proceed()
+                    runCatching {
+                        playlistFolderPreview
+                            .onNativeActionModeClickCompleted(view)
+                    }.onFailure { error ->
+                        Log.w(
+                            TAG,
+                            "Playlist ActionMode click teardown failed",
+                            error
+                        )
+                    }
+                    result
+                }
             }
 
-            if (intercepted) true else chain.proceed()
+            val performLongClick = android.view.View::class.java
+                .getDeclaredMethod("performLongClick")
+                .apply { isAccessible = true }
+            hook(performLongClick).intercept { chain ->
+                val view = chain.getThisObject() as? android.view.View
+                val intercepted = runCatching {
+                    playlistFolderPreview.interceptPickerOverlayLongClick(view) ||
+                        playlistController.onLongClick(view)
+                }.getOrElse { error ->
+                    Log.e(
+                        TAG,
+                        "Playlist semantic long-click interception failed",
+                        error
+                    )
+                    false
+                }
+                if (intercepted) true else chain.proceed()
+            }
+            Log.i(
+                "GoneSmartPlaylist",
+                "PLAYLIST INPUT MAPPING | semantic View dispatch hooks ready"
+            )
+        }.onFailure {
+            Log.e(
+                TAG,
+                "Playlist semantic input hooks unavailable",
+                it
+            )
         }
 
         // GMMP reuses PlaylistAdd row views while scrolling. Refresh the
         // tint AFTER a native bind so no selected background can leak onto
         // an unrelated playlist occupying the same RecyclerView holder.
         runCatching {
-            val adapterClass = param.classLoader.loadClass("zn3")
-            val bindMethods = adapterClass.declaredMethods.filter { method ->
-                method.name == "N0" && method.parameterCount >= 1
-            }
-            bindMethods.forEach { method ->
-                method.isAccessible = true
-                hook(method).intercept { chain ->
-                    val result = chain.proceed()
-                    val holder = (0 until method.parameterCount)
-                        .map { index -> chain.getArg(index) }
-                        .firstOrNull { it?.javaClass?.name == "jo3" }
-                    if (holder != null) {
-                        playlistController.onRowBound(holder)
+            var bindHookCount = 0
+            val boundAdapterNames = arrayListOf<String>()
+            GmmpPlaylistAdapterPolicy.verifiedClassNames.forEach { className ->
+                val adapterClass = runCatching {
+                    param.classLoader.loadClass(className)
+                }.getOrNull() ?: return@forEach
+                val bindMethods = adapterClass.declaredMethods.filter { method ->
+                    method.name == "N0" && method.parameterCount >= 1
+                }
+                bindMethods.forEach { method ->
+                    method.isAccessible = true
+                    hook(method).intercept { chain ->
+                        val result = chain.proceed()
+                        val args = (0 until method.parameterCount)
+                            .map { index -> chain.getArg(index) }
+                        val holder = args.firstOrNull {
+                            it?.javaClass?.name == "jo3"
+                        }
+                        if (holder != null) {
+                            playlistController.onRowBound(holder)
+                        }
+                        result
                     }
-                    result
+                    bindHookCount++
+                }
+                if (bindMethods.isNotEmpty()) {
+                    boundAdapterNames += className
                 }
             }
             Log.i(
                 "GoneSmartPlaylist",
-                "MULTI ROW BIND | native zn3.N0 hooks=${bindMethods.size}"
+                "MULTI ROW BIND | native adapters=" +
+                    boundAdapterNames.joinToString(",") +
+                    " | N0 hooks=" + bindHookCount
             )
         }.onFailure { error ->
             Log.w(
@@ -688,6 +3967,24 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "FAB hide hook unavailable; layout pin remains", error)
         }
 
+        // The Add-to-Playlist toolbar's own navigation button can bypass
+        // OnBackPressedDispatcher. Preserve its original click everywhere
+        // except inside an actual nested GoneSmart picker folder.
+        runCatching {
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick").apply {
+                    isAccessible = true
+                }
+            hook(performClick).intercept { chain ->
+                val clicked = chain.getThisObject() as? android.view.View
+                if (clicked != null &&
+                    playlistFolderPreview.consumePickerToolbarBack(clicked)
+                ) true else chain.proceed()
+            }
+        }.onFailure {
+            Log.w(TAG, "Picker native toolbar back hook unavailable", it)
+        }
+
         runCatching {
             val backClass = param.classLoader.loadClass(
                 "androidx.activity.OnBackPressedDispatcher"
@@ -695,20 +3992,59 @@ class GoneSmartModule : XposedModule() {
             val backMethod = backClass.getDeclaredMethod("onBackPressed")
             backMethod.isAccessible = true
             hook(backMethod).intercept { chain ->
-                if (playlistController.consumeBack()) {
+                if (
+                    playlistController.consumeBack() ||
+                    playlistFolderPreview.consumeBack() ||
+                    smartPlaylistFolderController.consumeBack()
+                ) {
                     null
                 } else {
                     chain.proceed()
                 }
             }
         }.onFailure { error ->
-            Log.w(TAG, "Playlist back-gesture hook unavailable", error)
+            // GMMP's optimized APK may not ship the public AndroidX
+            // dispatcher class. Fall back to the platform callback,
+            // scoped to this injected GMMP process, so nested folder
+            // navigation and multi-selection can still consume Back.
+            Log.i(
+                TAG,
+                "Playlist AndroidX back dispatcher unavailable; " +
+                    "trying Activity.onBackPressed"
+            )
+            runCatching {
+                val method = android.app.Activity::class.java
+                    .getDeclaredMethod("onBackPressed").apply {
+                        isAccessible = true
+                    }
+                hook(method).intercept { chain ->
+                    if (
+                        playlistController.consumeBack() ||
+                        playlistFolderPreview.consumeBack() ||
+                        smartPlaylistFolderController.consumeBack()
+                    ) null else chain.proceed()
+                }
+                Log.i(TAG, "Playlist platform back hook ready")
+            }.onFailure {
+                Log.w(TAG, "Playlist platform back hook unavailable", it)
+            }
         }
+
+        val pickerCoreReady =
+            installedPickerMethods.containsAll(
+                listOf("I3", "k2", "D1")
+            ) && nativeHandlerReady
 
         Log.i(
             "GoneSmartPlaylist",
-            "MULTI READY | experimental native playlist picker (debug build)"
+            "MULTI READY | native playlist multi-selection hooks" +
+                " | ready=$pickerCoreReady" +
+                " | pickerMethods=" +
+                installedPickerMethods.sorted().joinToString(",")
+                    .ifBlank { "none" } +
+                " | nativeHandler=$nativeHandlerReady"
         )
+        return pickerCoreReady
     }
 
     private fun initializeRemoteSettings() {
@@ -755,6 +4091,32 @@ class GoneSmartModule : XposedModule() {
         }
     }
 
+    private fun installPlaylistNavigationBadgeHook(
+        param: PackageReadyParam
+    ) {
+        val activityClass =
+            param.classLoader.loadClass(
+                "gonemad.gmmp.ui.main.MainActivity"
+            )
+        val resumeMethod =
+            findNoArgMethod(
+                type = activityClass,
+                name = "onResume"
+            ).apply { isAccessible = true }
+
+        hook(resumeMethod).intercept { chain ->
+            val result = chain.proceed()
+            (chain.getThisObject() as? Activity)?.let {
+                playlistNavigationBadgeController.attach(it)
+            }
+            result
+        }
+        Log.i(
+            "GoneSmartPlaylist",
+            "FOLDER NAV BADGE | MainActivity observer ready"
+        )
+    }
+
     private fun installPlayerBadgeHook(
         param: PackageReadyParam
     ) {
@@ -788,6 +4150,7 @@ class GoneSmartModule : XposedModule() {
                 activity != null
             ) {
 
+                statusNotifier.attachHostActivity(activity)
                 playerBadgeController
                     .attach(
                         activity
@@ -840,7 +4203,17 @@ class GoneSmartModule : XposedModule() {
             chain
                 .getThisObject()
                 ?.let { autoDjInstance ->
-
+                    trackMixAutoDj = WeakReference(autoDjInstance)
+                    trackMixController.captureNativeAutoDj(
+                        autoDjInstance
+                    )
+                    queueFlipController.captureNativeAutoDj(
+                        autoDjInstance
+                    )
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP AUTO DJ RUNTIME",
+                        instance = autoDjInstance
+                    )
                     startStartupPrewarm(
                         autoDjInstance
                     )
@@ -883,9 +4256,8 @@ class GoneSmartModule : XposedModule() {
         val startedAt =
             SystemClock.elapsedRealtime()
 
-        statusNotifier.showDelayed(
-            message =
-                "Preparing GoneSmart cache… This may take a moment.",
+        statusNotifier.showNativeDelayed(
+            noticeKey = "cache-preparing",
             delayMs =
                 STARTUP_PREWARM_STATUS_DELAY_MS,
             shouldShow = {
@@ -933,6 +4305,16 @@ class GoneSmartModule : XposedModule() {
                         if (
                             library.isEmpty()
                         ) {
+                            if (
+                                gmmpLibraryReader
+                                    .hasDeterministicMappingFailure()
+                            ) {
+                                Log.w(
+                                    TAG,
+                                    "STARTUP PREWARM STOPPED | GMMP library mapping unavailable for this build"
+                                )
+                                break
+                            }
 
                             Thread.sleep(
                                 STARTUP_PREWARM_RETRY_DELAY_MS
@@ -952,6 +4334,10 @@ class GoneSmartModule : XposedModule() {
                             "STARTUP PREWARM READY | " +
                                 "library=${library.size} | " +
                                 "index=$preparationResult"
+                        )
+
+                        scheduleInitialRecommendationPoolPrewarm(
+                            autoDjInstance
                         )
 
                         success =
@@ -989,9 +4375,7 @@ class GoneSmartModule : XposedModule() {
                     STARTUP_PREWARM_STATUS_DELAY_MS
                 ) {
 
-                    statusNotifier.show(
-                        "GoneSmart cache ready."
-                    )
+                    statusNotifier.showNative("cache-ready")
                 }
 
                 if (
@@ -1009,6 +4393,65 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
+        }
+    }
+
+    private fun scheduleInitialRecommendationPoolPrewarm(
+        autoDjInstance: Any
+    ) {
+        if (!options.enabled) return
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) return
+
+        startupExecutor.execute {
+            val startedAt = SystemClock.elapsedRealtime()
+            val queueContext = readQueueContext(autoDjInstance) ?: return@execute
+            val session = queueSessionTracker.observe(queueContext)
+            val settings = gmmpAutoDjSettingsReader.read()
+            val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+
+            if (
+                session.isNewSession ||
+                !recommendationPool.isForSession(session.sessionId)
+            ) {
+                resetRecommendationPoolForSession(session, sizing)
+            } else {
+                recommendationPool.configureTarget(
+                    expectedSessionId = session.sessionId,
+                    newTargetSize = sizing.targetSize
+                )
+            }
+
+            if (
+                recommendationPool.hasEnough(
+                    expectedSessionId = session.sessionId,
+                    count = 1,
+                    excludedTrackIds = queueContext.items.map { it.track.id }.toSet()
+                )
+            ) {
+                return@execute
+            }
+
+            val seeds = seedSelector.select(session)
+            if (seeds.isEmpty()) return@execute
+
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL POOL PREWARM | session=${session.sessionId} | " +
+                    "target=${sizing.targetSize} | seeds=${seeds.size}"
+            )
+            startPoolFill(
+                seeds = seeds,
+                autoDjInstance = autoDjInstance,
+                queueContext = queueContext,
+                session = session,
+                sizing = sizing,
+                background = true
+            )
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL POOL PREWARM SCHEDULED | ms=" +
+                    (SystemClock.elapsedRealtime() - startedAt)
+            )
         }
     }
 
@@ -1037,6 +4480,22 @@ class GoneSmartModule : XposedModule() {
 
             false
         }
+    }
+
+    private fun readQueueContext(autoDjInstance: Any): QueueContext? {
+        val verifiedPosition = queueFlipController
+            .verifiedPositionWriter(autoDjInstance)
+            ?.read()
+        return queueReader.read(autoDjInstance, verifiedPosition)
+    }
+
+    private fun proceedNativeRefill(
+        autoDjInstance: Any,
+        proceed: () -> Any?
+    ): Any? {
+        val result = proceed()
+        trackMixController.normalizeManagedQueueAfterNativeRefill(autoDjInstance)
+        return result
     }
 
     private fun installAutoDjRefillHook(
@@ -1070,8 +4529,61 @@ class GoneSmartModule : XposedModule() {
                     )
                     ?: 1
 
+            val refillStartedAt = SystemClock.elapsedRealtime()
+            var timingCheckpoint = refillStartedAt
+            fun logRefillTiming(phase: String) {
+                val now = SystemClock.elapsedRealtime()
+                Log.i(
+                    TAG,
+                    "SMART DJ TIMING | phase=$phase | deltaMs=" +
+                        (now - timingCheckpoint) +
+                        " | totalMs=" + (now - refillStartedAt) +
+                        " | requested=$requestedTracks"
+                )
+                timingCheckpoint = now
+            }
+
             val autoDjInstance =
                 chain.getThisObject()
+
+            if (autoDjInstance != null) {
+                trackMixAutoDj = WeakReference(autoDjInstance)
+                trackMixController.captureNativeAutoDj(autoDjInstance)
+                queueFlipController.captureNativeAutoDj(autoDjInstance)
+                scheduleCompatibilityRuntimeInstance(
+                    marker = "GMMP AUTO DJ RUNTIME",
+                    instance = autoDjInstance
+                )
+                runCatching {
+                    val queueField = findField(
+                        type = autoDjInstance.javaClass,
+                        name = "q"
+                    ).apply { isAccessible = true }
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP QUEUE RUNTIME",
+                        instance = queueField.get(autoDjInstance)
+                    )
+                    val trackDaoField = findField(
+                        type = autoDjInstance.javaClass,
+                        name = "r"
+                    ).apply { isAccessible = true }
+                    scheduleCompatibilityRuntimeInstance(
+                        marker = "GMMP TRACK DAO RUNTIME",
+                        instance = trackDaoField.get(autoDjInstance)
+                    )
+                }
+                if (trackMixController.shouldSuppressNativeRefill()) {
+                    // GMMP may start a refill as soon as native Play
+                    // seeks to the selected queue row. That older refill
+                    // races CLEAR_QUEUE and caused intermittent failures.
+                    // Track Mix will explicitly enable native Auto-DJ
+                    // after it confirms that only the new seed remains.
+                    return@intercept null
+                }
+                trackMixController.onNativeAutoDjRefillRequested(
+                    requestedTracks
+                )
+            }
 
             Log.i(
                 TAG,
@@ -1120,7 +4632,7 @@ class GoneSmartModule : XposedModule() {
                     appendEvent = false
                 )
 
-                return@intercept chain.proceed()
+                return@intercept proceedNativeRefill(autoDjInstance) { chain.proceed() }
             }
 
             if (
@@ -1133,9 +4645,8 @@ class GoneSmartModule : XposedModule() {
             }
 
             val beforeContext =
-                queueReader.read(
-                    autoDjInstance
-                )
+                readQueueContext(autoDjInstance)
+            logRefillTiming("queue-read-before")
 
             if (
                 beforeContext == null
@@ -1145,40 +4656,47 @@ class GoneSmartModule : XposedModule() {
                     networkStateReader
                         .getState()
 
-                if (
-                    state ==
-                    GoneSmartNetworkState.OFFLINE
-                ) {
-
-                    Log.i(
-                        TAG,
-                        "SMART DJ OFFLINE FALLBACK | " +
-                            "queue context unavailable - using native GMMP Auto-DJ"
-                    )
-
-                    playerBadgeController
-                        .setMode(
-                            PlayerAutoDjBadgeController.Mode.FALLBACK
-                        )
-
-                    runtimeReporter.report(
-                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
-                        message = "Offline: using GMMP Auto-DJ fallback.",
-                        appendEvent = true
-                    )
-
-                    return@intercept chain.proceed()
-                }
+                val useNativeFallback =
+                    state == GoneSmartNetworkState.OFFLINE ||
+                        options.fallbackToNativeAutoDjWhenNoSuitableTracks
 
                 playerBadgeController
                     .setMode(
                         PlayerAutoDjBadgeController.Mode.FALLBACK
                     )
 
+                if (useNativeFallback) {
+                    autoDjSelectionWindow.set(null)
+                    val reason =
+                        if (state == GoneSmartNetworkState.OFFLINE) {
+                            "offline"
+                        } else {
+                            "queue mapping unavailable"
+                        }
+                    Log.i(
+                        TAG,
+                        "SMART DJ NATIVE FALLBACK | " +
+                            "$reason; using original GMMP Auto-DJ"
+                    )
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                        message =
+                            "Using GMMP Auto-DJ fallback while GoneSmart " +
+                                "cannot read this queue.",
+                        appendEvent = true
+                    )
+                    val result = proceedNativeRefill(autoDjInstance) { chain.proceed() }
+                    Log.i(
+                        TAG,
+                        "========================================"
+                    )
+                    return@intercept result
+                }
+
                 Log.w(
                     TAG,
-                    "SMART DJ SUPPRESSED | " +
-                        "queue context unavailable; native online fallback disabled"
+                    "SMART DJ SUPPRESSED | queue context unavailable; " +
+                        "native fallback disabled by GoneSmart settings"
                 )
 
                 Log.i(
@@ -1306,12 +4824,10 @@ class GoneSmartModule : XposedModule() {
                 )
 
                 val result =
-                    chain.proceed()
+                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                 val afterContext =
-                    queueReader.read(
-                        autoDjInstance
-                    )
+                    readQueueContext(autoDjInstance)
 
                 if (
                     afterContext != null
@@ -1405,6 +4921,10 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
 
+            logRefillTiming(
+                if (poolAlreadyReady) "pool-hit" else "pool-ready-after-fill"
+            )
+
             if (
                 !poolReady
             ) {
@@ -1472,12 +4992,10 @@ class GoneSmartModule : XposedModule() {
                     )
 
                     val result =
-                        chain.proceed()
+                        proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                     val afterContext =
-                        queueReader.read(
-                            autoDjInstance
-                        )
+                        readQueueContext(autoDjInstance)
 
                     if (
                         afterContext != null
@@ -1546,7 +5064,7 @@ class GoneSmartModule : XposedModule() {
                         )
                     )
 
-                    chain.proceed()
+                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                 } finally {
 
@@ -1554,11 +5072,11 @@ class GoneSmartModule : XposedModule() {
                         null
                     )
                 }
+            logRefillTiming("native-refill")
 
             val afterContext =
-                queueReader.read(
-                    autoDjInstance
-                )
+                readQueueContext(autoDjInstance)
+            logRefillTiming("queue-read-after")
 
             if (
                 afterContext != null
@@ -1597,6 +5115,7 @@ class GoneSmartModule : XposedModule() {
                         session.sessionId
                     )
             )
+            logRefillTiming("complete")
 
             Log.i(
                 TAG,
@@ -1612,6 +5131,82 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+    /**
+     * GMMP 4.2.0 exposes the verified Auto-DJ selection boundary as
+     * kr.F1(int). New GMMP builds can reshuffle R8 names even when the
+     * underlying feature barely changes. Never guess a replacement hook:
+     * emit a bounded, signature-only diagnostic and fail closed so the rest
+     * of GoneSmart can continue loading.
+     */
+    private fun resolveAutoDjSelectionMethod(
+        autoDjDaoClass: Class<*>
+    ): java.lang.reflect.Method {
+        runCatching {
+            autoDjDaoClass.getDeclaredMethod(
+                "F1",
+                Integer.TYPE
+            )
+        }.getOrNull()?.let {
+            return it
+        }
+
+        val intMethods =
+            GmmpReflectionPolicy.concreteMethods(
+                autoDjDaoClass
+            )
+                .filter {
+                    it.parameterTypes.size == 1 &&
+                        it.parameterTypes[0] == Integer.TYPE
+                }
+                .sortedBy { it.name }
+
+        val listReturning = intMethods.filter {
+            java.util.List::class.java.isAssignableFrom(it.returnType)
+        }
+
+        fun signature(method: java.lang.reflect.Method): String =
+            method.declaringClass.name + "." +
+                method.name + "(int):" + method.returnType.name
+
+        val structural =
+            GmmpReflectionPolicy.uniqueConcreteMethod(
+                autoDjDaoClass
+            ) {
+                it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == Integer.TYPE &&
+                    java.util.List::class.java
+                        .isAssignableFrom(it.returnType)
+            }
+
+        if (structural != null) {
+            Log.w(
+                TAG,
+                "AUTO DJ SELECTION MAPPING | expected=kr.F1(int) unavailable" +
+                    " | structurally resolved=" +
+                    signature(structural)
+            )
+            return structural
+        }
+
+        Log.w(
+            TAG,
+            "AUTO DJ SELECTION MAPPING | expected=kr.F1(int) unavailable" +
+                " | listCandidates=" +
+                listReturning.take(8).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | intMethods=" +
+                intMethods.take(12).joinToString(",") {
+                    signature(it)
+                }.ifBlank { "none" } +
+                " | intMethodCount=" + intMethods.size
+        )
+
+        throw NoSuchMethodException(
+            "kr.F1(int) is unavailable; GMMP internal mapping is unverified"
+        )
+    }
+
     private fun installAutoDjSelectionHook(
         param: PackageReadyParam
     ) {
@@ -1622,9 +5217,8 @@ class GoneSmartModule : XposedModule() {
             )
 
         val selectionMethod =
-            autoDjDaoClass.getDeclaredMethod(
-                "F1",
-                Integer.TYPE
+            resolveAutoDjSelectionMethod(
+                autoDjDaoClass
             )
 
         selectionMethod.isAccessible =
@@ -1950,11 +5544,17 @@ class GoneSmartModule : XposedModule() {
                 "pool empty/insufficient - preparing session pool"
         )
 
-        return try {
+        val fastInitialWait = trackMixController.isExplicitInitialRefill()
+        val waitTimeoutMs = if (fastInitialWait) {
+            TRACK_MIX_INITIAL_SMART_WAIT_MS
+        } else {
+            TimeUnit.SECONDS.toMillis(SMART_PREPARE_TIMEOUT_SECONDS)
+        }
 
+        return try {
             future.get(
-                SMART_PREPARE_TIMEOUT_SECONDS,
-                TimeUnit.SECONDS
+                waitTimeoutMs,
+                TimeUnit.MILLISECONDS
             )
 
             val ready =
@@ -1976,6 +5576,19 @@ class GoneSmartModule : XposedModule() {
             ready
 
         } catch (timeoutException: TimeoutException) {
+
+            if (fastInitialWait) {
+                // Do not cancel or invalidate this fill: it becomes the warm
+                // pool for ordinary upcoming refills after native GMMP has
+                // made Next available immediately.
+                Log.i(
+                    TAG,
+                    "SMART DJ INITIAL FAST FALLBACK | waitedMs=" +
+                        TRACK_MIX_INITIAL_SMART_WAIT_MS +
+                        " | poolFill=continuing"
+                )
+                return false
+            }
 
             pipelineGeneration
                 .incrementAndGet()
@@ -2092,11 +5705,6 @@ class GoneSmartModule : XposedModule() {
                 pipelineGeneration
                     .get()
 
-            recommendationPool
-                .markRefillAttempt(
-                    session.sessionId
-                )
-
             val future =
                 pipelineExecutor
                     .submit<Boolean> {
@@ -2131,6 +5739,11 @@ class GoneSmartModule : XposedModule() {
                                     candidateTrackIds = candidateTrackIds,
                                     newTargetSize = sizing.targetSize
                                 )
+
+                        recommendationPool.recordRefillResult(
+                            expectedSessionId = session.sessionId,
+                            addedCount = added
+                        )
 
                         Log.i(
                             TAG,
@@ -3843,9 +7456,11 @@ class GoneSmartModule : XposedModule() {
             )
         ) {
 
-            statusNotifier.show(
-                message
-            )
+            // The detailed explanation remains in GoneSmart Logs/Logcat;
+            // an in-player Toast must use installed GMMP vocabulary.
+            Log.i(TAG, "SMART DJ NOTICE | key=" + noticeKey +
+                " | companionDetail=" + message)
+            statusNotifier.showNative(noticeKey)
         }
     }
 

@@ -5,6 +5,16 @@ object GoneSmartSettingsKeys {
     const val KEY_INITIALIZED = "initialized"
     const val KEY_ENABLED = "enabled"
     const val KEY_MULTI_PLAYLIST = "multi_playlist_selection"
+    const val KEY_PLAYLIST_FOLDERS = "playlist_folders_enabled"
+    const val KEY_SMART_PLAYLIST_FOLDERS = "smart_playlist_folders_enabled"
+    const val KEY_SMART_MULTI_PLAYLIST = "smart_playlist_multi_selection"
+    const val KEY_PLAYLIST_BRIDGE = "playlist_bridge_enabled"
+    const val KEY_SMART_GROUP_ROOT_PLAYLISTS =
+        "smart_playlist_folders_group_main_root"
+    const val KEY_GROUP_EXTERNAL_PLAYLISTS = "playlist_folders_group_external"
+    const val KEY_GROUP_ROOT_PLAYLISTS = "playlist_folders_group_main_root"
+    const val KEY_FLIP_QUEUE = "flip_queue"
+    const val KEY_TRACK_MIX = "track_mix_enabled"
 
     const val KEY_PREFER_HIGHER_RATED = "prefer_higher_rated"
     const val KEY_MINIMUM_RATING = "minimum_rating"

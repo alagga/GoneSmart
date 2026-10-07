@@ -1,0 +1,45 @@
+package io.github.alagga.gonesmart
+
+/**
+ * Smart physical-folder rows are rendered above GMMP's native ls4 RecyclerView.
+ *
+ * Keep the native RecyclerView's FULL consumed scroll distance. Only the
+ * visual folder translation is capped to the finite folder-band height.
+ * Capping the stored distance itself loses how far the native list travelled
+ * after the folder was already hidden; then the first upward dy incorrectly
+ * makes the folder reappear while the list is still far from its top.
+ */
+internal object SmartFolderHeaderScrollPolicy {
+    fun scrollDistanceAfterDelta(
+        currentDistance: Int,
+        dy: Int
+    ): Int {
+        val current = currentDistance.toLong().coerceAtLeast(0L)
+        return (current + dy.toLong())
+            .coerceIn(0L, Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
+    fun folderTranslation(
+        folderHeight: Int,
+        scrollDistance: Int
+    ): Int {
+        if (folderHeight <= 0) return 0
+        return scrollDistance.coerceIn(0, folderHeight)
+    }
+
+    fun edgeStretchScale(edgeDistance: Float): Float {
+        val distance = edgeDistance.coerceIn(0f, 1f)
+        if (distance <= 0f) return 1f
+        val vector =
+            0.016f * distance +
+                0.016f * (
+                    1.0 - kotlin.math.exp(
+                        -distance.toDouble() * kotlin.math.E / 0.33
+                    )
+                ).toFloat()
+        val numerator = (1f + vector) * (1f + vector)
+        val denominator = (1f - 1.1f * vector).coerceAtLeast(0.001f)
+        return numerator / denominator
+    }
+}

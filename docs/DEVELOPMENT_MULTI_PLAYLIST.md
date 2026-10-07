@@ -1,10 +1,10 @@
 # Multi-playlist selection (GMMP 4.2.0)
 
-GoneSmart's optional **UI → Multi-playlist selection** feature is implemented and available in release builds. It is independent of Smart DJ; normal single-playlist taps remain native GMMP operations. The implementation uses GMMP's own playlist writer and never edits playlist files directly.
+GoneSmart's optional **UI → Playlists → Multi-selection** feature is implemented and available in release builds. It is independent of Smart DJ; normal single-playlist taps remain native GMMP operations. The implementation uses GMMP's own playlist writer and never edits playlist files directly.
 
 ## User flow
 
-1. Enable **Multi-playlist selection** in GoneSmart's **UI** tab; enable and scope the libxposed module to GMMP.
+1. Enable **UI → Playlists → Multi-selection** in GoneSmart; enable and scope the libxposed module to GMMP.
 2. In GMMP's **Add to Playlist** dialog, long-press a destination to enter multiple selection.
 3. Tap other playlists to select or deselect them. The action bar displays GMMP's own localized selection count; selected rows track GMMP's changing dynamic theme and stay correctly highlighted when scrolling.
 4. Tap the confirmation checkmark (with GoneSmart's lilac sparkle) to add all source files to every selected destination. One native-style summary Toast reports the file count and the number of successful destinations.
@@ -32,3 +32,16 @@ Use disposable playlists. Verify long-press, toggle, scroll down/up, back cancel
 For debugging, filter Logcat to `GoneSmartPlaylist` and inspect `MULTI PICKER`, `MULTI SELECT`, `MULTI PALETTE`, `MULTI NAV`, `MULTI NATIVE ADD`, `MULTI TOAST` and `MULTI CONFIRM`. Paths in logs may reveal local filenames: redact them before publishing logs.
 
 This implementation targets GMMP 4.2.0 and will need revalidation if GMMP changes its internal obfuscated classes or its localized string resources.
+
+### Shared confirmation glyph and native ActionMode styling — 2026-09-27
+
+The original multi-selection checkmark implementation has been extracted without changing its drawing geometry to the shared `PlaylistConfirmDrawable.kt`; the existing Add-picker FAB continues using that exact renderer. The exact existing native contextual action bar discovery/tint helper is also exposed internally as `tintNativeContextBar(list,liveNativeFabColor)` so GoneSmart's normal-Playlists move destination uses the same original bar mechanics without reparenting any live session state. The move destination creates a separate native `AestheticFab` and subscribes independently to the same original `!mainColorAccent` observable as the real picker FAB.
+
+### Shared sparkle span reused by the real GMMP navigation drawer (2026-09-27)
+
+The already accepted native 28dp `BaselineCenteredSparkleSpan` of the Play Flipped context-menu title is now a standalone shared implementation in `BaselineCenteredSparkleSpan.kt` instead of a private QueueFlipController nested class. It keeps exactly the same badge size/density/vertical baseline and lilac `SparkleBadgeDrawable` settings, and it decorates the original GMMP Playlists drawer MenuItem ONLY while Playlist folders is enabled. The Move confirmation native FAB deliberately has NO lilac sparkle; the Add-picker multi-select FAB's old sparkle stays untouched.
+
+
+### Playlist folders integration accepted — 2026-09-28
+
+The maintainer confirmed the completed Playlist folders integration on the tested GMMP 4.2.0 device after the final combined build `ece4b658`. Picker multi-selection now also works across physical folder levels; native playlist creation within folders and the create-only behavior when multi-selection is enabled are included in the accepted feature flow. The native picker toolbar Back ascends nested folders rather than dismissing the entire picker immediately, the original list no longer flashes on initial attachment, and the independent Move FAB in the normal Playlists view starts above the native mini-player. The original Add-picker confirmation FAB retains its existing lilac sparkle; only the independent Move FAB lacks it. A successful Move generates no redundant Toast; multi-add retains its one aggregate native-style completion message. These statements report the maintainer's tested device, not additional validation of every GMMP locale/theme or every obfuscated version.

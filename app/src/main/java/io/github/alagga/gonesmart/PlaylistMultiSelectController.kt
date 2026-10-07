@@ -24,10 +24,11 @@ import android.widget.ImageView
 import android.widget.Toast
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
 /**
- * Experimental GMMP 4.2.0 integration, enabled only in GoneSmart debug builds.
+ * Verified GMMP 4.2.0 multi-selection integration used by debug and release builds.
  *
  * Uses native jo3 view holders and xn3 models, and dispatches additions
  * through the native io3.r(Context, ie0) handler. Never writes .m3u files.
@@ -79,16 +80,308 @@ internal class PlaylistMultiSelectController {
         var originalBarBackground: Drawable? = null
         var barBackgroundSaved = false
         var lastBarColor: Int? = null
+        var resolvedSelectionAccent: Int? = null
         var originalIcon: Drawable? = null
         var originalTint: ColorStateList? = null
         var originalDescription: CharSequence? = null
         var submitting = false
+        var nativeDispatchInProgress = false
     }
 
     private var active: Session? = null
+    @Volatile private var lastVerifiedNativeFabTint: Int? = null
+    @Volatile private var lastVerifiedNativeSelectionTint: Int? = null
+    private var folderSelectionChanged: ((ViewGroup) -> Unit)? = null
 
+    fun setFolderSelectionChangedListener(listener: (ViewGroup) -> Unit) {
+        folderSelectionChanged = listener
+    }
+
+    fun folderSelectionAccent(list: ViewGroup): Int? {
+        val session = active ?: return null
+        if (!enabled || session.list !== list) return null
+        return gmmpSelectionAccent(session, list)
+    }
+
+    fun folderNativeFab(list: ViewGroup): View? =
+        active?.takeIf { enabled && it.list === list }?.fab
+
+    fun isPickerList(list: ViewGroup): Boolean =
+        active?.list === list
+
+    /**
+     * Share the EXACT existing native contextual-bar discovery and coloring
+     * with the independent normal-Playlists move destination ActionMode.
+     * Never borrow/reparent the Add picker's own active ActionMode.
+     */
+    fun tintNativeContextBar(list: ViewGroup, liveNativeFabColor: Int): Boolean {
+        val bar = findContextBar(list.rootView) ?: return false
+        if ((bar.background as? ColorDrawable)?.color != liveNativeFabColor) {
+            bar.background = ColorDrawable(liveNativeFabColor)
+        }
+        return true
+    }
+
+    fun nativeContextBarColor(list: ViewGroup): Int? =
+        (findContextBar(list.rootView)?.background as? ColorDrawable)?.color
+
+    /**
+     * Normal Playlists multi-select is GMMP-owned and therefore the strongest
+     * available live palette witness for extension-owned Smart selection.
+     * Cache only that explicitly observed native color; Smart ActionMode must
+     * not self-certify its own fallback styling.
+     */
+    fun rememberNativeSelectionAccent(color: Int) {
+        if (isUsableSelectionColor(color)) {
+            lastVerifiedNativeSelectionTint = color
+        }
+    }
+
+    fun verifiedNativeSelectionAccent(): Int? =
+        lastVerifiedNativeSelectionTint?.takeIf(::isUsableSelectionColor)
+
+    fun visibleContextSelectionAccent(list: ViewGroup): Int? =
+        nativeContextBarColor(list)?.takeIf(::isUsableSelectionColor)
+
+    /**
+     * Same 50% native-primary overlay used by the accepted playlist
+     * multi-selection, but without requiring the Add-picker Session.
+     * Resolve it once when a standalone Smart selection starts so the first
+     * long-pressed row cannot differ from rows selected afterwards.
+     */
+    fun standaloneSelectionAccent(view: View): Int {
+        lastVerifiedNativeSelectionTint
+            ?.takeIf(::isUsableSelectionColor)
+            ?.let { return it }
+
+        val contextBar = (findContextBar(view.rootView)?.background
+            as? ColorDrawable)?.color?.takeIf(::isUsableSelectionColor)
+
+        val highlightAttr = view.resources.getIdentifier(
+            "rvHighlightOverlay", "attr", view.context.packageName
+        )
+        val controlHighlight = themeColor(
+            view, android.R.attr.colorControlHighlight
+        )?.takeIf(::isUsableSelectionColor)
+        val nativeHighlight = highlightAttr.takeIf { it != 0 }
+            ?.let { themeColor(view, it) }
+            ?.takeIf(::isUsableSelectionColor)
+
+        return NativeSelectionChromePolicy.chooseSelectionColor(
+            verifiedNativeSelection =
+                lastVerifiedNativeSelectionTint
+                    ?.takeIf(::isUsableSelectionColor),
+            nativeBar = contextBar,
+            nativeHighlight = nativeHighlight,
+            controlHighlight = controlHighlight,
+            nativeFab =
+                semanticNativeFabTint(view)
+                    ?: lastVerifiedNativeFabTint,
+            observedAccent =
+                NativeGmmpAccent.lastObserved()
+                    ?.takeIf(::isUsableSelectionColor),
+            fallback = 0xFF36A8BE.toInt()
+        )
+    }
+
+    /**
+     * Theme attributes are misleading on the tested GMMP 4.2.1 skin
+     * (colorPrimary=black, colorAccent=stale red). Prefer an actual native
+     * Material FAB tint. First use the semantic playlistFab id; otherwise
+     * accept a unique visible FAB color from the same GMMP window.
+     */
+    private fun semanticNativeFabTint(view: View): Int? {
+        val root = view.rootView
+        val playlistFabId = view.resources.getIdentifier(
+            "playlistFab", "id", view.context.packageName
+        )
+        if (playlistFabId != 0) {
+            val exact = root.findViewById<View>(playlistFabId)
+            materialFabTint(exact)?.let {
+                lastVerifiedNativeFabTint = it
+                return it
+            }
+        }
+
+        val colors = linkedSetOf<Int>()
+        fun walk(node: View, depth: Int, budget: IntArray) {
+            if (depth > 12 || budget[0]-- <= 0) return
+            materialFabTint(node)?.let(colors::add)
+            val group = node as? ViewGroup ?: return
+            for (index in 0 until group.childCount) {
+                walk(group.getChildAt(index), depth + 1, budget)
+            }
+        }
+        walk(root, 0, intArrayOf(256))
+        return colors.singleOrNull()?.also {
+            lastVerifiedNativeFabTint = it
+        }
+    }
+
+    private fun materialFabTint(view: View?): Int? {
+        val target = view ?: return null
+
+        // Never cast a GMMP-owned Material view to the module-side Material
+        // class. LSPosed can give host and module separate AndroidX/Material
+        // class loaders. The tint itself is a framework ColorStateList, so
+        // cross the boundary through View/reflection only.
+        val tint = runCatching {
+            target.backgroundTintList
+        }.getOrNull() ?: runCatching {
+            target.javaClass.methods.firstOrNull {
+                it.name == "getBackgroundTintList" &&
+                    it.parameterCount == 0 &&
+                    ColorStateList::class.java.isAssignableFrom(it.returnType)
+            }?.apply { isAccessible = true }
+                ?.invoke(target) as? ColorStateList
+        }.getOrNull() ?: return null
+
+        return tint.getColorForState(
+            target.drawableState,
+            tint.defaultColor
+        ).takeIf(::isUsableSelectionColor)
+    }
+
+    private fun isUsableSelectionColor(color: Int): Boolean {
+        if (Color.alpha(color) < 200 || color == Color.TRANSPARENT) return false
+        // Opaque near-black is colorPrimary on this 4.2.1 skin, not the
+        // playlist selection accent.
+        return Color.red(color) >= 12 ||
+            Color.green(color) >= 12 ||
+            Color.blue(color) >= 12
+    }
+
+    fun standaloneSelectionOverlayColor(view: View): Int {
+        val accent = standaloneSelectionAccent(view)
+        return Color.argb(
+            128,
+            Color.red(accent),
+            Color.green(accent),
+            Color.blue(accent)
+        )
+    }
+
+    fun confirmFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        if (!enabled || session.list !== list ||
+            session.selectedPaths.isEmpty()
+        ) return false
+        confirm(session)
+        folderSelectionChanged?.invoke(list)
+        return true
+    }
+
+    fun clearFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        if (session.list !== list || session.selectedPaths.isEmpty()) {
+            return false
+        }
+        exitSelection(session)
+        return true
+    }
+    private val eventReporter = GoneSmartRuntimeReporter()
+
+    private val pickerCreateOnlyScope = PlaylistPickerCreateOnlyScope()
+    private val pickerZeroToastPolicy = NativePickerZeroToastPolicy()
+    private val nativeZeroToastCandidates = WeakHashMap<Toast, Boolean>()
+    private val nativeZeroToastLock = Any()
+    private val zeroToastInCurrentCreate = ThreadLocal<Boolean>()
+
+    @Volatile private var pickerCloseGuardReady = false
     @Volatile
     private var enabled = false
+
+    fun setPickerCloseGuardReady(ready: Boolean) {
+        pickerCloseGuardReady = ready
+    }
+
+    /**
+     * Only the currently visible, unselected Add picker may opt into
+     * create-only. Never change the source-selection handler's stored mode
+     * or intercept a multi-destination confirmation.
+     */
+    fun canCreatePlaylistWithoutAdding(): Boolean {
+        val session = active ?: return false
+        return pickerCreateOnlyScope.eligible(
+            enabled = enabled,
+            closeGuardInstalled = pickerCloseGuardReady,
+            pickerAttached = session.list?.isAttachedToWindow == true,
+            selectedDestinations = session.selectedPaths.size
+        )
+    }
+
+    fun aroundPickerCreateOnly(proceed: () -> Any?): Any? {
+        val previous = zeroToastInCurrentCreate.get()
+        zeroToastInCurrentCreate.set(false)
+        try {
+            return pickerCreateOnlyScope.duringCreate(proceed)
+        } finally {
+            if (previous == null) zeroToastInCurrentCreate.remove()
+            else zeroToastInCurrentCreate.set(previous)
+        }
+    }
+
+    /**
+     * The original fo3 create transaction can schedule its native success
+     * toast AFTER its synchronous callback returns. Match only the exact
+     * currently localized 0-file message, once, after a verified native j83
+     * event from OUR empty-create scope; never suppress a normal add result.
+     */
+    fun onNativeToastConstructed(
+        toast: Toast?,
+        context: Context?,
+        message: CharSequence?
+    ) {
+        if (toast == null || context == null || message == null) return
+        val insideCreate = pickerCreateOnlyScope.isActive()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val pending = synchronized(nativeZeroToastLock) {
+            pickerZeroToastPolicy.hasPending(now)
+        }
+        if (!insideCreate && !pending) return
+        val nativeString = context.resources.getIdentifier(
+            "add_to_playlist_toast", "string", context.packageName
+        )
+        if (nativeString == 0) return
+        val expected = runCatching {
+            context.getString(nativeString, 0)
+        }.getOrNull() ?: return
+        val suppressed = synchronized(nativeZeroToastLock) {
+            if (nativeZeroToastCandidates.containsKey(toast)) return@synchronized false
+            pickerZeroToastPolicy.shouldSuppress(
+                actual = message.toString(),
+                localizedEmptyResult = expected,
+                now = now,
+                insideCreate = insideCreate
+            ).also {
+                if (it) nativeZeroToastCandidates[toast] = true
+            }
+        }
+        if (suppressed) {
+            if (insideCreate) zeroToastInCurrentCreate.set(true)
+            Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast identified")
+        }
+    }
+
+    fun shouldSuppressPickerCreateCloseEvent(event: Any?): Boolean {
+        val suppress = pickerCreateOnlyScope.shouldSuppressClose(
+            event?.javaClass?.name
+        )
+        if (suppress) {
+            // This native event is emitted by fo3 only after its original
+            // create path. Its toast may be posted later by native GMMP.
+            // When constructed synchronously, do not arm a second token.
+            if (zeroToastInCurrentCreate.get() != true) {
+                synchronized(nativeZeroToastLock) {
+                    pickerZeroToastPolicy.arm(
+                        android.os.SystemClock.elapsedRealtime()
+                    )
+                }
+            }
+            Log.i(TAG, "PICKER CREATE ONLY | native close event suppressed")
+        }
+        return suppress
+    }
 
     /**
      * UI feature is separate from the Smart DJ recommendation switch.
@@ -202,10 +495,18 @@ internal class PlaylistMultiSelectController {
      * Ordinary one-playlist operations and unrelated GMMP Toasts are left
      * untouched. The aggregate is posted after all accepted callbacks.
      */
-    fun shouldSuppressNativeResultToast(): Boolean {
-        // GMMP versions may create their native success Toast either
-        // synchronously inside io3.r() or in its jd(mode=4) completion.
-        // Both scopes belong exclusively to this multi-add batch.
+    fun shouldSuppressNativeResultToast(toast: Toast? = null): Boolean {
+        // These asynchronous native create-only toasts have been identified
+        // by the original GMMP localized message at Toast.makeText().
+        if (toast != null && synchronized(nativeZeroToastLock) {
+                nativeZeroToastCandidates.remove(toast) == true
+            }
+        ) {
+            Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast suppressed")
+            return true
+        }
+        // Ordinary multiple-destination native successes are still scoped
+        // to their original jd(mode=4) callback, unchanged by this fix.
         val batch = runningNativeCallback.get()
             ?: constructingNativeCallback.get()
             ?: return false
@@ -229,22 +530,41 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun maybeShowNativeSummary(batch: NativeNavigationBatch) {
-        val successful = synchronized(navigationLock) {
+        // Distinguish "still waiting" from "every callback finished, but
+        // GMMP confirmed zero successful destinations". Emit one final
+        // event for either outcome, never intermediate optimistic results.
+        val completed = synchronized(navigationLock) {
             if (batch.summaryScheduled ||
                 !batch.dispatchFinished ||
                 batch.acceptedDestinations <= 0 ||
-                batch.callbacksFinished < batch.acceptedDestinations ||
-                batch.successfulDestinations <= 0
+                batch.callbacksFinished < batch.acceptedDestinations
             ) {
-                0
+                null
             } else {
                 batch.summaryScheduled = true
                 batch.successfulDestinations.coerceAtMost(
                     batch.acceptedDestinations
                 )
             }
+        } ?: return
+        if (completed == 0) {
+            Log.w(TAG, "MULTI RESULT | no successful destinations confirmed")
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+                "Adding songs to multiple playlists was not confirmed."
+            )
+            return
         }
-        if (successful == 0) return
+        val successful = completed
+        eventReporter.reportEvent(
+            GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+            "Added ${batch.sourceCount} " +
+                "song${if (batch.sourceCount == 1) "" else "s"} to " +
+                "$successful playlist${if (successful == 1) "" else "s"}." +
+                if (successful < batch.acceptedDestinations) {
+                    " (Partial: ${batch.acceptedDestinations} accepted.)"
+                } else ""
+        )
 
         // Reuse GMMP's actual localized toast and its own playlist nouns.
         // GMMP's add_to_playlist_toast contains only ONE placeholder for
@@ -298,6 +618,30 @@ internal class PlaylistMultiSelectController {
         Log.i(TAG, "MULTI PICKER | new session")
     }
 
+    /**
+     * GMMP 4.2.1 remapped the picker fragment lifecycle. The visible native
+     * playlistListRecyclerView + playlistFab pair is a stronger semantic
+     * boundary than an R8 class name, so adopt it when the legacy hook did
+     * not create a picker session.
+     */
+    fun adoptPickerSurface(list: ViewGroup, fab: View) {
+        if (!enabled || resourceName(fab) != "playlistFab" ||
+            resourceName(list) != "playlistListRecyclerView"
+        ) return
+        val current = active
+        if (current == null ||
+            (current.list != null && current.list !== list)
+        ) {
+            reset()
+            active = Session(list)
+            Log.i(TAG, "MULTI PICKER | runtime surface adopted")
+        }
+        // Capture the actually rendered host FAB color before Aesthetic's
+        // static primary/accent attributes can seed stale fallback values.
+        onFabFound(fab)
+        onListFound(list)
+    }
+
     fun onFabFound(fab: View) {
         if (!enabled) return
         val session = active ?: return
@@ -305,6 +649,16 @@ internal class PlaylistMultiSelectController {
         if (session.fab === fab) return
 
         session.fab = fab
+        materialFabTint(fab)?.let { nativeColor ->
+            session.liveFabAccent = nativeColor
+            session.resolvedSelectionAccent = nativeColor
+            lastVerifiedNativeFabTint = nativeColor
+            Log.i(
+                TAG,
+                "MULTI PALETTE | native playlistFab=#" +
+                    Integer.toHexString(nativeColor)
+            )
+        }
         Log.i(TAG, "MULTI FAB | attached")
         if (session.nativeTheme != null) {
             observeNativeFabColor(session)
@@ -327,10 +681,24 @@ internal class PlaylistMultiSelectController {
                 override fun onViewAttachedToWindow(view: View) = Unit
 
                 override fun onViewDetachedFromWindow(view: View) {
-                    if (active === session) {
-                        Log.i(TAG, "MULTI PICKER | view detached; clearing session")
-                        reset()
-                    }
+                    // 4.2.1 can detach/re-attach or replace the native
+                    // RecyclerView while GoneSmart installs the folder
+                    // overlay. Do not destroy the picker session inside that
+                    // same traversal; a replacement surface gets a chance to
+                    // adopt the session first.
+                    view.postDelayed({
+                        if (active === session &&
+                            session.list === view &&
+                            !view.isAttachedToWindow
+                        ) {
+                            Log.i(
+                                TAG,
+                                "MULTI PICKER | detached surface remained gone; " +
+                                    "clearing session"
+                            )
+                            reset()
+                        }
+                    }, 650L)
                 }
             }
         )
@@ -406,7 +774,9 @@ internal class PlaylistMultiSelectController {
 
     fun onClick(view: View?): Boolean {
         if (!enabled) return false
-        val session = visibleSession() ?: return false
+        val session = active ?: return false
+        if (session.nativeDispatchInProgress) return false
+        if (visibleSession() !== session) return false
 
         if (view === session.fab && session.selectedPaths.isNotEmpty()) {
             confirm(session)
@@ -438,6 +808,92 @@ internal class PlaylistMultiSelectController {
         }
 
         return true
+    }
+
+    /**
+     * Folder-browser rows are GoneSmart views, but the selection and final
+     * write path remain the existing native GMMP multi-playlist flow.
+     */
+    fun onFolderPlaylistLongClick(
+        list: ViewGroup,
+        model: Any
+    ): Boolean {
+        if (!enabled) return false
+        val session = visibleSession() ?: return false
+        if (session.list !== list) return false
+        val path = modelPath(model) ?: return false
+
+        // Selection itself is extension-owned and must not depend on a
+        // currently visible hidden native RecyclerView holder. The original
+        // holder is needed only when Confirm dispatches GMMP's real row click.
+        // Resolve/capture one opportunistically here and again at confirm.
+        findDispatchHolder(list)?.let {
+            session.dispatchHolder = it
+        }
+        session.selectedModels[path] = model
+        session.selectedPaths.add(path)
+        enableFab(session)
+        updateSelectionBar(session)
+        refreshVisibleRows(session)
+        folderSelectionChanged?.invoke(list)
+        Log.i(TAG, "MULTI FOLDER SELECT | added=$path")
+        return true
+    }
+
+    fun onFolderPlaylistClick(
+        list: ViewGroup,
+        model: Any
+    ): Boolean {
+        if (!enabled) return false
+        val session = visibleSession() ?: return false
+        if (session.list !== list || session.selectedPaths.isEmpty()) {
+            return false
+        }
+        val path = modelPath(model) ?: return false
+        findDispatchHolder(list)?.let {
+            session.dispatchHolder = it
+        }
+
+        if (!session.selectedPaths.add(path)) {
+            session.selectedPaths.remove(path)
+            session.selectedModels.remove(path)
+            Log.i(TAG, "MULTI FOLDER SELECT | removed=$path")
+        } else {
+            session.selectedModels[path] = model
+            Log.i(TAG, "MULTI FOLDER SELECT | added=$path")
+        }
+
+        if (session.selectedPaths.isEmpty()) {
+            exitSelection(session)
+        } else {
+            enableFab(session)
+            updateSelectionBar(session)
+        }
+        refreshVisibleRows(session)
+        folderSelectionChanged?.invoke(list)
+        return true
+    }
+
+    fun isFolderPlaylistSelected(path: String): Boolean =
+        active?.selectedPaths?.contains(path) == true
+
+    fun hasFolderSelection(list: ViewGroup): Boolean {
+        val session = active ?: return false
+        return enabled && session.list === list &&
+            session.selectedPaths.isNotEmpty()
+    }
+
+    private fun findDispatchHolder(list: ViewGroup): Any? {
+        val holderMethod = runCatching {
+            list.javaClass.getMethod("getChildViewHolder", View::class.java)
+        }.getOrNull() ?: return null
+        for (index in 0 until list.childCount) {
+            val holder = runCatching {
+                holderMethod.invoke(list, list.getChildAt(index))
+            }.getOrNull()
+            if (holder != null && holderModel(holder) != null) return holder
+        }
+        return null
     }
 
     fun consumeBack(): Boolean {
@@ -504,17 +960,28 @@ internal class PlaylistMultiSelectController {
         trace: Boolean = false
     ): Any? {
         val list = session.list ?: return null
-        if (view !is FrameLayout || view.parent !== list) {
-            if (trace) Log.w(TAG, "MULTI LONG STOP | not a picker row")
+        val row = AncestorOwnershipPolicy.directOwnedAncestor(
+            start = view,
+            parentOf = { it.parent as? View },
+            isDirectOwnedChild = { it.parent === list }
+        )
+        if (row == null) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | no owned picker RecyclerView row"
+                )
+            }
             return null
         }
 
-        // bw.i0() returns t23 groups, not jo3 row holders. Ask the
-        // RecyclerView for the real, currently bound view holder.
+        // 4.2.1 dispatches performLongClick from metadataTextEntry (TextView)
+        // inside the native row. Normalize that descendant to RecyclerView's
+        // direct child before asking for the already-bound holder/model.
         val holder = runCatching {
             list.javaClass
                 .getMethod("getChildViewHolder", View::class.java)
-                .invoke(list, view)
+                .invoke(list, row)
         }.onFailure { error ->
             if (trace) Log.w(TAG, "MULTI LONG STOP | holder lookup failed", error)
         }.getOrNull()
@@ -525,26 +992,33 @@ internal class PlaylistMultiSelectController {
                 "MULTI LONG | rowHolder=${holder?.javaClass?.name ?: "null"}"
             )
         }
-        if (holder?.javaClass?.name != "jo3") {
-            if (trace) Log.w(TAG, "MULTI LONG STOP | expected jo3 holder")
+        if (holder == null || holderModel(holder) == null) {
+            if (trace) {
+                Log.w(
+                    TAG,
+                    "MULTI LONG STOP | playlist holder model unavailable"
+                )
+            }
             return null
         }
         return holder
     }
 
     private fun holderModel(holder: Any): Any? =
-        runCatching {
-            holder.javaClass.getDeclaredField("A").apply {
-                isAccessible = true
-            }.get(holder)?.takeIf { it.javaClass.name == "xn3" }
-        }.getOrNull()
+        NativePlaylistRuntimeBinding.boundModel(holder)
+            ?: runCatching {
+                holder.javaClass.getDeclaredField("A").apply {
+                    isAccessible = true
+                }.get(holder)?.takeIf { it.javaClass.name == "xn3" }
+            }.getOrNull()
 
     private fun modelPath(model: Any): String? =
-        runCatching {
-            model.javaClass.getDeclaredField("q").apply {
-                isAccessible = true
-            }.get(model) as? String
-        }.getOrNull()?.takeIf { it.isNotBlank() }
+        NativePlaylistRuntimeBinding.pathOf(model)
+            ?: runCatching {
+                model.javaClass.getDeclaredField("q").apply {
+                    isAccessible = true
+                }.get(model) as? String
+            }.getOrNull()?.takeIf { it.isNotBlank() }
 
     private fun adapterItems(
         list: ViewGroup,
@@ -554,6 +1028,20 @@ internal class PlaylistMultiSelectController {
             val adapter = list.javaClass
                 .getMethod("getAdapter").invoke(list)
                 ?: return emptyList()
+            val count = runCatching {
+                adapter.javaClass.getMethod("getItemCount")
+                    .invoke(adapter) as Int
+            }.getOrDefault(0)
+            NativePlaylistRuntimeBinding.readAll(adapter, count)?.let {
+                val models = it.map { row -> row.model }
+                if (trace) {
+                    Log.i(
+                        TAG,
+                        "MULTI LONG | runtime playlistModels=" + models.size
+                    )
+                }
+                return models
+            }
             val groups = adapter.javaClass
                 .getMethod("i0").invoke(adapter) as? List<*>
                 ?: return emptyList()
@@ -667,6 +1155,14 @@ internal class PlaylistMultiSelectController {
             // Native Aesthetic palette observables notify while the
             // currently playing track or the user's custom theme changes.
             val observerType = loader.loadClass("nf3")
+            if (!observerType.isInterface) {
+                Log.i(
+                    TAG,
+                    "MULTI PALETTE | GMMP observer type remapped; " +
+                        "live theme/FAB colors retained"
+                )
+                return@runCatching
+            }
             val observeAttribute = themeClass.getDeclaredMethod(
                 "b",
                 Int::class.javaPrimitiveType
@@ -815,12 +1311,19 @@ internal class PlaylistMultiSelectController {
             // The obfuscated utility oy0.h(theme, rawAttr, fallback)
             // is precisely the path used by AestheticFab.onAttachedToWindow.
             val utility = loader.loadClass("oy0")
-            val observableMethod = utility.declaredMethods.first {
+            val observableMethod = utility.declaredMethods.firstOrNull {
                 it.name == "h" &&
                     it.parameterCount == 3 &&
                     it.parameterTypes[0].isAssignableFrom(theme.javaClass) &&
                     it.parameterTypes[1] == String::class.java
-            }.apply { isAccessible = true }
+            }?.apply { isAccessible = true } ?: run {
+                Log.i(
+                    TAG,
+                    "MULTI PALETTE | dynamic FAB resolver unavailable; " +
+                        "following verified native palette fallbacks"
+                )
+                return
+            }
             val observable = observableMethod.invoke(
                 null,
                 theme,
@@ -931,6 +1434,13 @@ internal class PlaylistMultiSelectController {
             refreshVisibleRows(session)
             updateSparkleColor(session)
         }
+        if (active === session) {
+            session.list?.let { list ->
+                // The same live native accent drives the inline overlay,
+                // not only the hidden RecyclerView row decorations.
+                folderSelectionChanged?.invoke(list)
+            }
+        }
     }
 
     private fun stopNativeGmmpPalette(session: Session) {
@@ -986,8 +1496,7 @@ internal class PlaylistMultiSelectController {
     ): String {
         val context = session.list?.context
             ?: return count.toString()
-        return gmmpString(context, "num_selected", count)
-            ?: count.toString()
+        return PlaylistFolderUiKit.selectionTitle(context, count)
     }
 
     private fun updateSelectionBar(session: Session) {
@@ -1069,11 +1578,17 @@ internal class PlaylistMultiSelectController {
             session.barView = bar
             session.originalBarBackground = bar.background
             session.barBackgroundSaved = true
+            // This picker ActionMode is GoneSmart-owned. Its first background
+            // can still be GMMP's stale colorAccent (r20: #ff8e0e00), so it
+            // is NOT a native Playlist selection witness and must never be
+            // promoted into the process-wide verified selection cache.
         }
 
-        // Native queue ActionMode uses the live colorPrimary, not a
-        // one-time snapshot of the playlist FAB's background tint.
-        val accent = gmmpPrimary(session, bar)
+        val accent = nativeFabTint(session)
+            ?: session.resolvedSelectionAccent
+            ?: verifiedNativeSelectionAccent()
+            ?: standaloneSelectionAccent(bar)
+        session.resolvedSelectionAccent = accent
         if (session.lastBarColor != accent ||
             (bar.background as? ColorDrawable)?.color != accent
         ) {
@@ -1111,7 +1626,7 @@ internal class PlaylistMultiSelectController {
         }
 
         fab.imageTintList = null
-        fab.setImageDrawable(MultiConfirmDrawable(dp(fab, 24f)))
+        fab.setImageDrawable(PlaylistConfirmDrawable(dp(fab, 24f)))
         if (session.sparkle == null) {
             val color = currentSparkleColor(session, fab)
             session.sparkleColor = color
@@ -1127,8 +1642,13 @@ internal class PlaylistMultiSelectController {
         } else {
             updateSparkleColor(session)
         }
-        fab.contentDescription =
-            "GoneSmart: Zu ${session.selectedPaths.size} Playlists hinzufügen"
+        // Preserve GMMP's current language for screen readers as well as
+        // visible ActionMode text; never hardcode a German description.
+        val countLabel = selectionTitle(session, session.selectedPaths.size)
+        fab.contentDescription = listOfNotNull(
+            countLabel,
+            session.originalDescription?.toString()?.takeIf(String::isNotBlank)
+        ).joinToString(" · ")
         pinFab(session)
     }
 
@@ -1241,22 +1761,44 @@ internal class PlaylistMultiSelectController {
      * fallbacks for fixed/custom themes or a currently untinted FAB.
      */
     private fun gmmpPrimary(session: Session, view: View): Int =
-        session.liveFabAccent
-            ?: session.livePrimary
+        nativeFabTint(session)
+            ?: session.liveFabAccent
+            ?: NativeGmmpAccent.lastObserved()
             ?: session.liveAccent
+            ?: session.livePrimary?.takeUnless { color ->
+                Color.red(color) < 12 &&
+                    Color.green(color) < 12 &&
+                    Color.blue(color) < 12
+            }
             ?: gmmpAccent(session, view)
+
+    private fun nativeFabTint(session: Session): Int? {
+        val color = materialFabTint(session.fab) ?: return null
+        lastVerifiedNativeFabTint = color
+        return color
+    }
+
+    private fun gmmpSelectionAccent(
+        session: Session,
+        view: View
+    ): Int {
+        nativeFabTint(session)?.let { native ->
+            session.resolvedSelectionAccent = native
+            return native
+        }
+        return session.resolvedSelectionAccent
+            ?: verifiedNativeSelectionAccent()
+            ?: standaloneSelectionAccent(view).also {
+                session.resolvedSelectionAccent = it
+            }
+    }
 
     private fun gmmpAccent(session: Session, view: View): Int {
         // Aesthetic's observable value is the real GMMP accent, even
         // when a new cover updates it while this picker remains open.
+        nativeFabTint(session)?.let { return it }
         session.liveFabAccent?.let { return it }
         session.liveAccent?.let { return it }
-        val fab = session.fab as? com.google.android.material.floatingactionbutton.FloatingActionButton
-        val liveFabColor = fab?.backgroundTintList?.let { tint ->
-            tint.getColorForState(fab.drawableState, tint.defaultColor)
-        }?.takeIf { Color.alpha(it) >= 200 }
-
-        if (liveFabColor != null) return liveFabColor
 
         val resources = view.context.resources
         val packageName = view.context.packageName
@@ -1316,7 +1858,7 @@ internal class PlaylistMultiSelectController {
         session: Session,
         row: FrameLayout
     ): Int {
-        val accent = gmmpPrimary(session, row)
+        val accent = gmmpSelectionAccent(session, row)
         val color = Color.argb(
             128,
             Color.red(accent),
@@ -1327,7 +1869,7 @@ internal class PlaylistMultiSelectController {
             session.lastLoggedAccent = accent
             Log.i(
                 TAG,
-                "MULTI STYLE | native dynamic primary=#" +
+                "MULTI STYLE | native dynamic selection accent=#" +
                     Integer.toHexString(accent) +
                     " | row overlay=#" +
                     Integer.toHexString(color)
@@ -1346,17 +1888,18 @@ internal class PlaylistMultiSelectController {
         }
     }
 
+
     /**
      * Called after GMMP's native adapter rebinds a holder, in addition to
      * layout/scroll callbacks. This prevents old highlight state leaking
      * onto unrelated playlists during RecyclerView view recycling.
      */
     fun onRowBound(holder: Any?) {
+        if (holder?.javaClass?.name != "jo3") return
         val session = active ?: return
         if (session.selectedPaths.isEmpty() &&
             session.appliedRowOverlays.isEmpty()
         ) return
-        if (holder?.javaClass?.name != "jo3") return
 
         val row = runCatching {
             holder.javaClass.getField("itemView").get(holder) as? FrameLayout
@@ -1412,31 +1955,13 @@ internal class PlaylistMultiSelectController {
 
         val fab = session.fab ?: return
         val list = session.list ?: return
-        val handler = session.nativeHandler
 
-        if (handler == null || handler.javaClass.name != "io3") {
-            warn(fab.context, "GMMP-Playlistfunktion nicht verfügbar")
-            Log.w(TAG, "MULTI CONFIRM | native io3 handler missing")
-            return
-        }
-
-        val sourceCount = sourceCount(handler)
-        if (sourceCount <= 0) {
-            warn(fab.context, "Keine ausgewählten Titel mehr vorhanden")
-            Log.w(TAG, "MULTI CONFIRM | native source selection empty")
-            return
-        }
-
-        // bw.i0() yields t23 groups. The groups' r() lists contain
-        // xn3 playlist models. Re-resolve by stable native playlist path.
         val currentModels = adapterItems(list)
         val byPath = currentModels.mapNotNull { model ->
             modelPath(model)?.let { path -> path to model }
         }.toMap()
         val targets = session.selectedPaths.mapNotNull { path ->
             if (currentModels.isEmpty()) {
-                // Only fall back when the adapter cannot expose models;
-                // captured models still have their original native path.
                 session.selectedModels[path]
                     ?.takeIf { modelPath(it) == path }
             } else {
@@ -1450,100 +1975,143 @@ internal class PlaylistMultiSelectController {
             return
         }
 
-        val holder = session.dispatchHolder
-        val modelField = runCatching {
-            holder?.javaClass?.getDeclaredField("A")?.also {
-                it.isAccessible = true
-            }
-        }.getOrNull()
-        if (holder?.javaClass?.name != "jo3" || modelField == null) {
+        val holder = session.dispatchHolder ?: findDispatchHolder(list)
+        if (holder == null) {
             warn(fab.context, "GMMP-Playlistzeile nicht verfügbar")
-            Log.w(TAG, "MULTI CONFIRM | jo3 dispatch holder missing")
+            Log.w(TAG, "MULTI CONFIRM | native dispatch holder missing")
             return
         }
 
-        val addMethod: Method = runCatching {
-            handler.javaClass.declaredMethods.first {
-                it.name == "r" &&
-                    it.parameterTypes.size == 2 &&
+        val handler = session.nativeHandler
+        val addMethod = handler?.let { candidate ->
+            GmmpReflectionPolicy.concreteMethods(candidate.javaClass).singleOrNull {
+                it.parameterTypes.size == 2 &&
                     Context::class.java.isAssignableFrom(
                         it.parameterTypes[0]
                     ) &&
-                    it.parameterTypes[1].name == "ie0" &&
                     it.returnType == Boolean::class.javaPrimitiveType
-            }.also { it.isAccessible = true }
-        }.getOrElse { error ->
+            }?.apply { isAccessible = true }
+        }
+        val legacyField = runCatching {
+            holder.javaClass.getDeclaredField("A").apply {
+                isAccessible = true
+            }
+        }.getOrNull()
+        val nativeRow = NativePlaylistRuntimeBinding.itemViewOf(holder)
+        if (addMethod == null && nativeRow == null) {
             warn(fab.context, "Native GMMP-Methode nicht gefunden")
-            Log.e(TAG, "MULTI CONFIRM | io3.r missing", error)
+            Log.w(
+                TAG,
+                "MULTI CONFIRM | neither native handler nor row click available"
+            )
             return
         }
 
-        // GMMP io3.r(Context, ie0) accepts a jo3 view holder but reads
-        // only jo3.A -> xn3.q synchronously. Temporarily switch A to each
-        // selected model, call the native handler, then restore it.
-        // Never retain recycled view objects as destination identity.
-        val originalModel = modelField.get(holder)
-        // One batch spans every destination, but only the native completion
-        // callback is allowed to dismiss the picker, and only once.
-        val navigationBatch = if (targets.size > 1) {
+        val sourceCount = handler?.let(::sourceCount)
+            ?.takeIf { it > 0 } ?: 0
+        val navigationBatch = if (targets.size > 1 && sourceCount > 0) {
             NativeNavigationBatch(
                 sourceCount = sourceCount,
-                // Use the picker Activity context: GMMP may apply a
-                // different in-app language than the application default.
                 context = fab.context
             )
-        } else {
-            null
-        }
+        } else null
+
+        val originalRuntimeModel =
+            NativePlaylistRuntimeBinding.boundModel(holder)
+        val originalLegacyModel = runCatching {
+            legacyField?.get(holder)
+        }.getOrNull()
+
         session.submitting = true
         var accepted = 0
         try {
             for (model in targets) {
                 val path = modelPath(model) ?: continue
-                modelField.set(holder, model)
+                val runtimePrevious =
+                    NativePlaylistRuntimeBinding.swapBoundModel(holder, model)
+                val legacyReady = if (runtimePrevious != null) {
+                    true
+                } else {
+                    runCatching {
+                        legacyField?.set(holder, model)
+                        legacyField != null
+                    }.getOrDefault(false)
+                }
+                if (!legacyReady) {
+                    Log.w(
+                        TAG,
+                        "MULTI NATIVE ADD | destination=$path | " +
+                            "bound model swap unavailable"
+                    )
+                    continue
+                }
 
-                val previous = constructingNativeCallback.get()
+                val previousCallback = constructingNativeCallback.get()
                 if (navigationBatch != null) {
                     constructingNativeCallback.set(navigationBatch)
                 }
                 val dispatched = try {
-                    addMethod.invoke(handler, fab.context, holder) as? Boolean
-                        ?: false
+                    if (addMethod != null && handler != null) {
+                        addMethod.invoke(
+                            handler,
+                            fab.context,
+                            holder
+                        ) as? Boolean ?: false
+                    } else {
+                        // 4.2.1: dispatch the exact native row click. The
+                        // holder is temporarily bound to the selected yn3,
+                        // so GMMP executes its normal one-playlist add path.
+                        session.nativeDispatchInProgress = true
+                        nativeRow?.performClick() == true
+                    }
                 } finally {
-                    if (previous == null) {
+                    session.nativeDispatchInProgress = false
+                    if (previousCallback == null) {
                         constructingNativeCallback.remove()
                     } else {
-                        constructingNativeCallback.set(previous)
+                        constructingNativeCallback.set(previousCallback)
                     }
                 }
 
                 Log.i(
                     TAG,
                     "MULTI NATIVE ADD | destination=$path | " +
-                        "accepted=$dispatched | sourceCount=$sourceCount"
+                        "accepted=$dispatched | dispatch=" +
+                        if (addMethod != null) "handler" else "native-row"
                 )
                 if (dispatched) accepted++
             }
         } catch (error: Throwable) {
             Log.e(TAG, "MULTI CONFIRM | native dispatch failed", error)
         } finally {
-            runCatching { modelField.set(holder, originalModel) }
-                .onFailure { Log.e(TAG, "MULTI CONFIRM | holder restore failed", it) }
+            if (originalRuntimeModel != null) {
+                NativePlaylistRuntimeBinding.restoreBoundModel(
+                    holder,
+                    originalRuntimeModel
+                )
+            } else {
+                runCatching {
+                    legacyField?.set(holder, originalLegacyModel)
+                }
+            }
             markNativeDispatchFinished(navigationBatch, accepted)
-            // A retry after partial dispatch could duplicate tracks.
             exitSelection(session)
             session.submitting = false
         }
 
-        if (navigationBatch == null) {
-            // This case is a single destination dispatched from a selection
-            // session; preserve GMMP's normal native completion toast.
-            if (accepted == 0) {
-                warn(fab.context, "Hinzufügen nicht gestartet")
-            }
-        } else if (accepted == 0) {
-            warn(fab.context, "Hinzufügen zu keiner Playlist gestartet")
-        } else {
+        if (accepted == 0) {
+            warn(
+                fab.context,
+                NativeGmmpUiText.error(
+                    fab.context,
+                    gmmpString(fab.context, "playlists")
+                )
+            )
+            eventReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_PLAYLISTS,
+                "Could not start adding the selected songs to playlists."
+            )
+        } else if (navigationBatch != null) {
             Log.i(
                 TAG,
                 "MULTI TOAST | awaiting native confirmations for " +
@@ -1607,6 +2175,9 @@ internal class PlaylistMultiSelectController {
         session.originalTint = null
         session.originalDescription = null
         refreshVisibleRows(session)
+        session.list?.let { list ->
+            folderSelectionChanged?.invoke(list)
+        }
         Log.i(TAG, "MULTI MODE | exited")
     }
 
@@ -1630,6 +2201,7 @@ internal class PlaylistMultiSelectController {
     }
 
     private fun resourceName(view: View): String {
+        if (!NativeResourceIdPolicy.canResolveEntryName(view.id)) return ""
         return runCatching {
             view.resources.getResourceEntryName(view.id)
         }.getOrDefault("")
@@ -1639,57 +2211,14 @@ internal class PlaylistMultiSelectController {
         (value * view.resources.displayMetrics.density + 0.5f).toInt()
 
     private fun warn(context: Context, text: String) {
-        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        // Engineering failure details remain in English-only GoneSmart Logs
+        // and Logcat. The GMMP-hosted warning must follow its own language;
+        // this also covers older German debug-only guard messages.
+        Log.w(TAG, "MULTI UI ERROR | " + text)
+        val native = NativeGmmpUiText.error(
+            context, gmmpString(context, "playlists")
+        )
+        Toast.makeText(context, native, Toast.LENGTH_SHORT).show()
     }
 
-    private class MultiConfirmDrawable(
-        private val iconSizePx: Int
-    ) : Drawable() {
-        override fun getIntrinsicWidth(): Int = iconSizePx
-        override fun getIntrinsicHeight(): Int = iconSizePx
-
-        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 3.4f
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-
-        override fun draw(canvas: Canvas) {
-            val rect = bounds
-            val w = rect.width().toFloat()
-            val h = rect.height().toFloat()
-            val x = rect.left.toFloat()
-            val y = rect.top.toFloat()
-
-            stroke.color = Color.WHITE
-            stroke.strokeWidth = w * 0.115f
-            canvas.drawLine(
-                x + w * 0.15f, y + h * 0.54f,
-                x + w * 0.42f, y + h * 0.78f,
-                stroke
-            )
-            canvas.drawLine(
-                x + w * 0.42f, y + h * 0.78f,
-                x + w * 0.87f, y + h * 0.26f,
-                stroke
-            )
-
-        // The shared Auto-DJ badge renderer draws the lilac sparkle as
-        // a separate overlay in the top-right corner of the native FAB.
-        }
-
-        override fun setAlpha(alpha: Int) {
-            stroke.alpha = alpha
-            invalidateSelf()
-        }
-
-        override fun setColorFilter(colorFilter: ColorFilter?) {
-            stroke.colorFilter = colorFilter
-            invalidateSelf()
-        }
-
-        @Suppress("DEPRECATION")
-        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-    }
 }

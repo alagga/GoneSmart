@@ -3,209 +3,426 @@ package io.github.alagga.gonesmart
 import android.util.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 
+/**
+ * Read-only GMMP queue adapter.
+ *
+ * 4.2.0 used the concrete ex3 -> QueueDao path. 4.2.1 moved qr.q to a
+ * generated Room DAO, so a second path reads queue_table through the same
+ * already-open read-only Cursor bridge as the library reader. The current
+ * playback row prefers a passively verified absolute queue-position hint.
+ * Internal integer state is only a fallback; ambiguous candidates fail closed
+ * and leave native Auto-DJ untouched.
+ */
 class GmmpQueueReader {
 
     companion object {
         private const val TAG = "GoneSmart"
+        private const val CURSOR_QUERY =
+            """
+            SELECT queue_table.queue_position AS queue_position,
+                   queue_table.queue_shuffle_position AS shuffle_position,
+                   queue_table.queue_id AS queue_id,
+                   tracks.song_id AS song_id,
+                   tracks.track_name AS track_name,
+                   tracks.track_uri AS track_uri,
+                   GROUP_CONCAT(DISTINCT artists.artist) AS artist
+              FROM queue_table
+              INNER JOIN tracks
+                      ON tracks.song_id = queue_table.queue_track_id
+              LEFT JOIN artist_tracks
+                     ON artist_tracks.song_id = tracks.song_id
+              LEFT JOIN artists
+                     ON artists.artist_id = artist_tracks.artist_id
+             GROUP BY queue_table.queue_id
+             ORDER BY queue_table.queue_position
+            """
     }
 
+    private enum class OrderKind { QUEUE, SHUFFLE }
+
+    private data class CursorRow(
+        val queuePosition: Int,
+        val shufflePosition: Int,
+        val queueEntryId: Long,
+        val track: TrackInfo
+    )
+
+    private data class CurrentMarker(
+        val rowIndex: Int,
+        val orderKind: OrderKind,
+        val source: String
+    )
+
+    private val reportedCursorBindings =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     fun read(
-        autoDjInstance: Any
+        autoDjInstance: Any,
+        currentQueuePositionHint: Int? = null
     ): QueueContext? {
+        readLegacy(autoDjInstance)?.let { return it }
+        return readThroughCursor(autoDjInstance, currentQueuePositionHint)
+    }
 
-        return try {
-
-            /*
-             * qr.q = GMMP Queue
-             *
-             * runtime class = ex3
-             */
-            val queue =
-                readObjectField(
-                    autoDjInstance,
-                    "q"
-                ) ?: return null
-
-            /*
-             * qr.r = TrackDao
-             *
-             * declared type = r75
-             * runtime type  = v75
-             */
-            val trackDao =
-                readObjectField(
-                    autoDjInstance,
-                    "r"
-                ) ?: return null
-
-            /*
-             * ex3.D()
-             *
-             * Bestätigt:
-             * aktuelle queuePosition.
-             */
+    private fun readLegacy(autoDjInstance: Any): QueueContext? =
+        runCatching {
+            val queue = readObjectField(autoDjInstance, "q")
+                ?: return@runCatching null
+            val trackDao = readObjectField(autoDjInstance, "r")
+                ?: return@runCatching null
             val currentQueuePosition =
-                invokeNoArgMethod(
-                    queue,
-                    "D"
-                ) as? Int ?: return null
-
-            /*
-             * ex3.r = QueueDao
-             *
-             * declared type = tx3
-             * runtime type  = xx3
-             */
-            val queueDao =
-                readObjectField(
-                    queue,
-                    "r"
-                ) ?: return null
-
-            /*
-             * tx3.H1()
-             *
-             * Liefert alle Queue-Entities.
-             *
-             * WICHTIG:
-             * Die Reihenfolge dieser Liste entspricht
-             * NICHT zuverlässig der Wiedergabereihenfolge.
-             *
-             * Deshalb sortieren wir später anhand
-             * von ey3.a = queuePosition.
-             */
+                invokeNoArgMethod(queue, "D") as? Int
+                    ?: return@runCatching null
+            val queueDao = readObjectField(queue, "r")
+                ?: return@runCatching null
             val rawQueueItems =
-                invokeNoArgMethod(
-                    queueDao,
-                    "H1"
-                ) as? List<*> ?: return null
-
-            /*
-             * r75.R1(long) -> q75
-             *
-             * Bestätigter Track-Lookup anhand song_id.
-             */
-            val trackLookupMethod =
-                findMethod(
-                    trackDao.javaClass,
-                    "R1",
-                    java.lang.Long.TYPE
-                ) ?: return null
-
+                invokeNoArgMethod(queueDao, "H1") as? List<*>
+                    ?: return@runCatching null
+            val trackLookupMethod = findMethod(
+                trackDao.javaClass,
+                "R1",
+                java.lang.Long.TYPE
+            ) ?: return@runCatching null
             trackLookupMethod.isAccessible = true
 
-            val unsortedItems =
-                rawQueueItems.mapNotNull { rawQueueItem ->
-
-                    if (rawQueueItem == null) {
-                        return@mapNotNull null
-                    }
-
-                    /*
-                     * ey3.a = queuePosition
-                     */
-                    val queuePosition =
-                        readIntField(
-                            rawQueueItem,
-                            "a"
-                        ) ?: return@mapNotNull null
-
-                    /*
-                     * ey3.b = song_id
-                     */
-                    val trackId =
-                        readLongField(
-                            rawQueueItem,
-                            "b"
-                        ) ?: return@mapNotNull null
-
-                    /*
-                     * ey3.c = shufflePosition
-                     */
-                    val shufflePosition =
-                        readIntField(
-                            rawQueueItem,
-                            "c"
-                        ) ?: -1
-
-                    /*
-                     * ey3.d = eindeutige Queue-Entry-ID
-                     */
-                    val queueEntryId =
-                        readLongField(
-                            rawQueueItem,
-                            "d"
-                        ) ?: return@mapNotNull null
-
-                    /*
-                     * Diese Logik haben wir mit der
-                     * sichtbaren GMMP-Warteschlange
-                     * bestätigt.
-                     */
-                    val state =
-                        when {
-
-                            queuePosition < currentQueuePosition ->
-                                QueueItemState.PAST
-
-                            queuePosition == currentQueuePosition ->
-                                QueueItemState.CURRENT
-
-                            else ->
-                                QueueItemState.UPCOMING
-                        }
-
-                    val track =
-                        readTrack(
-                            trackDao = trackDao,
-                            trackLookupMethod = trackLookupMethod,
-                            trackId = trackId
-                        )
-
-                    QueueItemInfo(
-                        orderIndex = -1,
-                        queuePosition = queuePosition,
-                        shufflePosition = shufflePosition,
-                        queueEntryId = queueEntryId,
-                        track = track,
-                        state = state
-                    )
+            val sortedItems = rawQueueItems.mapNotNull { raw ->
+                raw ?: return@mapNotNull null
+                val queuePosition = readIntField(raw, "a")
+                    ?: return@mapNotNull null
+                val trackId = readLongField(raw, "b")
+                    ?: return@mapNotNull null
+                val shufflePosition = readIntField(raw, "c") ?: -1
+                val queueEntryId = readLongField(raw, "d")
+                    ?: return@mapNotNull null
+                val state = when {
+                    queuePosition < currentQueuePosition ->
+                        QueueItemState.PAST
+                    queuePosition == currentQueuePosition ->
+                        QueueItemState.CURRENT
+                    else -> QueueItemState.UPCOMING
+                }
+                QueueItemInfo(
+                    orderIndex = -1,
+                    queuePosition = queuePosition,
+                    shufflePosition = shufflePosition,
+                    queueEntryId = queueEntryId,
+                    track = readTrack(
+                        trackDao,
+                        trackLookupMethod,
+                        trackId
+                    ),
+                    state = state
+                )
+            }.sortedBy { it.queuePosition }
+                .mapIndexed { index, item ->
+                    item.copy(orderIndex = index)
                 }
 
-            /*
-             * H1() liefert keine zuverlässige Reihenfolge.
-             *
-             * queuePosition dagegen entspricht exakt
-             * der sichtbaren Wiedergabereihenfolge.
-             */
-            val sortedItems =
-                unsortedItems
-                    .sortedBy {
-                        it.queuePosition
-                    }
-                    .mapIndexed { index, item ->
+            if (sortedItems.none { it.state == QueueItemState.CURRENT }) {
+                null
+            } else {
+                QueueContext(
+                    currentQueuePosition = currentQueuePosition,
+                    items = sortedItems
+                )
+            }
+        }.getOrNull()
 
-                        item.copy(
-                            orderIndex = index
+    private fun readThroughCursor(
+        autoDjInstance: Any,
+        currentQueuePositionHint: Int?
+    ): QueueContext? =
+        runCatching {
+            val rows = GmmpReadOnlySql.query(
+                autoDjInstance = autoDjInstance,
+                sql = CURSOR_QUERY.trimIndent()
+            ) { cursor ->
+                fun column(name: String): Int =
+                    cursor.getColumnIndex(name).also {
+                        require(it >= 0) {
+                            "GMMP queue Cursor missing column " + name
+                        }
+                    }
+                val queuePosition = column("queue_position")
+                val shufflePosition = column("shuffle_position")
+                val queueId = column("queue_id")
+                val songId = column("song_id")
+                val title = column("track_name")
+                val path = column("track_uri")
+                val artist = column("artist")
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(
+                            CursorRow(
+                                queuePosition = cursor.getInt(queuePosition),
+                                shufflePosition =
+                                    if (cursor.isNull(shufflePosition)) -1
+                                    else cursor.getInt(shufflePosition),
+                                queueEntryId = cursor.getLong(queueId),
+                                track = TrackInfo(
+                                    id = cursor.getLong(songId),
+                                    title =
+                                        if (cursor.isNull(title)) null
+                                        else cursor.getString(title),
+                                    artist =
+                                        if (cursor.isNull(artist)) null
+                                        else cursor.getString(artist),
+                                    albumArtist = null,
+                                    path =
+                                        if (cursor.isNull(path)) null
+                                        else cursor.getString(path)
+                                )
+                            )
                         )
                     }
+                }
+            }
+            if (rows.isEmpty()) return@runCatching null
 
+            val marker = resolveCurrentMarker(
+                autoDjInstance,
+                rows,
+                currentQueuePositionHint
+            ) ?: return@runCatching null
+            val useShuffle =
+                marker.orderKind == OrderKind.SHUFFLE &&
+                    rows.all { it.shufflePosition >= 0 } &&
+                    rows.map { it.shufflePosition }.distinct().size == rows.size
+            val ordered = if (useShuffle) {
+                rows.sortedBy { it.shufflePosition }
+            } else {
+                rows.sortedBy { it.queuePosition }
+            }
+            val currentEntry = rows[marker.rowIndex].queueEntryId
+            val currentIndex = ordered.indexOfFirst {
+                it.queueEntryId == currentEntry
+            }
+            if (currentIndex < 0) return@runCatching null
+
+            val items = ordered.mapIndexed { index, row ->
+                QueueItemInfo(
+                    orderIndex = index,
+                    queuePosition = row.queuePosition,
+                    shufflePosition = row.shufflePosition,
+                    queueEntryId = row.queueEntryId,
+                    track = row.track,
+                    state = when {
+                        index < currentIndex -> QueueItemState.PAST
+                        index == currentIndex -> QueueItemState.CURRENT
+                        else -> QueueItemState.UPCOMING
+                    }
+                )
+            }
+            val currentQueuePosition = ordered[currentIndex].queuePosition
+            val key =
+                autoDjInstance.javaClass.name + "|" +
+                    marker.source + "|" +
+                    if (useShuffle) "shuffle" else "queue"
+            if (reportedCursorBindings.add(key)) {
+                Log.i(
+                    TAG,
+                    "GMMP QUEUE MAPPING | source=read-only Cursor" +
+                        " | rows=" + rows.size +
+                        " | currentResolver=" + marker.source +
+                        " | order=" +
+                        if (useShuffle) "shuffle" else "queue"
+                )
+            }
             QueueContext(
                 currentQueuePosition = currentQueuePosition,
-                items = sortedItems
+                items = items
             )
-
-        } catch (t: Throwable) {
-
-            Log.e(
+        }.onFailure {
+            Log.w(
                 TAG,
-                "Could not read GMMP queue",
-                t
+                "GMMP queue read-only Cursor fallback unavailable",
+                it
             )
+        }.getOrNull()
 
-            null
+    private fun resolveCurrentMarker(
+        autoDjInstance: Any,
+        rows: List<CursorRow>,
+        currentQueuePositionHint: Int?
+    ): CurrentMarker? {
+        currentQueuePositionHint?.let { position ->
+            val matches = rows.indices.filter { index ->
+                rows[index].queuePosition == position
+            }
+            if (matches.size == 1) {
+                return CurrentMarker(
+                    rowIndex = matches.single(),
+                    orderKind = OrderKind.QUEUE,
+                    source = "verified-native-writer-hint"
+                )
+            }
+            Log.w(
+                TAG,
+                "GMMP QUEUE CURRENT | absolute position hint rejected" +
+                    " | position=" + position +
+                    " | matches=" + matches.size
+            )
         }
+
+        fun fromHost(host: Any, source: String): CurrentMarker? {
+            val signals = integerSignals(host)
+            return markerFromSignals(signals, rows, source)
+        }
+
+        // r39 device evidence disproved qr.t/ur.b as playback position:
+        // ur.b remained 1 while MusicService was reading queue positions 7
+        // and 8. Earlier 4.2.1 device passes repeatedly correlated qr.p/dx3
+        // with the actually playing row, so restore that owner first.
+        readObjectField(autoDjInstance, "p")?.let { state ->
+            fromHost(state, "direct-state:" + state.javaClass.name)
+                ?.let { return it }
+        }
+
+        // qr.t/ur is deliberately NOT a current-position fallback. Its value
+        // can coincidentally equal a valid queue_position and caused r36-r39
+        // to select row 1 even while another row was playing.
+
+        val candidates = hierarchyFields(autoDjInstance.javaClass)
+            .mapNotNull { field ->
+                if (field.name == "t") return@mapNotNull null
+                field.isAccessible = true
+                val value = runCatching {
+                    field.get(autoDjInstance)
+                }.getOrNull() ?: return@mapNotNull null
+                if (!isSignalHost(value)) return@mapNotNull null
+                fromHost(
+                    value,
+                    "field:" + field.name + "->" + value.javaClass.name
+                )
+            }
+        val uniqueRows = candidates.map { it.rowIndex }.distinct()
+        if (uniqueRows.size != 1) {
+            Log.w(
+                TAG,
+                "GMMP QUEUE CURRENT | structural marker unresolved" +
+                    " | candidates=" +
+                    candidates.joinToString(",") {
+                        it.source + "#" + it.rowIndex
+                    }.ifBlank { "none" }
+            )
+            return null
+        }
+        val matching = candidates.filter {
+            it.rowIndex == uniqueRows.single()
+        }
+        return matching.firstOrNull {
+            it.orderKind == OrderKind.SHUFFLE
+        } ?: matching.firstOrNull()
+    }
+
+    private fun markerFromSignals(
+        signals: List<Pair<String, Int>>,
+        rows: List<CursorRow>,
+        source: String
+    ): CurrentMarker? {
+        fun resolve(kind: OrderKind): CurrentMarker? {
+            val markers = arrayListOf<CurrentMarker>()
+            signals.forEach { (name, value) ->
+                if (value < 0) return@forEach
+                val matches = rows.indices.filter {
+                    if (kind == OrderKind.QUEUE) {
+                        rows[it].queuePosition == value
+                    } else {
+                        rows[it].shufflePosition == value
+                    }
+                }
+                if (matches.size == 1) {
+                    markers += CurrentMarker(
+                        matches.single(),
+                        kind,
+                        source + "." + name
+                    )
+                }
+            }
+            val uniqueRows = markers.map { it.rowIndex }.distinct()
+            if (uniqueRows.size != 1) return null
+            return markers.firstOrNull {
+                it.rowIndex == uniqueRows.single()
+            }
+        }
+
+        // GMMP's verified 4.2.0 D() pointer is queue_position. Preserve
+        // that semantic first. Treating one integer as BOTH queue and
+        // shuffle positions makes a normal shuffled queue look ambiguous.
+        return resolve(OrderKind.QUEUE)
+            ?: resolve(OrderKind.SHUFFLE)
+    }
+
+    private fun integerSignals(target: Any): List<Pair<String, Int>> {
+        val result = arrayListOf<Pair<String, Int>>()
+        hierarchyFields(target.javaClass).forEach { field ->
+            if (field.type != Integer.TYPE &&
+                field.type != Integer::class.java
+            ) return@forEach
+            val value = runCatching {
+                field.isAccessible = true
+                (field.get(target) as? Number)?.toInt()
+            }.getOrNull() ?: return@forEach
+            result += "field:" + field.name to value
+        }
+        hierarchyMethods(target.javaClass).forEach { method ->
+            if (method.parameterCount != 0 ||
+                (method.returnType != Integer.TYPE &&
+                    method.returnType != Integer::class.java) ||
+                method.name == "hashCode"
+            ) return@forEach
+            val value = runCatching {
+                method.isAccessible = true
+                (method.invoke(target) as? Number)?.toInt()
+            }.getOrNull() ?: return@forEach
+            result += "method:" + method.name to value
+        }
+        return result.distinct()
+    }
+
+    private fun isSignalHost(value: Any): Boolean {
+        val name = value.javaClass.name
+        if (name.startsWith("java.") ||
+            name.startsWith("android.") ||
+            name.startsWith("kotlin.") ||
+            value is java.util.Collection<*> ||
+            value is java.util.concurrent.Executor
+        ) return false
+        val fields = hierarchyFields(value.javaClass)
+        if (fields.any { field ->
+                val declaredDatabase =
+                    field.type.name ==
+                        "gonemad.gmmp.data.database.GMDatabase" ||
+                        generateSequence<Class<*>>(field.type) { c -> c.superclass }
+                            .any { c -> c.name == "androidx.room.RoomDatabase" }
+                if (declaredDatabase) {
+                    true
+                } else {
+                    // 4.2.1 generated DAOs declare their database field as
+                    // obfuscated f94, so declared-type checks alone let d85
+                    // and kr leak into current-position discovery. Inspect
+                    // only the runtime TYPE of an already-owned field; no
+                    // values/rows are read or mutated here.
+                    val nested = runCatching {
+                        field.isAccessible = true
+                        field.get(value)
+                    }.getOrNull()
+                    nested != null &&
+                        (
+                            nested.javaClass.name ==
+                                "gonemad.gmmp.data.database.GMDatabase_Impl" ||
+                                generateSequence<Class<*>>(
+                                    nested.javaClass
+                                ) { c -> c.superclass }.any { c ->
+                                    c.name == "androidx.room.RoomDatabase"
+                                }
+                        )
+                }
+            }
+        ) return false
+        return true
     }
 
     private fun readTrack(
@@ -213,272 +430,76 @@ class GmmpQueueReader {
         trackLookupMethod: Method,
         trackId: Long
     ): TrackInfo {
-
         return try {
-
-            val trackObject =
-                trackLookupMethod.invoke(
-                    trackDao,
-                    trackId
-                )
-
+            val trackObject = trackLookupMethod.invoke(trackDao, trackId)
             if (trackObject == null) {
-
-                return TrackInfo(
-                    id = trackId,
-                    title = null,
-                    artist = null,
-                    albumArtist = null,
-                    path = null
-                )
+                return TrackInfo(trackId, null, null, null, null)
             }
-
-            /*
-             * q75:
-             *
-             * o = song_id
-             * p = Titel
-             * r = Dateipfad
-             * u = Track-Interpret(en)
-             * H = Albuminterpret
-             */
             TrackInfo(
-                id =
-                    readLongField(
-                        trackObject,
-                        "o"
-                    ) ?: trackId,
-
-                title =
-                    readStringField(
-                        trackObject,
-                        "p"
-                    ),
-
-                artist =
-                    readStringField(
-                        trackObject,
-                        "u"
-                    ),
-
-                albumArtist =
-                    readStringField(
-                        trackObject,
-                        "H"
-                    ),
-
-                path =
-                    readStringField(
-                        trackObject,
-                        "r"
-                    )
+                id = readLongField(trackObject, "o") ?: trackId,
+                title = readStringField(trackObject, "p"),
+                artist = readStringField(trackObject, "u"),
+                albumArtist = readStringField(trackObject, "H"),
+                path = readStringField(trackObject, "r")
             )
-
         } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Track lookup failed for trackId=$trackId",
-                t
-            )
-
-            TrackInfo(
-                id = trackId,
-                title = null,
-                artist = null,
-                albumArtist = null,
-                path = null
-            )
+            Log.w(TAG, "Track lookup failed for trackId=" + trackId, t)
+            TrackInfo(trackId, null, null, null, null)
         }
     }
 
-    private fun readObjectField(
-        target: Any,
-        fieldName: String
-    ): Any? {
-
-        return try {
-
-            val field =
-                findField(
-                    target.javaClass,
-                    fieldName
-                ) ?: return null
-
+    private fun readObjectField(target: Any, fieldName: String): Any? =
+        runCatching {
+            val field = findField(target.javaClass, fieldName)
+                ?: return@runCatching null
             field.isAccessible = true
+            field.get(target)
+        }.getOrNull()
 
-            field.get(
-                target
-            )
-
-        } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Could not read field " +
-                        "${target.javaClass.name}.$fieldName",
-                t
-            )
-
-            null
-        }
-    }
-
-    private fun readIntField(
-        target: Any,
-        fieldName: String
-    ): Int? {
-
-        return try {
-
-            val field =
-                findField(
-                    target.javaClass,
-                    fieldName
-                ) ?: return null
-
+    private fun readIntField(target: Any, fieldName: String): Int? =
+        runCatching {
+            val field = findField(target.javaClass, fieldName)
+                ?: return@runCatching null
             field.isAccessible = true
+            (field.get(target) as? Number)?.toInt()
+        }.getOrNull()
 
-            field.getInt(
-                target
-            )
-
-        } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Could not read int field " +
-                        "${target.javaClass.name}.$fieldName",
-                t
-            )
-
-            null
-        }
-    }
-
-    private fun readLongField(
-        target: Any,
-        fieldName: String
-    ): Long? {
-
-        return try {
-
-            val field =
-                findField(
-                    target.javaClass,
-                    fieldName
-                ) ?: return null
-
+    private fun readLongField(target: Any, fieldName: String): Long? =
+        runCatching {
+            val field = findField(target.javaClass, fieldName)
+                ?: return@runCatching null
             field.isAccessible = true
+            (field.get(target) as? Number)?.toLong()
+        }.getOrNull()
 
-            field.getLong(
-                target
-            )
-
-        } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Could not read long field " +
-                        "${target.javaClass.name}.$fieldName",
-                t
-            )
-
-            null
-        }
-    }
-
-    private fun readStringField(
-        target: Any,
-        fieldName: String
-    ): String? {
-
-        return try {
-
-            val field =
-                findField(
-                    target.javaClass,
-                    fieldName
-                ) ?: return null
-
+    private fun readStringField(target: Any, fieldName: String): String? =
+        runCatching {
+            val field = findField(target.javaClass, fieldName)
+                ?: return@runCatching null
             field.isAccessible = true
+            field.get(target) as? String
+        }.getOrNull()
 
-            field.get(
-                target
-            ) as? String
-
-        } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Could not read String field " +
-                        "${target.javaClass.name}.$fieldName",
-                t
-            )
-
-            null
-        }
-    }
-
-    private fun invokeNoArgMethod(
-        target: Any,
-        methodName: String
-    ): Any? {
-
-        return try {
-
-            val method =
-                findMethod(
-                    target.javaClass,
-                    methodName
-                ) ?: return null
-
+    private fun invokeNoArgMethod(target: Any, methodName: String): Any? =
+        runCatching {
+            val method = findMethod(target.javaClass, methodName)
+                ?: return@runCatching null
             method.isAccessible = true
-
-            method.invoke(
-                target
-            )
-
-        } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "Could not invoke " +
-                        "${target.javaClass.name}.$methodName()",
-                t
-            )
-
-            null
-        }
-    }
+            method.invoke(target)
+        }.getOrNull()
 
     private fun findField(
         startClass: Class<*>,
         fieldName: String
     ): Field? {
-
-        var currentClass: Class<*>? =
-            startClass
-
-        while (
-            currentClass != null &&
-            currentClass != Any::class.java
-        ) {
-
+        var current: Class<*>? = startClass
+        while (current != null && current != Any::class.java) {
             try {
-
-                return currentClass
-                    .getDeclaredField(
-                        fieldName
-                    )
-
+                return current.getDeclaredField(fieldName)
             } catch (_: NoSuchFieldException) {
-
-                currentClass =
-                    currentClass.superclass
+                current = current.superclass
             }
         }
-
         return null
     }
 
@@ -487,30 +508,43 @@ class GmmpQueueReader {
         methodName: String,
         vararg parameterTypes: Class<*>
     ): Method? {
-
-        var currentClass: Class<*>? =
-            startClass
-
-        while (
-            currentClass != null &&
-            currentClass != Any::class.java
-        ) {
-
+        var current: Class<*>? = startClass
+        while (current != null && current != Any::class.java) {
             try {
-
-                return currentClass
-                    .getDeclaredMethod(
-                        methodName,
-                        *parameterTypes
-                    )
-
+                return current.getDeclaredMethod(
+                    methodName,
+                    *parameterTypes
+                )
             } catch (_: NoSuchMethodException) {
-
-                currentClass =
-                    currentClass.superclass
+                current = current.superclass
             }
         }
-
         return null
     }
+
+    private fun hierarchyFields(type: Class<*>): List<Field> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter {
+                !Modifier.isStatic(it.modifiers) && !it.isSynthetic
+            }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" + it.type.name
+            }
+            .toList()
+
+    private fun hierarchyMethods(type: Class<*>): List<Method> =
+        generateSequence<Class<*>>(type) { it.superclass }
+            .flatMap { it.declaredMethods.asSequence() }
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    !Modifier.isAbstract(it.modifiers) &&
+                    !it.isSynthetic
+            }
+            .distinctBy {
+                it.declaringClass.name + "|" + it.name + "|" +
+                    it.parameterTypes.joinToString(",") { p -> p.name } +
+                    "|" + it.returnType.name
+            }
+            .toList()
 }

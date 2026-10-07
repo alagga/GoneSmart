@@ -5,6 +5,15 @@ import android.content.SharedPreferences
 data class GoneSmartOptions(
     val enabled: Boolean = true,
     val multiPlaylistEnabled: Boolean = false,
+    val playlistFoldersEnabled: Boolean = false,
+    val smartPlaylistFoldersEnabled: Boolean = false,
+    val smartMultiPlaylistEnabled: Boolean = true,
+    val playlistBridgeEnabled: Boolean = true,
+    val smartGroupRootPlaylists: Boolean = false,
+    val groupExternalPlaylists: Boolean = true,
+    val groupRootPlaylists: Boolean = true,
+    val flipQueueEnabled: Boolean = false,
+    val trackMixEnabled: Boolean = true,
     val preferHigherRatedMatches: Boolean = true,
     val minimumRatingStars: Double = 0.0,
     val smartRatingEnabled: Boolean = false,
@@ -33,6 +42,42 @@ data class GoneSmartOptions(
                 multiPlaylistEnabled = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST,
                     false
+                ),
+                playlistFoldersEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS,
+                    false
+                ),
+                smartPlaylistFoldersEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS,
+                    false
+                ),
+                smartMultiPlaylistEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_SMART_MULTI_PLAYLIST,
+                    true
+                ),
+                playlistBridgeEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PLAYLIST_BRIDGE,
+                    true
+                ),
+                smartGroupRootPlaylists = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_SMART_GROUP_ROOT_PLAYLISTS,
+                    false
+                ),
+                groupExternalPlaylists = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS,
+                    true
+                ),
+                groupRootPlaylists = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS,
+                    true
+                ),
+                flipQueueEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_FLIP_QUEUE,
+                    false
+                ),
+                trackMixEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_TRACK_MIX,
+                    true
                 ),
                 preferHigherRatedMatches = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
