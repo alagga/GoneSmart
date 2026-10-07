@@ -12,74 +12,25 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout release branch
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: feature/playlist-bridge
           fetch-depth: 0
 
-      - name: Remove stale non-conflicting merge leftovers
+      - name: Apply cleanup
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          module = Path('app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt')
-          text = module.read_text()
-          duplicate = '''            if (key == GoneSmartSettingsKeys.KEY_MULTI_PLAYLIST) {
-                playlistController.setEnabled(options.multiPlaylistEnabled)
-            }
-
-'''
-          if text.count(duplicate) < 2:
-              # The later block has extra event reporting, so normally only the
-              # early exact block matches. Accept one exact match and remove it.
-              if duplicate not in text:
-                  raise SystemExit('early duplicate multi-playlist listener block not found')
-          text = text.replace(duplicate, '', 1)
-          module.write_text(text)
-
-          badge = Path('app/src/main/java/io/github/alagga/gonesmart/PlayerAutoDjBadgeController.kt')
-          text = badge.read_text()
-          stale = '''        /**
-         * GMMP can change colorAccent without recreating the playlist FAB.
-         * Update the existing overlay in place so its position, bounds,
-         * and click handling remain unchanged during a track transition.
-         */
-        fun updateColor(color: Int) {
-            if (badgeColor == color) return
-            badgeColor = color
-            fillPaint.color = color
-            highlightPaint.color = lighten(color, 0.58f)
-            invalidateSelf()
-        }
-
-'''
-          if stale not in text:
-              raise SystemExit('stale duplicate updateColor block not found')
-          text = text.replace(stale, '', 1)
-          if text.count('fun updateColor(color: Int)') != 1:
-              raise SystemExit('expected exactly one updateColor implementation')
-          badge.write_text(text)
-
-          dead = Path('app/src/main/java/io/github/alagga/gonesmart/PlaylistDiagnosticReporter.kt')
-          if dead.exists():
-              dead.unlink()
-          PY
-
-          if git grep -n 'PlaylistDiagnosticReporter' -- ':!docs/**' ':!AGENTS.md'; then
-            echo 'PlaylistDiagnosticReporter is still referenced'
-            exit 1
-          fi
-
+          python3 scripts/merge_cleanup_040.py
           git diff --check
 
-      - name: Commit cleanup and remove helper
+      - name: Commit cleanup
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/merge-cleanup-040.yml
+          rm scripts/merge_cleanup_040.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
