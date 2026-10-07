@@ -19,25 +19,17 @@ def regex_once(text: str, pattern: str, replacement: str, label: str) -> str:
 smart_path = Path("app/src/main/java/io/github/alagga/gonesmart/SmartPlaylistFolderController.kt")
 smart = smart_path.read_text()
 
-smart = replace_once(
+smart = regex_once(
     smart,
-    """        var touchGuardReported: Boolean = false
-        var overscrollReported: Boolean = false
-    )""",
-    """        var touchGuardReported: Boolean = false
-        var overscrollReported: Boolean = false,
-        var visibleRowSyncPending: Boolean = false
-    )""",
+    r'''(\s+var touchGuardReported: Boolean = false,?\s*\n\s+var overscrollReported: Boolean = false),?''',
+    r'''\1,
+        var visibleRowSyncPending: Boolean = false''',
     "smart browser row-sync state",
 )
 
 smart = regex_once(
     smart,
-    r'''        val scrollDrawListener =
-            android\.view\.ViewTreeObserver\.OnPreDrawListener \{
-.*?
-            \}
-        val detachListener = object : View\.OnAttachStateChangeListener \{''',
+    r'''        val scrollDrawListener =\n            android\.view\.ViewTreeObserver\.OnPreDrawListener \{\n.*?\n            \}\n        val detachListener = object : View\.OnAttachStateChangeListener \{''',
     '''        val scrollDrawListener =
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
@@ -160,10 +152,7 @@ playlist = playlist_path.read_text()
 
 playlist = regex_once(
     playlist,
-    r'''        var lastThemeProbe = 0L
-        var lastSelectionChromeProbe = 0L
-.*?
-        val detachListener = object : View\.OnAttachStateChangeListener \{''',
+    r'''        var lastThemeProbe = 0L\n        var lastSelectionChromeProbe = 0L\n.*?\n        val detachListener = object : View\.OnAttachStateChangeListener \{''',
     '''        var lastThemeProbe = 0L
         var lastSelectionChromeProbe = 0L
         // Keep draw-time work scoped to the actually visible page. Adapter
