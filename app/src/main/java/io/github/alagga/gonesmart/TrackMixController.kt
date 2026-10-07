@@ -109,6 +109,10 @@ internal class TrackMixController(
     @Volatile private var pending: Pending? = null
     @Volatile private var nativeQueue: WeakReference<Any>? = null
     @Volatile private var nativeAutoDj: WeakReference<Any>? = null
+    // 4.2.1 no longer exposes the verified 4.2.0 append-position allocator.
+    // Scope the bounded native-DAO position repair only to a Track Auto-DJ
+    // session we created; unrelated native list Play disarms it.
+    @Volatile private var managedAutoDj: WeakReference<Any>? = null
 
     @Volatile private var enabled = true
 
@@ -151,6 +155,35 @@ internal class TrackMixController(
             } else {
                 nativeRefillAllowance.set(previous)
             }
+        }
+    }
+
+    fun isExplicitInitialRefill(): Boolean =
+        pending?.stage == "FILLING" &&
+            (nativeRefillAllowance.get() ?: 0) > 0
+
+    fun normalizeManagedQueueAfterNativeRefill(autoDj: Any): Boolean {
+        if (managedAutoDj?.get() !== autoDj) return false
+        return runCatching {
+            GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+            ).normalizeQueuePositionsIfNeeded()
+        }.onFailure {
+            Log.e(
+                TAG,
+                "MIX QUEUE NORMALIZE | native 4.2.1 position repair failed",
+                it
+            )
+        }.getOrDefault(false)
+    }
+
+    private fun armManagedAutoDjSession() {
+        val autoDj = nativeAutoDj?.get() ?: return
+        val legacyQueue = field(autoDj, "q")
+            ?.takeIf { it.javaClass.name == "ex3" }
+        if (legacyQueue == null) {
+            managedAutoDj = WeakReference(autoDj)
         }
     }
 
@@ -213,7 +246,11 @@ internal class TrackMixController(
     }
 
     fun onNativePlaybackQueueUpdated(origin: String) {
-        val request = pending ?: return
+        val request = pending
+        if (request == null) {
+            managedAutoDj = null
+            return
+        }
         if (request.stage == "WAIT_PLAY") {
             request.nativePlaySignal = true
             request.nativeSource = origin
@@ -452,6 +489,7 @@ internal class TrackMixController(
                 "MIX SEED | queueSize=${cleared.ids.size} | " +
                     "currentPreserved=true"
             )
+            armManagedAutoDjSession()
 
             request.stage = "FILLING"
             val nativeSettings = settings.read()

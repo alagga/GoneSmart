@@ -98,3 +98,8 @@ The supplied pre-cleanup log also showed that GoneSmart's own explicit log noise
 8. Passive discovery is not free: after a boundary graduates, remove both diagnostic noise and repeated reflection/SQL work from normal runtime hot paths.
 9. UI observation is not free either: cache semantically proven native anchors and make full view-tree scans a recovery path, especially from `OnGlobalLayout`/pager callbacks.
 10. Device-accepted actions still need verification, but that verification should be one bounded postcondition check rather than a discovery-era polling loop.
+
+
+## r42 queue-continuity follow-up
+
+Maintainer device feedback on 2026-10-07 accepts the preceding navigation hot-path fix (tab swiping is smooth) and confirms the localized Track Auto-DJ action works again. The same log reopened Track Auto-DJ queue continuity: after seed isolation, 4.2.1 retained a ~5900 absolute append-position basis, Smart-DJ refill reads lost CURRENT/session provenance, and the Initial-Size smart wait could strand playback on the seed for more than ten seconds. r42 carries the bundled source/CI correction: verified-current hints for every Smart-DJ queue read, scoped native-DAO position rebasing after Track-Auto-DJ refills, and a 1500 ms non-cancelling initial smart wait. Device acceptance remains pending one bundled Track Auto-DJ/rapid-skip/Queue-view pass.

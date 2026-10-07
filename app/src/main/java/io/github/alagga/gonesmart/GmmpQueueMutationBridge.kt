@@ -283,6 +283,107 @@ internal class GmmpQueueMutationBridge(
         return ok
     }
 
+
+    /**
+     * Rebase a Track-Auto-DJ-owned sparse queue to 1..N after GMMP's native
+     * refill. GMMP 4.2.0 exposed a verified append allocator; 4.2.1 does not.
+     * Do not guess its obfuscated replacement. Instead update only the proven
+     * native Queue entities, move the already-passively-verified playback
+     * pointer if required, and require an independent Cursor postcondition.
+     */
+    fun normalizeQueuePositionsIfNeeded(): Boolean {
+        val resolved = resolve(
+            requireDelete = false,
+            requireStatePosition = false
+        )
+        val ordered = resolved.rows.sortedBy {
+            number(resolved.position, it).toInt()
+        }
+        if (ordered.isEmpty()) return false
+
+        val current = resolved.context.items.singleOrNull {
+            it.state == QueueItemState.CURRENT
+        } ?: error("GMMP current queue entry unavailable for normalization")
+        val plan = QueuePositionNormalizationPolicy.plan(
+            rows = ordered.map {
+                QueuePositionNormalizationPolicy.Row(
+                    queueId = number(resolved.queueId, it).toLong(),
+                    position = number(resolved.position, it).toInt()
+                )
+            },
+            currentQueueId = current.queueEntryId
+        ) ?: return false
+
+        val oldPositions = ordered.map {
+            number(resolved.position, it).toInt()
+        }
+        val oldCurrentPosition = resolved.context.currentQueuePosition
+        val statePosition = if (
+            oldCurrentPosition == plan.currentNewPosition
+        ) {
+            null
+        } else {
+            resolveStatePosition(oldCurrentPosition)
+        }
+        val oldState = statePosition?.read()
+
+        try {
+            ordered.forEachIndexed { index, row ->
+                setInt(resolved.position, row, index + 1)
+            }
+            resolved.update.invoke(
+                resolved.dao,
+                ArrayList(ordered)
+            )
+            statePosition?.write(plan.currentNewPosition)
+
+            val verified = GmmpQueueReader().read(
+                autoDj,
+                statePosition?.read() ?: plan.currentNewPosition
+            ) ?: error("Queue normalization verification unavailable")
+            val verifiedOrdered = verified.items.sortedBy { it.queuePosition }
+            val verifiedIds = verifiedOrdered.map { it.queueEntryId }
+            val verifiedPositions = verifiedOrdered.map { it.queuePosition }
+            val verifiedCurrent = verified.items.singleOrNull {
+                it.state == QueueItemState.CURRENT
+            }?.queueEntryId
+            require(
+                verifiedIds == plan.orderedQueueIds &&
+                    verifiedPositions == plan.normalizedPositions &&
+                    verifiedCurrent == plan.currentQueueId
+            ) {
+                "GMMP Track Auto-DJ queue normalization failed postcondition"
+            }
+
+            Log.i(
+                TAG,
+                "QUEUE POSITION NORMALIZE | old=" +
+                    plan.originalPositions.joinToString(",") +
+                    " | new=1.." + plan.normalizedPositions.size +
+                    " | currentId=" + plan.currentQueueId +
+                    " | currentPosition=" + plan.currentNewPosition +
+                    " | verified=true"
+            )
+            return true
+        } catch (failure: Throwable) {
+            runCatching {
+                ordered.forEachIndexed { index, row ->
+                    setInt(resolved.position, row, oldPositions[index])
+                }
+                resolved.update.invoke(
+                    resolved.dao,
+                    ArrayList(ordered)
+                )
+                if (statePosition != null && oldState != null) {
+                    statePosition.write(oldState)
+                }
+            }.onFailure { rollback ->
+                failure.addSuppressed(rollback)
+            }
+            throw failure
+        }
+    }
+
     private fun resolve(
         requireDelete: Boolean,
         requireStatePosition: Boolean
