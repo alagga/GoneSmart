@@ -27,7 +27,7 @@ GoneSmart 0.4.0 is a major feature and compatibility update for **GoneMAD Music 
 - Clearer confirmation and error messages instead of symbol-only popups.
 - Numerous smaller UI, stability and cleanup improvements.
 
-## Companion app polish
+## Compatibility
 
 - **Tested GMMP version:** 4.2.1
 - **Android:** 8.0+
@@ -46,6 +46,6 @@ The following areas are currently planned for the next major update:
 
 These are planned features and may change during development.
 
-## Compatibility and limitations
+## Installation
 
 Download `GoneSmart-v0.4.0.apk`, install it, enable GoneSmart for `gonemad.gmmp` in Vector/LSPosed, force-stop GMMP and reopen it. See the repository README and `docs/INSTALLATION.md` for the full setup and troubleshooting guide.
