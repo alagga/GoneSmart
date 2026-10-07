@@ -63,6 +63,9 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Keep workflow changes for connector update
+        run: git restore --source=HEAD -- .github/workflows/build.yml .github/workflows/release.yml
+
       - name: Remove one-off helper
         run: rm -f tools/apply_gmmp_update_warning_forum.py .github/workflows/apply-gmmp-update-warning-forum.yml
 
