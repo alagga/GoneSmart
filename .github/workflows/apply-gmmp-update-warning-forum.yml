@@ -19,6 +19,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fix helper quoting
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_gmmp_update_warning_forum.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace("    reply = f'''[size=5]", '    reply = f"""[size=5]')
+          text = text.replace("{body}\\n'''\n    return thread.rstrip()", '{body}\\n"""\n    return thread.rstrip()')
+          path.write_text(text, encoding='utf-8')
+          PY
+
       - name: Apply implementation
         run: python3 tools/apply_gmmp_update_warning_forum.py
 
