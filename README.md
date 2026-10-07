@@ -45,16 +45,19 @@ The matching system is especially tuned for electronic-music libraries, where Or
 
 ## Features
 
-This section is the short overview. Each major feature links to a more detailed explanation further down the page.
+This section is the short overview. Each major feature links directly to a more detailed explanation further down the page.
 
-| Area | Highlights | Details |
-|---|---|---|
-| **Smart Auto-DJ** | Session-aware recommendations, local-library matching, multiple providers, recommendation pool, rating and matching controls, GMMP fallback and player status indicator | [Smart Auto-DJ](#smart-auto-dj) |
-| **Playlist tools** | Playlist folders, Smart-Playlist folders, multi-selection and Playlist Link | [Playlist & Smart-Playlist tools](#playlist--smart-playlist-tools) |
-| **Playback tools** | Queue Flip / Play flipped and Track Auto-DJ from an individual song | [Playback tools](#playback-tools) |
-| **Companion app** | Status, settings, logs, compatibility information, update checks and built-in help | [Companion app](#companion-app) |
+| Area | Highlights |
+|---|---|
+| **[Smart Auto-DJ](#smart-auto-dj)** | Session-aware recommendations, local-library matching, multiple providers, recommendation pool, rating and matching controls, GMMP fallback and player status indicator |
+| **[Playlist tools](#playlist--smart-playlist-tools)** | Playlist folders, Smart-Playlist folders, multi-selection and Playlist Link |
+| **[Playback tools](#playback-tools)** | Queue Flip / Play flipped and Track Auto-DJ from an individual song |
+| **[Companion app](#companion-app)** | Status, settings, logs, compatibility information, update checks and built-in help |
 
-### Smart Auto-DJ at a glance
+<details open>
+<summary><b>✨ Smart Auto-DJ at a glance</b></summary>
+
+<br/>
 
 | Feature | What it does |
 |---|---|
@@ -72,7 +75,12 @@ This section is the short overview. Each major feature links to a more detailed 
 | Native fallback | Can hand selection back to regular GMMP Auto-DJ when GoneSmart cannot provide a suitable track |
 | Offline pool | A still-valid pool from the current session can continue to supply tracks without a new provider request |
 
-### UI & quality-of-life at a glance
+</details>
+
+<details>
+<summary><b>🎛️ UI & quality-of-life at a glance</b></summary>
+
+<br/>
 
 | Feature | What it does |
 |---|---|
@@ -84,6 +92,8 @@ This section is the short overview. Each major feature links to a more detailed 
 | Track Auto-DJ | Start a fresh Smart Auto-DJ session directly from an individual song |
 | GMMP-style UI | Added actions follow GMMP's active look, theme and available native wording where possible |
 | Independent controls | UI extensions can be enabled separately from the normal Smart Auto-DJ settings |
+
+</details>
 
 ---
 
