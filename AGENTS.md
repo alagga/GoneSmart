@@ -86,6 +86,8 @@ The 4.2.1 Track Auto-DJ flow is accepted for both normal Playlists and large Sma
 - Attached but **offscreen ViewPager pages must be effectively idle**. Do not do row reflection, model scanning, expensive style sampling or refresh fallback work merely because the native view remains attached.
 - Prefer native adapter/scroll/layout events. If a pre-draw listener is unavoidable, keep only genuinely frame-dependent geometry/overscroll work there and gate it to the visible foreground surface.
 - Coalesce visible-row synchronization to at most one posted animation-frame update per scroll/refresh burst.
+- Long-lived `OnGlobalLayout`/layout listeners must fast-path already proven native anchors. A full decor/view-tree scan is a recovery path for detached, hidden or semantically rebound targets, not normal work during pager animation.
+- Periodic visual diagnostics (for example drawable/glyph raster analysis) must be invalidation/state-driven and cached. A bounded safety recheck is acceptable; rebuilding bitmaps, shaders or paths every monitor tick/frame is not.
 
 ## 7. Companion Status screen contract
 
@@ -113,6 +115,8 @@ Keep concise markers for:
 Retire or gate deep `GMMP COMPAT CLASS/RECYCLER ... FIELDS/METHODS/CTORS/NESTED` inventories after a version is accepted. Preserve the reusable diagnostics utilities for the next unknown version; do not keep the full discovery flood active on every normal 4.2.1 launch.
 
 Do not “fix” noisy native GMMP tags such as `w6` by hiding their logger. If GoneSmart caused unnecessary native SQL, remove the repeated work. Native queries that GMMP itself legitimately performs while opening/refocusing a library tab may remain visible in logcat.
+
+Accepted user actions may keep a bounded postcondition check, but must not retain discovery-era polling loops. Repeated Cursor/Queue reads after a device-accepted native action are reserved for an unknown/failing compatibility boundary, not ordinary runtime verification.
 
 ## 9. Safety for queue/library mutation
 

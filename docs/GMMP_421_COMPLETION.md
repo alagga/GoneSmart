@@ -25,7 +25,7 @@ This document records the final device-verified state of the GMMP 4.2.1 compatib
 | Companion Compatibility policy | Accepted | Tested version source-of-truth is 4.2.1; other installed versions are warning/untested. |
 | Companion Status card | Implemented + JVM covered | One status card; overall status and individual GMMP/Xposed/GoneSmart/Compatibility sections use independent red/amber/green health. |
 | Compatibility logging | Accepted cleanup | Broad class/runtime/Recycler inventories are disabled for accepted 4.2.1; compact success/failure diagnostics remain. |
-| Accepted-version performance cleanup | Accepted implementation | Queue-writer discovery retires from the playback hot path after proof; Smart-folder row reflection is scroll/refresh-coalesced; Playlist/Smart folder pre-draw fallback work is foreground-only. |
+| Accepted-version performance cleanup | Accepted implementation | Queue-writer discovery retires after proof; folder row work is event-coalesced/foreground-only; persistent player/navigation badges reuse verified native anchors; Play-flipped verification is a single bounded postcondition read. |
 
 ## Queue Flip final contract
 
@@ -57,6 +57,9 @@ After the writer has been proven for the live Auto-DJ instance, all discovery ho
 - [x] Queue-writer discovery no longer performs broad state/readback work after proof.
 - [x] Playlist and Smart-Playlist folder overlays avoid expensive row/model work on attached offscreen tabs.
 - [x] Smart-folder visible-row reflection is coalesced from native scroll/refresh events instead of every pre-draw.
+- [x] Player/Now-Playing badge no longer rescans the decor tree or rerasterizes the glyph on every monitor/layout tick.
+- [x] Playlist/Smart navigation badges reuse semantically validated native TextViews during layout waves and fall back to discovery only when needed.
+- [x] Play-flipped postcondition verification no longer polls Queue state repeatedly after an accepted native launch.
 - [x] Temporary cleanup workflow/script removed from the repository.
 - [ ] Exact-head CI must be green after the final documentation/cleanup commit before branch retirement.
 
@@ -74,12 +77,14 @@ No known enabled 4.2.1 feature still depends on an unsafe guessed state-changing
 
 ## Performance audit result
 
-The final 4.2.1 log review found two GoneSmart-side hot paths worth retiring:
+The final 4.2.1 log/code review found four GoneSmart-side hot-path classes worth retiring:
 
 1. Queue current-position writer discovery could repeatedly invoke generic zero-arg state getters. Some GMMP getters perform queue SQL internally, producing hundreds of `w6` queries per second and visible frame loss. The accepted path now prefers the cheap verified native position signal, bounds generic fallback once per candidate, uses cheap-only delayed checks and becomes a no-op after proof.
 2. Playlist/Smart-Playlist folder overlays retained some pre-draw work even on attached offscreen ViewPager pages. Expensive visible-row reflection/alignment is now coalesced from scroll/refresh events and periodic fallback refreshes run only on the foreground page.
+3. Persistent player/navigation badge helpers could repeat full view-tree discovery during layout waves. The player badge now caches its native Now-Playing/playback-mode anchors, caches drawable analysis and reuses drawing objects; the Playlist/Smart navigation badge keeps weak semantically validated target references and caches adapter-getter reflection. Structural discovery remains the recovery path when native views change.
+4. Device-accepted Play-flipped playback still ran a discovery-era postcondition polling loop. Normal runtime now performs one delayed Queue verification plus at most one legacy fallback, with no repeated polling.
 
-The remaining `w6` lines emitted when GMMP itself opens/refocuses native library tabs are native queries; GoneSmart should not suppress GMMP's logger. The goal is to stop causing unnecessary queries, not hide them.
+The supplied pre-cleanup log also showed that GoneSmart's own explicit log noise was concentrated in the player-badge diagnostics; those accepted-version target/glyph/mode/hidden info lines are now retired. The remaining `w6` lines emitted when GMMP itself legitimately opens/refocuses native library tabs may remain visible. The goal is to stop causing unnecessary queries, not hide them.
 
 ## Durable 4.2.1 lessons
 
@@ -91,3 +96,5 @@ The remaining `w6` lines emitted when GMMP itself opens/refocuses native library
 6. Large Smart-Playlist playback may expose stable-looking intermediate queues; Track Auto-DJ must preserve the clicked target across the complete asynchronous native rebuild.
 7. GMMP Initial Size includes the seed; use the native refill boundary once with the exact missing count instead of chaining ordinary upcoming refills.
 8. Passive discovery is not free: after a boundary graduates, remove both diagnostic noise and repeated reflection/SQL work from normal runtime hot paths.
+9. UI observation is not free either: cache semantically proven native anchors and make full view-tree scans a recovery path, especially from `OnGlobalLayout`/pager callbacks.
+10. Device-accepted actions still need verification, but that verification should be one bounded postcondition check rather than a discovery-era polling loop.

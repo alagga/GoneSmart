@@ -148,7 +148,7 @@ Performance contract for these surfaces:
 
 ## 5. Accepted-version performance audit
 
-The final 4.2.1 cleanup found two important classes of accidental overhead:
+The final 4.2.1 cleanup found four important classes of accidental overhead:
 
 ### Queue writer discovery
 
@@ -169,6 +169,29 @@ Final policy:
 - offscreen pages are idle apart from the minimal geometry needed to keep an overlay hidden;
 - Smart-folder visible-row title/interaction sync is posted/coalesced from native scroll and refresh events;
 - normal Playlist periodic model-refresh fallback runs only on the foreground page and at a slow interval; native adapter notifications remain the primary refresh path.
+
+### Player / navigation badges
+
+The Now Playing Auto-DJ badge and Playlist/Smart-Playlist navigation badges are persistent UI extensions, so discovery cost matters even when no feature action is running. The former could repeatedly rescan the full decor tree and rasterize the playback-mode drawable; the latter could rescan every `TextView` and rediscover `getAdapter()` reflection during layout waves.
+
+Final policy:
+- cache weak references to already proven native UI anchors;
+- on layout/global-layout callbacks, reuse those anchors while they remain attached, visible and semantically valid;
+- fall back to structural full-tree discovery only when a cached target disappears or is rebound;
+- cache class-level reflection such as adapter getters instead of rediscovering it per ViewGroup;
+- cache glyph analysis by drawable identity/state and use only a bounded safety recheck;
+- reuse render objects/shaders/paths where possible instead of allocating them on every draw;
+- normal accepted-version badge state changes do not emit repetitive info logs.
+
+### Play-flipped postcondition verification
+
+The native 4.2.1 Play-flipped interception is device-accepted. Its old success verifier could poll Queue state up to twelve times at 250 ms intervals after every launch, including a legacy reflective fallback.
+
+Final policy:
+- one delayed independent Queue postcondition read is sufficient during normal accepted-version playback;
+- at most one legacy structural fallback may run if the primary read is inconclusive;
+- there is no retry/polling loop in the normal path;
+- repeated diagnostics belong only to an unknown/failing compatibility investigation.
 
 Do not hide GMMP's native `w6` logger to make logs look clean. Remove GoneSmart-caused unnecessary queries. Native GMMP queries performed legitimately when a library tab is opened/refocused may remain visible.
 
