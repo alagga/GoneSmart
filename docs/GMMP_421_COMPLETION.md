@@ -61,7 +61,7 @@ After the writer has been proven for the live Auto-DJ instance, all discovery ho
 - [x] Playlist/Smart navigation badges reuse semantically validated native TextViews during layout waves and fall back to discovery only when needed.
 - [x] Play-flipped postcondition verification no longer polls Queue state repeatedly after an accepted native launch.
 - [x] Temporary cleanup workflow/script removed from the repository.
-- [ ] Exact-head CI must be green after the final documentation/cleanup commit before branch retirement.
+- [ ] Before branch retirement, re-check the normal Build workflow on whatever commit is then the exact branch head.
 
 ## Dynamic / structural audit result
 
