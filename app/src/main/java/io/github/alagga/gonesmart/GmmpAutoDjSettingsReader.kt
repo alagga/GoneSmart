@@ -174,7 +174,8 @@ class GmmpAutoDjSettingsReader {
          *
          * With the user's current GMMP settings (initial=5,
          * upcoming=1), this produces a target of 20 and a
-         * low-water mark of 6.
+         * low-water mark of 10. Refilling at half-full gives the
+         * provider/matcher pipeline enough runway during rapid skips.
          */
         val target =
             max(
@@ -205,8 +206,8 @@ class GmmpAutoDjSettingsReader {
 
         val minimumConsumedBeforeRefill =
             max(
-                3,
-                settings.upcomingTrackCount * 2
+                2,
+                settings.upcomingTrackCount
             )
                 .coerceAtMost(
                     max(

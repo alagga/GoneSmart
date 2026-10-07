@@ -82,7 +82,6 @@ class PlayerAutoDjBadgeController {
     private var observedDecorRef: WeakReference<View>? = null
     private var overlayDrawable: SparkleBadgeDrawable? = null
     private var loggedMissingTarget = false
-    private var lastScanElapsedMs = Long.MIN_VALUE
     private var modeMonitorScheduled = false
     private var lastAutoDjDetection: Boolean? = null
     private var lastRenderedMode: Mode? = null
@@ -94,6 +93,25 @@ class PlayerAutoDjBadgeController {
         ViewTreeObserver.OnGlobalLayoutListener {
             scheduleRescan()
         }
+
+    private val rescanRunnable = Runnable {
+        val activity = activityRef?.get() ?: return@Runnable
+        if (activity.isFinishing || activity.isDestroyed) return@Runnable
+        val target = targetRef?.get()
+        val marker = nowPlayingMarkerRef?.get()
+        if (
+            isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
+            isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
+        ) {
+            if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                updateOverlayBounds(target!!)
+            } else {
+                clearOverlay()
+            }
+            return@Runnable
+        }
+        findAndAttach(activity, forceLog = false)
+    }
 
     private val modeMonitorRunnable = object : Runnable {
         override fun run() {
@@ -108,17 +126,21 @@ class PlayerAutoDjBadgeController {
             val target = targetRef?.get()
             val marker = nowPlayingMarkerRef?.get()
             if (
-                target != null &&
-                marker != null &&
                 isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
                 isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
             ) {
-                refreshBadge(target)
+                if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                    refreshBadge(target!!)
+                } else {
+                    clearOverlay()
+                }
+                scheduleModeMonitor()
             } else {
-                findAndAttach(activity, forceLog = false)
+                // Missing Now Playing must not become an endless 550-ms
+                // full decor-tree scan while the Library pager is active.
+                clearOverlay()
+                scheduleRescan()
             }
-
-            scheduleModeMonitor()
         }
     }
 
@@ -147,12 +169,9 @@ class PlayerAutoDjBadgeController {
 
         val decor = activity.window?.decorView ?: return
         installGlobalLayoutListener(decor)
-        scheduleModeMonitor()
-
-        decor.post { findAndAttach(activity, forceLog = false) }
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = false) }, 250L)
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = false) }, 900L)
-        mainHandler.postDelayed({ findAndAttach(activity, forceLog = true) }, 1800L)
+        // Discover once after layout quiet. A later Now-Playing creation
+        // produces its own layout event and schedules another bounded scan.
+        scheduleRescan()
     }
 
     private fun scheduleModeMonitor() {
@@ -179,38 +198,29 @@ class PlayerAutoDjBadgeController {
     }
 
     private fun scheduleRescan() {
-        val now = SystemClock.elapsedRealtime()
-        if (
-            lastScanElapsedMs != Long.MIN_VALUE &&
-            now - lastScanElapsedMs < RESCAN_DEBOUNCE_MS
-        ) {
-            return
-        }
-
-        lastScanElapsedMs = now
         val activity = activityRef?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
         val target = targetRef?.get()
         val marker = nowPlayingMarkerRef?.get()
 
-        // Global layout can fire continuously while ViewPager tabs animate.
-        // If the already-proven native anchors are still valid, there is no
-        // reason to rebuild a full decor-tree inventory. Geometry alone may
-        // have changed, while the 550 ms mode monitor owns glyph detection.
+        // ViewPager visibility changes do not invalidate a verified anchor.
         if (
-            target != null &&
-            marker != null &&
             isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME) &&
             isUsableNativeView(marker, NOW_PLAYING_MARKER_RESOURCE_NAME)
         ) {
-            mainHandler.post {
-                if (isUsableNativeView(target, PLAYBACK_MODE_RESOURCE_NAME)) {
-                    updateOverlayBounds(target)
-                }
+            mainHandler.removeCallbacks(rescanRunnable)
+            if (isVisibleNativeView(target) && isVisibleNativeView(marker)) {
+                updateOverlayBounds(target!!)
+            } else {
+                clearOverlay()
             }
             return
         }
 
-        mainHandler.post { findAndAttach(activity, forceLog = false) }
+        // True trailing debounce: continuous pager layout waves keep pushing
+        // the one structural recovery scan back until the UI is quiet.
+        mainHandler.removeCallbacks(rescanRunnable)
+        mainHandler.postDelayed(rescanRunnable, RESCAN_DEBOUNCE_MS)
     }
 
     private fun findAndAttach(
@@ -260,6 +270,7 @@ class PlayerAutoDjBadgeController {
             nowPlayingMarkerRef = WeakReference(nowPlayingMarker)
             updateOverlayBounds(target)
             refreshBadge(target)
+            scheduleModeMonitor()
             return
         }
 
@@ -272,16 +283,21 @@ class PlayerAutoDjBadgeController {
         clearGlyphAnalysisCache()
 
         refreshBadge(target)
+        scheduleModeMonitor()
     }
 
     private fun isUsableNativeView(view: View?, expectedResourceName: String): Boolean {
         return view != null &&
             view.isAttachedToWindow &&
-            view.isShown &&
-            view.width > 0 &&
-            view.height > 0 &&
             resourceName(view).equals(expectedResourceName, ignoreCase = true)
     }
+
+    private fun isVisibleNativeView(view: View?): Boolean =
+        view != null &&
+            view.isAttachedToWindow &&
+            view.isShown &&
+            view.width > 0 &&
+            view.height > 0
 
     private fun resourceName(view: View): String {
         if (!NativeResourceIdPolicy.canResolveEntryName(view.id)) return ""

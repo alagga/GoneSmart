@@ -12,7 +12,7 @@ class SessionRecommendationPool {
          * If a refill produced very few useful local tracks,
          * do not hammer the providers again on every skip.
          */
-        private const val MIN_REFILL_ATTEMPT_INTERVAL_MS =
+        private const val UNPRODUCTIVE_REFILL_BACKOFF_MS =
             60_000L
     }
 
@@ -31,7 +31,7 @@ class SessionRecommendationPool {
     private var consumedSinceLastSuccessfulFill =
         0
 
-    private var lastRefillAttemptElapsedMs =
+    private var lastUnproductiveFillElapsedMs =
         Long.MIN_VALUE
 
     @Synchronized
@@ -55,7 +55,7 @@ class SessionRecommendationPool {
         consumedSinceLastSuccessfulFill =
             0
 
-        lastRefillAttemptElapsedMs =
+        lastUnproductiveFillElapsedMs =
             Long.MIN_VALUE
     }
 
@@ -342,12 +342,16 @@ class SessionRecommendationPool {
         val now =
             SystemClock.elapsedRealtime()
 
+        // Back off only when the previous provider pass produced nothing.
+        // A successful pool that is being consumed quickly is precisely the
+        // case where we want an early asynchronous top-up rather than making
+        // the next native Auto-DJ request wait for network work.
         if (
-            lastRefillAttemptElapsedMs !=
+            lastUnproductiveFillElapsedMs !=
             Long.MIN_VALUE &&
             now -
-                lastRefillAttemptElapsedMs <
-                MIN_REFILL_ATTEMPT_INTERVAL_MS
+                lastUnproductiveFillElapsedMs <
+                UNPRODUCTIVE_REFILL_BACKOFF_MS
         ) {
 
             return false
@@ -357,18 +361,25 @@ class SessionRecommendationPool {
     }
 
     @Synchronized
-    fun markRefillAttempt(
-        expectedSessionId: Long
+    fun recordRefillResult(
+        expectedSessionId: Long,
+        addedCount: Int
     ) {
 
         if (
-            sessionId ==
+            sessionId !=
             expectedSessionId
         ) {
 
-            lastRefillAttemptElapsedMs =
-                SystemClock.elapsedRealtime()
+            return
         }
+
+        lastUnproductiveFillElapsedMs =
+            if (addedCount > 0) {
+                Long.MIN_VALUE
+            } else {
+                SystemClock.elapsedRealtime()
+            }
     }
 
     @Synchronized

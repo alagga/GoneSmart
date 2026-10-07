@@ -4326,6 +4326,10 @@ class GoneSmartModule : XposedModule() {
                                 "index=$preparationResult"
                         )
 
+                        scheduleInitialRecommendationPoolPrewarm(
+                            autoDjInstance
+                        )
+
                         success =
                             true
 
@@ -4379,6 +4383,65 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
+        }
+    }
+
+    private fun scheduleInitialRecommendationPoolPrewarm(
+        autoDjInstance: Any
+    ) {
+        if (!options.enabled) return
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) return
+
+        startupExecutor.execute {
+            val startedAt = SystemClock.elapsedRealtime()
+            val queueContext = queueReader.read(autoDjInstance) ?: return@execute
+            val session = queueSessionTracker.observe(queueContext)
+            val settings = gmmpAutoDjSettingsReader.read()
+            val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+
+            if (
+                session.isNewSession ||
+                !recommendationPool.isForSession(session.sessionId)
+            ) {
+                resetRecommendationPoolForSession(session, sizing)
+            } else {
+                recommendationPool.configureTarget(
+                    expectedSessionId = session.sessionId,
+                    newTargetSize = sizing.targetSize
+                )
+            }
+
+            if (
+                recommendationPool.hasEnough(
+                    expectedSessionId = session.sessionId,
+                    count = 1,
+                    excludedTrackIds = queueContext.items.map { it.track.id }.toSet()
+                )
+            ) {
+                return@execute
+            }
+
+            val seeds = seedSelector.select(session)
+            if (seeds.isEmpty()) return@execute
+
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL POOL PREWARM | session=${session.sessionId} | " +
+                    "target=${sizing.targetSize} | seeds=${seeds.size}"
+            )
+            startPoolFill(
+                seeds = seeds,
+                autoDjInstance = autoDjInstance,
+                queueContext = queueContext,
+                session = session,
+                sizing = sizing,
+                background = true
+            )
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL POOL PREWARM SCHEDULED | ms=" +
+                    (SystemClock.elapsedRealtime() - startedAt)
+            )
         }
     }
 
@@ -4439,6 +4502,20 @@ class GoneSmartModule : XposedModule() {
                         1
                     )
                     ?: 1
+
+            val refillStartedAt = SystemClock.elapsedRealtime()
+            var timingCheckpoint = refillStartedAt
+            fun logRefillTiming(phase: String) {
+                val now = SystemClock.elapsedRealtime()
+                Log.i(
+                    TAG,
+                    "SMART DJ TIMING | phase=$phase | deltaMs=" +
+                        (now - timingCheckpoint) +
+                        " | totalMs=" + (now - refillStartedAt) +
+                        " | requested=$requestedTracks"
+                )
+                timingCheckpoint = now
+            }
 
             val autoDjInstance =
                 chain.getThisObject()
@@ -4545,6 +4622,7 @@ class GoneSmartModule : XposedModule() {
                 queueReader.read(
                     autoDjInstance
                 )
+            logRefillTiming("queue-read-before")
 
             if (
                 beforeContext == null
@@ -4821,6 +4899,10 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
 
+            logRefillTiming(
+                if (poolAlreadyReady) "pool-hit" else "pool-ready-after-fill"
+            )
+
             if (
                 !poolReady
             ) {
@@ -4970,11 +5052,13 @@ class GoneSmartModule : XposedModule() {
                         null
                     )
                 }
+            logRefillTiming("native-refill")
 
             val afterContext =
                 queueReader.read(
                     autoDjInstance
                 )
+            logRefillTiming("queue-read-after")
 
             if (
                 afterContext != null
@@ -5013,6 +5097,7 @@ class GoneSmartModule : XposedModule() {
                         session.sessionId
                     )
             )
+            logRefillTiming("complete")
 
             Log.i(
                 TAG,
@@ -5583,11 +5668,6 @@ class GoneSmartModule : XposedModule() {
                 pipelineGeneration
                     .get()
 
-            recommendationPool
-                .markRefillAttempt(
-                    session.sessionId
-                )
-
             val future =
                 pipelineExecutor
                     .submit<Boolean> {
@@ -5622,6 +5702,11 @@ class GoneSmartModule : XposedModule() {
                                     candidateTrackIds = candidateTrackIds,
                                     newTargetSize = sizing.targetSize
                                 )
+
+                        recommendationPool.recordRefillResult(
+                            expectedSessionId = session.sessionId,
+                            addedCount = added
+                        )
 
                         Log.i(
                             TAG,
