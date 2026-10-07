@@ -1,111 +1,45 @@
-# GoneSmart v0.4.0 (upcoming)
+# GoneSmart v0.4.0
 
-> **Development snapshot — 1 October 2026.** These notes track the current v0.4 branch and are not final release notes yet. More features may land before v0.4 is tagged. Current device acceptance refers to the maintainer's GoneMAD Music Player 4.2.0 setup unless stated otherwise. GMMP 4.2.1 is currently detected as untested and is not yet compatibility-accepted.
+GoneSmart 0.4.0 expands the project from Smart Auto-DJ into a broader native-looking GMMP extension and completes compatibility work for **GoneMAD Music Player 4.2.1**.
 
-Smart Auto-DJ remains the core feature. v0.4 expands GoneSmart into a broader set of native-looking GMMP quality-of-life extensions while keeping playback, playlist writing and Smart-Playlist evaluation as close to GMMP's original paths as possible.
+## Highlights
 
-## Compatibility hardening
+- **GMMP 4.2.1 compatibility:** all enabled 0.4.0 feature families were migrated to the remapped internals and device-accepted on the maintainer setup.
+- **Playlist folders:** browse nested physical playlist folders in the Playlists tab and Add-to-Playlist picker, create/delete folders, and move one or several playlists with native GMMP writers and verification.
+- **Smart-Playlist folders:** independent physical folder view for Smart Playlists while GMMP keeps ownership of real Smart-Playlist rows, parsing and actions.
+- **Multi-selection:** add songs to several ordinary playlists in one picker session and move multiple Smart Playlists where supported.
+- **Playlist Link:** Smart Playlists can reference ordinary playlists as live membership rules; disabling GoneSmart leaves the saved Smart Playlist openable and the extension rule inert.
+- **Flip queue / Play flipped:** reverse an existing queue or launch ordinary/Smart playlists in reverse order while preserving native playback ownership.
+- **Track Auto-DJ:** start a fresh Auto-DJ session from an individual track, keep that track as the seed and fill to GMMP's configured Initial Size.
+- **Status and compatibility UI:** one coherent Status card with independent GMMP, Xposed, GoneSmart and Compatibility health sections; untested GMMP versions are shown in amber.
 
-- The Home **Compatibility** row now keeps its normal text color but receives an amber/orange background when the installed GMMP version differs from the explicitly tested version, while the overall module/injection card continues to describe whether GoneSmart is injected.
-- GMMP 4.2.1 performs a broad internal R8 remap despite its small public changelog. Observed breaks include the 4.2.0 Auto-DJ selection method `kr.F1(int)`, Playlist picker lifecycle hooks, Playlist Link editor/rule bindings, Smart-Playlist model/folder hooks, queue/Flip observers and native playlist-Play entry points. Stable boundaries and unresolved mappings are tracked in `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`.
-- Smart-DJ hook failures are now isolated from independent GoneSmart features. A missing Auto-DJ mapping no longer prevents Playlist/Smart-Playlist UI hooks, Flip and other unrelated extensions from being installed.
-- Unknown replacement obfuscated methods are not hooked by signature guesswork. GoneSmart emits a bounded signature-only diagnostic for the affected class and fails closed for that specific boundary until the mapping is verified.
+## Smart Auto-DJ and playback hardening
 
+- Recommendation pools prewarm and top up in the background so rapid skipping does not wait unnecessarily for another provider round.
+- Successful pool fills are no longer throttled by the provider backoff intended for unproductive requests.
+- Track Auto-DJ uses GMMP's verified native queue/refill paths, preserves the clicked seed across large Smart-Playlist rebuilds and repairs the 4.2.1 queue-continuation edge case without guessing an obfuscated append allocator.
+- The first CURRENT exposed by Smart-Playlist playback is treated as provisional during the bounded native-Play settle window. If that transient row disappears, GoneSmart can retarget to the independently observed live CURRENT; outside that window it fails closed.
+- Queue Flip learns the current-position writer passively from natural GMMP playback and verifies it independently before controlled use.
 
-## Playlist and Smart-Playlist organization
+## Performance and cleanup
 
-### Navigation layout compatibility
-
-- Playlist and Smart-Playlist folder surfaces now identify GMMP's native list adapters (`zn3` / `ls4`) instead of depending only on the navigation-layout-specific RecyclerView IDs.
-- Add-to-Playlist picker identity now comes from its verified native picker session rather than a generic CoordinatorLayout-parent heuristic.
-- GoneSmart's Playlist/Smart-Playlist sparkle can follow GMMP's alternative top-tab and Bottom → Library navigation labels while excluding real Playlist/Smart-Playlist content rows.
-- Bottom → Library is now device-accepted for both Playlist and Smart-Playlist sparkles on the maintainer's GMMP 4.2.0 setup. Top Tabs remains the only targeted navigation-layout check.
-- A Tabs-only host mismatch previously caused the ordinary Playlist folder attach path to repeat an expensive native-model/index pass after every failed overlay-host attempt, producing severe main-thread stalls. Host resolution now happens before model walking, unsupported attached surfaces fail-stop instead of retrying on every layout, and the tab pager can host folder chrome only as a ViewPager decor child rather than another page.
-- Theme/color adaptation, Add-to-Playlist and the Now Playing Auto-DJ badge were already reported working across the navigation layouts and are not part of the remaining Tabs retest.
-
-## Playlist folders
-
-- Optional **UI → Playlists → Folders** view for nested physical playlist folders in both GMMP's Playlists tab and Add to Playlist picker.
-- Folder creation reuses GMMP's native playlist-creation shell on the verified 4.2.0 path, with only the folder-specific text/action redirected; a guarded native folder-creator fallback remains for unsupported mappings.
-- Physical folder deletion uses GMMP's original delete confirmation/worker. GoneSmart removes only already-verified empty directories after native playlist deletion completes.
-- One or several playlists can be moved with the shared native-styled destination browser and white-check FAB. The move transaction stages a recoverable copy, invokes GMMP's original delete and rescan/index paths and verifies the result.
-- **Group external playlists** and **Group root playlists** independently control the virtual **Other Locations** node.
-- The existing native Playlists drawer entry receives GoneSmart's lilac sparkle only while the feature is enabled.
-- Accepted on the maintainer's GMMP 4.2.0 device, including nested navigation, picker/root behavior, creation, deletion, multi-selection, Move, first-frame behavior, native dialog focus/accent and overscroll/animation parity.
-
-### Smart-Playlist folders
-
-- First-frame/return staging now keeps an already-correct physical-folder projection continuously visible: GMMP's redundant root-only Smart-list submit is bypassed once that projection is prepared, so returning from a nested Smart-Playlist no longer needs a hide/reveal blackout. First construction still masks any transient root dataset until the remembered projection has committed, and initial tab opening no longer exposes the former header-first layout shift.
-
-- Separate **UI → Smart-Playlists → Folders** option; independent from normal Playlist folders.
-- Real Smart-Playlist entries remain GMMP's original `ls4/vs4/ws4` rows. GoneSmart adds only the physical-folder header, breadcrumb and folder actions.
-- Shared folder chrome is reused through `PlaylistFolderUiKit` and `PlaylistFolderMoveChrome` rather than maintaining a second visual implementation.
-- **Group root Smart-Playlists** optionally moves root `.spl` entries into virtual **Other Locations**.
-- **Multi-selection** long-presses verified native Smart rows and moves several selected Smart-Playlists together. This is extension-owned on the tested runtime because GMMP's generic selection structures do not actually start the Smart-row ActionMode there.
-- Smart moves are blocked when another native Smart-Playlist links to a selected `.spl` by absolute path. Multi-item moves roll back earlier files if a later move fails.
-- Folder Delete reuses GMMP's native Smart delete label/icon and original delete workflow.
-- Accepted on the maintainer's GMMP 4.2.0 device through 30 September 2026, including scrolling/stretch, first-frame staging, drawer badge, folder creation and single/multi Move.
-
-## Playlist Link
-
-- New independent **UI → Smart-Playlists → Playlist Link** switch, enabled by default to preserve the behavior of existing development installs.
-- GMMP's original Smart-Playlist editor Link action offers **Smart-Playlist** or ordinary **Playlist** while the option is enabled.
-- Choosing Playlist creates a live membership rule backed by the selected ordinary playlist. Membership is read through GMMP's original playlist parser and compiled into GMMP's native Smart query predicates; no static track snapshot is stored.
-- Add/save/reopen/edit, normal Smart display/playback and dynamic source changes were verified on-device.
-- The V2 persisted representation keeps saved Smart-Playlists usable when GoneSmart is disabled on the tested setup. The new Bridge switch uses the same native fallback path: saved Bridge leaves remain visible but become boolean-neutral while the option is off, and resume live membership after re-enabling it.
-- Missing, empty or unreadable Bridge sources fail closed while GoneSmart is active.
-- The feature now installs its functional hooks in both debug and release build variants. Old reader/query/save exploration probes were removed from the shipping path.
-
-## Multi-selection
-
-- **UI → Playlists → Multi-selection**: long-press a destination in Add to Playlist, select more playlists and confirm once. GMMP's own native playlist-add operation performs each write.
-- **UI → Smart-Playlists → Multi-selection**: long-press native Smart rows and move several Smart-Playlists together when Smart folders are enabled.
-- The companion labels are intentionally parallel while their descriptions state the surface-specific action.
-- Selection colors follow GMMP's live theme and selection is keyed to verified playlist paths rather than recycled row identity.
-
-## Flip queue / Play flipped
-
-- Optional **UI → Playback & Queue → Flip queue / Play flipped**, disabled by default.
-- Reverse the entire current queue while the current queue entry, play/pause state and playback progress follow their new position.
-- Playlist and Smart-Playlist menus can play the native resolved list from last item to first.
-- Uses native queue/playlist APIs and verifies the resulting order; the queue path attempts rollback if its native update fails.
-- Device-validated on GMMP 4.2.0 with queue, ordinary-playlist and Smart-Playlist cases.
-
-## Track Auto-DJ
-
-- Native-looking per-track action directly after Play next on supported individual-song menus.
-- Starts the selected song as the seed of a fresh queue, enables Smart DJ when needed and lets GMMP Auto-DJ fill to its configured Initial Size.
-- Uses native queue-entry IDs and one native Room transaction to isolate the selected entry before refill, avoiding the older asynchronous clear-queue race.
-- Shows one verified localized confirmation; intermediate native startup Toast/Snackbar noise is suppressed only inside the bounded transition.
-- The companion consistently calls the feature **Track Auto-DJ**; injected GMMP text is composed from GMMP's localized resources.
-- Accepted on-device after the queue-isolation correction.
-
-## Companion UI and logs
-
-- UI settings are grouped into **PLAYLISTS**, **SMART-PLAYLISTS**, and **PLAYBACK & QUEUE**.
-- Both playlist groups now use the same concise **Multi-selection** and **Folders** labels, with truthful descriptions of the different actions.
-- Folder/grouping/multi-selection and Playlist Link setting changes generate high-level `[UI]` log events.
-- The Logs summary counts **Smart DJ**, **Playlists**, **Flip**, **Track Auto-DJ**, **UI**, and **System** separately; only legacy/unknown entries remain under **Other**.
-- Playlist Link readiness is recorded as a high-level System event without exposing playlist names or paths.
-- Internal Logcat keeps feature-specific tags; exploratory native-save/reader/surface probes that were only needed during reverse engineering have been removed.
-
-## Release hardening completed in this branch
-
-- Playlist Link moved out of its obsolete debug-PoC gate and now has a normal functional hook path.
-- Obsolete native playlist-save traces, Smart-folder loader diagnostics, move-discovery probes and playlist-surface discovery logging were removed.
-- Bridge path logging remains privacy-safe; file paths are reduced to extension/hash/length where diagnostic output is still needed.
-- Companion Help, README, architecture, logging and feature docs were synchronized with the accepted current behavior.
-- No broader compatibility claim is made: GMMP 4.2.0 remains the tested target and injected UI still depends on obfuscated internals.
+- Offscreen Playlist/Smart-Playlist ViewPager pages are effectively idle.
+- Player and navigation badges reuse verified native UI anchors instead of repeatedly rescanning the full view tree.
+- Accepted-version discovery probes retire their runtime cost as well as their verbose logs.
+- Play-flipped verification uses one bounded postcondition read instead of a polling loop.
+- Track Auto-DJ pre-action queue reads run off GMMP's main thread.
+- User-facing success/error popups now use readable text fallbacks instead of symbol-only checkmarks/warnings; native GMMP translations are still preferred where available.
 
 ## Compatibility
 
-- Tested target: **GoneMAD Music Player 4.2.0**
-- Android: **8.0+**
-- libxposed API: **102**
-- Vector v2.2+ remains the recommended rooted path.
-- LSPatch 1.2 remains experimental / less tested.
-- Alternative GMMP versions, custom playlist roots and untested skins/languages remain explicit compatibility work.
+- **GoneMAD Music Player:** 4.2.1 is the tested target for this release.
+- **Android:** 8.0+ (`minSdk 26`).
+- **Hooking API:** libxposed API 102.
+- **Rooted setup:** JingMatrix Vector v2.2+ is the recommended path.
+- **LSPatch v1.2:** remains experimental / less tested.
 
-## Before the actual v0.4 release
+GoneSmart hooks obfuscated GMMP internals. Future GMMP versions are intentionally marked untested until the compatibility workflow in `docs/GMMP_COMPATIBILITY_PLAYBOOK.md` has been completed.
 
-Continue normal feature development on the current branch. Before tagging v0.4, run the complete CI/release checklist, repeat device smoke tests for any subsequently touched injected surface, finalize these notes and publish a signed build through the documented release workflow.
+## Installation
+
+Download `GoneSmart-v0.4.0.apk`, install it, enable GoneSmart for `gonemad.gmmp` in Vector/LSPosed, force-stop GMMP and reopen it. See the repository README and `docs/INSTALLATION.md` for the full setup and troubleshooting guide.

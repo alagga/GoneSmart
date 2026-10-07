@@ -48,9 +48,9 @@ class NativeGmmpUiTextTest {
         )
     }
 
-    @Test fun symbolFallbackDoesNotLeakAnotherLanguage() {
-        assertEquals("⚠", NativeGmmpUiText.errorLabel(null, null))
-        assertEquals("⚠ · DJ automatique",
+    @Test fun readableFallbackIsUsedWhenNativeErrorTextIsMissing() {
+        assertEquals("Error", NativeGmmpUiText.errorLabel(null, null))
+        assertEquals("Error · DJ automatique",
             NativeGmmpUiText.errorLabel(null, "DJ automatique"))
         assertEquals("Erreur", NativeGmmpUiText.errorLabel("Erreur", " "))
     }
@@ -60,9 +60,9 @@ class NativeGmmpUiTextTest {
             "Playlist gespeichert",
             NativeGmmpUiText.playlistMoveSuccessLabel("Playlist gespeichert")
         )
-        assertEquals("✓", NativeGmmpUiText.playlistMoveSuccessLabel(null))
+        assertEquals("Playlist moved", NativeGmmpUiText.playlistMoveSuccessLabel(null))
         assertEquals(
-            "✓",
+            "Playlist moved",
             NativeGmmpUiText.playlistMoveSuccessLabel("Saved %s")
         )
     }

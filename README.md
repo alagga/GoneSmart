@@ -176,7 +176,7 @@ A more detailed component overview lives in [docs/ARCHITECTURE.md](docs/ARCHITEC
 
 | | |
 |---|---|
-| **Latest tested GMMP version** | `4.2.0` |
+| **Latest tested GMMP version** | `4.2.1` |
 | **Android** | Android 8.0+ (`minSdk 26`) |
 | **Module API** | libxposed API `102` |
 | **Rooted framework** | [JingMatrix Vector](https://github.com/JingMatrix/Vector) `v2.2+` recommended |
@@ -237,7 +237,7 @@ GoneSmart sparkle in the Queue, Playlist and Smart Playlist menus.
 - **Play Smart Playlist flipped:** Apply the same reversal *after* GMMP
   evaluates the Smart Playlist's current ordered track list.
 
-All three native operations were exercised on GMMP **4.2.0** on an actual
+All three native operations were exercised on GMMP **4.2.1** on an actual
 device (31-track queue, 17-track playlist, and Smart Playlists of 31 and
 140 tracks); the queue position, first/last track identities, and native
 verification logs matched the expected order. Other GMMP versions and

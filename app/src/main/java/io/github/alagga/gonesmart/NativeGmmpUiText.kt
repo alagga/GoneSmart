@@ -5,8 +5,8 @@ import android.content.Context
 /**
  * Text displayed INSIDE GMMP must come from its live host Resources.
  * English-only explanatory details belong in GoneSmart's own Logs, not
- * inside a foreign-language GMMP Toast. The installed GMMP 4.2.0 has
- * a native `error` resource; the symbol-only fallback is locale-neutral.
+ * inside a foreign-language GMMP Toast. The tested GMMP 4.2.1 has
+ * a native `error` resource; readable English is the final fallback.
  */
 internal object NativeGmmpUiText {
     fun string(context: Context, resourceName: String): String? {
@@ -19,7 +19,7 @@ internal object NativeGmmpUiText {
     }
 
     fun errorLabel(nativeError: String?, nativeAction: String?): String {
-        val error = nativeError?.takeUnless(String::isBlank) ?: "⚠"
+        val error = nativeError?.takeUnless(String::isBlank) ?: "Error"
         val action = nativeAction?.takeUnless(String::isBlank)
         return if (action == null) error else "$error · $action"
     }
@@ -173,7 +173,7 @@ internal object NativeGmmpUiText {
      */
     internal fun playlistMoveSuccessLabel(nativePlaylistSaved: String?): String {
         val native = nativePlaylistSaved?.takeUnless(String::isBlank)
-        return if (native == null || native.contains("%")) "✓" else native
+        return if (native == null || native.contains("%")) "Playlist moved" else native
     }
 
     fun playlistMoveSuccess(context: Context): String =

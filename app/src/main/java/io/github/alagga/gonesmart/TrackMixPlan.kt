@@ -38,7 +38,7 @@ internal object TrackMixPlan {
         return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
     }
 
-    /** Original GMMP `started` when present; otherwise icon-only status. */
+    /** Prefer GMMP `started`; otherwise use a readable GoneSmart fallback. */
     @Suppress("UNUSED_PARAMETER")
     fun localizedStartedMessage(
         language: String,
@@ -46,7 +46,7 @@ internal object TrackMixPlan {
         gmmpStarted: String?
     ): String {
         val native = gmmpStarted?.trim()?.takeIf(String::isNotBlank)
-        return if (native == null) "$menuLabel ✓" else "$menuLabel $native"
+        return "$menuLabel ${native ?: "started"}"
     }
 
     data class NativeQueueEntry(
