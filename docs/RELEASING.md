@@ -26,6 +26,12 @@ The release workflow verifies secrets, regenerates the GMMP forum copy, restores
 
 After publishing, copy `docs/forum/LATEST_RELEASE_REPLY.bbcode` into the existing GMMP forum thread and update its first post from `docs/forum/THREAD_START.bbcode` whenever the overview or compatibility information changed. The suggested subject is in `docs/forum/THREAD_SUBJECT.txt`.
 
+### Patch releases after a major feature release
+
+Use a new patch version instead of replacing an already published APK under the old version number. This preserves a clean Android update path, release history and reproducible artifacts.
+
+When a small patch becomes GitHub's **Latest Release** immediately after a large feature release, start the patch notes with a prominent sentence that it is a small follow-up and link back to the preceding major release. Briefly name the major release's headline features so visitors landing on the Latest Release page do not mistake the small patch for the project's full feature scope.
+
 ## Prereleases
 
 Use a version such as `0.5.0-beta1`, update release notes and dispatch **Release APK** with **prerelease** enabled.
