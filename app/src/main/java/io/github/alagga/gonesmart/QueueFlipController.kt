@@ -456,66 +456,70 @@ internal class QueueFlipController {
         }
         if (expectedIds.size != expectedTracks.size) return
         diagnosticsExecutor.execute {
-            repeat(12) { attempt ->
-                Thread.sleep(250)
-                val cursor = nativeAutoDj?.get()?.let {
-                    GmmpQueueReader().read(it)
+            // The 4.2.1 native interception is device-accepted. Verification
+            // is therefore a bounded postcondition check, not a polling loop:
+            // repeated GmmpQueueReader reads can themselves produce the same
+            // queue SQL storm that compatibility discovery is meant to avoid.
+            Thread.sleep(300)
+            val cursor = nativeAutoDj?.get()?.let {
+                GmmpQueueReader().read(it)
+            }
+            if (cursor != null) {
+                val ordered = cursor.items.sortedBy { it.queuePosition }
+                val ids = ordered.map { it.track.id }
+                val current = cursor.items.singleOrNull {
+                    it.state == QueueItemState.CURRENT
                 }
-                if (cursor != null) {
-                    val ordered = cursor.items.sortedBy { it.queuePosition }
-                    val ids = ordered.map { it.track.id }
-                    val current = cursor.items.singleOrNull {
-                        it.state == QueueItemState.CURRENT
-                    }
-                    if (ids.size >= expectedIds.size &&
-                        ids.take(expectedIds.size) == expectedIds &&
-                        current?.queueEntryId == ordered.firstOrNull()?.queueEntryId
-                    ) {
-                        Log.i(
-                            TAG,
-                            "FLIP PLAY VERIFIED | kind=$sourceKind | source=cursor | " +
-                                "expected=${expectedIds.size} | queueSize=${ids.size} | " +
-                                "currentPosition=${current?.queuePosition ?: -1} | " +
-                                "checks=${attempt + 1}"
-                        )
-                        eventReporter.reportEvent(
-                            GoneSmartRuntimeContract.CATEGORY_FLIP,
-                            "Playing $sourceKind in reverse: ${expectedIds.size} tracks."
-                        )
-                        return@execute
-                    }
-                }
-                val queue = nativeQueue?.get()
-                val legacy = queue?.let {
-                    runCatching {
-                        val dao = field(it, "r")!!
-                        val raw = dao.javaClass.getMethod("H1")
-                            .invoke(dao) as List<*>
-                        val ids = raw.filterNotNull().sortedBy { row ->
-                            (field(row, "a") as Number).toInt()
-                        }.map { row ->
-                            (field(row, "b") as Number).toLong()
-                        }
-                        val position = it.javaClass.getDeclaredMethod("D")
-                            .apply { isAccessible = true }.invoke(it)
-                        ids.size >= expectedIds.size &&
-                            ids.take(expectedIds.size) == expectedIds &&
-                            position == 1
-                    }.getOrDefault(false)
-                } == true
-                if (legacy) {
+                if (ids.size >= expectedIds.size &&
+                    ids.take(expectedIds.size) == expectedIds &&
+                    current?.queueEntryId == ordered.firstOrNull()?.queueEntryId
+                ) {
                     Log.i(
                         TAG,
-                        "FLIP PLAY VERIFIED | kind=$sourceKind | source=legacy | " +
-                            "checks=${attempt + 1}"
+                        "FLIP PLAY VERIFIED | kind=$sourceKind | source=cursor | " +
+                            "expected=${expectedIds.size} | queueSize=${ids.size} | " +
+                            "currentPosition=${current?.queuePosition ?: -1} | checks=1"
+                    )
+                    eventReporter.reportEvent(
+                        GoneSmartRuntimeContract.CATEGORY_FLIP,
+                        "Playing $sourceKind in reverse: ${expectedIds.size} tracks."
                     )
                     return@execute
                 }
             }
-            Log.e(
+
+            // Retain one legacy structural read only as a compatibility
+            // fallback. Never retry it in a timer loop.
+            val queue = nativeQueue?.get()
+            val legacy = queue?.let {
+                runCatching {
+                    val dao = field(it, "r")!!
+                    val raw = dao.javaClass.getMethod("H1")
+                        .invoke(dao) as List<*>
+                    val ids = raw.filterNotNull().sortedBy { row ->
+                        (field(row, "a") as Number).toInt()
+                    }.map { row ->
+                        (field(row, "b") as Number).toLong()
+                    }
+                    val position = it.javaClass.getDeclaredMethod("D")
+                        .apply { isAccessible = true }.invoke(it)
+                    ids.size >= expectedIds.size &&
+                        ids.take(expectedIds.size) == expectedIds &&
+                        position == 1
+                }.getOrDefault(false)
+            } == true
+            if (legacy) {
+                Log.i(
+                    TAG,
+                    "FLIP PLAY VERIFIED | kind=$sourceKind | source=legacy | checks=1"
+                )
+                return@execute
+            }
+
+            Log.w(
                 TAG,
-                "FLIP PLAY VERIFY | $sourceKind playback did not match reversed " +
-                    "playlist after 3 seconds"
+                "FLIP PLAY VERIFY | one bounded postcondition check was inconclusive | " +
+                    "kind=$sourceKind | expected=${expectedIds.size}"
             )
         }
     }

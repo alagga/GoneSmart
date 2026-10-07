@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.widget.TextView
 import java.lang.ref.WeakReference
+import java.lang.reflect.Method
 import java.util.WeakHashMap
 
 /**
@@ -40,7 +41,11 @@ internal class PlaylistNavigationBadgeController {
     private var activityRef: WeakReference<Activity>? = null
     private var decorRef: WeakReference<View>? = null
     private var refreshPending = false
+    private var forceRefreshPending = false
     private var lastRefreshElapsed = Long.MIN_VALUE
+    private var cachedPlaylistTargets = emptyList<WeakReference<TextView>>()
+    private var cachedSmartTargets = emptyList<WeakReference<TextView>>()
+    private val adapterGetterCache = mutableMapOf<Class<*>, Method?>()
 
     private val globalLayoutListener =
         ViewTreeObserver.OnGlobalLayoutListener {
@@ -80,6 +85,15 @@ internal class PlaylistNavigationBadgeController {
     private fun scheduleRefresh(force: Boolean = false) {
         val activity = activityRef?.get() ?: return
         if (activity.isFinishing || activity.isDestroyed) return
+
+        // With both badges disabled there is nothing to discover once any
+        // previous decoration has been restored. Keep the listener installed
+        // for future option changes, but make its steady-state callback free.
+        if (!playlistEnabled && !smartEnabled &&
+            playlistOriginals.isEmpty() && smartOriginals.isEmpty()
+        ) return
+
+        forceRefreshPending = forceRefreshPending || force
         if (refreshPending) return
 
         val now = SystemClock.elapsedRealtime()
@@ -92,7 +106,13 @@ internal class PlaylistNavigationBadgeController {
         main.postDelayed({
             refreshPending = false
             lastRefreshElapsed = SystemClock.elapsedRealtime()
-            activityRef?.get()?.let(::refresh)
+            val forceFull = forceRefreshPending
+            forceRefreshPending = false
+            val current = activityRef?.get() ?: return@postDelayed
+            if (!forceFull && refreshCachedTargets(current)) {
+                return@postDelayed
+            }
+            refresh(current)
         }, delay)
     }
 
@@ -161,6 +181,9 @@ internal class PlaylistNavigationBadgeController {
             if (hasNavigationPair) addAll(smartCandidates)
         }
 
+        cachedPlaylistTargets = playlistTargets.map(::WeakReference)
+        cachedSmartTargets = smartTargets.map(::WeakReference)
+
         restoreMissing(playlistOriginals, playlistTargets)
         restoreMissing(smartOriginals, smartTargets)
         playlistTargets.forEach {
@@ -180,6 +203,62 @@ internal class PlaylistNavigationBadgeController {
                 reportOnce("library", libraryPlaylist, librarySmart)
             }
         }
+    }
+
+    private fun refreshCachedTargets(activity: Activity): Boolean {
+        val playlists = cachedPlaylistTargets.mapNotNull(WeakReference<TextView>::get)
+        val smart = cachedSmartTargets.mapNotNull(WeakReference<TextView>::get)
+        if (playlists.isEmpty() && smart.isEmpty()) return false
+
+        val playlistNames = listOfNotNull(
+            NativeGmmpUiText.string(activity, "playlists"),
+            NativeGmmpUiText.string(activity, "playlist")
+        ).map(String::trim)
+        val smartNames = listOfNotNull(
+            NativeGmmpUiText.string(activity, "smart"),
+            NativeGmmpUiText.string(activity, "smart_playlist"),
+            NativeGmmpUiText.string(activity, "smart_playlists"),
+            NativeGmmpUiText.smartPlaylist(activity)
+        ).map(String::trim).distinct()
+
+        if (playlists.any { !isStillTarget(it, playlistNames, playlistOriginals) } ||
+            smart.any { !isStillTarget(it, smartNames, smartOriginals) }
+        ) return false
+
+        playlists.forEach {
+            updateSparkle(it, playlistEnabled, playlistOriginals)
+        }
+        smart.forEach {
+            updateSparkle(it, smartEnabled, smartOriginals)
+        }
+        return true
+    }
+
+    private fun isStillTarget(
+        view: TextView,
+        localizedNames: List<String>,
+        originals: WeakHashMap<TextView, CharSequence>
+    ): Boolean {
+        if (!isVisible(view) || insideClassicDrawer(view) ||
+            !hasClickableAncestor(view)
+        ) return false
+
+        val current = view.text ?: return false
+        val decoratedByUs = current is Spanned &&
+            current.getSpans(
+                0,
+                current.length,
+                BaselineCenteredSparkleSpan::class.java
+            ).isNotEmpty()
+        val nativeTitle = if (decoratedByUs) {
+            originals[view] ?: current
+        } else {
+            current
+        }
+        return PlaylistDrawerBadgePolicy.matchesExactLocalizedTitle(
+            localizedNames,
+            nativeTitle.toString()
+        )
     }
 
     private fun reportOnce(
@@ -271,10 +350,13 @@ internal class PlaylistNavigationBadgeController {
             // Navigation labels never live inside the actual Playlist/Smart
             // content adapters. Prune those subtrees once instead of doing
             // reflective getAdapter() walks for every bound row TextView.
-            val adapterName = runCatching {
+            val adapterGetter = adapterGetterCache.getOrPut(view.javaClass) {
                 view.javaClass.methods.firstOrNull {
                     it.name == "getAdapter" && it.parameterCount == 0
-                }?.invoke(view)?.javaClass?.name
+                }
+            }
+            val adapterName = runCatching {
+                adapterGetter?.invoke(view)?.javaClass?.name
             }.getOrNull()
             if (adapterName == "zn3" || adapterName == "ls4") return
 
