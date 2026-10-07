@@ -132,7 +132,10 @@ Accepted actions may retain one bounded postcondition check, not discovery-era p
 - `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: version ledger and future-update procedure.
 - `docs/GMMP_421_COMPLETION.md`: concise final 4.2.1 / 0.4.0 acceptance state.
 - `docs/NATIVE_GMMP_AUDIT.md` and dated `GMMP_421_*` files: historical reverse-engineering evidence.
+- `docs/ROADMAP.md`: public planned direction for upcoming releases; keep it concise and user-facing.
 - Feature docs: detailed user/developer behavior.
+
+Public release notes, the README and roadmap should explain **what a feature does and what the user gains**. Keep implementation detail at a high level (for example, "more dynamic hooks improve robustness for future GMMP versions"). Obfuscated names, resolver internals, queue-writer mechanics and similar reverse-engineering detail belong in the compatibility/audit/development docs, not the GitHub Release body unless required to explain a limitation.
 
 Keep chronology out of `AGENTS.md`; preserve it in the audit/evidence docs.
 
@@ -146,8 +149,9 @@ A release candidate is complete only when:
 4. tests cover durable resolver/policy behavior;
 5. `AGENTS.md`, the compatibility playbook, completion matrix, README and release notes agree;
 6. release-facing docs describe the accepted/tested version and shipping state rather than stale development-branch or pre-acceptance wording;
-7. no enabled unsafe guessed writer remains;
-8. accepted-version diagnostics impose no obvious persistent hot-path cost;
-9. the merged `main` head is green before tagging/publishing.
+7. public release notes prioritize features, benefits and user-visible improvements over implementation internals;
+8. no enabled unsafe guessed writer remains;
+9. accepted-version diagnostics impose no obvious persistent hot-path cost;
+10. the merged `main` head is green before tagging/publishing.
 
 After 0.4.0, new features should start on a normal named feature branch from the chosen clean `main` integration point.
