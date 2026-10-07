@@ -73,30 +73,31 @@ For Smart Auto-DJ, GoneSmart currently combines recommendations from [b]ListenBr
 [*][b]Recommended rooted setup:[/b] JingMatrix Vector 2.2+
 [/list]
 
-LSPatch is also possible, but is currently less extensively tested.
+LSPatch v1.2 is documented as a possible no-root setup, but it has [b]not been tested by me[/b] and should be treated as experimental.
 
 
-[size=4][b]Important note about GMMP updates[/b][/size]
+[size=4][b]Important[/b][/size]
 
-GoneSmart integrates with GMMP internals. A future GMMP update can therefore temporarily break individual GoneSmart features even though many hooks and lookups are designed to be more dynamic across versions.
+GoneSmart is an [b]independent project[/b] and is not affiliated with GoneMAD Software.
 
-[b]I recommend disabling automatic Play Store updates for GoneMAD Music Player while using GoneSmart.[/b]
-
-On GMMP's Play Store page, open the menu in the top-right corner and disable [i]Enable auto update[/i] / [i]Auto-update[/i] (the wording can vary slightly between Play Store versions).
-
-Before manually updating GMMP, check this thread or the GoneSmart GitHub page to see whether the new GMMP version has already been tested. GoneSmart itself also warns again when it detects a different GMMP version.
+If you run into something that looks like a GMMP bug, please disable GoneSmart first and check whether the problem can still be reproduced with normal GMMP before reporting it to the GMMP developer. If it only happens with GoneSmart enabled, please report it here or on the GoneSmart GitHub instead.
 
 
-[size=4][b]Planned for 0.5.0[/b][/size]
+[size=4][b]GMMP updates[/b][/size]
 
-Current ideas for the next larger update include:
+GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. I recommend disabling automatic Play Store updates for GMMP and checking the tested GMMP version here or on GitHub before updating manually. GoneSmart also warns when it detects a different GMMP version.
+
+
+[size=4][b]Ideas for 0.5.0[/b][/size]
+
+Current directions for the next larger update include:
 
 [list]
-[*][b]More recommendation providers[/b] – additional sources for music recommendations, with Spotify, YouTube and YouTube Music among the planned options.
+[*][b]More recommendation providers[/b] – additional recommendation sources are being considered. Services such as Spotify, YouTube or YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
 [*][b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
 [/list]
 
-These are planned features and may change during development.
+These ideas may change during development.
 
 
 [size=4][b]Feedback & bug reports[/b][/size]
