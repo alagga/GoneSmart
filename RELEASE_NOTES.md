@@ -1,51 +1,36 @@
-# GoneSmart v0.4.0
+# GoneSmart v0.4.1
 
-GoneSmart 0.4.0 is a major feature and compatibility update for **GoneMAD Music Player 4.2.1**. It adds several new playlist and playback tools, improves Smart Auto-DJ responsiveness, and makes GoneSmart more robust for future GMMP updates.
+**Small follow-up to v0.4.0.** GoneSmart 0.4.0 remains the major feature release: it introduced Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link, Queue Flip / Play flipped, Track Auto-DJ, the redesigned status screen, and the larger GMMP 4.2.1 compatibility/performance update. See the [v0.4.0 release](https://github.com/alagga/GoneSmart/releases/tag/v0.4.0) for the full feature notes.
 
-## What's new
+GoneSmart 0.4.1 is a small compatibility and documentation follow-up. It does not replace the 0.4.0 feature set.
 
-- **Playlist folders:** browse your playlists in folders, create and delete folders, and move one or several playlists between them.
-- **Smart-Playlist folders:** organize Smart Playlists in folders as well, including moving multiple Smart Playlists at once.
-- **Multi-selection:** add tracks to several playlists in one step and use multi-selection in supported playlist management views.
-- **Playlist Link:** use a normal playlist as a live source inside a Smart Playlist. Changes to the source playlist can be reflected the next time the Smart Playlist is evaluated.
-- **Flip queue / Play flipped:** reverse the current queue, or start a normal or Smart Playlist from the end and play it backwards through its order.
-- **Track Auto-DJ:** start a fresh Auto-DJ session directly from an individual song. The selected song becomes the starting point for the new session.
-- **Improved status screen:** GMMP, Xposed, GoneSmart and version compatibility are shown separately so problems are easier to identify.
+## What's new in 0.4.1
 
-## Smart Auto-DJ improvements
+- **GMMP update warning:** the companion app now warns about automatic GMMP Play Store updates. The warning can be dismissed for the currently installed GMMP version and appears again when a different GMMP version is detected.
+- **Compatibility help:** the companion app keeps the GMMP update/compatibility advice available in Help and can open GMMP's Play Store page directly.
+- **Clearer support guidance:** public documentation now makes the project boundary and GMMP bug-reporting procedure explicit.
 
-- Recommendations are prepared earlier in the background, reducing delays when skipping through tracks quickly.
-- Track Auto-DJ works more reliably with normal playlists and large Smart Playlists.
-- Auto-DJ continuation and queue handling were hardened for GMMP 4.2.1.
-- Several edge cases around rapidly changing playback and Smart-Playlist loading were fixed.
-
-## Performance and usability
-
-- Smoother navigation between Playlist and Smart-Playlist views.
-- Less unnecessary background work when views are not visible.
-- Faster and more responsive playback-related actions.
-- Clearer confirmation and error messages instead of symbol-only popups.
-- Numerous smaller UI, stability and cleanup improvements.
-
-## Compatibility
+## Important compatibility note
 
 - **Tested GMMP version:** 4.2.1
 - **Android:** 8.0+
 - **Hooking API:** libxposed API 102
 - **Recommended rooted setup:** JingMatrix Vector v2.2+
-- **LSPatch v1.2:** still considered experimental / less tested
+- **LSPatch v1.2:** documented as an experimental no-root path, but **not tested by the GoneSmart maintainer**
 
-GoneSmart still depends on GMMP internals, so a future GMMP update can require compatibility work. For 0.4.0, many hooks and lookups were made more dynamic and less dependent on fixed internal names to improve robustness across future versions.
+GoneSmart is an independent project and is not affiliated with GoneMAD Software. Before reporting a suspected GMMP bug to the GMMP developer, disable GoneSmart and verify that the problem is still reproducible without GoneSmart. Problems that only occur with GoneSmart enabled should be reported to GoneSmart instead.
 
-## Planned for 0.5.0
+## GMMP updates
 
-The following areas are currently planned for the next major update:
+GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart's tested GMMP version before updating manually.
 
-- **More recommendation providers:** support additional sources for music recommendations, with Spotify, YouTube and YouTube Music among the planned options.
-- **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers or other audio device is connected.
+## Looking toward 0.5.0
 
-These are planned features and may change during development.
+- **More recommendation providers:** additional recommendation sources are being explored. Services such as Spotify, YouTube and YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
+- **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
+
+These are current directions and may change during development.
 
 ## Installation
 
-Download `GoneSmart-v0.4.0.apk`, install it, enable GoneSmart for `gonemad.gmmp` in Vector/LSPosed, force-stop GMMP and reopen it. See the repository README and `docs/INSTALLATION.md` for the full setup and troubleshooting guide.
+Download `GoneSmart-v0.4.1.apk`, install it over the existing GoneSmart installation, then force-stop GMMP and reopen it. Existing GoneSmart settings are preserved. See the repository README and `docs/INSTALLATION.md` for the full setup and troubleshooting guide.

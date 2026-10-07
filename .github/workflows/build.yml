@@ -18,6 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify generated forum copy
+        run: python3 scripts/generate_forum_posts.py --check
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:

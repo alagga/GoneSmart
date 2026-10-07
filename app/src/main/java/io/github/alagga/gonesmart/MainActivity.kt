@@ -17,6 +17,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -38,6 +39,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val GMMP_PACKAGE = "gonemad.gmmp"
+        private const val COMPATIBILITY_PREFS = "gonesmart_compatibility"
+        private const val KEY_ACKNOWLEDGED_GMMP_UPDATE_WARNING_VERSIONS = "acknowledged_gmmp_update_warning_versions"
 
         private const val COLOR_BG = 0xFF151419.toInt()
         private const val COLOR_SURFACE = 0xFF1E1D23.toInt()
@@ -117,6 +120,9 @@ class MainActivity : AppCompatActivity() {
         showTab(Tab.HOME)
         refreshSettingsSwitches()
         refreshStatus()
+        if (savedInstanceState == null) {
+            showGmmpUpdateWarningIfNeeded()
+        }
         checkForUpdates()
     }
 
@@ -658,6 +664,13 @@ class MainActivity : AppCompatActivity() {
         ))
         container.addView(verticalGap(12))
         container.addView(infoCard(
+            title = "Automatic GMMP updates",
+            body = "A new GMMP version can change internal components and temporarily break GoneSmart features. We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart compatibility before updating. The startup reminder is remembered per GMMP version and appears again after the installed GMMP version changes."
+        ))
+        container.addView(verticalGap(10))
+        container.addView(outlineButton("Open GMMP in Play Store") { openGmmpPlayStore() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
             title = "Xposed / LSPatch",
             body = "The rooted setup targets the modern libxposed API 102 implementation in Vector 2.2 or newer. LSPatch 1.2 is documented as an experimental no-root path, but it has not yet been validated as thoroughly as the rooted Vector setup."
         ))
@@ -990,6 +1003,68 @@ class MainActivity : AppCompatActivity() {
             "No events yet. Activity will appear here as you use GoneSmart."
         } else {
             lines.joinToString("\n")
+        }
+    }
+
+    private fun showGmmpUpdateWarningIfNeeded() {
+        val gmmpVersion = getGmmpVersion() ?: return
+        val preferences = getSharedPreferences(COMPATIBILITY_PREFS, Context.MODE_PRIVATE)
+        val acknowledgedVersions =
+            preferences.getStringSet(KEY_ACKNOWLEDGED_GMMP_UPDATE_WARNING_VERSIONS, emptySet())
+                ?.toSet()
+                .orEmpty()
+        if (!GmmpUpdateWarningPolicy.shouldShow(gmmpVersion, acknowledgedVersions)) return
+
+        val compatibilityState = GmmpCompatibilityPolicy.state(gmmpVersion)
+        val message = when (compatibilityState) {
+            GmmpCompatibilityPolicy.State.TESTED ->
+                "GoneSmart is tested with GMMP $gmmpVersion. Future GMMP updates can change internal components and temporarily break GoneSmart features.\n\nWe recommend disabling automatic Play Store updates for GMMP and checking GoneSmart compatibility before updating."
+            GmmpCompatibilityPolicy.State.UNTESTED ->
+                "Installed GMMP $gmmpVersion has not been verified with GoneSmart yet. New GMMP versions can temporarily break GoneSmart features.\n\nWe recommend disabling automatic Play Store updates for GMMP and checking the GoneSmart compatibility status before updating again."
+            GmmpCompatibilityPolicy.State.UNKNOWN -> return
+        }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), 0, dp(24), dp(6))
+        }
+        content.addView(textView(message, 14f, COLOR_TEXT_SECONDARY))
+        content.addView(verticalGap(14))
+        val doNotShowAgain = CheckBox(this).apply {
+            text = "Don't show again for GMMP $gmmpVersion"
+            setTextColor(COLOR_TEXT)
+            textSize = 14f
+        }
+        content.addView(doNotShowAgain)
+
+        fun acknowledgeIfRequested() {
+            if (!doNotShowAgain.isChecked) return
+            val updated = GmmpUpdateWarningPolicy.withAcknowledged(gmmpVersion, acknowledgedVersions)
+            preferences.edit()
+                .putStringSet(KEY_ACKNOWLEDGED_GMMP_UPDATE_WARNING_VERSIONS, updated)
+                .apply()
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("GMMP automatic updates")
+            .setView(content)
+            .setPositiveButton("Got it") { _, _ -> acknowledgeIfRequested() }
+            .setNeutralButton("Open Play Store") { _, _ ->
+                acknowledgeIfRequested()
+                openGmmpPlayStore()
+            }
+            .show()
+    }
+
+    private fun openGmmpPlayStore() {
+        val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$GMMP_PACKAGE")).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            setPackage("com.android.vending")
+        }
+        try {
+            startActivity(marketIntent)
+        } catch (_: Throwable) {
+            openUrl("https://play.google.com/store/apps/details?id=$GMMP_PACKAGE")
         }
     }
 

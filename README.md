@@ -41,6 +41,9 @@ The matching system is especially tuned for electronic-music libraries, where Or
 > [!NOTE]
 > GoneSmart is an independent project. It is not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.
 
+> [!IMPORTANT]
+> If something looks like a GMMP bug, disable GoneSmart first and verify that the issue is still reproducible with normal GMMP before reporting it to the GMMP developer. Problems that only occur with GoneSmart enabled should be reported to GoneSmart instead.
+
 ---
 
 ## Features
@@ -229,10 +232,13 @@ Most normal setting changes apply live. A GMMP restart is mainly useful after mo
 | **Android** | Android 8.0+ (`minSdk 26`) |
 | **Module API** | libxposed API `102` |
 | **Rooted framework** | [JingMatrix Vector](https://github.com/JingMatrix/Vector) `v2.2+` recommended |
-| **No-root path** | [JingMatrix LSPatch](https://github.com/JingMatrix/LSPatch) `v1.2` — experimental / less tested |
+| **No-root path** | [JingMatrix LSPatch](https://github.com/JingMatrix/LSPatch) `v1.2` — experimental / **not tested by the maintainer** |
 | **Target package** | `gonemad.gmmp` |
 
 GoneSmart depends on GMMP internals, so future GMMP updates can require compatibility work. Many hooks and lookups are intentionally dynamic to improve robustness across future versions, but versions other than the tested one should still be treated as unverified until checked.
+
+> [!IMPORTANT]
+> We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart's tested GMMP version before updating GMMP manually. GoneSmart 0.4.1 also warns when it detects a GMMP version that has not already been acknowledged in the companion app.
 
 Developer-facing compatibility details live in [docs/GMMP_COMPATIBILITY_PLAYBOOK.md](docs/GMMP_COMPATIBILITY_PLAYBOOK.md).
 
@@ -254,10 +260,10 @@ Install the latest GoneSmart APK from [**Releases**](https://github.com/alagga/G
 6. Open the GoneSmart companion app and confirm that the module/target status is active.
 7. Enable GMMP's normal **Auto-DJ** mode if you want to use Smart Auto-DJ.
 
-### No root — LSPatch (experimental)
+### No root — LSPatch (experimental / untested)
 
 > [!WARNING]
-> LSPatch support is an experimental path and is not tested as thoroughly as the recommended rooted Vector setup. Patching changes the target APK signature and can affect app updates, licensing or integrity checks.
+> LSPatch is documented as a possible no-root setup, but it has **not been tested by the GoneSmart maintainer**. Patching changes the target APK signature and can affect app updates, licensing or integrity checks.
 
 1. Install GoneSmart.
 2. Install [JingMatrix LSPatch v1.2](https://github.com/JingMatrix/LSPatch/releases/tag/v1.2).
@@ -293,12 +299,12 @@ More detail: [docs/FAQ.md](docs/FAQ.md).
 
 ## Roadmap
 
-### Planned for 0.5.0
+### Ideas for 0.5.0
 
-- **More recommendation providers:** expand Smart Auto-DJ with additional recommendation sources, with Spotify, YouTube and YouTube Music among the planned options.
+- **More recommendation providers:** additional recommendation sources are being explored. Services such as Spotify, YouTube and YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
 - **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
 
-These items are planned and may change during development. See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
+These are current directions and may change during development. See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
 
 ---
 
@@ -351,6 +357,7 @@ Bug reports, reproducible compatibility findings and focused pull requests are w
 
 - [Open a bug report or feature request](https://github.com/alagga/GoneSmart/issues/new/choose).
 - When reporting compatibility problems, include exact GMMP / Vector / LSPatch versions and relevant GoneSmart logs.
+- Before reporting a suspected GMMP bug upstream, disable GoneSmart and verify that the problem is reproducible without it.
 - Do not include API keys, keystores, account data or other secrets in issues or logs.
 
 ---
