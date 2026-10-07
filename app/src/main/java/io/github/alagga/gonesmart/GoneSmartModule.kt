@@ -78,6 +78,13 @@ class GoneSmartModule : XposedModule() {
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
 
+        // Track Auto-DJ must never strand playback on the isolated seed while
+        // the network recommendation pipeline takes many seconds. Give the
+        // smart pool a short head start, then let native GMMP fill Initial
+        // Size immediately while the same pool preparation keeps running.
+        private const val TRACK_MIX_INITIAL_SMART_WAIT_MS =
+            1_500L
+
         private const val RECENT_DUPLICATE_HISTORY_LIMIT =
             8
 
@@ -4397,7 +4404,7 @@ class GoneSmartModule : XposedModule() {
 
         startupExecutor.execute {
             val startedAt = SystemClock.elapsedRealtime()
-            val queueContext = queueReader.read(autoDjInstance) ?: return@execute
+            val queueContext = readQueueContext(autoDjInstance) ?: return@execute
             val session = queueSessionTracker.observe(queueContext)
             val settings = gmmpAutoDjSettingsReader.read()
             val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
@@ -4473,6 +4480,22 @@ class GoneSmartModule : XposedModule() {
 
             false
         }
+    }
+
+    private fun readQueueContext(autoDjInstance: Any): QueueContext? {
+        val verifiedPosition = queueFlipController
+            .verifiedPositionWriter(autoDjInstance)
+            ?.read()
+        return queueReader.read(autoDjInstance, verifiedPosition)
+    }
+
+    private fun proceedNativeRefill(
+        autoDjInstance: Any,
+        proceed: () -> Any?
+    ): Any? {
+        val result = proceed()
+        trackMixController.normalizeManagedQueueAfterNativeRefill(autoDjInstance)
+        return result
     }
 
     private fun installAutoDjRefillHook(
@@ -4609,7 +4632,7 @@ class GoneSmartModule : XposedModule() {
                     appendEvent = false
                 )
 
-                return@intercept chain.proceed()
+                return@intercept proceedNativeRefill(autoDjInstance) { chain.proceed() }
             }
 
             if (
@@ -4622,9 +4645,7 @@ class GoneSmartModule : XposedModule() {
             }
 
             val beforeContext =
-                queueReader.read(
-                    autoDjInstance
-                )
+                readQueueContext(autoDjInstance)
             logRefillTiming("queue-read-before")
 
             if (
@@ -4664,7 +4685,7 @@ class GoneSmartModule : XposedModule() {
                                 "cannot read this queue.",
                         appendEvent = true
                     )
-                    val result = chain.proceed()
+                    val result = proceedNativeRefill(autoDjInstance) { chain.proceed() }
                     Log.i(
                         TAG,
                         "========================================"
@@ -4803,12 +4824,10 @@ class GoneSmartModule : XposedModule() {
                 )
 
                 val result =
-                    chain.proceed()
+                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                 val afterContext =
-                    queueReader.read(
-                        autoDjInstance
-                    )
+                    readQueueContext(autoDjInstance)
 
                 if (
                     afterContext != null
@@ -4973,12 +4992,10 @@ class GoneSmartModule : XposedModule() {
                     )
 
                     val result =
-                        chain.proceed()
+                        proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                     val afterContext =
-                        queueReader.read(
-                            autoDjInstance
-                        )
+                        readQueueContext(autoDjInstance)
 
                     if (
                         afterContext != null
@@ -5047,7 +5064,7 @@ class GoneSmartModule : XposedModule() {
                         )
                     )
 
-                    chain.proceed()
+                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
                 } finally {
 
@@ -5058,9 +5075,7 @@ class GoneSmartModule : XposedModule() {
             logRefillTiming("native-refill")
 
             val afterContext =
-                queueReader.read(
-                    autoDjInstance
-                )
+                readQueueContext(autoDjInstance)
             logRefillTiming("queue-read-after")
 
             if (
@@ -5529,11 +5544,17 @@ class GoneSmartModule : XposedModule() {
                 "pool empty/insufficient - preparing session pool"
         )
 
-        return try {
+        val fastInitialWait = trackMixController.isExplicitInitialRefill()
+        val waitTimeoutMs = if (fastInitialWait) {
+            TRACK_MIX_INITIAL_SMART_WAIT_MS
+        } else {
+            TimeUnit.SECONDS.toMillis(SMART_PREPARE_TIMEOUT_SECONDS)
+        }
 
+        return try {
             future.get(
-                SMART_PREPARE_TIMEOUT_SECONDS,
-                TimeUnit.SECONDS
+                waitTimeoutMs,
+                TimeUnit.MILLISECONDS
             )
 
             val ready =
@@ -5555,6 +5576,19 @@ class GoneSmartModule : XposedModule() {
             ready
 
         } catch (timeoutException: TimeoutException) {
+
+            if (fastInitialWait) {
+                // Do not cancel or invalidate this fill: it becomes the warm
+                // pool for ordinary upcoming refills after native GMMP has
+                // made Next available immediately.
+                Log.i(
+                    TAG,
+                    "SMART DJ INITIAL FAST FALLBACK | waitedMs=" +
+                        TRACK_MIX_INITIAL_SMART_WAIT_MS +
+                        " | poolFill=continuing"
+                )
+                return false
+            }
 
             pipelineGeneration
                 .incrementAndGet()

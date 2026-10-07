@@ -233,3 +233,12 @@ Before promoting a new GMMP version to tested:
 - [ ] companion Compatibility source-of-truth updated;
 - [ ] `AGENTS.md`, `docs/GMMP_421_COMPLETION.md` and this playbook updated;
 - [ ] exact-head CI fully green.
+
+
+### Track Auto-DJ queue-root continuity
+
+Track Auto-DJ is a special queue-root mutation: it preserves one native row and removes the previous source list. Treat the native playback pointer and the native append-position basis as separate state. On GMMP 4.2.0 both were behaviorally known; on 4.2.1 only the current-position writer/readback is currently proven. Do not infer the append allocator from an obfuscated integer field. Until that native boundary is proven, the accepted compatibility fallback is scoped to the Track-Auto-DJ-owned queue: after native refill, rebase sparse Queue DAO row positions to contiguous `1..N`, move only the passively verified playback pointer when required, and independently Cursor-verify row order/current identity.
+
+Smart-DJ session tracking must consume the same passively verified current-position hint as queue mutation. If a refill read silently falls back to structural CURRENT discovery, generated rows can be misclassified as user anchors, which resets the recommendation pool on every skip. The correct steady state is one queue session plus pool hits/background top-up, not repeated `QUEUE SESSION ... new=true` cycles.
+
+For the explicit Track-Auto-DJ Initial-Size refill, network recommendation preparation is opportunistic rather than a playback gate. Use a short bounded smart wait, keep the fill future alive on timeout, and immediately pass the refill to native GMMP so the Next action exists while the recommendation pool continues warming.
