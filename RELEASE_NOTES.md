@@ -1,44 +1,50 @@
 # GoneSmart v0.4.0
 
-GoneSmart 0.4.0 expands the project from Smart Auto-DJ into a broader native-looking GMMP extension and completes compatibility work for **GoneMAD Music Player 4.2.1**.
+GoneSmart 0.4.0 is a major feature and compatibility update for **GoneMAD Music Player 4.2.1**. It adds several new playlist and playback tools, improves Smart Auto-DJ responsiveness, and makes GoneSmart more robust for future GMMP updates.
 
-## Highlights
+## What's new
 
-- **GMMP 4.2.1 compatibility:** all enabled 0.4.0 feature families were migrated to the remapped internals and device-accepted on the maintainer setup.
-- **Playlist folders:** browse nested physical playlist folders in the Playlists tab and Add-to-Playlist picker, create/delete folders, and move one or several playlists with native GMMP writers and verification.
-- **Smart-Playlist folders:** independent physical folder view for Smart Playlists while GMMP keeps ownership of real Smart-Playlist rows, parsing and actions.
-- **Multi-selection:** add songs to several ordinary playlists in one picker session and move multiple Smart Playlists where supported.
-- **Playlist Link:** Smart Playlists can reference ordinary playlists as live membership rules; disabling GoneSmart leaves the saved Smart Playlist openable and the extension rule inert.
-- **Flip queue / Play flipped:** reverse an existing queue or launch ordinary/Smart playlists in reverse order while preserving native playback ownership.
-- **Track Auto-DJ:** start a fresh Auto-DJ session from an individual track, keep that track as the seed and fill to GMMP's configured Initial Size.
-- **Status and compatibility UI:** one coherent Status card with independent GMMP, Xposed, GoneSmart and Compatibility health sections; untested GMMP versions are shown in amber.
+- **Playlist folders:** browse your playlists in folders, create and delete folders, and move one or several playlists between them.
+- **Smart-Playlist folders:** organize Smart Playlists in folders as well, including moving multiple Smart Playlists at once.
+- **Multi-selection:** add tracks to several playlists in one step and use multi-selection in supported playlist management views.
+- **Playlist Link:** use a normal playlist as a live source inside a Smart Playlist. Changes to the source playlist can be reflected the next time the Smart Playlist is evaluated.
+- **Flip queue / Play flipped:** reverse the current queue, or start a normal or Smart Playlist from the end and play it backwards through its order.
+- **Track Auto-DJ:** start a fresh Auto-DJ session directly from an individual song. The selected song becomes the starting point for the new session.
+- **Improved status screen:** GMMP, Xposed, GoneSmart and version compatibility are shown separately so problems are easier to identify.
 
-## Smart Auto-DJ and playback hardening
+## Smart Auto-DJ improvements
 
-- Recommendation pools prewarm and top up in the background so rapid skipping does not wait unnecessarily for another provider round.
-- Successful pool fills are no longer throttled by the provider backoff intended for unproductive requests.
-- Track Auto-DJ uses GMMP's verified native queue/refill paths, preserves the clicked seed across large Smart-Playlist rebuilds and repairs the 4.2.1 queue-continuation edge case without guessing an obfuscated append allocator.
-- The first CURRENT exposed by Smart-Playlist playback is treated as provisional during the bounded native-Play settle window. If that transient row disappears, GoneSmart can retarget to the independently observed live CURRENT; outside that window it fails closed.
-- Queue Flip learns the current-position writer passively from natural GMMP playback and verifies it independently before controlled use.
+- Recommendations are prepared earlier in the background, reducing delays when skipping through tracks quickly.
+- Track Auto-DJ works more reliably with normal playlists and large Smart Playlists.
+- Auto-DJ continuation and queue handling were hardened for GMMP 4.2.1.
+- Several edge cases around rapidly changing playback and Smart-Playlist loading were fixed.
 
-## Performance and cleanup
+## Performance and usability
 
-- Offscreen Playlist/Smart-Playlist ViewPager pages are effectively idle.
-- Player and navigation badges reuse verified native UI anchors instead of repeatedly rescanning the full view tree.
-- Accepted-version discovery probes retire their runtime cost as well as their verbose logs.
-- Play-flipped verification uses one bounded postcondition read instead of a polling loop.
-- Track Auto-DJ pre-action queue reads run off GMMP's main thread.
-- User-facing success/error popups now use readable text fallbacks instead of symbol-only checkmarks/warnings; native GMMP translations are still preferred where available.
+- Smoother navigation between Playlist and Smart-Playlist views.
+- Less unnecessary background work when views are not visible.
+- Faster and more responsive playback-related actions.
+- Clearer confirmation and error messages instead of symbol-only popups.
+- Numerous smaller UI, stability and cleanup improvements.
 
 ## Compatibility
 
-- **GoneMAD Music Player:** 4.2.1 is the tested target for this release.
-- **Android:** 8.0+ (`minSdk 26`).
-- **Hooking API:** libxposed API 102.
-- **Rooted setup:** JingMatrix Vector v2.2+ is the recommended path.
-- **LSPatch v1.2:** remains experimental / less tested.
+- **Tested GMMP version:** 4.2.1
+- **Android:** 8.0+
+- **Hooking API:** libxposed API 102
+- **Recommended rooted setup:** JingMatrix Vector v2.2+
+- **LSPatch v1.2:** still considered experimental / less tested
 
-GoneSmart hooks obfuscated GMMP internals. Future GMMP versions are intentionally marked untested until the compatibility workflow in `docs/GMMP_COMPATIBILITY_PLAYBOOK.md` has been completed.
+GoneSmart still depends on GMMP internals, so a future GMMP update can require compatibility work. For 0.4.0, many hooks and lookups were made more dynamic and less dependent on fixed internal names to improve robustness across future versions.
+
+## Planned for 0.5.0
+
+The following areas are currently planned for the next major update:
+
+- **More recommendation providers:** support additional sources for music recommendations, with Spotify, YouTube and YouTube Music among the planned options.
+- **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers or other audio device is connected.
+
+These are planned features and may change during development.
 
 ## Installation
 
