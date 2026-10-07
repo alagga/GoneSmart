@@ -80,10 +80,14 @@ android {
         )
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     signingConfigs {
-        if (releaseSigningConfigured) {
-            create("release") {
-                storeFile = rootProject.file(releaseStoreFilePath!!)
+        create("release") {
+            if (releaseSigningConfigured) {
+                storeFile = file(releaseStoreFilePath!!)
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
@@ -93,7 +97,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            optimization {
+                enable = false
+            }
+
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -101,22 +108,40 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+        sourceCompatibility =
+            JavaVersion.VERSION_11
 
-    testOptions {
-        unitTests.isReturnDefaultValues = true
+        targetCompatibility =
+            JavaVersion.VERSION_11
     }
 }
 
 dependencies {
-    compileOnly(libs.libxposed.api)
-    implementation(libs.libxposed.service)
+    implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.constraintlayout)
+    implementation(libs.androidx.core.ktx)
     implementation(libs.material)
-    implementation(libs.okhttp)
-    implementation(libs.gson)
-    implementation(libs.androidx.room.runtime)
+    // Match the exact AndroidX RecyclerView version packaged by GMMP 4.2.0.
+    // Both playlist ItemAnimator and Files quickNav EdgeEffectFactory run
+    // on GMMP's host-process RecyclerView implementation at runtime.
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
+
+    implementation(
+        "io.github.libxposed:service:102.0.0"
+    )
+
     testImplementation(libs.junit)
+
+    androidTestImplementation(
+        libs.androidx.espresso.core
+    )
+
+    androidTestImplementation(
+        libs.androidx.junit
+    )
+
+    compileOnly(
+        "io.github.libxposed:api:102.0.0"
+    )
 }
