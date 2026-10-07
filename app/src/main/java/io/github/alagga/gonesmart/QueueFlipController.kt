@@ -97,6 +97,9 @@ internal class QueueFlipController {
         if (candidate != null) nativeAutoDj = WeakReference(candidate)
     }
 
+    fun verifiedPositionWriter(autoDj: Any): NativeQueuePositionWriter? =
+        positionWriterObserver.binding(autoDj)
+
     /**
      * Called by passive MusicService hooks. The original GMMP method always
      * runs exactly once. Observation merely compares the independent native
