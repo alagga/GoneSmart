@@ -8,7 +8,7 @@ This roadmap describes the current direction for upcoming GoneSmart releases. Pl
 
 Expand Smart Auto-DJ with additional sources for music recommendations. Spotify, YouTube and YouTube Music are among the planned provider options.
 
-The goal is to improve recommendation coverage and give users more choice while GoneSmart continues to match recommendations against the local GMMP library.
+These services are planned as additional **recommendation sources**, not as a way to stream their catalog through GoneSmart. The goal is to improve recommendation coverage and give users more choice while GoneSmart continues to resolve playable tracks against the local GMMP library.
 
 ### Bluetooth device audio profiles
 
