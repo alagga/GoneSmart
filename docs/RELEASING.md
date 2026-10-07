@@ -15,14 +15,16 @@ Keep the original release keystore backed up offline; every update must use the 
 ## Stable release flow
 
 1. Finish code and documentation on the active feature branch.
-2. Set `versionCode` / `versionName` in `app/build.gradle.kts` and finalize `RELEASE_NOTES.md`.
-3. Confirm the normal **Build** workflow is green on the exact feature head.
+2. Set `versionCode` / `versionName` in `app/build.gradle.kts` and finalize `RELEASE_NOTES.md`. Update `docs/forum/THREAD_START_TEMPLATE.bbcode` if the public feature overview changed, then run `python3 scripts/generate_forum_posts.py`.
+3. Review the generated `docs/forum/THREAD_START.bbcode` and `docs/forum/LATEST_RELEASE_REPLY.bbcode`, then confirm the normal **Build** workflow is green on the exact feature head. CI fails if the generated forum copy is stale.
 4. Open/review the feature → `main` pull request and merge it without discarding unrelated `main` history.
 5. Confirm the normal **Build** workflow is green on the exact merged `main` head.
 6. Open **Actions → Release APK → Run workflow** with **prerelease** disabled.
 7. Verify the resulting `v<versionName>` tag, GitHub Release and signed APK asset.
 
-The release workflow verifies secrets, restores the release keystore, builds the signed APK, derives the tag from Gradle, creates the tag for a manual dispatch, uploads `GoneSmart-v<version>.apk` and uses `RELEASE_NOTES.md` as the release body.
+The release workflow verifies secrets, regenerates the GMMP forum copy, restores the release keystore, builds the signed APK, derives the tag from Gradle, creates the tag for a manual dispatch, uploads `GoneSmart-v<version>.apk` plus versioned forum-thread/reply BBCode assets, and uses `RELEASE_NOTES.md` as the release body. Manual releases must be dispatched from `main`. If the generated forum files changed, the workflow refreshes the copy-ready files on `main` after publication.
+
+After publishing, copy `docs/forum/LATEST_RELEASE_REPLY.bbcode` into the existing GMMP forum thread and update its first post from `docs/forum/THREAD_START.bbcode` whenever the overview or compatibility information changed. The suggested subject is in `docs/forum/THREAD_SUBJECT.txt`.
 
 ## Prereleases
 

@@ -1,0 +1,94 @@
+[size=5][b]GoneSmart – Smart Auto-DJ, Playlist & UI Extensions for GoneMAD Music Player[/b][/size]
+
+Hi everyone,
+
+I'd like to share [b]GoneSmart[/b], an independent Xposed/libxposed module and companion app that extends GoneMAD Music Player with a smarter Auto-DJ and several optional playlist, playback and UI features.
+
+I'll keep this first post updated and use the thread replies for future releases.
+
+[b]GitHub:[/b]
+[url=https://github.com/alagga/GoneSmart]https://github.com/alagga/GoneSmart[/url]
+
+[b]Current release:[/b]
+[url={{RELEASE_URL}}]GoneSmart v{{VERSION}}[/url]
+
+
+[size=4][b]What is GoneSmart?[/b][/size]
+
+GoneSmart keeps GMMP as the actual music player and adds extra functionality around it.
+
+[list]
+[*][b]Smart Auto-DJ[/b] – uses the current listening session to find related music and matches those recommendations against tracks that already exist in your local GMMP library.
+[*][b]UI & workflow extensions[/b] – additional playlist, Smart-Playlist, queue and playback tools integrated into GMMP.
+[/list]
+
+For Smart Auto-DJ, GoneSmart currently combines recommendations from [b]ListenBrainz[/b] and [b]Last.fm[/b]. Your complete music library is not uploaded to those services; matching against your library happens locally.
+
+
+[size=4][b]Main features[/b][/size]
+
+[b]Smart Auto-DJ[/b]
+[list]
+[*]Session-aware recommendations based on the current and recently selected tracks
+[*]ListenBrainz + Last.fm recommendation sources
+[*]Only selects music that exists in your GMMP library
+[*]Recommendation pool for faster Auto-DJ refills
+[*]Rating and matching preferences
+[*]Optional fallback to GMMP's normal Auto-DJ
+[*]Player indicator showing GoneSmart Auto-DJ status
+[/list]
+
+[b]Playlist & Smart-Playlist tools[/b]
+[list]
+[*]Playlist folders
+[*]Smart-Playlist folders
+[*]Multi-selection
+[*]Playlist Link – use a normal playlist as a live source inside a Smart Playlist
+[/list]
+
+[b]Playback tools[/b]
+[list]
+[*]Flip the current queue
+[*]Play normal playlists or Smart Playlists from last track to first
+[*]Track Auto-DJ – start a new Smart Auto-DJ session directly from an individual song
+[/list]
+
+[b]Companion app[/b]
+[list]
+[*]Module and GMMP status
+[*]Smart DJ and UI settings
+[*]Compatibility information
+[*]High-level activity/error logs
+[*]Update checking and built-in help
+[/list]
+
+
+[size=4][b]Current compatibility[/b][/size]
+
+[list]
+[*][b]GoneSmart:[/b] v{{VERSION}}
+[*][b]Tested GMMP version:[/b] {{TESTED_GMMP}}
+[*][b]Android:[/b] 8.0+
+[*][b]Hooking API:[/b] libxposed API 102
+[*][b]Recommended rooted setup:[/b] JingMatrix Vector 2.2+
+[/list]
+
+LSPatch is also possible, but is currently less extensively tested.
+
+
+[size=4][b]Important note about GMMP updates[/b][/size]
+
+GoneSmart integrates with GMMP internals. A future GMMP update can therefore temporarily break individual GoneSmart features even though many hooks and lookups are designed to be more dynamic across versions.
+
+[b]I recommend disabling automatic Play Store updates for GoneMAD Music Player while using GoneSmart.[/b]
+
+Before manually updating GMMP, check this thread or the GoneSmart GitHub page to see whether the new GMMP version has already been tested. GoneSmart itself also warns again when it detects a different GMMP version.
+
+
+[size=4][b]Feedback & bug reports[/b][/size]
+
+Feedback is very welcome, especially with different libraries, Android setups and GMMP configurations. If something breaks, please include your exact GMMP version and, if possible, the relevant GoneSmart logs.
+
+[url=https://github.com/alagga/GoneSmart/issues]GitHub issues and feature requests[/url]
+
+GoneSmart is an independent project and is not affiliated with GoneMAD Software, Last.fm, MusicBrainz, MetaBrainz or ListenBrainz.
