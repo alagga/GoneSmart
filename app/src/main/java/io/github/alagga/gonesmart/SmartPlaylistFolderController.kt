@@ -1535,26 +1535,28 @@ internal class SmartPlaylistFolderController(
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
                     syncPagerOverlayVisibility(browser)
-                    val front = isFrontFragmentView(list)
-                    val visible = front &&
-                        browser.overlay.visibility == View.VISIBLE &&
-                        list.isShown
+                    val front = isFrontFragmentView(list) && list.isShown
+                    if (front && !browser.nativeContentReady) {
+                        // Initial projection is allowed to complete while the
+                        // overlay is still INVISIBLE. Visibility is itself the
+                        // postcondition of revealInitialContent().
+                        val ready = nativeProjectionReady(browser)
+                        if (ready || browser.projectionFailOpenAllowed) {
+                            revealInitialContent(
+                                browser,
+                                allowProjectionMismatch =
+                                    browser.projectionFailOpenAllowed
+                            )
+                            scheduleVisibleRowSync(browser)
+                        }
+                    }
 
+                    val visible = front &&
+                        browser.overlay.visibility == View.VISIBLE
                     if (visible) {
-                        // If the current folder projection completed while a
-                        // Smart-Playlist detail was covering this fragment,
-                        // reveal it only in this first real front-surface draw.
-                        if (!browser.nativeContentReady) {
-                            val ready = nativeProjectionReady(browser)
-                            if (ready || browser.projectionFailOpenAllowed) {
-                                revealInitialContent(
-                                    browser,
-                                    allowProjectionMismatch =
-                                        browser.projectionFailOpenAllowed
-                                )
-                                scheduleVisibleRowSync(browser)
-                            }
-                        } else if (browser.projectionPrepared) {
+                        if (browser.nativeContentReady &&
+                            browser.projectionPrepared
+                        ) {
                             // GMMP may submit its physical Smart root again
                             // after GoneSmart committed a nested projection.
                             // The adapter-count guard is foreground-only and
