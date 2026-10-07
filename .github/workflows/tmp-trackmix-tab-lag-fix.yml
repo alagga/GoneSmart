@@ -34,7 +34,7 @@ jobs:
       - name: Check patch invariants
         run: |
           grep -q 'nativePositionWriterProvider(autoDj)' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
-          grep -q 'verifiedPositionWriter(autoDj)' app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt
+          grep -q 'fun verifiedPositionWriter' app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt
           grep -q 'negativeDiscoverySettled' app/src/main/java/io/github/alagga/gonesmart/PlaylistNavigationBadgeController.kt
           git diff --check
       - name: Unit tests
