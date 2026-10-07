@@ -7,6 +7,7 @@ import android.util.Log
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -23,9 +24,14 @@ internal interface NativeQueuePositionWriter {
  *
  * GMMP 4.2.1 naturally invokes the structurally unique Auto-DJ child
  * Int->void writer (observed as dx3.c2(int)) with the absolute queue_position
- * it is switching to. The natural invocation is promoted only when the same
- * runtime host exposes an unambiguous read signal with that value or the
- * previously accepted independent Auto-DJ signal proves the transition.
+ * it is switching to. The natural invocation is promoted only when the cheap,
+ * independently verified Auto-DJ position signal proves the transition. A
+ * broader same-host readback remains a bounded compatibility fallback only.
+ *
+ * Once a writer has been proved for the live Auto-DJ instance, discovery is
+ * retired from the playback hot path: subsequent natural calls proceed
+ * without reflection, delayed callbacks, or queue SQL. This is important
+ * because some innocent-looking zero-arg GMMP getters perform queue lookups.
  *
  * Identification is deliberately separate from controlled-write success:
  * a Queue Flip write succeeds only when the verified native readback reaches
@@ -51,6 +57,8 @@ internal class NativeQueuePositionWriterObserver(
     )
 
     private val controlledWrite = ThreadLocal<Boolean>()
+    private val stateWriterSignatures = ConcurrentHashMap<Class<*>, Set<String>>()
+    private val broadFallbackAttempted = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var verified: Verified? = null
@@ -67,42 +75,29 @@ internal class NativeQueuePositionWriterObserver(
             return proceed()
         }
 
-        val stateWriter = NativeQueuePlaybackDiagnostics
-            .stateWriterMethods(autoDj.javaClass)
-            .any { sameMethod(it, method) }
+        // Discovery is complete for this live Auto-DJ instance. Do not keep
+        // sampling native state on every playback callback: r41 device logs
+        // showed that the old fallback could execute hundreds of GMMP queue
+        // queries per second after the semantic boundary was already known.
+        verified?.let { proof ->
+            if (proof.autoDj.get() === autoDj && proof.receiver.get() != null) {
+                return proceed()
+            }
+        }
+
+        val stateWriter = isStateWriter(autoDj.javaClass, method)
         val before = readSignal(autoDj)
         val invocationLooper = Looper.myLooper()
         val result = proceed()
         val after = readSignal(autoDj)
 
-        val sameHostProof = if (
-            stateWriter && isUniqueQueuePosition(autoDj, argument)
-        ) {
-            NativeQueueObservedStateBinding.resolve(
-                host = service,
-                observedWriter = method,
-                observedValue = argument
-            )
-        } else {
-            null
-        }
-        if (sameHostProof != null) {
-            record(
-                receiver = service,
-                autoDj = autoDj,
-                method = method,
-                looper = invocationLooper,
-                signalSource = "same-host:" + sameHostProof.reader.description,
-                sameHostReader = sameHostProof.reader
-            )
-            return result
-        }
-
+        // The accepted 4.2.1 proof is intentionally cheap: qr.p/dx3 exposes
+        // the independently verified integer field directly. Prefer it before
+        // any generic getter scan, because arbitrary GMMP getters may touch DB.
         val nativeSignalProof =
             before != null && after != null &&
-                before.value != after.value && after.value == argument &&
-                isUniqueQueuePosition(autoDj, argument)
-        if (nativeSignalProof) {
+                before.value != after.value && after.value == argument
+        if (nativeSignalProof && isUniqueQueuePosition(autoDj, argument)) {
             record(
                 receiver = service,
                 autoDj = autoDj,
@@ -114,16 +109,43 @@ internal class NativeQueuePositionWriterObserver(
             return result
         }
 
-        if (stateWriter) {
-            scheduleDelayedObservation(
-                receiver = service,
-                autoDj = autoDj,
-                method = method,
-                argument = argument,
-                looper = invocationLooper,
-                beforeValue = before?.value
+        if (!stateWriter) return result
+
+        // Compatibility fallback for a future GMMP shape. Run the broad
+        // same-host accessor analysis at most ONCE per concrete method in a
+        // process; never on each natural playback invocation.
+        val fallbackKey = methodKey(method)
+        if (broadFallbackAttempted.add(fallbackKey) &&
+            isUniqueQueuePosition(autoDj, argument)
+        ) {
+            val sameHostProof = NativeQueueObservedStateBinding.resolve(
+                host = service,
+                observedWriter = method,
+                observedValue = argument
             )
+            if (sameHostProof != null) {
+                record(
+                    receiver = service,
+                    autoDj = autoDj,
+                    method = method,
+                    looper = invocationLooper,
+                    signalSource = "same-host:" + sameHostProof.reader.description,
+                    sameHostReader = sameHostProof.reader
+                )
+                return result
+            }
         }
+
+        // Delayed observation is cheap-only. It samples the already accepted
+        // native position signal and never repeats generic reflection scans.
+        scheduleDelayedObservation(
+            receiver = service,
+            autoDj = autoDj,
+            method = method,
+            argument = argument,
+            looper = invocationLooper,
+            beforeValue = before?.value
+        )
         return result
     }
 
@@ -249,32 +271,16 @@ internal class NativeQueuePositionWriterObserver(
         DELAYED_SIGNAL_CHECKS_MS.forEach { delay ->
             Handler(looper).postDelayed(
                 {
-                    if (!isUniqueQueuePosition(autoDj, argument)) {
-                        return@postDelayed
+                    verified?.let { proof ->
+                        if (proof.autoDj.get() === autoDj) return@postDelayed
                     }
-                    val sameHostProof = NativeQueueObservedStateBinding.resolve(
-                        host = receiver,
-                        observedWriter = method,
-                        observedValue = argument
-                    )
-                    if (sameHostProof != null) {
-                        record(
-                            receiver = receiver,
-                            autoDj = autoDj,
-                            method = method,
-                            looper = looper,
-                            signalSource =
-                                "same-host-delayed:" +
-                                    sameHostProof.reader.description,
-                            sameHostReader = sameHostProof.reader
-                        )
-                        return@postDelayed
-                    }
-
                     val reading = readSignal(autoDj) ?: return@postDelayed
                     if (reading.value != argument ||
                         reading.value == beforeValue
                     ) return@postDelayed
+                    if (!isUniqueQueuePosition(autoDj, argument)) {
+                        return@postDelayed
+                    }
                     record(
                         receiver = receiver,
                         autoDj = autoDj,
@@ -289,11 +295,19 @@ internal class NativeQueuePositionWriterObserver(
         }
     }
 
-    private fun sameMethod(left: Method, right: Method): Boolean =
-        left.declaringClass == right.declaringClass &&
-            left.name == right.name &&
-            left.returnType == right.returnType &&
-            left.parameterTypes.contentEquals(right.parameterTypes)
+    private fun isStateWriter(autoDjClass: Class<*>, method: Method): Boolean {
+        val signatures = stateWriterSignatures.computeIfAbsent(autoDjClass) {
+            NativeQueuePlaybackDiagnostics.stateWriterMethods(it)
+                .map(::methodKey)
+                .toSet()
+        }
+        return methodKey(method) in signatures
+    }
+
+    private fun methodKey(method: Method): String =
+        method.declaringClass.name + "|" + method.name + "|" +
+            method.returnType.name + "|" +
+            method.parameterTypes.joinToString(",") { it.name }
 
     private fun isUniqueQueuePosition(autoDj: Any, position: Int): Boolean {
         if (position < 0) return false
@@ -349,9 +363,16 @@ internal class NativeQueuePositionWriterObserver(
             TAG,
             "QUEUE POSITION WRITER VERIFIED | writer=" +
                 method.declaringClass.name + "." + method.name +
-                "(int) | signal=" + signalSource
+                "(int) | signal=" + signalSource +
+                " | discovery=retired"
         )
     }
+
+    private fun sameMethod(left: Method, right: Method): Boolean =
+        left.declaringClass == right.declaringClass &&
+            left.name == right.name &&
+            left.returnType == right.returnType &&
+            left.parameterTypes.contentEquals(right.parameterTypes)
 
     private fun hierarchyFields(type: Class<*>): List<java.lang.reflect.Field> =
         generateSequence<Class<*>>(type) { it.superclass }
