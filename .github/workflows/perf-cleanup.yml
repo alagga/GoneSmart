@@ -1,0 +1,35 @@
+name: One-shot 4.2.1 performance cleanup
+
+on:
+  push:
+    branches:
+      - feature/playlist-bridge
+    paths:
+      - tools/perf_cleanup_patch.py
+      - .github/workflows/perf-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/playlist-bridge
+          fetch-depth: 0
+      - name: Apply bounded performance cleanup
+        run: python3 tools/perf_cleanup_patch.py
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/github/alagga/gonesmart/SmartPlaylistFolderController.kt \
+                  app/src/main/java/io/github/alagga/gonesmart/PlaylistFolderPreviewController.kt
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m "perf(ui): retire accepted 4.2.1 draw-time probes"
+          git push origin HEAD:feature/playlist-bridge
