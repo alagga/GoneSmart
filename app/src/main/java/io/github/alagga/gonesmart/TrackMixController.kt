@@ -54,6 +54,26 @@ internal class TrackMixController(
             "menu_gm_context_file_browser",
             "menu_gm_context_shared"
         )
+
+        @Volatile
+        private var activeManagedController:
+            WeakReference<TrackMixController>? = null
+
+        /**
+         * QueueFlipController calls this only after GMMP itself naturally
+         * changes the verified CURRENT position. It is an event signal, not
+         * a polling loop and never discovers or invokes an unknown writer.
+         */
+        fun onVerifiedNaturalQueuePosition(
+            autoDj: Any,
+            currentPosition: Int?
+        ) {
+            activeManagedController?.get()
+                ?.scheduleManagedRefillCheck(
+                    autoDj = autoDj,
+                    currentPosition = currentPosition
+                )
+        }
     }
 
     private data class Snapshot(
@@ -113,6 +133,8 @@ internal class TrackMixController(
     // Scope the bounded native-DAO position repair only to a Track Auto-DJ
     // session we created; unrelated native list Play disarms it.
     @Volatile private var managedAutoDj: WeakReference<Any>? = null
+    private val managedRefillInFlight = AtomicBoolean(false)
+    @Volatile private var lastManagedObservedPosition = Int.MIN_VALUE
 
     @Volatile private var enabled = true
 
@@ -125,6 +147,9 @@ internal class TrackMixController(
 
     fun setEnabled(value: Boolean) {
         enabled = value
+        if (!value) {
+            disarmManagedAutoDjSession("feature-disabled")
+        }
         Log.i(TAG, "MIX SETTINGS | enabled=$value")
     }
 
@@ -184,6 +209,102 @@ internal class TrackMixController(
             ?.takeIf { it.javaClass.name == "ex3" }
         if (legacyQueue == null) {
             managedAutoDj = WeakReference(autoDj)
+            managedRefillInFlight.set(false)
+            lastManagedObservedPosition = Int.MIN_VALUE
+            activeManagedController = WeakReference(this)
+            Log.i(TAG, "MIX CONTINUITY | managed 4.2.1 Auto-DJ session armed")
+        }
+    }
+
+    private fun disarmManagedAutoDjSession(reason: String) {
+        val wasActive = managedAutoDj?.get() != null
+        managedAutoDj = null
+        managedRefillInFlight.set(false)
+        lastManagedObservedPosition = Int.MIN_VALUE
+        if (activeManagedController?.get() === this) {
+            activeManagedController = null
+        }
+        if (wasActive) {
+            Log.i(TAG, "MIX CONTINUITY | disarmed | reason=$reason")
+        }
+    }
+
+    private fun scheduleManagedRefillCheck(
+        autoDj: Any,
+        currentPosition: Int?
+    ) {
+        val position = currentPosition ?: return
+        if (position <= 0) return
+        if (managedAutoDj?.get() !== autoDj) return
+        if (pending != null || refillHold.get()) return
+
+        synchronized(this) {
+            if (managedAutoDj?.get() !== autoDj) return
+            if (lastManagedObservedPosition == position) return
+            lastManagedObservedPosition = position
+        }
+
+        work.execute {
+            if (managedAutoDj?.get() !== autoDj) return@execute
+            if (pending != null || refillHold.get()) return@execute
+            if (!managedRefillInFlight.compareAndSet(false, true)) return@execute
+
+            try {
+                val context = queueReader.read(autoDj, position)
+                    ?: return@execute
+                val ordered = context.items.sortedBy { it.queuePosition }
+                val currentIndex = ordered.indexOfFirst {
+                    it.state == QueueItemState.CURRENT
+                }
+                if (currentIndex < 0) return@execute
+
+                val expectedPositions = (1..ordered.size).toList()
+                val actualPositions = ordered.map { it.queuePosition }
+                if (actualPositions != expectedPositions) {
+                    Log.w(
+                        TAG,
+                        "MIX CONTINUITY | skip refill check; queue not normalized | " +
+                            "positions=" + actualPositions.joinToString(",")
+                    )
+                    return@execute
+                }
+
+                val nativeSettings = settings.read()
+                val requested = TrackAutoDjContinuationPolicy.refillCount(
+                    queueSize = ordered.size,
+                    currentIndex = currentIndex,
+                    upcomingTrackCount = nativeSettings.upcomingTrackCount
+                )
+                if (requested <= 0) return@execute
+
+                val remaining = ordered.size - currentIndex - 1
+                Log.i(
+                    TAG,
+                    "MIX CONTINUITY REFILL | currentPosition=" +
+                        ordered[currentIndex].queuePosition +
+                        " | queueSize=" + ordered.size +
+                        " | remaining=$remaining" +
+                        " | upcoming=${nativeSettings.upcomingTrackCount}" +
+                        " | requested=$requested" +
+                        " | boundary=native-qr.z"
+                )
+
+                if (!requestNativeRefill(requested)) {
+                    Log.w(
+                        TAG,
+                        "MIX CONTINUITY REFILL | native request rejected | " +
+                            "requested=$requested"
+                    )
+                }
+            } catch (failure: Throwable) {
+                Log.e(
+                    TAG,
+                    "MIX CONTINUITY REFILL | managed refill check failed",
+                    failure
+                )
+            } finally {
+                managedRefillInFlight.set(false)
+            }
         }
     }
 
@@ -248,7 +369,7 @@ internal class TrackMixController(
     fun onNativePlaybackQueueUpdated(origin: String) {
         val request = pending
         if (request == null) {
-            managedAutoDj = null
+            disarmManagedAutoDjSession("native-queue-replaced:$origin")
             return
         }
         if (request.stage == "WAIT_PLAY") {
@@ -443,6 +564,7 @@ internal class TrackMixController(
     }
 
     private fun runTrackMix(request: Pending) {
+        var managedSessionReady = false
         try {
             // Native Play may first expose a temporary queue and then replace
             // it with the fully materialized source list. Keep the originally
@@ -565,6 +687,7 @@ internal class TrackMixController(
                 )
                 toast(request.context, request.menuLabel + " ✓")
             } else {
+                managedSessionReady = true
                 Log.i(
                     TAG,
                     "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +
@@ -589,6 +712,9 @@ internal class TrackMixController(
             refillHold.set(false)
             request.stage = "DONE"
             if (pending === request) pending = null
+            if (!managedSessionReady) {
+                disarmManagedAutoDjSession("track-mix-not-verified")
+            }
         }
     }
 
