@@ -1,4 +1,4 @@
-name: Finish 0.4.0 notification cleanup
+name: Finish GoneSmart 0.4.0 notifications
 
 on:
   push:
@@ -18,51 +18,21 @@ jobs:
           ref: feature/playlist-bridge
           fetch-depth: 0
 
-      - name: Replace remaining symbol-only runtime notices
+      - name: Apply cleanup
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          track = Path('app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt')
-          text = track.read_text()
-          old = '                toast(request.context, request.menuLabel + " ✓")'
-          new = '                toast(request.context, request.confirmation)'
-          if old not in text:
-              raise SystemExit('Track Mix checkmark toast not found')
-          track.write_text(text.replace(old, new, 1))
-
-          flip = Path('app/src/main/java/io/github/alagga/gonesmart/QueueFlipController.kt')
-          text = flip.read_text()
-          old = '''                    if (count > 1) {
-                        (nativeString(context, "queue") ?: "").trim()
-                            .takeIf(String::isNotBlank)?.plus(" ✓") ?: "✓"
-                    } else {
-'''
-          new = '''                    if (count > 1) {
-                        "Queue reversed"
-                    } else {
-'''
-          if old not in text:
-              raise SystemExit('Queue Flip checkmark toast not found')
-          flip.write_text(text.replace(old, new, 1))
-          PY
-
+          python3 scripts/release_notice_cleanup.py
           git diff --check
-
           remaining="$(grep -R -n '✓' app/src/main/java/io/github/alagga/gonesmart --include='*.kt' | grep -v '/MainActivity.kt:' || true)"
-          if [[ -n "$remaining" ]]; then
-            echo 'Unexpected runtime checkmark glyphs remain:'
-            echo "$remaining"
-            exit 1
-          fi
+          test -z "$remaining"
 
-      - name: Commit clean runtime notices and remove helper
+      - name: Commit cleanup
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/release-notice-cleanup.yml
+          rm scripts/release_notice_cleanup.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
