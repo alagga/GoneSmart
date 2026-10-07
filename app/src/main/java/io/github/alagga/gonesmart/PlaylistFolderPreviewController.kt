@@ -2319,70 +2319,75 @@ internal class PlaylistFolderPreviewController(
         }
         var lastThemeProbe = 0L
         var lastSelectionChromeProbe = 0L
-        // Aesthetic can change color values from album artwork without
-        // triggering a new layout. Probe the actual native row on redraw,
-        // throttled so scrolling and cover animations remain lightweight.
+        // Keep draw-time work scoped to the actually visible page. Adapter
+        // notifications are the primary model-refresh path; this listener is
+        // only a foreground fallback for palette and lifecycle changes.
         val themeListener = android.view.ViewTreeObserver.OnPreDrawListener {
             val now = android.os.SystemClock.uptimeMillis()
             weakList.get()?.let { current ->
                 browsers[current]?.let { browser ->
                     syncPagerOverlayVisibility(browser)
-                    // 4.2.1 renamed the native playlist ActionMode callback,
-                    // so the old yn3->n3 destroy hook is only a fast path.
-                    // The actual contextual bar is a stable UI postcondition:
-                    // once seen, its disappearance means GMMP ended selection.
-                    if (!isPicker(current) &&
-                        browser.mainSelection.isSelecting &&
-                        now - lastSelectionChromeProbe >= 80L
-                    ) {
-                        lastSelectionChromeProbe = now
-                        val nativeChromeColor =
-                            multiSelect.nativeContextBarColor(current)
-                        val chromeVisible = nativeChromeColor != null
-                        if (chromeVisible) {
-                            browser.nativeSelectionChromeSeen = true
-                            nativeChromeColor?.let(
-                                multiSelect::rememberNativeSelectionAccent
-                            )
-                            if (browser.liveSelectionAccent !=
-                                nativeChromeColor
-                            ) {
-                                browser.liveSelectionAccent =
-                                    nativeChromeColor
-                                syncMainSelectionVisuals(browser)
-                            }
-                        } else if (
-                            NativeSelectionChromePolicy.shouldClear(
-                                selectionActive =
-                                    browser.mainSelection.isSelecting,
-                                visibleChromeSeen =
-                                    browser.nativeSelectionChromeSeen,
-                                chromeVisibleNow = false
-                            )
+                    val foreground =
+                        browser.overlay.visibility == View.VISIBLE &&
+                            current.isShown &&
+                            isFrontFragmentView(current)
+                    if (foreground) {
+                        // 4.2.1 renamed the native playlist ActionMode
+                        // callback, so visible native chrome remains the
+                        // semantic postcondition while selection is active.
+                        if (!isPicker(current) &&
+                            browser.mainSelection.isSelecting &&
+                            now - lastSelectionChromeProbe >= 80L
                         ) {
-                            clearMainSelectionPresentation(browser)
-                            Log.i(
-                                TAG,
-                                "FOLDER MAIN SELECT | visible native ActionMode " +
-                                    "ended; cleared"
-                            )
+                            lastSelectionChromeProbe = now
+                            val nativeChromeColor =
+                                multiSelect.nativeContextBarColor(current)
+                            val chromeVisible = nativeChromeColor != null
+                            if (chromeVisible) {
+                                browser.nativeSelectionChromeSeen = true
+                                nativeChromeColor?.let(
+                                    multiSelect::rememberNativeSelectionAccent
+                                )
+                                if (browser.liveSelectionAccent !=
+                                    nativeChromeColor
+                                ) {
+                                    browser.liveSelectionAccent = nativeChromeColor
+                                    syncMainSelectionVisuals(browser)
+                                }
+                            } else if (
+                                NativeSelectionChromePolicy.shouldClear(
+                                    selectionActive =
+                                        browser.mainSelection.isSelecting,
+                                    visibleChromeSeen =
+                                        browser.nativeSelectionChromeSeen,
+                                    chromeVisibleNow = false
+                                )
+                            ) {
+                                clearMainSelectionPresentation(browser)
+                                Log.i(
+                                    TAG,
+                                    "FOLDER MAIN SELECT | visible native ActionMode " +
+                                        "ended; cleared"
+                                )
+                            }
                         }
-                    }
-                }
-            }
-            if (now - lastThemeProbe >= 400L) {
-                lastThemeProbe = now
-                weakList.get()?.let { current ->
-                    browsers[current]?.let { browser ->
-                        runCatching {
-                            // GMMP can change the visible tab without changing
-                            // RecyclerView bounds. Re-evaluate visibility here
-                            // as the accepted pre-Smart implementation did.
-                            positionOverlay(browser)
-                            scheduleNativePlaylistRefresh(browser)
-                        }.onFailure { error ->
-                            Log.e(TAG, "FOLDER INLINE ERROR | theme probe", error)
-                            removeBrowser(current)
+
+                        // Adapter events already refresh immediately. Probe
+                        // only as a slow foreground fallback so attached
+                        // offscreen ViewPager pages are effectively idle.
+                        if (now - lastThemeProbe >= 1200L) {
+                            lastThemeProbe = now
+                            runCatching {
+                                positionOverlay(browser)
+                                scheduleNativePlaylistRefresh(browser)
+                            }.onFailure { error ->
+                                Log.e(
+                                    TAG,
+                                    "FOLDER INLINE ERROR | theme probe",
+                                    error
+                                )
+                                removeBrowser(current)
+                            }
                         }
                     }
                 }

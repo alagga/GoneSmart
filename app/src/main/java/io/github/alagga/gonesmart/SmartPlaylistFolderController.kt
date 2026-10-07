@@ -307,7 +307,8 @@ internal class SmartPlaylistFolderController(
         var pendingFolderScrollReset: Boolean = true,
         var scrollDeltaReported: Boolean = false,
         var touchGuardReported: Boolean = false,
-        var overscrollReported: Boolean = false
+        var overscrollReported: Boolean = false,
+        var visibleRowSyncPending: Boolean = false
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -964,6 +965,25 @@ internal class SmartPlaylistFolderController(
         val list = view as? ViewGroup ?: return
         val browser = browsers[list] ?: return
         syncFolderRowsScrollByDelta(browser, dy)
+        scheduleVisibleRowSync(browser)
+    }
+
+    private fun scheduleVisibleRowSync(browser: Browser) {
+        if (browser.visibleRowSyncPending ||
+            browsers[browser.list] !== browser ||
+            !browser.list.isAttachedToWindow
+        ) return
+        browser.visibleRowSyncPending = true
+        browser.list.postOnAnimation {
+            browser.visibleRowSyncPending = false
+            if (browsers[browser.list] !== browser ||
+                !browser.list.isAttachedToWindow ||
+                !isFrontFragmentView(browser.list) ||
+                browser.overlay.visibility != View.VISIBLE
+            ) return@postOnAnimation
+            alignVisibleNativeTitles(browser)
+            syncVisibleSmartRowInteractions(browser)
+        }
     }
 
     fun onNativeRecyclerTouch(view: View?, event: MotionEvent?) {
@@ -1515,55 +1535,58 @@ internal class SmartPlaylistFolderController(
             android.view.ViewTreeObserver.OnPreDrawListener {
                 if (browsers[list] === browser) {
                     syncPagerOverlayVisibility(browser)
-                    // If the current folder projection completed while a
-                    // Smart-Playlist detail was covering this fragment,
-                    // reveal it only in this first real front-surface pre-draw.
-                    // Header/inset are committed before native alpha returns.
-                    if (!browser.nativeContentReady &&
-                        isFrontFragmentView(list)
-                    ) {
-                        val ready = nativeProjectionReady(browser)
-                        if (ready || browser.projectionFailOpenAllowed) {
-                            revealInitialContent(
-                                browser,
-                                allowProjectionMismatch =
-                                    browser.projectionFailOpenAllowed
-                            )
-                        }
-                    } else if (browser.nativeContentReady &&
-                        browser.projectionPrepared &&
-                        isFrontFragmentView(list)
-                    ) {
-                        // GMMP may submit its physical Smart root again after
-                        // GoneSmart has already committed a nested/virtual
-                        // projection. Repair only an observed item-count drift
-                        // and throttle the check; no reload occurs per frame.
-                        val now = android.os.SystemClock.uptimeMillis()
-                        if (!browser.projectionRepairPending &&
-                            now - browser.lastProjectionGuardAt >= 350L
-                        ) {
-                            browser.lastProjectionGuardAt = now
-                            val actual = nativeAdapterItemCount(browser)
-                            val expected = browser.nativeOrder.size
-                            if (actual != null && actual != expected) {
-                                browser.projectionRepairPending = true
-                                browser.nativeSubmitted = false
-                                Log.i(
-                                    TAG,
-                                    "SMART FOLDERS PROJECTION DRIFT | expected=" +
-                                        expected + " | actual=" + actual +
-                                        " | repairing current folder"
+                    val front = isFrontFragmentView(list)
+                    val visible = front &&
+                        browser.overlay.visibility == View.VISIBLE &&
+                        list.isShown
+
+                    if (visible) {
+                        // If the current folder projection completed while a
+                        // Smart-Playlist detail was covering this fragment,
+                        // reveal it only in this first real front-surface draw.
+                        if (!browser.nativeContentReady) {
+                            val ready = nativeProjectionReady(browser)
+                            if (ready || browser.projectionFailOpenAllowed) {
+                                revealInitialContent(
+                                    browser,
+                                    allowProjectionMismatch =
+                                        browser.projectionFailOpenAllowed
                                 )
-                                refresh(browser)
+                                scheduleVisibleRowSync(browser)
+                            }
+                        } else if (browser.projectionPrepared) {
+                            // GMMP may submit its physical Smart root again
+                            // after GoneSmart committed a nested projection.
+                            // The adapter-count guard is foreground-only and
+                            // throttled; hidden ViewPager pages do no work.
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (!browser.projectionRepairPending &&
+                                now - browser.lastProjectionGuardAt >= 350L
+                            ) {
+                                browser.lastProjectionGuardAt = now
+                                val actual = nativeAdapterItemCount(browser)
+                                val expected = browser.nativeOrder.size
+                                if (actual != null && actual != expected) {
+                                    browser.projectionRepairPending = true
+                                    browser.nativeSubmitted = false
+                                    Log.i(
+                                        TAG,
+                                        "SMART FOLDERS PROJECTION DRIFT | expected=" +
+                                            expected + " | actual=" + actual +
+                                            " | repairing current folder"
+                                    )
+                                    refresh(browser)
+                                }
                             }
                         }
+
+                        // Edge stretch is the only operation that genuinely
+                        // needs draw-time sampling. Row reflection/alignment
+                        // is coalesced from native scroll/refresh events.
+                        syncNativeVerticalOverscroll(browser)
+                    } else if (browser.overscrollReported) {
+                        resetFolderOverscroll(browser)
                     }
-                    // Normal scrolling stays driven only by native consumed
-                    // dy. PreDraw mirrors GMMP's own top EdgeEffect stretch
-                    // so synthetic physical folders deform with native rows.
-                    syncNativeVerticalOverscroll(browser)
-                    alignVisibleNativeTitles(browser)
-                    syncVisibleSmartRowInteractions(browser)
                 }
                 true
             }
@@ -1803,6 +1826,7 @@ internal class SmartPlaylistFolderController(
                 browser.projectionRepairPending = false
                 settleFolderScrollAfterRefresh(browser, generation)
                 positionOverlay(browser)
+                scheduleVisibleRowSync(browser)
             }
         }
     }
