@@ -104,4 +104,52 @@ class TrackMixQueueSettlingPolicyTest {
             )
         )
     }
+
+    @Test
+    fun vanishedProvisionalSmartPlaylistCurrentMayBeRetargetedInsideGuard() {
+        assertTrue(
+            TrackMixQueueSettlingPolicy.shouldRetargetTransientTarget(
+                source = "menu_gm_context_track",
+                sinceDetectionMs = 400L,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                selectedTrackOccurrences = 0,
+                currentStillSelected = false,
+                playbackChangedFromBefore = true
+            )
+        )
+    }
+
+    @Test
+    fun retargetingFailsClosedOutsideSmartPlaylistSettlingWindow() {
+        assertFalse(
+            TrackMixQueueSettlingPolicy.shouldRetargetTransientTarget(
+                source = "menu_gm_context_track",
+                sinceDetectionMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                selectedTrackOccurrences = 0,
+                currentStillSelected = false,
+                playbackChangedFromBefore = true
+            )
+        )
+        assertFalse(
+            TrackMixQueueSettlingPolicy.shouldRetargetTransientTarget(
+                source = "menu_gm_context_queue",
+                sinceDetectionMs = 400L,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                selectedTrackOccurrences = 0,
+                currentStillSelected = false,
+                playbackChangedFromBefore = true
+            )
+        )
+        assertFalse(
+            TrackMixQueueSettlingPolicy.shouldRetargetTransientTarget(
+                source = "menu_gm_context_track",
+                sinceDetectionMs = 400L,
+                requiredGuardMs = TrackMixQueueSettlingPolicy.COMPLETION_GUARD_MS,
+                selectedTrackOccurrences = 1,
+                currentStillSelected = false,
+                playbackChangedFromBefore = true
+            )
+        )
+    }
 }
