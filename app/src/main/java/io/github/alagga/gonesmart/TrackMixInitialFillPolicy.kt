@@ -19,6 +19,16 @@ internal object TrackMixInitialFillPolicy {
         if (legacyQueue) LEGACY_COMMAND_REFILL_WAIT_MS
         else GMMP_421_COMMAND_PREPARE_WAIT_MS
 
+    /**
+     * Once Track Mix has reduced the queue to its selected native seed,
+     * playback continuity outranks waiting for the remote Smart-DJ pool.
+     * The pool fill may continue in the background, but GMMP must be
+     * allowed to populate its Initial Size immediately.
+     */
+    fun shouldWaitForSmartPoolAfterSeedIsolation(
+        explicitInitialRefill: Boolean
+    ): Boolean = !explicitInitialRefill
+
     fun nativeInitialRefillCount(
         initialSize: Int,
         seedQueueSize: Int

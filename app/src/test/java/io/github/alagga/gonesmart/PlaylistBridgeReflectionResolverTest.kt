@@ -62,6 +62,28 @@ class PlaylistBridgeReflectionResolverTest {
         @JvmField val b = QueryColumn("track_uri")
     }
 
+    private object WrongHistoricalQueryFieldsFixture {
+        @JvmField val a = QueryColumn("song_id")
+    }
+
+    private object RemappedQueryFieldsFixture {
+        @JvmField val x = QueryColumn("song_id")
+        @JvmField val y = QueryColumn("track_uri")
+    }
+
+    private class BlindQueryColumn : QueryFieldMarker {
+        override fun toString(): String = "opaque-column"
+    }
+
+    private class QueryPredicate(private val sql: String) {
+        override fun toString(): String = sql
+    }
+
+    private object BlindQueryFieldsFixture {
+        @JvmField val id: QueryFieldMarker = BlindQueryColumn()
+        @JvmField val uri: QueryFieldMarker = BlindQueryColumn()
+    }
+
     @Test
     fun preferredNameStillRequiresMatchingShape() {
         val method = PlaylistBridgeReflectionResolver.method(
@@ -191,5 +213,39 @@ class PlaylistBridgeReflectionResolverTest {
                 expectedValue = "track_uri"
             )
         }
+    }
+
+    @Test
+    fun semanticFieldDiscoveryFallsBackBeyondHistoricalHolderNames() {
+        val field = PlaylistBridgeReflectionResolver.resolveStaticFieldBySemanticValue(
+            preferredHolders = listOf(WrongHistoricalQueryFieldsFixture::class.java),
+            fallbackHolders = sequenceOf(RemappedQueryFieldsFixture::class.java),
+            valueClass = QueryColumn::class.java,
+            expectedValue = "track_uri",
+            description = "remapped query field"
+        )
+        assertEquals("y", field.name)
+        assertSame(RemappedQueryFieldsFixture::class.java, field.declaringClass)
+    }
+
+    @Test
+    fun semanticFieldDiscoveryMayUseResolvedNativeBuilderAsOpaqueProbe() {
+        val field = PlaylistBridgeReflectionResolver.resolveStaticFieldBySemanticValue(
+            preferredHolders = emptyList(),
+            fallbackHolders = sequenceOf(BlindQueryFieldsFixture::class.java),
+            valueClass = QueryFieldMarker::class.java,
+            expectedValue = "track_uri",
+            description = "opaque query field",
+            valueProbe = { value ->
+                when {
+                    value === BlindQueryFieldsFixture.uri ->
+                        QueryPredicate("track_uri IN (?)")
+                    value === BlindQueryFieldsFixture.id ->
+                        QueryPredicate("song_id IN (?)")
+                    else -> null
+                }
+            }
+        )
+        assertEquals("uri", field.name)
     }
 }

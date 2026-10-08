@@ -79,11 +79,9 @@ class GoneSmartModule : XposedModule() {
             60L
 
         // Track Auto-DJ must never strand playback on the isolated seed while
-        // the network recommendation pipeline takes many seconds. Give the
-        // smart pool a short head start, then let native GMMP fill Initial
-        // Size immediately while the same pool preparation keeps running.
-        private const val TRACK_MIX_INITIAL_SMART_WAIT_MS =
-            1_500L
+        // the network recommendation pipeline takes many seconds. Once the
+        // seed is isolated, the native Initial Size refill is immediate;
+        // recommendation preparation may continue only in the background.
 
         private const val RECENT_DUPLICATE_HISTORY_LIMIT =
             8
@@ -5541,18 +5539,34 @@ class GoneSmartModule : XposedModule() {
                 background = false
             )
 
+        val waitForSmartPool =
+            TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(
+                explicitInitialRefill = trackMixController.isExplicitInitialRefill()
+            )
+
+        if (!waitForSmartPool) {
+            // The queue now contains only the selected Track Mix seed.
+            // GMMP may request queue_position=2 immediately for its
+            // next/gapless decoder. Never block that native Initial Size
+            // refill on the network recommendation pipeline. The already
+            // started pool fill deliberately keeps running for later
+            // ordinary Auto-DJ refills.
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL CONTINUITY | native refill immediately" +
+                    " | poolFill=continuing"
+            )
+            return false
+        }
+
         Log.i(
             TAG,
             "SMART DJ WAIT | " +
                 "pool empty/insufficient - preparing session pool"
         )
 
-        val fastInitialWait = trackMixController.isExplicitInitialRefill()
-        val waitTimeoutMs = if (fastInitialWait) {
-            TRACK_MIX_INITIAL_SMART_WAIT_MS
-        } else {
+        val waitTimeoutMs =
             TimeUnit.SECONDS.toMillis(SMART_PREPARE_TIMEOUT_SECONDS)
-        }
 
         return try {
             future.get(
@@ -5579,19 +5593,6 @@ class GoneSmartModule : XposedModule() {
             ready
 
         } catch (timeoutException: TimeoutException) {
-
-            if (fastInitialWait) {
-                // Do not cancel or invalidate this fill: it becomes the warm
-                // pool for ordinary upcoming refills after native GMMP has
-                // made Next available immediately.
-                Log.i(
-                    TAG,
-                    "SMART DJ INITIAL FAST FALLBACK | waitedMs=" +
-                        TRACK_MIX_INITIAL_SMART_WAIT_MS +
-                        " | poolFill=continuing"
-                )
-                return false
-            }
 
             pipelineGeneration
                 .incrementAndGet()

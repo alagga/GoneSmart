@@ -1,6 +1,8 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackMixInitialFillPolicyTest {
@@ -56,6 +58,19 @@ class TrackMixInitialFillPolicyTest {
         assertEquals(
             90L,
             TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(false)
+        )
+    }
+
+    @Test fun isolatedTrackMixSeedNeverWaitsForSmartPool() {
+        assertFalse(
+            TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(
+                explicitInitialRefill = true
+            )
+        )
+        assertTrue(
+            TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(
+                explicitInitialRefill = false
+            )
         )
     }
 }

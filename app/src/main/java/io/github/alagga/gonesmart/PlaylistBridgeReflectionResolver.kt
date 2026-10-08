@@ -180,7 +180,8 @@ internal object PlaylistBridgeReflectionResolver {
     fun matchesStaticFieldSemanticValue(
         field: Field,
         valueClass: Class<*>,
-        expectedValue: String
+        expectedValue: String,
+        valueProbe: ((Any) -> Any?)? = null
     ): Boolean {
         if (!java.lang.reflect.Modifier.isStatic(field.modifiers)) {
             return false
@@ -188,11 +189,178 @@ internal object PlaylistBridgeReflectionResolver {
         return runCatching {
             field.isAccessible = true
             val value = field.get(null) ?: return@runCatching false
-            valueClass.isInstance(value) &&
-                semanticRepresentations(value).any {
-                    containsSemanticIdentifier(it, expectedValue)
-                }
+            if (!valueClass.isInstance(value)) return@runCatching false
+
+            val direct = semanticRepresentations(value).any {
+                containsSemanticIdentifier(it, expectedValue)
+            }
+            if (direct) return@runCatching true
+
+            val probed = valueProbe?.invoke(value)
+                ?: return@runCatching false
+            semanticRepresentations(probed).any {
+                containsSemanticIdentifier(it, expectedValue)
+            }
         }.getOrDefault(false)
+    }
+
+
+    private fun readNamedField(instance: Any, name: String): Any? {
+        var type: Class<*>? = instance.javaClass
+        while (type != null) {
+            val current = type
+            val field = runCatching {
+                current.getDeclaredField(name)
+            }.getOrNull()
+            if (field != null) {
+                return runCatching {
+                    field.isAccessible = true
+                    field.get(instance)
+                }.getOrNull()
+            }
+            type = current.superclass
+        }
+        return null
+    }
+
+    /**
+     * Enumerate only class names already present in this target ClassLoader's
+     * dex files. Classes are loaded without initialization; static values are
+     * touched only after their declared field shape is compatible with the
+     * native query-field parameter type.
+     */
+    private fun dexClassNames(loader: ClassLoader): Sequence<String> = sequence {
+        val pathList = readNamedField(loader, "pathList")
+            ?: return@sequence
+        val elements = readNamedField(pathList, "dexElements")
+            ?: return@sequence
+        if (!elements.javaClass.isArray) return@sequence
+
+        val seen = linkedSetOf<String>()
+        val length = java.lang.reflect.Array.getLength(elements)
+        for (index in 0 until length) {
+            val element = java.lang.reflect.Array.get(elements, index)
+                ?: continue
+            val dexFile = readNamedField(element, "dexFile")
+                ?: continue
+            val entries = runCatching {
+                dexFile.javaClass.getMethod("entries").invoke(dexFile)
+                    as? java.util.Enumeration<*>
+            }.getOrNull() ?: continue
+            while (entries.hasMoreElements()) {
+                val name = entries.nextElement() as? String ?: continue
+                if (seen.add(name)) yield(name)
+            }
+        }
+    }
+
+    private fun potentialSemanticHolder(
+        type: Class<*>,
+        valueClass: Class<*>
+    ): Boolean = type.declaredFields.any { field ->
+        java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+            !field.type.isPrimitive &&
+            field.type != Any::class.java &&
+            (
+                field.type.isAssignableFrom(valueClass) ||
+                    valueClass.isAssignableFrom(field.type)
+                )
+    }
+
+    internal fun resolveStaticFieldBySemanticValue(
+        preferredHolders: List<Class<*>>,
+        fallbackHolders: Sequence<Class<*>>,
+        valueClass: Class<*>,
+        expectedValue: String,
+        description: String,
+        valueProbe: ((Any) -> Any?)? = null
+    ): Field {
+        fun matches(type: Class<*>): List<Field> =
+            fields(type).filter { field ->
+                matchesStaticFieldSemanticValue(
+                    field = field,
+                    valueClass = valueClass,
+                    expectedValue = expectedValue,
+                    valueProbe = valueProbe
+                )
+            }
+
+        preferredHolders.distinctBy { it.name }.forEach { holder ->
+            val found = matches(holder)
+            require(found.size <= 1) {
+                "$description on preferred holder ${holder.name} is ambiguous: " +
+                    found.joinToString { it.name }
+            }
+            found.singleOrNull()?.let {
+                return it.apply { isAccessible = true }
+            }
+        }
+
+        val discovered = arrayListOf<Field>()
+        fallbackHolders
+            .distinctBy { it.name }
+            .filter { potentialSemanticHolder(it, valueClass) }
+            .forEach { holder ->
+                val found = matches(holder)
+                require(found.size <= 1) {
+                    "$description on discovered holder ${holder.name} is ambiguous: " +
+                        found.joinToString { it.name }
+                }
+                found.singleOrNull()?.let { field ->
+                    discovered += field
+                    require(discovered.size <= 1) {
+                        "$description is ambiguous across holders: " +
+                            discovered.joinToString {
+                                it.declaringClass.name + "." + it.name
+                            }
+                    }
+                }
+            }
+
+        require(discovered.size == 1) {
+            "$description is missing after semantic dex discovery"
+        }
+        return discovered.single().apply { isAccessible = true }
+    }
+
+    fun resolveStaticFieldBySemanticValue(
+        loader: ClassLoader,
+        preferredHolderNames: List<String>,
+        valueClass: Class<*>,
+        expectedValue: String,
+        description: String,
+        valueProbe: ((Any) -> Any?)? = null
+    ): Field {
+        val preferredNames = preferredHolderNames.distinct()
+        val preferred = preferredNames.mapNotNull { name ->
+            runCatching { loader.loadClass(name) }.getOrNull()
+        }
+        val valuePackage = valueClass.name.substringBeforeLast(
+            '.',
+            missingDelimiterValue = ""
+        )
+        val fallback = dexClassNames(loader)
+            .filter { className ->
+                className !in preferredNames &&
+                    className.substringBeforeLast(
+                        '.',
+                        missingDelimiterValue = ""
+                    ) == valuePackage
+            }
+            .mapNotNull { className ->
+                runCatching {
+                    Class.forName(className, false, loader)
+                }.getOrNull()
+            }
+
+        return resolveStaticFieldBySemanticValue(
+            preferredHolders = preferred,
+            fallbackHolders = fallback,
+            valueClass = valueClass,
+            expectedValue = expectedValue,
+            description = description,
+            valueProbe = valueProbe
+        )
     }
 
     fun method(

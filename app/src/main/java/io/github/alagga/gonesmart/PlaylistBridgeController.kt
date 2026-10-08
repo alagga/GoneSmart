@@ -1538,30 +1538,21 @@ internal class PlaylistBridgeController {
                     predicateClass.isAssignableFrom(method.returnType))
         }
         val queryFieldClass = nativeIn.parameterTypes[0]
-        val trackFieldClass = r.loadClass(
-            loader,
-            listOf("w75", "z75"),
-            "native track query fields"
-        ) { type ->
-            r.fields(type).count { field ->
-                r.matchesStaticFieldSemanticValue(
-                    field = field,
-                    valueClass = queryFieldClass,
-                    expectedValue = "track_uri"
+        val uriFieldMember = r.resolveStaticFieldBySemanticValue(
+            loader = loader,
+            preferredHolderNames = listOf("w75", "z75"),
+            valueClass = queryFieldClass,
+            expectedValue = "track_uri",
+            description = "native track URI query field",
+            valueProbe = { queryField ->
+                nativeIn.invoke(
+                    null,
+                    queryField,
+                    listOf("gonesmart-playlist-link-binding-probe")
                 )
-            } == 1
-        }
-        val uriField = r.field(
-            trackFieldClass,
-            listOf("URI"),
-            "native track URI query field"
-        ) { field ->
-            r.matchesStaticFieldSemanticValue(
-                field = field,
-                valueClass = queryFieldClass,
-                expectedValue = "track_uri"
-            )
-        }.get(null)
+            }
+        )
+        val uriField = uriFieldMember.get(null)
             ?: throw IllegalStateException("Native track URI query field is null")
 
         // OR grouping is required only when one source exceeds the
