@@ -64,7 +64,7 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Outside the guard, fail closed rather than following unrelated/manual playback.
 - Isolate the exact native Queue entity through proven GMMP writers and verify that the seed remains Current.
 - GMMP Initial Size includes the seed; request exactly the missing count through native `qr.z(count)`.
-- Recommendation preparation must not strand playback on a one-row queue. Give Smart DJ only a short bounded head start; native GMMP may fill immediately while the same pool fill continues in the background.
+- Recommendation preparation must not strand playback on a one-row queue. Give Smart DJ only a short bounded head start; native GMMP may fill immediately while the same pool preparation keeps running in the background.
 - Track-Auto-DJ-owned normalized queues use the accepted event-driven continuation repair: on a verified natural CURRENT transition, read remaining rows once and invoke `qr.z(deficit)` only when GMMP's configured upcoming count is not satisfied. No polling and no guessed append allocator.
 
 ## 6. Playlist / Smart-Playlist / UI rules
@@ -73,7 +73,7 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Playlist Link is portable/fail-closed. Disabling it leaves old Smart Playlists openable and GoneSmart-only semantics inert.
 - Playlist Link must share semantic/runtime GMMP boundaries with the accepted Playlist/Smart-Playlist stack. Historical 4.2.0 obfuscated names are fast-path evidence only; the leaf rule, presenter, parser, query builder, playlist DAO/model and Smart writer must be shape-validated and ambiguity must fail closed.
 - A remapped Playlist Link UI action is not proven by an old obfuscated method name plus a matching signature. Correlate the real user-triggered native call passively (for example from the resulting native dialog/event stack) before promoting an intercept boundary.
-- Playlist Link dispatch must not rely solely on an after-inflate `MenuItem` listener: GMMP may replace it later. Keep the validated native presenter link action as the authoritative fallback; use a bounded reentrancy bypass only when handing the Smart-Playlist option back to GMMP's original linker.
+- Playlist Link dispatch must not rely solely on an after-inflate `MenuItem` listener because GMMP may replace it later. A presenter/action fallback is authoritative only after that exact native boundary has been passively correlated from the real user action; until then it remains diagnostic evidence and must not be treated as proven.
 - Playlist Link is not accepted on a new GMMP mapping until one bundled device pass verifies **add → save → reopen/edit → evaluate/play** and then changes the linked source playlist once to prove that membership remains live rather than copied.
 - Multi-selection changes only the intended add/move/create action.
 - UI extensions follow GMMP's live theme/navigation surfaces rather than fixed assumptions where possible.
