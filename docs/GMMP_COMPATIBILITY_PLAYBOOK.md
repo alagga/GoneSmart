@@ -113,12 +113,15 @@ This continuation path is device-accepted for 0.4.0.
 
 The 2026-10-08 `d5ff3ddabff2` trace exposed two Track Mix regressions around the already accepted native boundaries. First, a queue-menu click that had actually started track `9772` was later reclassified as an unchanged replay of stale CURRENT track `9761`; the GoneSmart verification line itself showed `nativeSignal=false` and `changed=false`. Same-current replay therefore now requires the independent native playback signal instead of treating a successful menu dispatch as proof. Second, after isolating the seed, GMMP 4.2.1 populated its Auto-DJ pool in about 86–95 ms but could query queue position 2 and reach `next audio source is null` as early as about 208 ms. The historical 1.8 s command-settling guard is retained only for the accepted legacy `ex3` path. The 4.2.1 path crosses the already proven `qr.z(initial-deficit)` boundary after a short bounded native preparation window, before playback can observe an empty next position.
 
+Runtime `3cf7c504dc7d` then proved that this 90 ms 4.2.1 command boundary was actually active, but also exposed a second wait **inside GoneSmart's Smart-DJ refill interceptor**: after the queue had already been reduced to the single seed, recommendation-pool preparation blocked the explicit `qr.z(4)` path for another 1500 ms. During that interval GMMP requested `queue_position=2`, received `next audio source is null`, and only several hundred milliseconds later received the four fallback rows. The repair therefore no longer waits for the remote Smart-DJ pool at all once an explicit Track Mix seed is isolated. It starts or reuses the recommendation fill, immediately allows GMMP's native Initial Size refill to proceed, and keeps the recommendation work running only for later refills. This removes the GoneSmart-created empty-next window instead of tuning another delay.
+
 ### Recommendation-pool latency
 
 - successful fills may top up again as soon as low-water requires it;
 - the long provider backoff applies only after an unproductive fill;
 - startup/session prewarm is asynchronous;
-- Track Auto-DJ's explicit Initial-Size path gives smart preparation only a short bounded head start and never cancels the still-useful background fill when native GMMP must proceed immediately.
+- before Track Mix seed isolation, recommendation preparation may prewarm normally;
+- after explicit seed isolation, the Initial-Size path performs **zero remote Smart-pool wait**: native GMMP fills immediately while the same pool preparation continues in the background for later refills.
 
 ### Playlist / Smart-Playlist surfaces
 
@@ -146,7 +149,9 @@ The following `efc069cead61` device run advanced beyond that repair and failed o
 
 Runtime `e95176162041` then showed that semantic-value matching was still too strict because it tested the declared field type before reading the static value. The resolver was changed to accept a candidate only when the **runtime value** is an instance of the already resolved native query-field class and its semantic representation is `track_uri`, preserving uniqueness and fail-closed ambiguity.
 
-Runtime `d5ff3ddabff2` proved that this runtime-type repair still stopped at the same `w75/z75` holder boundary: neither static candidate exposed `track_uri` through the query-field object's direct representation. The next resolver therefore remains read-only and bounded but inspects the already loaded in-memory value graph of type-compatible static constants for the exact native identifier. It invokes no unknown methods, executes no query and still requires exactly one semantic `track_uri` candidate. Historical holder names remain bounded fast-path evidence; no new obfuscated mapping is guessed. Device re-acceptance remains pending.
+Runtime `d5ff3ddabff2` proved that this runtime-type repair still stopped at the same `w75/z75` holder boundary: neither static candidate exposed `track_uri` through the query-field object's direct representation. The next resolver therefore remained read-only and bounded and inspected the in-memory value graph of type-compatible static constants for the exact native identifier.
+
+Runtime `3cf7c504dc7d` finally proved that the failure occurs one level earlier still: both historical holder classes `w75` and `z75` are rejected before any semantic `track_uri` field can be selected, while the independently proven chooser callback `as4$g.accept(...)` continues to fire. The holder names are therefore no longer a gate. They remain fast paths, but on miss the resolver enumerates only class names from the target ClassLoader's dex files without initializing them, limits discovery to the native query-field package and structurally compatible static fields, and requires one unique semantic match. Direct bounded in-memory value inspection remains first choice; if the query-field object is opaque, only the already resolved native IN predicate builder may be used as a read-only in-memory semantic probe. No database query or unknown method is executed, and ambiguity still fails closed. Device re-acceptance remains pending.
 
 ## 5. Accepted-version performance contract
 
