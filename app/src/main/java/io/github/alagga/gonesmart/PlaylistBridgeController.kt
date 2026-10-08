@@ -71,9 +71,7 @@ internal class PlaylistBridgeController {
         val playlistEntries: Field,
         val fileModelFile: Field,
         val nativeIn: Method,
-        val nativeEquals: Method,
         val uriField: Any,
-        val idField: Any,
         val whereGroupConstructor: Constructor<*>,
         val databaseSingleton: Field,
         val playlistDaoGetter: Method,
@@ -888,10 +886,7 @@ internal class PlaylistBridgeController {
             as MutableList<Any?>
         rules.clear()
         rules += native.smartRuleConstructor.newInstance(
-            100, // GMMP 4.2.0 cg.A(100) -> z75.ID
-            if (shouldMatch) 1 else 0, // != for true, = for false
-            Long.MIN_VALUE.toString(),
-            0
+            *PlaylistBridgeNativeSentinelPolicy.ruleArguments(shouldMatch)
         )
         check(native.smartPlaylistSave.invoke(smart, file) == true) {
             "GMMP native Smart Playlist writer returned false"
@@ -1239,8 +1234,18 @@ internal class PlaylistBridgeController {
         return loaded
     }
 
-    private fun falsePredicate(native: Bindings): Any =
-        native.nativeEquals.invoke(null, native.idField, Long.MIN_VALUE)
+    private fun falsePredicate(native: Bindings): Any {
+        val rule = native.smartRuleConstructor.newInstance(
+            *PlaylistBridgeNativeSentinelPolicy.ruleArguments(false)
+        )
+        return native.evaluationMethod.invoke(
+            rule,
+            java.util.LinkedHashSet<Any>(),
+            0
+        ) ?: throw IllegalStateException(
+            "GMMP native fail-closed Smart-rule evaluator returned null"
+        )
+    }
 
     private fun canonicalPath(file: File): String =
         runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
@@ -1324,6 +1329,23 @@ internal class PlaylistBridgeController {
                 method.returnType != java.lang.Void.TYPE
         }
         val predicateClass = evaluationMethod.returnType
+        // Do not map a separate obfuscated equality helper just to create a
+        // fail-closed predicate. Ask GMMP's own native leaf-rule evaluator to
+        // compile the already accepted ID = Long.MIN_VALUE sentinel instead.
+        val failClosedRuleProbe = smartRuleConstructor.newInstance(
+            *PlaylistBridgeNativeSentinelPolicy.ruleArguments(false)
+        )
+        val failClosedPredicateProbe = evaluationMethod.invoke(
+            failClosedRuleProbe,
+            java.util.LinkedHashSet<Any>(),
+            0
+        ) ?: throw IllegalStateException(
+            "Native fail-closed Smart-rule evaluator returned null"
+        )
+        require(predicateClass.isInstance(failClosedPredicateProbe)) {
+            "Native fail-closed Smart-rule evaluator returned unexpected type " +
+                failClosedPredicateProbe.javaClass.name
+        }
 
         val presenterClass = r.loadClass(
             loader,
@@ -1507,18 +1529,6 @@ internal class PlaylistBridgeController {
                     predicateClass.isAssignableFrom(method.returnType))
         }
         val queryFieldClass = nativeIn.parameterTypes[0]
-        val nativeEquals = r.method(
-            searchHelperClass,
-            listOf("p"),
-            "native equality predicate builder"
-        ) { method ->
-            java.lang.reflect.Modifier.isStatic(method.modifiers) &&
-                method.parameterCount == 2 &&
-                method.parameterTypes[0] == queryFieldClass &&
-                !java.util.List::class.java.isAssignableFrom(method.parameterTypes[1]) &&
-                (method.returnType == predicateClass ||
-                    predicateClass.isAssignableFrom(method.returnType))
-        }
         val trackFieldClass = r.loadClass(
             loader,
             listOf("w75", "z75"),
@@ -1526,17 +1536,11 @@ internal class PlaylistBridgeController {
         ) { type ->
             runCatching {
                 val uri = type.getDeclaredField("URI")
-                val id = type.getDeclaredField("ID")
                 java.lang.reflect.Modifier.isStatic(uri.modifiers) &&
-                    java.lang.reflect.Modifier.isStatic(id.modifiers) &&
-                    queryFieldClass.isAssignableFrom(uri.type) &&
-                    queryFieldClass.isAssignableFrom(id.type)
+                    queryFieldClass.isAssignableFrom(uri.type)
             }.getOrDefault(false)
         }
         val uriField = trackFieldClass.getDeclaredField("URI").apply {
-            isAccessible = true
-        }.get(null)
-        val idField = trackFieldClass.getDeclaredField("ID").apply {
             isAccessible = true
         }.get(null)
 
@@ -1793,6 +1797,7 @@ internal class PlaylistBridgeController {
                 " | parser=${parserClass.name}" +
                 " | dao=${playlistDaoClass.name}" +
                 " | predicate=${predicateClass.name}" +
+                " | falsePredicate=native-rule-evaluator" +
                 " | linkBoundary=" +
                 (presenterLinkSmartPlaylist?.let {
                     it.declaringClass.name + "." + it.name
@@ -1826,9 +1831,7 @@ internal class PlaylistBridgeController {
             playlistEntries = playlistEntries,
             fileModelFile = fileModelFile,
             nativeIn = nativeIn,
-            nativeEquals = nativeEquals,
             uriField = uriField,
-            idField = idField,
             whereGroupConstructor = whereGroupConstructor,
             databaseSingleton = databaseSingleton,
             playlistDaoGetter = playlistDaoGetter,
