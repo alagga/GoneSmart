@@ -32,13 +32,20 @@ class PlaylistBridgeReflectionResolverTest {
         @Suppress("unused") fun Q1(value: RuleBase) = Unit
     }
 
-    private class QueryColumn(private val sql: String) {
+    private interface QueryFieldMarker
+
+    private class QueryColumn(private val sql: String) : QueryFieldMarker {
         override fun toString(): String = sql
     }
 
     private object QueryFieldsFixture {
         @JvmField val a = QueryColumn("song_id")
         @JvmField val b = QueryColumn("track_uri")
+    }
+
+    private object ErasedQueryFieldsFixture {
+        @JvmField val a: QueryFieldMarker = QueryColumn("song_id")
+        @JvmField val b: QueryFieldMarker = QueryColumn("track_uri")
     }
 
     private object AmbiguousQueryFieldsFixture {
@@ -127,6 +134,23 @@ class PlaylistBridgeReflectionResolverTest {
             )
         }
         assertEquals("b", field.name)
+    }
+
+    @Test
+    fun semanticStaticFieldUsesRuntimeValueTypeNotDeclaredFieldType() {
+        val field = PlaylistBridgeReflectionResolver.field(
+            ErasedQueryFieldsFixture::class.java,
+            listOf("URI"),
+            "semantic query field"
+        ) { candidate ->
+            PlaylistBridgeReflectionResolver.matchesStaticFieldSemanticValue(
+                field = candidate,
+                valueClass = QueryColumn::class.java,
+                expectedValue = "track_uri"
+            )
+        }
+        assertEquals("b", field.name)
+        assertSame(QueryFieldMarker::class.java, field.type)
     }
 
     @Test(expected = IllegalArgumentException::class)
