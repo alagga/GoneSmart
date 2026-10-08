@@ -78,3 +78,8 @@ For future divergent-branch integrations, a clean textual merge is not sufficien
 ## Release gate
 
 The release may be tagged only after the final feature head and the merged `main` head both pass the normal Build workflow. The signed public APK is produced only by `.github/workflows/release.yml`.
+
+
+## Post-release compatibility corrections
+
+- 8 October 2026: Playlist Link was found broken on the shipping 4.2.1 path because its bridge still depended on the old 4.2.0 obfuscated presenter/rule/parser/query/DAO map. A planned 0.4.2 repair replaces that all-or-nothing name map with shape-validated runtime bindings. This item is **not** re-accepted until the repaired add/save/reopen/evaluate/edit flow is verified on device.

@@ -1,6 +1,6 @@
 # Playlist Link
 
-**Current status (30 September 2026): feature-complete on the maintainer's tested GMMP 4.2.0 setup and enabled in both debug and release build variants of the v0.4 development branch.** This is branch acceptance, not a published v0.4 release or a compatibility claim for other GMMP versions.
+**Current status (8 October 2026): the feature remains accepted on GMMP 4.2.0, but a post-v0.4.1 device check found the 4.2.1 path broken by stale 4.2.0-only obfuscation bindings. The `fix/playlist-link-gmmp-4.2.1` / planned v0.4.2 repair replaces those bindings with shape-validated runtime resolution. Device re-acceptance is still pending.**
 
 Playlist Link lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Link**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
 
@@ -15,7 +15,7 @@ A saved Playlist Link rule appears as a normal playlist-style rule in the editor
 
 ## Runtime architecture
 
-The implementation intentionally reuses GMMP's original 4.2.0 internals rather than building a parallel Smart-Playlist evaluator:
+The implementation intentionally reuses GMMP's native internals rather than building a parallel Smart-Playlist evaluator. From the 4.2.1 repair onward, obfuscated names are only fast paths and every required editor/rule/parser/query/DAO/writer boundary is validated by runtime shape before use:
 
 1. Ordinary choices come from GMMP's native Playlist DAO.
 2. The selected playlist is parsed through GMMP's original M3U/PLS/WPL reader.
@@ -92,7 +92,7 @@ These accepted tests should not be repeated merely because documentation was cle
 
 ## Known release boundaries
 
-- GMMP **4.2.0** is the tested target; obfuscated internals are version-sensitive.
+- GMMP **4.2.0** is the previously device-accepted Playlist Link baseline. GMMP **4.2.1** has a v0.4.2 repair candidate pending device re-acceptance.
 - Very large ordinary playlists rely on the current verified URI-IN chunking behavior.
 - A missing source intentionally matches nothing while GoneSmart is active.
 - Moving/renaming a Playlist Link source is not guessed from its display name.

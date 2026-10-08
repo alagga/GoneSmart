@@ -3302,17 +3302,17 @@ class GoneSmartModule : XposedModule() {
     private fun installPlaylistBridgeEditorHooks(
         loader: ClassLoader
     ): Int {
+        val targets = playlistBridgeController.hookTargets() ?: run {
+            playlistBridgeWarn(
+                "Smart editor hook targets unavailable",
+                IllegalStateException("Playlist Bridge bindings missing")
+            )
+            return 0
+        }
         var installed = 0
 
         runCatching {
-            val presenterClass = loader.loadClass("ds4")
-            val constructor = presenterClass
-                .getDeclaredConstructor(
-                    android.content.Context::class.java,
-                    android.os.Bundle::class.java
-                )
-                .apply { isAccessible = true }
-            hook(constructor).intercept { chain ->
+            hook(targets.presenterConstructor).intercept { chain ->
                 val context = chain.getArg(0) as? android.content.Context
                 val result = chain.proceed()
                 playlistBridgeController.capturePresenter(
@@ -3327,11 +3327,7 @@ class GoneSmartModule : XposedModule() {
         }
 
         runCatching {
-            val presenterClass = loader.loadClass("ds4")
-            val method = presenterClass
-                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
+            hook(targets.presenterLinkSmartPlaylist).intercept { chain ->
                 val edit = chain.getArg(0) as? Boolean == true
                 if (
                     playlistBridgeController.interceptNativeLinkedEditor(
@@ -3349,25 +3345,25 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart link chooser hook unavailable", it)
         }
 
-        runCatching {
-            val consumerClass = loader.loadClass("ds4\$g")
-            val method = consumerClass
-                .getDeclaredMethod("accept", Any::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val previous = playlistBridgeSmartChooserTitleDepth.get()
-                playlistBridgeSmartChooserTitleDepth.set(previous + 1)
-                try {
-                    chain.proceed()
-                } finally {
-                    playlistBridgeSmartChooserTitleDepth.set(previous)
+        targets.chooserConsumerAccept?.let { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    val previous = playlistBridgeSmartChooserTitleDepth.get()
+                    playlistBridgeSmartChooserTitleDepth.set(previous + 1)
+                    try {
+                        chain.proceed()
+                    } finally {
+                        playlistBridgeSmartChooserTitleDepth.set(previous)
+                    }
                 }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn("Smart chooser title scope unavailable", it)
             }
-            installed++
-        }.onFailure {
-            playlistBridgeWarn("Smart chooser title scope unavailable", it)
         }
 
+        // This native resource accessor is stable outside the remapped Smart
+        // editor family. Keep it optional: title polish must never gate Link.
         runCatching {
             val basePresenterClass = loader.loadClass("bx")
             val method = basePresenterClass
@@ -3397,22 +3393,19 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart chooser title hook unavailable", it)
         }
 
-        runCatching {
-            val metadataTextClass = loader.loadClass("os2")
-            val baseRuleClass = loader.loadClass("gt4")
-            val method = metadataTextClass
-                .getDeclaredMethod("U", baseRuleClass)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val original = chain.proceed() as? String
-                playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
-                    chain.getArg(0),
-                    original
-                )
+        targets.ruleLabelFormatter?.let { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    val original = chain.proceed() as? String
+                    playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
+                        chain.getArg(0),
+                        original
+                    )
+                }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn("Smart rule label hook unavailable", it)
             }
-            installed++
-        }.onFailure {
-            playlistBridgeWarn("Smart rule label hook unavailable", it)
         }
 
         return installed
@@ -3421,20 +3414,9 @@ class GoneSmartModule : XposedModule() {
     private fun installPlaylistBridgeEvaluationHook(
         loader: ClassLoader
     ): Int {
+        val method = playlistBridgeController.hookTargets()?.evaluationMethod
+            ?: return 0
         return runCatching {
-            val smartRuleClass = loader.loadClass("ft4")
-            val whereClass = loader.loadClass("ww3")
-            val method = smartRuleClass
-                .getDeclaredMethod(
-                    "z",
-                    java.util.LinkedHashSet::class.java,
-                    java.lang.Integer::class.java
-                )
-                .apply { isAccessible = true }
-            require(method.returnType == whereClass) {
-                "Unexpected ft4.z return type " + method.returnType.name
-            }
-
             hook(method).intercept { chain ->
                 val rule = chain.getThisObject()
                 if (!playlistBridgeController.isBridgeRule(rule) ||

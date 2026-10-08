@@ -49,13 +49,22 @@ internal class PlaylistBridgeController {
     private data class Bindings(
         val loader: ClassLoader,
         val presenterClass: Class<*>,
+        val presenterConstructor: Constructor<*>,
         val baseRuleClass: Class<*>,
         val smartRuleClass: Class<*>,
         val smartRuleConstructor: Constructor<*>,
+        val ruleSentinel: Field,
+        val ruleValue: Field,
         val presenterAddRule: Method,
         val presenterState: Method,
-        val presenterRefresh: Method,
+        val presenterRefresh: Method?,
+        val presenterView: Field?,
         val stateRules: Method,
+        val statePaths: Field?,
+        val stateSelectedIndex: Field?,
+        val stateDirty: Field?,
+        val ruleIdGetter: Method?,
+        val ruleIdSetter: Method?,
         val playlistFileConstructor: Constructor<*>,
         val fileModelConstructor: Constructor<*>,
         val playlistRead: Method,
@@ -69,8 +78,6 @@ internal class PlaylistBridgeController {
         val databaseSingleton: Field,
         val playlistDaoGetter: Method,
         val playlistDaoAll: Method,
-        val playlistEntityUri: Field,
-        val playlistEntityName: Field,
         val dialogEventConstructor: Constructor<*>,
         val dialogCallbackClass: Class<*>,
         val eventBusGet: Method,
@@ -83,15 +90,18 @@ internal class PlaylistBridgeController {
         val popupMenuShow: Method,
         val popupMenuListenerClass: Class<*>,
         val smartPlaylistConstructor: Constructor<*>,
+        val smartPlaylistConstructorArgs: Array<Any?>,
         val smartPlaylistSave: Method,
         val smartPlaylistName: Field,
         val smartPlaylistRules: Field,
         val smartPlaylistMatchAll: Field,
         val groupRuleClass: Class<*>,
         val groupRules: Field,
-        val groupMatchAll: Field
+        val groupMatchAll: Field,
+        val chooserConsumerAccept: Method?,
+        val ruleLabelFormatter: Method?,
+        val evaluationMethod: Method
     )
-
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "GoneSmartPlaylistBridge").apply { isDaemon = true }
@@ -106,6 +116,24 @@ internal class PlaylistBridgeController {
     internal data class PortableSaveToken(
         val originals: List<Pair<Any, String?>>
     )
+
+    internal data class HookTargets(
+        val presenterConstructor: Constructor<*>,
+        val presenterLinkSmartPlaylist: Method,
+        val chooserConsumerAccept: Method?,
+        val ruleLabelFormatter: Method?,
+        val evaluationMethod: Method
+    )
+
+    internal fun hookTargets(): HookTargets? = bindings?.let { native ->
+        HookTargets(
+            presenterConstructor = native.presenterConstructor,
+            presenterLinkSmartPlaylist = native.presenterLinkSmartPlaylist,
+            chooserConsumerAccept = native.chooserConsumerAccept,
+            ruleLabelFormatter = native.ruleLabelFormatter,
+            evaluationMethod = native.evaluationMethod
+        )
+    }
 
     fun setEnabled(value: Boolean) {
         if (enabled == value) return
@@ -131,56 +159,18 @@ internal class PlaylistBridgeController {
     private fun diagnoseCompatibilityBindings(
         loader: ClassLoader
     ) {
-        runCatching {
-            val type = loader.loadClass("ft4")
-            Log.w(
-                TAG,
-                "BRIDGE MAPPING | ft4 constructors=" +
-                    GmmpReflectionDiagnostics.constructors(type) +
-                    " | methods2=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 20
-                    ) {
-                        it.parameterTypes.size == 2
-                    }
-            )
-        }
-
-        runCatching {
-            val type = loader.loadClass("ds4")
-            val nested =
-                type.declaredClasses
-                    .take(12)
-                    .joinToString(",") { it.name }
-                    .ifBlank { "none" }
-            Log.w(
-                TAG,
-                "BRIDGE MAPPING | ds4 constructors=" +
-                    GmmpReflectionDiagnostics.constructors(type) +
-                    " | oneArgMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 20
-                    ) {
-                        it.parameterTypes.size == 1
-                    } +
-                    " | nested=" + nested
-            )
-        }
-
-        runCatching {
-            val type = loader.loadClass("os2")
-            Log.w(
-                TAG,
-                "BRIDGE MAPPING | os2 oneArgMethods=" +
-                    GmmpReflectionDiagnostics.methods(
-                        type = type,
-                        limit = 20
-                    ) {
-                        it.parameterTypes.size == 1
-                    }
-            )
+        listOf("ct4", "ft4", "as4", "ds4", "ls2", "os2").forEach { name ->
+            runCatching { loader.loadClass(name) }.getOrNull()?.let { type ->
+                Log.w(
+                    TAG,
+                    "BRIDGE MAPPING | candidate=$name" +
+                        " | constructors=" + GmmpReflectionDiagnostics.constructors(type) +
+                        " | methods=" + GmmpReflectionDiagnostics.methods(
+                            type = type,
+                            limit = 24
+                        ) { true }
+                )
+            }
         }
     }
 
@@ -255,9 +245,7 @@ internal class PlaylistBridgeController {
             return original
         }
         val value = runCatching {
-            findField(rule.javaClass, "q")
-                .apply { isAccessible = true }
-                .get(rule) as? String
+            native.ruleValue.get(rule) as? String
         }.getOrNull()
         if (PlaylistBridgeReference.isBridgeValue(value)) return original
         if (
@@ -402,11 +390,9 @@ internal class PlaylistBridgeController {
         val native = bindings ?: return false
         if (rule == null || !native.smartRuleClass.isInstance(rule)) return false
         return runCatching {
-            val field = findField(rule.javaClass, "o").apply { isAccessible = true }
-                .getInt(rule)
-            val value = findField(rule.javaClass, "q").apply { isAccessible = true }
-                .get(rule) as? String
-            field == -1 && PlaylistBridgeReference.decode(value) != null
+            val sentinel = native.ruleSentinel.getInt(rule)
+            val value = native.ruleValue.get(rule) as? String
+            sentinel == -1 && PlaylistBridgeReference.decode(value) != null
         }.getOrDefault(false)
     }
 
@@ -415,8 +401,7 @@ internal class PlaylistBridgeController {
     fun compile(rule: Any): Any {
         val native = bindings
             ?: throw IllegalStateException("Playlist Bridge bindings missing")
-        val value = findField(rule.javaClass, "q").apply { isAccessible = true }
-            .get(rule) as? String
+        val value = native.ruleValue.get(rule) as? String
         val reference = PlaylistBridgeReference.decode(value)
             ?: return falsePredicate(native)
         val started = System.nanoTime()
@@ -507,12 +492,9 @@ internal class PlaylistBridgeController {
     }
 
     fun restorePortableSave(token: PortableSaveToken?) {
+        val native = bindings ?: return
         token?.originals?.asReversed()?.forEach { (rule, value) ->
-            runCatching {
-                findField(rule.javaClass, "q")
-                    .apply { isAccessible = true }
-                    .set(rule, value)
-            }
+            runCatching { native.ruleValue.set(rule, value) }
         }
     }
 
@@ -620,9 +602,7 @@ internal class PlaylistBridgeController {
         originals: MutableList<Pair<Any, String?>>
     ) {
         if (native.smartRuleClass.isInstance(rule) && isBridgeRule(rule)) {
-            val field = findField(rule.javaClass, "q").apply {
-                isAccessible = true
-            }
+            val field = native.ruleValue
             val original = field.get(rule) as? String
             val reference = PlaylistBridgeReference.decode(original) ?: return
             val compatibilityPath = compatibilitySmartPlaylistPath(
@@ -727,7 +707,9 @@ internal class PlaylistBridgeController {
         file: File,
         shouldMatch: Boolean
     ) {
-        val smart = native.smartPlaylistConstructor.newInstance()
+        val smart = native.smartPlaylistConstructor.newInstance(
+            *native.smartPlaylistConstructorArgs
+        )
         native.smartPlaylistName.set(
             smart,
             if (shouldMatch) {
@@ -897,9 +879,7 @@ internal class PlaylistBridgeController {
         @Suppress("UNCHECKED_CAST")
         val rules = native.stateRules.invoke(state) as MutableList<Any?>
         @Suppress("UNCHECKED_CAST")
-        val paths = findField(state.javaClass, "x")
-            .apply { isAccessible = true }
-            .get(state) as? MutableMap<Int, String>
+        val paths = native.statePaths?.get(state) as? MutableMap<Int, String>
         paths?.put(rules.size, choice.path)
         val rule = createRule(native, choice)
         native.presenterAddRule.invoke(presenter, rule)
@@ -918,31 +898,25 @@ internal class PlaylistBridgeController {
         val state = native.presenterState.invoke(presenter)
         @Suppress("UNCHECKED_CAST")
         val rules = native.stateRules.invoke(state) as MutableList<Any?>
-        val index = findField(state.javaClass, "y")
-            .apply { isAccessible = true }
-            .getInt(state)
+        val selectedIndex = native.stateSelectedIndex
+            ?: throw IllegalStateException("Smart editor selected-index mapping unavailable")
+        val index = selectedIndex.getInt(state)
         val previous = rules.getOrNull(index)
             ?: throw IndexOutOfBoundsException("Smart rule index $index")
         val replacement = createRule(native, choice)
         runCatching {
-            val id = previous.javaClass.getMethod("d").invoke(previous) as Number
-            replacement.javaClass
-                .getMethod("w", java.lang.Long.TYPE)
-                .invoke(replacement, id.toLong())
+            val getter = native.ruleIdGetter ?: return@runCatching
+            val setter = native.ruleIdSetter ?: return@runCatching
+            val id = getter.invoke(previous) as? Number ?: return@runCatching
+            setter.invoke(replacement, id.toLong())
         }
         rules[index] = replacement
-        findField(state.javaClass, "v")
-            .apply { isAccessible = true }
-            .setBoolean(state, true)
+        native.stateDirty?.setBoolean(state, true)
         @Suppress("UNCHECKED_CAST")
-        val paths = findField(state.javaClass, "x")
-            .apply { isAccessible = true }
-            .get(state) as? MutableMap<Int, String>
+        val paths = native.statePaths?.get(state) as? MutableMap<Int, String>
         paths?.put(index, choice.path)
-        val view = findField(presenter.javaClass, "r")
-            .apply { isAccessible = true }
-            .get(presenter)
-        if (view != null) {
+        val view = native.presenterView?.get(presenter)
+        if (view != null && native.presenterRefresh != null) {
             native.presenterRefresh.invoke(presenter, view)
         }
         Log.i(
@@ -966,9 +940,8 @@ internal class PlaylistBridgeController {
     private fun selectedRule(presenter: Any): Any? = runCatching {
         val native = bindings ?: return@runCatching null
         val state = native.presenterState.invoke(presenter)
-        val index = findField(state.javaClass, "y")
-            .apply { isAccessible = true }
-            .getInt(state)
+        val indexField = native.stateSelectedIndex ?: return@runCatching null
+        val index = indexField.getInt(state)
         val rules = native.stateRules.invoke(state) as? List<*>
         rules?.getOrNull(index)
     }.getOrNull()
@@ -982,15 +955,29 @@ internal class PlaylistBridgeController {
             ?: emptyList<Any>()
         val raw = rows.mapNotNull { row ->
             if (row == null) return@mapNotNull null
-            val uri = native.playlistEntityUri.get(row) as? String
-                ?: return@mapNotNull null
-            val file = playlistFile(uri) ?: return@mapNotNull null
-            if (file.extension.lowercase() !in SUPPORTED_EXTENSIONS) {
-                return@mapNotNull null
-            }
-            val display = (native.playlistEntityName.get(row) as? String)
-                ?.takeUnless(String::isBlank)
-                ?: file.nameWithoutExtension
+            val strings = PlaylistBridgeReflectionResolver.fields(row.javaClass)
+                .asSequence()
+                .filter { it.type == String::class.java }
+                .mapNotNull { field ->
+                    field.isAccessible = true
+                    runCatching { field.get(row) as? String }.getOrNull()
+                }
+                .filter(String::isNotBlank)
+                .distinct()
+                .toList()
+            val source = strings.firstNotNullOfOrNull { raw ->
+                playlistFile(raw)?.takeIf {
+                    it.extension.lowercase() in SUPPORTED_EXTENSIONS
+                }?.let { raw to it }
+            } ?: return@mapNotNull null
+            val uri = source.first
+            val file = source.second
+            val display = strings.firstOrNull { value ->
+                value != uri &&
+                    !value.startsWith("file://", ignoreCase = true) &&
+                    !value.startsWith("content://", ignoreCase = true) &&
+                    !value.contains(File.separatorChar)
+            } ?: file.nameWithoutExtension
             PlaylistChoice(
                 path = canonicalPath(file),
                 displayName = display,
@@ -1102,178 +1089,589 @@ internal class PlaylistBridgeController {
     }
 
     private fun createBindings(loader: ClassLoader): Bindings {
-        val presenterClass = loader.loadClass("ds4")
-        val baseRuleClass = loader.loadClass("gt4")
-        val smartRuleClass = loader.loadClass("ft4")
-        val smartPlaylistClass = loader.loadClass("ws4")
-        val groupRuleClass = loader.loadClass("jt4")
-        val stateClass = loader.loadClass("hs4")
-        val playlistFileClass = loader.loadClass("hp3")
-        val fileModelClass = loader.loadClass("th1")
-        val queryFieldClass = loader.loadClass("qw3")
-        val searchHelperClass = loader.loadClass("ot0")
-        val trackFieldClass = loader.loadClass("z75")
-        val whereGroupClass = loader.loadClass("zw3")
-        val dbClass =
-            loader.loadClass("gonemad.gmmp.data.database.GMDatabase")
-        val playlistDaoClass = loader.loadClass("ko3")
-        val playlistEntityClass = loader.loadClass("gp3")
-        val dialogEventClass = loader.loadClass("zn4")
-        val dialogCallbackClass = loader.loadClass("mr1")
-        val eventBusClass = loader.loadClass("gc1")
-        val unitClass = loader.loadClass("uf5")
-        val viewClass = loader.loadClass("fo2")
-        val popupMenuClass =
-            loader.loadClass("androidx.appcompat.widget.PopupMenu")
-        val popupMenuListenerClass =
-            loader.loadClass(
-                "androidx.appcompat.widget.PopupMenu\$OnMenuItemClickListener"
+        val r = PlaylistBridgeReflectionResolver
+
+        // GMMP 4.2.1 shifted this family of R8 names by three letters on the
+        // tested build (for example ws4 -> ts4). Names are fast paths only;
+        // every class/member is shape-validated below.
+        val smartRuleClass = r.loadClass(
+            loader,
+            listOf("ct4", "ft4"),
+            "Playlist Link leaf Smart rule"
+        ) { type ->
+            type.declaredConstructors.any { ctor ->
+                ctor.parameterTypes.contentEquals(
+                    arrayOf(
+                        Integer.TYPE,
+                        Integer.TYPE,
+                        String::class.java,
+                        Integer.TYPE
+                    )
+                )
+            }
+        }
+        val smartRuleConstructor = r.constructor(
+            smartRuleClass,
+            "Playlist Link leaf-rule constructor"
+        ) { ctor ->
+            ctor.parameterTypes.contentEquals(
+                arrayOf(
+                    Integer.TYPE,
+                    Integer.TYPE,
+                    String::class.java,
+                    Integer.TYPE
+                )
             )
+        }
+        val baseRuleClass = smartRuleClass.superclass
+            ?: throw IllegalStateException("Playlist Link leaf rule has no base class")
+        val probeValue = "gonesmart-playlist-v2:binding-probe"
+        val probeRule = smartRuleConstructor.newInstance(-1, 0, probeValue, 0)
+        val ruleValue = r.field(
+            smartRuleClass,
+            listOf("q"),
+            "Playlist Link rule value"
+        ) { field ->
+            field.type == String::class.java &&
+                runCatching { field.isAccessible = true; field.get(probeRule) == probeValue }
+                    .getOrDefault(false)
+        }
+        val ruleSentinel = r.field(
+            smartRuleClass,
+            listOf("o"),
+            "Playlist Link rule sentinel"
+        ) { field ->
+            field.type == Integer.TYPE &&
+                runCatching { field.isAccessible = true; field.getInt(probeRule) == -1 }
+                    .getOrDefault(false)
+        }
+
+        val evaluationMethod = r.method(
+            smartRuleClass,
+            listOf("z"),
+            "Playlist Link rule evaluator"
+        ) { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 2 &&
+                java.util.LinkedHashSet::class.java.isAssignableFrom(method.parameterTypes[0]) &&
+                (method.parameterTypes[1] == java.lang.Integer::class.java ||
+                    method.parameterTypes[1] == Integer.TYPE) &&
+                method.returnType != java.lang.Void.TYPE
+        }
+        val predicateClass = evaluationMethod.returnType
+
+        val presenterClass = r.loadClass(
+            loader,
+            listOf("as4", "ds4"),
+            "Smart editor presenter"
+        ) { type ->
+            type.declaredConstructors.any { ctor ->
+                ctor.parameterTypes.contentEquals(
+                    arrayOf(Context::class.java, android.os.Bundle::class.java)
+                )
+            }
+        }
+        val presenterConstructor = r.constructor(
+            presenterClass,
+            "Smart editor presenter constructor"
+        ) { ctor ->
+            ctor.parameterTypes.contentEquals(
+                arrayOf(Context::class.java, android.os.Bundle::class.java)
+            )
+        }
+        val presenterAddRule = r.method(
+            presenterClass,
+            listOf("P1"),
+            "Smart editor add-rule action"
+        ) { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0].isAssignableFrom(smartRuleClass)
+        }
+        val presenterState = r.method(
+            presenterClass,
+            listOf("V1"),
+            "Smart editor state accessor"
+        ) { method ->
+            method.parameterCount == 0 &&
+                method.returnType != java.lang.Void.TYPE &&
+                r.methods(method.returnType).any { candidate ->
+                    candidate.parameterCount == 0 &&
+                        java.util.List::class.java.isAssignableFrom(candidate.returnType)
+                }
+        }
+        val stateClass = presenterState.returnType
+        val stateRules = r.method(
+            stateClass,
+            listOf("b"),
+            "Smart editor rule-list accessor"
+        ) { method ->
+            method.parameterCount == 0 &&
+                java.util.List::class.java.isAssignableFrom(method.returnType)
+        }
+        val statePaths = r.optionalField(stateClass, listOf("x")) { field ->
+            java.util.Map::class.java.isAssignableFrom(field.type)
+        }
+        val stateSelectedIndex = r.optionalField(stateClass, listOf("y")) {
+            it.type == Integer.TYPE
+        }
+        val stateDirty = r.optionalField(stateClass, listOf("v")) {
+            it.type == java.lang.Boolean.TYPE
+        }
+        val presenterView = r.optionalField(presenterClass, listOf("r")) { field ->
+            !field.type.isPrimitive &&
+                !Context::class.java.isAssignableFrom(field.type)
+        }
+        val presenterRefresh = r.optionalMethod(
+            presenterClass,
+            listOf("Z1")
+        ) { method ->
+            method.parameterCount == 1 &&
+                method.returnType == java.lang.Void.TYPE &&
+                (presenterView == null ||
+                    method.parameterTypes[0].isAssignableFrom(presenterView.type) ||
+                    presenterView.type.isAssignableFrom(method.parameterTypes[0]))
+        }
+        val presenterLinkSmartPlaylist = r.method(
+            presenterClass,
+            listOf("g2"),
+            "native linked-Smart-Playlist action"
+        ) { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterTypes.contentEquals(arrayOf(java.lang.Boolean.TYPE))
+        }
+        val ruleIdGetter = r.optionalMethod(smartRuleClass, listOf("d")) { method ->
+            method.parameterCount == 0 &&
+                (Number::class.java.isAssignableFrom(method.returnType) ||
+                    method.returnType == java.lang.Long.TYPE)
+        }
+        val ruleIdSetter = r.optionalMethod(smartRuleClass, listOf("w")) { method ->
+            method.parameterTypes.contentEquals(arrayOf(java.lang.Long.TYPE))
+        }
+
+        val parserClass = r.loadClass(
+            loader,
+            listOf("ep3", "hp3"),
+            "native playlist parser"
+        ) { type ->
+            type.declaredConstructors.any { ctor ->
+                ctor.parameterCount == 1 &&
+                    ctor.parameterTypes[0].declaredConstructors.any { modelCtor ->
+                        modelCtor.parameterTypes.contentEquals(
+                            arrayOf(File::class.java, java.lang.Long::class.java)
+                        )
+                    }
+            }
+        }
+        val playlistFileConstructor = r.constructor(
+            parserClass,
+            "native playlist parser constructor"
+        ) { ctor ->
+            ctor.parameterCount == 1 &&
+                ctor.parameterTypes[0].declaredConstructors.any { modelCtor ->
+                    modelCtor.parameterTypes.contentEquals(
+                        arrayOf(File::class.java, java.lang.Long::class.java)
+                    )
+                }
+        }
+        val fileModelClass = playlistFileConstructor.parameterTypes[0]
+        val fileModelConstructor = r.constructor(
+            fileModelClass,
+            "native playlist entry/file model constructor"
+        ) { ctor ->
+            ctor.parameterTypes.contentEquals(
+                arrayOf(File::class.java, java.lang.Long::class.java)
+            )
+        }
+        val playlistRead = r.method(
+            parserClass,
+            listOf("c"),
+            "native playlist read action"
+        ) { method ->
+            java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterTypes.contentEquals(
+                    arrayOf(parserClass, String::class.java, Integer.TYPE)
+                )
+        }
+        val playlistEntries = r.field(
+            parserClass,
+            listOf("r"),
+            "native parsed playlist entries"
+        ) { field -> java.util.Collection::class.java.isAssignableFrom(field.type) }
+        val fileModelFile = r.field(
+            fileModelClass,
+            listOf("a"),
+            "native playlist entry file"
+        ) { field -> File::class.java.isAssignableFrom(field.type) }
+
+        val searchHelperClass = r.loadClass(
+            loader,
+            listOf("lt0", "ot0"),
+            "native Smart query helper"
+        ) { type ->
+            r.methods(type).any { method ->
+                java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.parameterCount == 2 &&
+                    java.util.List::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                    (method.returnType == predicateClass ||
+                        predicateClass.isAssignableFrom(method.returnType))
+            }
+        }
+        val nativeIn = r.method(
+            searchHelperClass,
+            listOf("t"),
+            "native IN predicate builder"
+        ) { method ->
+            java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 2 &&
+                java.util.List::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                (method.returnType == predicateClass ||
+                    predicateClass.isAssignableFrom(method.returnType))
+        }
+        val queryFieldClass = nativeIn.parameterTypes[0]
+        val nativeEquals = r.method(
+            searchHelperClass,
+            listOf("p"),
+            "native equality predicate builder"
+        ) { method ->
+            java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 2 &&
+                method.parameterTypes[0] == queryFieldClass &&
+                !java.util.List::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                (method.returnType == predicateClass ||
+                    predicateClass.isAssignableFrom(method.returnType))
+        }
+        val trackFieldClass = r.loadClass(
+            loader,
+            listOf("w75", "z75"),
+            "native track query fields"
+        ) { type ->
+            runCatching {
+                val uri = type.getDeclaredField("URI")
+                val id = type.getDeclaredField("ID")
+                java.lang.reflect.Modifier.isStatic(uri.modifiers) &&
+                    java.lang.reflect.Modifier.isStatic(id.modifiers) &&
+                    queryFieldClass.isAssignableFrom(uri.type) &&
+                    queryFieldClass.isAssignableFrom(id.type)
+            }.getOrDefault(false)
+        }
+        val uriField = trackFieldClass.getDeclaredField("URI").apply {
+            isAccessible = true
+        }.get(null)
+        val idField = trackFieldClass.getDeclaredField("ID").apply {
+            isAccessible = true
+        }.get(null)
+
+        val whereGroupClass = sequenceOf(
+            predicateClass,
+            r.optionalClass(loader, listOf("ww3", "zw3")) { candidate ->
+                predicateClass.isAssignableFrom(candidate) ||
+                    candidate.isAssignableFrom(predicateClass)
+            }
+        ).filterNotNull().firstOrNull { candidate ->
+            candidate.declaredConstructors.any { ctor ->
+                ctor.parameterTypes.contentEquals(
+                    arrayOf(java.util.List::class.java, String::class.java)
+                )
+            }
+        } ?: throw IllegalStateException("Native OR predicate group is unavailable")
+        val whereGroupConstructor = r.constructor(
+            whereGroupClass,
+            "native OR predicate group"
+        ) { ctor ->
+            ctor.parameterTypes.contentEquals(
+                arrayOf(java.util.List::class.java, String::class.java)
+            )
+        }
+
+        val dbClass = loader.loadClass("gonemad.gmmp.data.database.GMDatabase")
+        val playlistDaoClass = r.loadClass(
+            loader,
+            listOf("ho3", "ko3"),
+            "native Playlist DAO"
+        ) { type ->
+            r.methods(type).any { method ->
+                method.parameterCount == 0 &&
+                    java.util.List::class.java.isAssignableFrom(method.returnType)
+            }
+        }
+        val databaseSingleton = r.field(
+            dbClass,
+            listOf("l"),
+            "GMDatabase singleton"
+        ) { field ->
+            java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                dbClass.isAssignableFrom(field.type)
+        }
+        val playlistDaoGetter = r.method(
+            dbClass,
+            listOf("E"),
+            "GMDatabase Playlist DAO accessor"
+        ) { method ->
+            method.parameterCount == 0 &&
+                playlistDaoClass.isAssignableFrom(method.returnType)
+        }
+        val playlistDaoAll = r.method(
+            playlistDaoClass,
+            listOf("G1"),
+            "native Playlist DAO list reader"
+        ) { method ->
+            method.parameterCount == 0 &&
+                java.util.List::class.java.isAssignableFrom(method.returnType)
+        }
+
+        val dialogEventClass = r.loadClass(
+            loader,
+            listOf("wn4", "zn4"),
+            "native list-dialog event"
+        ) { type ->
+            type.declaredConstructors.any { ctor ->
+                ctor.parameterCount == 3 &&
+                    ctor.parameterTypes[0] == String::class.java &&
+                    java.util.List::class.java.isAssignableFrom(ctor.parameterTypes[1]) &&
+                    ctor.parameterTypes[2].isInterface
+            }
+        }
+        val dialogEventConstructor = r.constructor(
+            dialogEventClass,
+            "native list-dialog event constructor"
+        ) { ctor ->
+            ctor.parameterCount == 3 &&
+                ctor.parameterTypes[0] == String::class.java &&
+                java.util.List::class.java.isAssignableFrom(ctor.parameterTypes[1]) &&
+                ctor.parameterTypes[2].isInterface
+        }
+        val dialogCallbackClass = dialogEventConstructor.parameterTypes[2]
+        val eventBusClass = r.loadClass(
+            loader,
+            listOf("dc1", "gc1"),
+            "native event bus"
+        ) { type ->
+            r.methods(type).any { method ->
+                java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.parameterCount == 0 &&
+                    type.isAssignableFrom(method.returnType)
+            }
+        }
+        val eventBusGet = r.method(
+            eventBusClass,
+            listOf("b"),
+            "native event-bus singleton accessor"
+        ) { method ->
+            java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 0 &&
+                eventBusClass.isAssignableFrom(method.returnType)
+        }
+        val eventBusPost = r.method(
+            eventBusClass,
+            listOf("f"),
+            "native event-bus post"
+        ) { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0].isAssignableFrom(dialogEventClass)
+        }
+        val unitClass = r.loadClass(
+            loader,
+            listOf("rf5", "uf5"),
+            "Kotlin Unit runtime value"
+        ) { type ->
+            r.fields(type).any { field ->
+                java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                    type.isAssignableFrom(field.type)
+            }
+        }
+        val unitField = r.field(
+            unitClass,
+            listOf("a"),
+            "Kotlin Unit singleton"
+        ) { field ->
+            java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                unitClass.isAssignableFrom(field.type)
+        }
+
+        val popupMenuClass = loader.loadClass("androidx.appcompat.widget.PopupMenu")
+        val popupMenuListenerClass = loader.loadClass(
+            "androidx.appcompat.widget.PopupMenu\$OnMenuItemClickListener"
+        )
+        val popupMenuConstructor = popupMenuClass.getDeclaredConstructor(
+            Context::class.java,
+            View::class.java
+        ).apply { isAccessible = true }
+        val popupMenuGetMenu = popupMenuClass.getDeclaredMethod("getMenu").apply {
+            isAccessible = true
+        }
+        val popupMenuSetListener = popupMenuClass.getDeclaredMethod(
+            "setOnMenuItemClickListener",
+            popupMenuListenerClass
+        ).apply { isAccessible = true }
+        val popupMenuShow = popupMenuClass.getDeclaredMethod("show").apply {
+            isAccessible = true
+        }
+
+        val smartPlaylistClass = r.loadClass(
+            loader,
+            listOf("ts4", "ws4"),
+            "native Smart-Playlist model"
+        ) { type ->
+            r.methods(type).any { method ->
+                method.parameterTypes.contentEquals(arrayOf(File::class.java)) &&
+                    (method.returnType == java.lang.Boolean.TYPE ||
+                        method.returnType == java.lang.Boolean::class.java)
+            } &&
+                r.fields(type).any { java.util.List::class.java.isAssignableFrom(it.type) } &&
+                r.fields(type).any { it.type == java.lang.Boolean.TYPE }
+        }
+        val smartPlaylistConstructor = smartPlaylistClass.declaredConstructors
+            .firstOrNull { it.parameterCount == 0 }
+            ?: smartPlaylistClass.declaredConstructors.singleOrNull { ctor ->
+                ctor.parameterCount == 6 &&
+                    ctor.parameterTypes[1] == Integer.TYPE &&
+                    ctor.parameterTypes[2] == Integer.TYPE &&
+                    ctor.parameterTypes[3] == Integer.TYPE &&
+                    ctor.parameterTypes[5] == Integer.TYPE
+            }
+            ?: throw IllegalStateException(
+                "Native Smart-Playlist constructor shape is ambiguous"
+            )
+        smartPlaylistConstructor.isAccessible = true
+        val smartPlaylistConstructorArgs: Array<Any?> =
+            if (smartPlaylistConstructor.parameterCount == 0) {
+                emptyArray()
+            } else {
+                arrayOf(null, 0, 0, 0, null, 255)
+            }
+        val smartPlaylistSave = r.method(
+            smartPlaylistClass,
+            listOf("t"),
+            "native Smart-Playlist writer"
+        ) { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterTypes.contentEquals(arrayOf(File::class.java)) &&
+                (method.returnType == java.lang.Boolean.TYPE ||
+                    method.returnType == java.lang.Boolean::class.java)
+        }
+        val smartPlaylistName = r.field(
+            smartPlaylistClass,
+            listOf("o"),
+            "Smart-Playlist name"
+        ) { it.type == String::class.java }
+        val smartPlaylistRules = r.field(
+            smartPlaylistClass,
+            listOf("u"),
+            "Smart-Playlist rule list"
+        ) { java.util.List::class.java.isAssignableFrom(it.type) }
+        val smartPlaylistMatchAll = r.field(
+            smartPlaylistClass,
+            listOf("s"),
+            "Smart-Playlist match-all flag"
+        ) { it.type == java.lang.Boolean.TYPE }
+
+        val groupRuleClass = r.loadClass(
+            loader,
+            listOf("gt4", "jt4"),
+            "Smart-rule group"
+        ) { type ->
+            type != baseRuleClass &&
+                baseRuleClass.isAssignableFrom(type) &&
+                r.fields(type).any { java.util.List::class.java.isAssignableFrom(it.type) } &&
+                r.fields(type).any { it.type == java.lang.Boolean.TYPE }
+        }
+        val groupRules = r.field(
+            groupRuleClass,
+            listOf("o"),
+            "Smart-rule group children"
+        ) { java.util.List::class.java.isAssignableFrom(it.type) }
+        val groupMatchAll = r.field(
+            groupRuleClass,
+            listOf("p"),
+            "Smart-rule group match-all flag"
+        ) { it.type == java.lang.Boolean.TYPE }
+
+        val chooserConsumerAccept = r.optionalClass(
+            loader,
+            listOf(presenterClass.name + "\$g")
+        )?.let { consumerClass ->
+            r.optionalMethod(consumerClass, listOf("accept")) { method ->
+                method.parameterCount == 1 && method.name == "accept"
+            }
+        }
+        val ruleLabelFormatter = r.optionalClass(
+            loader,
+            listOf("ls2", "os2")
+        )?.let { formatterClass ->
+            r.optionalMethod(formatterClass, listOf("U")) { method ->
+                method.parameterCount == 1 &&
+                    method.parameterTypes[0].isAssignableFrom(smartRuleClass) &&
+                    method.returnType == String::class.java
+            }
+        }
+
+        Log.i(
+            TAG,
+            "BRIDGE MAPPING | presenter=${presenterClass.name}" +
+                " | leaf=${smartRuleClass.name}" +
+                " | smart=${smartPlaylistClass.name}" +
+                " | parser=${parserClass.name}" +
+                " | dao=${playlistDaoClass.name}" +
+                " | predicate=${predicateClass.name}"
+        )
 
         return Bindings(
             loader = loader,
             presenterClass = presenterClass,
+            presenterConstructor = presenterConstructor,
             baseRuleClass = baseRuleClass,
             smartRuleClass = smartRuleClass,
-            smartRuleConstructor = smartRuleClass.getDeclaredConstructor(
-                Integer.TYPE,
-                Integer.TYPE,
-                String::class.java,
-                Integer.TYPE
-            ).apply { isAccessible = true },
-            presenterAddRule = presenterClass
-                .getDeclaredMethod("P1", baseRuleClass)
-                .apply { isAccessible = true },
-            presenterState = presenterClass
-                .getDeclaredMethod("V1")
-                .apply { isAccessible = true },
-            presenterRefresh = presenterClass
-                .getDeclaredMethod("Z1", viewClass)
-                .apply { isAccessible = true },
-            stateRules = stateClass
-                .getDeclaredMethod("b")
-                .apply { isAccessible = true },
-            playlistFileConstructor = playlistFileClass
-                .getDeclaredConstructor(fileModelClass)
-                .apply { isAccessible = true },
-            fileModelConstructor = fileModelClass
-                .getDeclaredConstructor(
-                    File::class.java,
-                    java.lang.Long::class.java
-                )
-                .apply { isAccessible = true },
-            playlistRead = playlistFileClass
-                .getDeclaredMethod(
-                    "c",
-                    playlistFileClass,
-                    String::class.java,
-                    Integer.TYPE
-                )
-                .apply { isAccessible = true },
-            playlistEntries = findField(playlistFileClass, "r")
-                .apply { isAccessible = true },
-            fileModelFile = findField(fileModelClass, "a")
-                .apply { isAccessible = true },
-            nativeIn = searchHelperClass
-                .getDeclaredMethod(
-                    "t",
-                    queryFieldClass,
-                    java.util.List::class.java
-                )
-                .apply { isAccessible = true },
-            nativeEquals = searchHelperClass
-                .getDeclaredMethod(
-                    "p",
-                    queryFieldClass,
-                    Any::class.java
-                )
-                .apply { isAccessible = true },
-            uriField = trackFieldClass
-                .getDeclaredField("URI")
-                .apply { isAccessible = true }
-                .get(null),
-            idField = trackFieldClass
-                .getDeclaredField("ID")
-                .apply { isAccessible = true }
-                .get(null),
-            whereGroupConstructor = whereGroupClass
-                .getDeclaredConstructor(
-                    java.util.List::class.java,
-                    String::class.java
-                )
-                .apply { isAccessible = true },
-            databaseSingleton = dbClass
-                .getDeclaredField("l")
-                .apply { isAccessible = true },
-            playlistDaoGetter = dbClass
-                .getDeclaredMethod("E")
-                .apply { isAccessible = true },
-            playlistDaoAll = playlistDaoClass
-                .getDeclaredMethod("G1")
-                .apply { isAccessible = true },
-            playlistEntityUri = playlistEntityClass
-                .getDeclaredField("a")
-                .apply { isAccessible = true },
-            playlistEntityName = playlistEntityClass
-                .getDeclaredField("b")
-                .apply { isAccessible = true },
-            dialogEventConstructor = dialogEventClass
-                .getDeclaredConstructor(
-                    String::class.java,
-                    java.util.List::class.java,
-                    dialogCallbackClass
-                )
-                .apply { isAccessible = true },
+            smartRuleConstructor = smartRuleConstructor,
+            ruleSentinel = ruleSentinel,
+            ruleValue = ruleValue,
+            presenterAddRule = presenterAddRule,
+            presenterState = presenterState,
+            presenterRefresh = presenterRefresh,
+            presenterView = presenterView,
+            stateRules = stateRules,
+            statePaths = statePaths,
+            stateSelectedIndex = stateSelectedIndex,
+            stateDirty = stateDirty,
+            ruleIdGetter = ruleIdGetter,
+            ruleIdSetter = ruleIdSetter,
+            playlistFileConstructor = playlistFileConstructor,
+            fileModelConstructor = fileModelConstructor,
+            playlistRead = playlistRead,
+            playlistEntries = playlistEntries,
+            fileModelFile = fileModelFile,
+            nativeIn = nativeIn,
+            nativeEquals = nativeEquals,
+            uriField = uriField,
+            idField = idField,
+            whereGroupConstructor = whereGroupConstructor,
+            databaseSingleton = databaseSingleton,
+            playlistDaoGetter = playlistDaoGetter,
+            playlistDaoAll = playlistDaoAll,
+            dialogEventConstructor = dialogEventConstructor,
             dialogCallbackClass = dialogCallbackClass,
-            eventBusGet = eventBusClass
-                .getDeclaredMethod("b")
-                .apply { isAccessible = true },
-            eventBusPost = eventBusClass
-                .getDeclaredMethod("f", Any::class.java)
-                .apply { isAccessible = true },
-            unitValue = unitClass
-                .getDeclaredField("a")
-                .apply { isAccessible = true }
-                .get(null),
-            presenterLinkSmartPlaylist = presenterClass
-                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
-                .apply { isAccessible = true },
-            popupMenuConstructor = popupMenuClass
-                .getDeclaredConstructor(
-                    Context::class.java,
-                    View::class.java
-                )
-                .apply { isAccessible = true },
-            popupMenuGetMenu = popupMenuClass
-                .getDeclaredMethod("getMenu")
-                .apply { isAccessible = true },
-            popupMenuSetListener = popupMenuClass
-                .getDeclaredMethod(
-                    "setOnMenuItemClickListener",
-                    popupMenuListenerClass
-                )
-                .apply { isAccessible = true },
-            popupMenuShow = popupMenuClass
-                .getDeclaredMethod("show")
-                .apply { isAccessible = true },
+            eventBusGet = eventBusGet,
+            eventBusPost = eventBusPost,
+            unitValue = unitField.get(null),
+            presenterLinkSmartPlaylist = presenterLinkSmartPlaylist,
+            popupMenuConstructor = popupMenuConstructor,
+            popupMenuGetMenu = popupMenuGetMenu,
+            popupMenuSetListener = popupMenuSetListener,
+            popupMenuShow = popupMenuShow,
             popupMenuListenerClass = popupMenuListenerClass,
-            smartPlaylistConstructor = smartPlaylistClass
-                .getDeclaredConstructor()
-                .apply { isAccessible = true },
-            smartPlaylistSave = smartPlaylistClass
-                .getDeclaredMethod("t", File::class.java)
-                .apply { isAccessible = true },
-            smartPlaylistName = findField(smartPlaylistClass, "o")
-                .apply { isAccessible = true },
-            smartPlaylistRules = findField(smartPlaylistClass, "u")
-                .apply { isAccessible = true },
-            smartPlaylistMatchAll = findField(smartPlaylistClass, "s")
-                .apply { isAccessible = true },
+            smartPlaylistConstructor = smartPlaylistConstructor,
+            smartPlaylistConstructorArgs = smartPlaylistConstructorArgs,
+            smartPlaylistSave = smartPlaylistSave,
+            smartPlaylistName = smartPlaylistName,
+            smartPlaylistRules = smartPlaylistRules,
+            smartPlaylistMatchAll = smartPlaylistMatchAll,
             groupRuleClass = groupRuleClass,
-            groupRules = findField(groupRuleClass, "o")
-                .apply { isAccessible = true },
-            groupMatchAll = findField(groupRuleClass, "p")
-                .apply { isAccessible = true }
+            groupRules = groupRules,
+            groupMatchAll = groupMatchAll,
+            chooserConsumerAccept = chooserConsumerAccept,
+            ruleLabelFormatter = ruleLabelFormatter,
+            evaluationMethod = evaluationMethod
         )
     }
 

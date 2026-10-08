@@ -9,7 +9,7 @@ Standing contributor rules live in `AGENTS.md`; detailed chronology remains in `
 | GMMP version | State | Notes |
 | --- | --- | --- |
 | 4.2.0 | Accepted historical baseline | Original 0.3.x/early-0.4 mappings and device evidence. |
-| 4.2.1 | **Accepted / 0.4.0 target** | Smart DJ, Playlist/Smart-Playlist features, Flip, Track Auto-DJ and compatibility/performance cleanup device-accepted. |
+| 4.2.1 | **Accepted core target; Playlist Link repair pending re-acceptance** | Core 0.4.x features are accepted. A post-0.4.1 Playlist Link regression exposed stale 4.2.0-only bridge bindings; the 0.4.2 repair candidate uses shape-validated runtime bindings and still requires one device re-acceptance pass. |
 | Any other version | Untested | Show amber Compatibility status and run the bounded workflow before claiming support. |
 
 Source of truth: `GmmpCompatibilityPolicy.TESTED_VERSION = "4.2.1"`.
@@ -124,7 +124,7 @@ Accepted on 4.2.1:
 - Playlist folders;
 - Smart-Playlist folders;
 - ordinary and Smart multi-selection;
-- Playlist Link;
+- Playlist Link — post-0.4.1 regression discovered; 0.4.2 repair candidate pending device re-acceptance;
 - Play flipped;
 - Queue Flip;
 - navigation/player sparkle badges and Status/Compatibility UI.
