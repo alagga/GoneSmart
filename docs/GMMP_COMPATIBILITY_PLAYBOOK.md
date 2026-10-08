@@ -131,6 +131,8 @@ Accepted on 4.2.1:
 
 Resolvers prefer semantic adapter/model/writer ownership. Historical class names remain fast paths only where useful and safe.
 
+For Playlist Link specifically, do not rely on a post-inflate `MenuItem` listener as the sole dispatch boundary. GMMP 4.2.1 can replace that listener later in the Smart editor lifecycle. The validated native presenter link action is therefore the authoritative fallback: add-link requests may be rerouted to GoneSmart's type chooser, while the Smart-Playlist option re-enters GMMP's original native linker through a bounded reentrancy bypass.
+
 ## 5. Accepted-version performance contract
 
 - Offscreen ViewPager pages do not perform row/model/style work.

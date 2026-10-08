@@ -3328,9 +3328,12 @@ class GoneSmartModule : XposedModule() {
 
         runCatching {
             hook(targets.presenterLinkSmartPlaylist).intercept { chain ->
+                if (playlistBridgeController.shouldBypassNativeLinkHook()) {
+                    return@intercept chain.proceed()
+                }
                 val edit = chain.getArg(0) as? Boolean == true
                 if (
-                    playlistBridgeController.interceptNativeLinkedEditor(
+                    playlistBridgeController.interceptNativeLinkAction(
                         chain.getThisObject(),
                         edit
                     )

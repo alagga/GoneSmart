@@ -112,6 +112,7 @@ internal class PlaylistBridgeController {
     @Volatile private var enabled: Boolean = true
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var contextRef: WeakReference<Context>? = null
+    private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
 
     internal data class PortableSaveToken(
         val originals: List<Pair<Any, String?>>
@@ -269,10 +270,19 @@ internal class PlaylistBridgeController {
         val native = bindings ?: return false
         val activity = findActivity(context)
             ?: contextRef?.get()?.let(::findActivity)
-            ?: return false
+            ?: run {
+                Log.w(TAG, "BRIDGE TYPE MENU | active Activity unavailable")
+                return false
+            }
         val anchor = activity.window?.decorView
             ?.findViewById<View>(nativeLinkId)
-            ?: return false
+            ?: run {
+                Log.w(
+                    TAG,
+                    "BRIDGE TYPE MENU | native menuLink anchor unavailable | id=$nativeLinkId"
+                )
+                return false
+            }
 
         return runCatching {
             val popup = native.popupMenuConstructor.newInstance(context, anchor)
@@ -339,11 +349,23 @@ internal class PlaylistBridgeController {
             return
         }
         runCatching {
-            native.presenterLinkSmartPlaylist.invoke(presenter, false)
+            nativeSmartChooserBypass.set(true)
+            try {
+                native.presenterLinkSmartPlaylist.invoke(presenter, false)
+            } finally {
+                nativeSmartChooserBypass.set(false)
+            }
         }.onFailure {
-            Log.e(TAG, "BRIDGE SMART CHOOSER | original ds4.g2(false) failed", it)
+            Log.e(
+                TAG,
+                "BRIDGE SMART CHOOSER | original native linker failed",
+                it
+            )
         }
     }
+
+    fun shouldBypassNativeLinkHook(): Boolean =
+        nativeSmartChooserBypass.get()
 
     private fun decoratedPlaylistTitle(context: Context): CharSequence {
         val playlist = NativeGmmpUiText.string(context, "playlist")
@@ -376,14 +398,55 @@ internal class PlaylistBridgeController {
         return null
     }
 
-    fun interceptNativeLinkedEditor(presenter: Any?, edit: Boolean): Boolean {
-        if (!enabled || !edit || presenter == null) return false
-        val rule = selectedRule(presenter) ?: return false
-        if (!isBridgeRule(rule)) return false
+    fun interceptNativeLinkAction(presenter: Any?, edit: Boolean): Boolean {
+        if (presenter == null) return false
+        val native = bindings ?: return false
+        if (!native.presenterClass.isInstance(presenter)) return false
         presenterRef = WeakReference(presenter)
-        Log.i(TAG, "BRIDGE EDIT | intercepted native linked-playlist editor")
-        openChooser(edit = true, explicitPresenter = presenter)
-        return true
+
+        val selectedIsBridge = if (edit) {
+            selectedRule(presenter)?.let(::isBridgeRule) == true
+        } else {
+            false
+        }
+        return when (
+            PlaylistBridgeLinkDispatchPolicy.action(
+                enabled = enabled,
+                edit = edit,
+                selectedIsBridge = selectedIsBridge
+            )
+        ) {
+            PlaylistBridgeLinkAction.PASS_THROUGH -> false
+
+            PlaylistBridgeLinkAction.EDIT_BRIDGE -> {
+                Log.i(TAG, "BRIDGE EDIT | intercepted native linked-playlist editor")
+                openChooser(edit = true, explicitPresenter = presenter)
+                true
+            }
+
+            PlaylistBridgeLinkAction.SHOW_TYPE_MENU -> {
+                val context = contextRef?.get() ?: run {
+                    Log.w(TAG, "BRIDGE LINK DISPATCH | editor Context unavailable")
+                    return false
+                }
+                val nativeLinkId = context.resources.getIdentifier(
+                    NATIVE_LINK_ITEM,
+                    "id",
+                    GMMP_PACKAGE
+                )
+                if (nativeLinkId == 0) {
+                    Log.w(TAG, "BRIDGE LINK DISPATCH | menuLink resource unavailable")
+                    return false
+                }
+                val shown = showLinkTypeMenu(context, nativeLinkId)
+                Log.i(
+                    TAG,
+                    "BRIDGE LINK DISPATCH | native presenter action" +
+                        " | typeMenuShown=$shown"
+                )
+                shown
+            }
+        }
     }
 
     fun isBridgeRule(rule: Any?): Boolean {
