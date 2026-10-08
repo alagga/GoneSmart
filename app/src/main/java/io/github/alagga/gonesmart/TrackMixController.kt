@@ -112,9 +112,9 @@ internal class TrackMixController(
         Thread(task, "GoneSmartTrackMix").apply { isDaemon = true }
     }
     private val tokens = AtomicLong()
-    // Hard barrier around native Play -> seed isolation -> initial native fill.
-    // It is activated synchronously before Play so neither an old-queue refill
-    // nor GMMP's transitional upcoming-count refill can race Track Mix.
+    // Mutation barrier around seed isolation -> initial native fill. It is
+    // armed before native Play, but 4.2.1 WAIT_PLAY continuity refills pass
+    // through natively until GoneSmart actually owns CLEARING/FILLING.
     private val refillHold = AtomicBoolean(false)
     // The one refill explicitly requested by Track Mix must cross the same
     // native qr.z(count) hook while the global hold stays armed. Scope that

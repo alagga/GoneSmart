@@ -264,11 +264,12 @@ internal class GmmpQueueMutationBridge(
 
 
     /**
-     * Rebase a Track-Auto-DJ-owned sparse queue to 1..N after GMMP's native
-     * refill. GMMP 4.2.0 exposed a verified append allocator; 4.2.1 does not.
-     * Do not guess its obfuscated replacement. Instead update only the proven
-     * native Queue entities, move the already-passively-verified playback
-     * pointer if required, and require an independent Cursor postcondition.
+     * Compact a Track-Auto-DJ-owned sparse queue around its already verified
+     * absolute Current position after GMMP's native refill. GMMP 4.2.0 exposed
+     * a verified append allocator; 4.2.1 does not. Do not guess its obfuscated
+     * replacement and do not move Current merely to make the queue start at 1.
+     * Update only the proven native Queue entities and require an independent
+     * Cursor postcondition.
      */
     fun normalizeQueuePositionsIfNeeded(): Boolean {
         val resolved = resolve(
@@ -308,7 +309,11 @@ internal class GmmpQueueMutationBridge(
 
         try {
             ordered.forEachIndexed { index, row ->
-                setInt(resolved.position, row, index + 1)
+                setInt(
+                    resolved.position,
+                    row,
+                    plan.normalizedPositions[index]
+                )
             }
             resolved.update.invoke(
                 resolved.dao,
@@ -338,7 +343,7 @@ internal class GmmpQueueMutationBridge(
                 TAG,
                 "QUEUE POSITION NORMALIZE | old=" +
                     plan.originalPositions.joinToString(",") +
-                    " | new=1.." + plan.normalizedPositions.size +
+                    " | new=" + plan.normalizedPositions.joinToString(",") +
                     " | currentId=" + plan.currentQueueId +
                     " | currentPosition=" + plan.currentNewPosition +
                     " | verified=true"
