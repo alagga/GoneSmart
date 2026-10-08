@@ -25,7 +25,7 @@ class QueuePositionNormalizationPolicyTest {
     }
 
     @Test
-    fun `current row is moved to its corresponding normalized position`() {
+    fun `normalization preserves the verified absolute current position`() {
         val plan = QueuePositionNormalizationPolicy.plan(
             rows = listOf(
                 QueuePositionNormalizationPolicy.Row(20L, 5908),
@@ -35,8 +35,25 @@ class QueuePositionNormalizationPolicyTest {
             currentQueueId = 21L
         )!!
 
-        assertEquals(listOf(1, 2, 3), plan.normalizedPositions)
-        assertEquals(2, plan.currentNewPosition)
+        assertEquals(listOf(5911, 5912, 5913), plan.normalizedPositions)
+        assertEquals(5912, plan.currentNewPosition)
+    }
+
+    @Test
+    fun `first Track Mix seed can stay at position five while refill gaps close`() {
+        val plan = QueuePositionNormalizationPolicy.plan(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(50L, 5),
+                QueuePositionNormalizationPolicy.Row(51L, 11),
+                QueuePositionNormalizationPolicy.Row(52L, 12),
+                QueuePositionNormalizationPolicy.Row(53L, 13),
+                QueuePositionNormalizationPolicy.Row(54L, 14)
+            ),
+            currentQueueId = 50L
+        )!!
+
+        assertEquals(listOf(5, 6, 7, 8, 9), plan.normalizedPositions)
+        assertEquals(5, plan.currentNewPosition)
     }
 
     @Test

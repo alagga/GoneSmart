@@ -65,14 +65,28 @@ internal object PlaylistBridgeReflectionResolver {
         return out.values.toList()
     }
 
+    internal fun declaredFieldsSafely(
+        type: Class<*>,
+        reader: (Class<*>) -> Array<Field> = { it.declaredFields }
+    ): List<Field> = try {
+        reader(type).toList()
+    } catch (_: LinkageError) {
+        emptyList()
+    } catch (_: TypeNotPresentException) {
+        emptyList()
+    } catch (_: SecurityException) {
+        emptyList()
+    }
+
     fun fields(type: Class<*>): List<Field> {
         val out = linkedMapOf<String, Field>()
         var current: Class<*>? = type
         while (current != null) {
-            current.declaredFields.forEach { field ->
-                out.putIfAbsent(current.name + "#" + field.name, field)
+            val declaring = current
+            declaredFieldsSafely(declaring).forEach { field ->
+                out.putIfAbsent(declaring.name + "#" + field.name, field)
             }
-            current = current.superclass
+            current = runCatching { declaring.superclass }.getOrNull()
         }
         return out.values.toList()
     }
@@ -161,7 +175,7 @@ internal object PlaylistBridgeReflectionResolver {
                 ) {
                     break
                 }
-                type.declaredFields
+                declaredFieldsSafely(type)
                     .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
                     .forEach { field ->
                         runCatching {
@@ -257,14 +271,16 @@ internal object PlaylistBridgeReflectionResolver {
     private fun potentialSemanticHolder(
         type: Class<*>,
         valueClass: Class<*>
-    ): Boolean = type.declaredFields.any { field ->
-        java.lang.reflect.Modifier.isStatic(field.modifiers) &&
-            !field.type.isPrimitive &&
-            field.type != Any::class.java &&
-            (
-                field.type.isAssignableFrom(valueClass) ||
-                    valueClass.isAssignableFrom(field.type)
-                )
+    ): Boolean = declaredFieldsSafely(type).any { field ->
+        runCatching {
+            java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                !field.type.isPrimitive &&
+                field.type != Any::class.java &&
+                (
+                    field.type.isAssignableFrom(valueClass) ||
+                        valueClass.isAssignableFrom(field.type)
+                    )
+        }.getOrDefault(false)
     }
 
     internal fun resolveStaticFieldBySemanticValue(

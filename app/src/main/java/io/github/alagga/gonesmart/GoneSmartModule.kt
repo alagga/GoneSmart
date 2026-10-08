@@ -4573,17 +4573,28 @@ class GoneSmartModule : XposedModule() {
                         instance = trackDaoField.get(autoDjInstance)
                     )
                 }
-                if (trackMixController.shouldSuppressNativeRefill()) {
-                    // GMMP may start a refill as soon as native Play
-                    // seeks to the selected queue row. That older refill
-                    // races CLEAR_QUEUE and caused intermittent failures.
-                    // Track Mix will explicitly enable native Auto-DJ
-                    // after it confirms that only the new seed remains.
-                    return@intercept null
+                when (trackMixController.nativeRefillAction()) {
+                    TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE -> {
+                        // Before 4.2.1 seed isolation, GMMP still owns playback
+                        // continuity. Do not route this natural refill through
+                        // GoneSmart recommendation preparation and do not hold it:
+                        // GMMP can query next/current+1 within tens of ms.
+                        Log.i(
+                            "GoneSmartTrackMix",
+                            "MIX AUTO-DJ CONTINUITY | stage=WAIT_PLAY | " +
+                                "native refill pass-through | requested=$requestedTracks"
+                        )
+                        return@intercept chain.proceed()
+                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS -> {
+                        return@intercept null
+                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> {
+                        trackMixController.onNativeAutoDjRefillRequested(
+                            requestedTracks
+                        )
+                    }
                 }
-                trackMixController.onNativeAutoDjRefillRequested(
-                    requestedTracks
-                )
             }
 
             Log.i(

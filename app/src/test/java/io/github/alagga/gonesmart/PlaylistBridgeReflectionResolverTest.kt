@@ -3,6 +3,7 @@ package io.github.alagga.gonesmart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaylistBridgeReflectionResolverTest {
@@ -213,6 +214,16 @@ class PlaylistBridgeReflectionResolverTest {
                 expectedValue = "track_uri"
             )
         }
+    }
+
+    @Test
+    fun unavailableAndroidFieldMetadataIsSkippedInsteadOfAbortingDiscovery() {
+        val fields = PlaylistBridgeReflectionResolver.declaredFieldsSafely(
+            QueryFieldsFixture::class.java
+        ) {
+            throw NoClassDefFoundError("android/view/ScrollFeedbackProvider")
+        }
+        assertTrue(fields.isEmpty())
     }
 
     @Test

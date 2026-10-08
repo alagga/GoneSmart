@@ -8,6 +8,12 @@ package io.github.alagga.gonesmart
  * with the number of rows missing from Initial Size.
  */
 internal object TrackMixInitialFillPolicy {
+    enum class NativeRefillAction {
+        NORMAL,
+        PASS_NATIVE,
+        SUPPRESS
+    }
+
     private const val LEGACY_COMMAND_REFILL_WAIT_MS = 1_800L
     // 4.2.1 populated its native Auto-DJ pool in ~86-95 ms in both captured
     // runs, while playback queried the missing position 2 as early as ~208 ms.
@@ -18,6 +24,21 @@ internal object TrackMixInitialFillPolicy {
     fun autoDjCommandBoundaryWaitMs(legacyQueue: Boolean): Long =
         if (legacyQueue) LEGACY_COMMAND_REFILL_WAIT_MS
         else GMMP_421_COMMAND_PREPARE_WAIT_MS
+
+    fun nativeRefillAction(
+        holdActive: Boolean,
+        explicitAllowance: Boolean,
+        stage: String?,
+        legacyQueue: Boolean
+    ): NativeRefillAction {
+        if (!holdActive || explicitAllowance) return NativeRefillAction.NORMAL
+        if (legacyQueue) return NativeRefillAction.SUPPRESS
+        return when (stage) {
+            "WAIT_PLAY" -> NativeRefillAction.PASS_NATIVE
+            "CLEARING", "FILLING" -> NativeRefillAction.SUPPRESS
+            else -> NativeRefillAction.NORMAL
+        }
+    }
 
     /**
      * Once Track Mix has reduced the queue to its selected native seed,

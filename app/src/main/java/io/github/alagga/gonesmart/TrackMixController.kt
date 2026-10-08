@@ -152,19 +152,29 @@ internal class TrackMixController(
         Log.i(TAG, "MIX SETTINGS | enabled=$value")
     }
 
-    fun shouldSuppressNativeRefill(): Boolean {
-        if ((nativeRefillAllowance.get() ?: 0) > 0) return false
-        if (!refillHold.get()) return false
+    fun nativeRefillAction(): TrackMixInitialFillPolicy.NativeRefillAction {
         val request = pending
-        if (request?.stage == "FILLING") {
-            request.transitionalRefillSuppressed = true
-        }
-        Log.i(
-            TAG,
-            "MIX AUTO-DJ HOLD | stage=${request?.stage ?: "pre-play"} | " +
-                "deferring native refill until Track Mix initial fill"
+        val explicitAllowance = (nativeRefillAllowance.get() ?: 0) > 0
+        val legacyQueue = nativeAutoDj?.get()?.let { autoDj ->
+            field(autoDj, "q")?.javaClass?.name == "ex3"
+        } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
+        val action = TrackMixInitialFillPolicy.nativeRefillAction(
+            holdActive = refillHold.get(),
+            explicitAllowance = explicitAllowance,
+            stage = request?.stage,
+            legacyQueue = legacyQueue
         )
-        return true
+        if (action == TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS) {
+            if (request?.stage == "FILLING") {
+                request.transitionalRefillSuppressed = true
+            }
+            Log.i(
+                TAG,
+                "MIX AUTO-DJ HOLD | stage=${request?.stage ?: "pre-play"} | " +
+                    "legacyQueue=$legacyQueue | deferring native refill"
+            )
+        }
+        return action
     }
 
     private fun requestHeldNativeRefill(count: Int): Boolean {
@@ -257,8 +267,10 @@ internal class TrackMixController(
                 }
                 if (currentIndex < 0) return@execute
 
-                val expectedPositions = (1..ordered.size).toList()
                 val actualPositions = ordered.map { it.queuePosition }
+                val expectedPositions = actualPositions.firstOrNull()?.let { first ->
+                    List(ordered.size) { offset -> first + offset }
+                } ?: emptyList()
                 if (actualPositions != expectedPositions) {
                     Log.w(
                         TAG,

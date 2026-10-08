@@ -61,6 +61,57 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
+    @Test fun gmmp421WaitPlayRefillPassesThroughButMutationStagesHold() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "WAIT_PLAY",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "CLEARING",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "FILLING",
+                legacyQueue = false
+            )
+        )
+    }
+
+    @Test fun legacyWaitPlayHoldAndExplicit421RefillStayUnchanged() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "WAIT_PLAY",
+                legacyQueue = true
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "FILLING",
+                legacyQueue = false
+            )
+        )
+    }
+
     @Test fun isolatedTrackMixSeedNeverWaitsForSmartPool() {
         assertFalse(
             TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(

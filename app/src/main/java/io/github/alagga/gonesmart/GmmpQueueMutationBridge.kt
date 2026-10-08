@@ -219,26 +219,10 @@ internal class GmmpQueueMutationBridge(
         )
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
-        }
-        val selectedMatches = resolved.context.items.filter {
-            it.track.id == selectedTrackId
-        }
-        val selected = when {
-            current?.track?.id == selectedTrackId -> current
-            selectedMatches.size == 1 -> selectedMatches.single()
-            else -> return false
-        }
-        if (resolved.rows.size == 1) {
-            return current?.track?.id == selectedTrackId
-        }
-
-        val pointerAlreadyTargetsOne =
-            resolved.context.currentQueuePosition == 1
-        val statePosition = if (pointerAlreadyTargetsOne) {
-            null
-        } else {
-            resolveStatePosition(resolved.context.currentQueuePosition)
-        }
+        } ?: return false
+        if (current.track.id != selectedTrackId) return false
+        val selected = current
+        if (resolved.rows.size == 1) return true
 
         val selectedModel = resolved.rows.singleOrNull {
             number(resolved.queueId, it).toLong() == selected.queueEntryId
@@ -257,27 +241,22 @@ internal class GmmpQueueMutationBridge(
         )
 
         delete.invoke(resolved.dao, staleArray)
-        setInt(resolved.position, selectedModel, 1)
-        resolved.update.invoke(
-            resolved.dao,
-            arrayListOf(selectedModel)
-        )
-        statePosition?.write(1)
 
         val verified = GmmpQueueReader().read(
             autoDj,
-            statePosition?.read()
+            resolved.context.currentQueuePosition
         ) ?: return false
         val only = verified.items.singleOrNull() ?: return false
         val ok = only.track.id == selectedTrackId &&
             only.queueEntryId == selected.queueEntryId &&
+            only.queuePosition == selected.queuePosition &&
             only.state == QueueItemState.CURRENT
         if (ok) {
             Log.i(
                 TAG,
                 "QUEUE MUTATION | seed isolation verified | track=" +
                     selectedTrackId + " | queueId=" + only.queueEntryId +
-                    " | realigned=" + (selected.state != QueueItemState.CURRENT)
+                    " | positionPreserved=" + only.queuePosition
             )
         }
         return ok

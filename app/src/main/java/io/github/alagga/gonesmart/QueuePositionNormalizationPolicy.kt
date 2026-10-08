@@ -8,7 +8,8 @@ package io.github.alagga.gonesmart
  * directly and reset it with the seed. The equivalent 4.2.1 allocator is not
  * behaviorally proven, so the compatibility path must never guess a field.
  * Instead, after a native refill, a small Track-Auto-DJ-owned queue may be
- * rebased through the already-proven native Queue DAO update writer.
+ * compacted through the already-proven native Queue DAO update writer while
+ * preserving the naturally verified absolute Current position.
  */
 internal object QueuePositionNormalizationPolicy {
     data class Row(
@@ -43,7 +44,14 @@ internal object QueuePositionNormalizationPolicy {
         }
 
         val original = ordered.map { it.position }
-        val normalized = List(ordered.size) { it + 1 }
+        val currentPosition = ordered[currentIndex].position
+        val firstNormalizedPosition = currentPosition - currentIndex
+        require(firstNormalizedPosition > 0) {
+            "Current position cannot anchor a positive contiguous queue"
+        }
+        val normalized = List(ordered.size) { offset ->
+            firstNormalizedPosition + offset
+        }
         if (original == normalized) return null
 
         return Plan(
@@ -51,7 +59,7 @@ internal object QueuePositionNormalizationPolicy {
             originalPositions = original,
             normalizedPositions = normalized,
             currentQueueId = currentQueueId,
-            currentNewPosition = currentIndex + 1
+            currentNewPosition = currentPosition
         )
     }
 }
