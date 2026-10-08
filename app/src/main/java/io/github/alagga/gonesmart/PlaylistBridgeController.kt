@@ -1346,12 +1346,14 @@ internal class PlaylistBridgeController {
         }
         val presenterAddRule = r.method(
             presenterClass,
-            listOf("P1"),
+            listOf("P1", "Q1"),
             "Smart editor add-rule action"
         ) { method ->
-            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
-                method.parameterCount == 1 &&
-                method.parameterTypes[0].isAssignableFrom(smartRuleClass)
+            r.matchesDeclaredPresenterRuleAction(
+                method = method,
+                presenterClass = presenterClass,
+                baseRuleClass = baseRuleClass
+            )
         }
         val presenterState = r.method(
             presenterClass,
