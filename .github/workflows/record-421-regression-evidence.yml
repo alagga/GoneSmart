@@ -1,0 +1,26 @@
+name: Record 4.2.1 regression evidence
+
+on:
+  push:
+    branches: ['fix/playlist-link-gmmp-4.2.1']
+
+permissions:
+  contents: write
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply durable documentation update
+        run: python3 scripts/record_421_regression_evidence.py
+      - name: Remove helpers and commit docs
+        run: |
+          rm scripts/record_421_regression_evidence.py .github/workflows/record-421-regression-evidence.yml
+          git config user.name 'GoneSmart repair bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: record bundled 4.2.1 regression repair'
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
