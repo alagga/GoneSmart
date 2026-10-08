@@ -43,7 +43,6 @@ internal class TrackMixController(
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val COMMAND_AUTO_DJ = "gonemad.gmmp.command.AUTO_DJ"
         private const val MIX_ITEM_ID = 0x47534D01
-        private const val AUTO_DJ_COMMAND_REFILL_WAIT_MS = 1_800L
         // These GMMP 4.2.0 menu XMLs all have native Play and Play next.
         // Contexts that represent whole albums/artists/playlists are excluded.
         private val SONG_MENUS = setOf(
@@ -309,8 +308,13 @@ internal class TrackMixController(
     }
 
     private fun awaitAutoDjCommandRefillBoundary(request: Pending) {
-        val deadline = SystemClock.elapsedRealtime() +
-            AUTO_DJ_COMMAND_REFILL_WAIT_MS
+        val legacyQueue = nativeAutoDj?.get()?.let { autoDj ->
+            field(autoDj, "q")?.javaClass?.name == "ex3"
+        } == true
+        val waitMs = TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(
+            legacyQueue = legacyQueue
+        )
+        val deadline = SystemClock.elapsedRealtime() + waitMs
         while (
             isCurrent(request) &&
             !request.transitionalRefillSuppressed &&
@@ -321,7 +325,8 @@ internal class TrackMixController(
         Log.i(
             TAG,
             "MIX AUTO-DJ ARM | transitionalRefillSuppressed=" +
-                request.transitionalRefillSuppressed
+                request.transitionalRefillSuppressed +
+                " | legacyQueue=$legacyQueue | waitMs=$waitMs"
         )
     }
 
@@ -979,6 +984,7 @@ internal class TrackMixController(
                 TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
                     source = request.source,
                     nativePlayAccepted = request.nativePlayAccepted,
+                    nativePlaySignal = request.nativePlaySignal,
                     before = before,
                     current = identity,
                     stableMs = now - request.createdAt,

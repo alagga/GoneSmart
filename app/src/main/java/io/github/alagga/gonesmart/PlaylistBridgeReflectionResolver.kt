@@ -87,6 +87,96 @@ internal object PlaylistBridgeReflectionResolver {
             method.parameterTypes.contentEquals(arrayOf(baseRuleClass)) &&
             method.returnType == java.lang.Void.TYPE
 
+    private fun containsSemanticIdentifier(
+        text: String,
+        expectedValue: String
+    ): Boolean {
+        val cleaned = text
+            .replace('`', ' ')
+            .replace('"', ' ')
+            .replace('[', ' ')
+            .replace(']', ' ')
+        val token = Regex.escape(expectedValue)
+        return Regex(
+            "(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+\\.)?$token(?![A-Za-z0-9_])"
+        ).containsMatchIn(cleaned)
+    }
+
+    /**
+     * R8 may leave a query-field constant under a broad/opaque object whose
+     * own toString no longer exposes the SQL column. Walk only that already
+     * loaded in-memory value graph (bounded depth, no method calls) and look
+     * for the exact native semantic identifier. No database/query action is
+     * executed here.
+     */
+    private fun semanticRepresentations(value: Any): Set<String> {
+        val out = linkedSetOf<String>()
+        val seen = java.util.IdentityHashMap<Any, Boolean>()
+
+        fun visit(candidate: Any?, depth: Int) {
+            if (candidate == null || depth < 0) return
+            when (candidate) {
+                is CharSequence -> {
+                    out += candidate.toString()
+                    return
+                }
+                is Enum<*> -> {
+                    out += candidate.name
+                    out += candidate.toString()
+                    return
+                }
+                is Number, is Boolean, is Char, is Class<*> -> return
+                is Collection<*> -> {
+                    candidate.take(64).forEach { visit(it, depth - 1) }
+                    return
+                }
+                is Map<*, *> -> {
+                    candidate.entries.take(64).forEach {
+                        visit(it.key, depth - 1)
+                        visit(it.value, depth - 1)
+                    }
+                    return
+                }
+            }
+
+            if (candidate.javaClass.isArray) {
+                val length = java.lang.reflect.Array.getLength(candidate)
+                repeat(length.coerceAtMost(64)) { index ->
+                    visit(java.lang.reflect.Array.get(candidate, index), depth - 1)
+                }
+                return
+            }
+            if (seen.put(candidate, true) != null) return
+
+            runCatching { out += candidate.toString() }
+            if (depth == 0) return
+
+            var type: Class<*>? = candidate.javaClass
+            while (type != null && type != Any::class.java) {
+                val name = type.name
+                if (
+                    name.startsWith("java.") ||
+                    name.startsWith("kotlin.") ||
+                    name.startsWith("android.")
+                ) {
+                    break
+                }
+                type.declaredFields
+                    .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                    .forEach { field ->
+                        runCatching {
+                            field.isAccessible = true
+                            visit(field.get(candidate), depth - 1)
+                        }
+                    }
+                type = type.superclass
+            }
+        }
+
+        visit(value, 4)
+        return out
+    }
+
     fun matchesStaticFieldSemanticValue(
         field: Field,
         valueClass: Class<*>,
@@ -98,7 +188,10 @@ internal object PlaylistBridgeReflectionResolver {
         return runCatching {
             field.isAccessible = true
             val value = field.get(null) ?: return@runCatching false
-            valueClass.isInstance(value) && value.toString() == expectedValue
+            valueClass.isInstance(value) &&
+                semanticRepresentations(value).any {
+                    containsSemanticIdentifier(it, expectedValue)
+                }
         }.getOrDefault(false)
     }
 

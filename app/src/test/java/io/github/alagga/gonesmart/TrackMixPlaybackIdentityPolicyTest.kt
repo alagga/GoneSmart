@@ -63,16 +63,28 @@ class TrackMixPlaybackIdentityPolicyTest {
         )
     }
 
-    @Test fun acceptedQueuePlayMayReuseAlreadyCurrentEntryAfterGuardDelay() {
+    @Test fun acceptedQueuePlayMayReuseAlreadyCurrentEntryOnlyWithNativeSignal() {
         val current = TrackMixPlaybackIdentityPolicy.Identity(
             queueEntryId = 100L,
             trackId = 20L,
             currentIndex = 50
         )
+        assertFalse(
+            TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
+                source = "menu_gm_context_queue",
+                nativePlayAccepted = true,
+                nativePlaySignal = false,
+                before = current,
+                current = current,
+                stableMs = 400L,
+                actionAgeMs = 1_600L
+            )
+        )
         assertTrue(
             TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
                 source = "menu_gm_context_queue",
                 nativePlayAccepted = true,
+                nativePlaySignal = true,
                 before = current,
                 current = current,
                 stableMs = 400L,
@@ -83,6 +95,7 @@ class TrackMixPlaybackIdentityPolicyTest {
             TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
                 source = "menu_gm_context_track",
                 nativePlayAccepted = true,
+                nativePlaySignal = true,
                 before = current,
                 current = current,
                 stableMs = 400L,
@@ -93,6 +106,7 @@ class TrackMixPlaybackIdentityPolicyTest {
             TrackMixPlaybackIdentityPolicy.acceptSameCurrentQueuePlay(
                 source = "menu_gm_context_queue",
                 nativePlayAccepted = true,
+                nativePlaySignal = true,
                 before = current,
                 current = current,
                 stableMs = 400L,

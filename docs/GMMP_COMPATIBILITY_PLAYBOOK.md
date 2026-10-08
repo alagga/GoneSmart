@@ -90,10 +90,11 @@ Accepted from ordinary playlists and large Smart Playlists:
 3. preserve the clicked/provisional target if it remains uniquely identifiable through a large rebuild;
 4. if the first provisional CURRENT disappears completely inside the guard, retarget to the independently observed live CURRENT and restart settling;
 5. outside the guard, fail closed on competing/manual playback;
-6. isolate the exact native Queue entity through proven writers;
-7. verify the seed is sole Current;
-8. request exactly `Initial Size - seed size` through native refill;
-9. verify exact Initial Size and preserved seed.
+6. an unchanged CURRENT may count as a replay only when an independent native playback/queue-update signal confirms the action; a successful menu callback alone is not playback identity;
+7. isolate the exact native Queue entity through proven writers;
+8. verify the seed is sole Current;
+9. request exactly `Initial Size - seed size` through native refill;
+10. verify exact Initial Size and preserved seed.
 
 #### 4.2.1 queue-root continuity (r42–r43)
 
@@ -109,6 +110,8 @@ For a Track-Auto-DJ-owned normalized queue only:
 - disarm on unrelated native list playback.
 
 This continuation path is device-accepted for 0.4.0.
+
+The 2026-10-08 `d5ff3ddabff2` trace exposed two Track Mix regressions around the already accepted native boundaries. First, a queue-menu click that had actually started track `9772` was later reclassified as an unchanged replay of stale CURRENT track `9761`; the GoneSmart verification line itself showed `nativeSignal=false` and `changed=false`. Same-current replay therefore now requires the independent native playback signal instead of treating a successful menu dispatch as proof. Second, after isolating the seed, GMMP 4.2.1 populated its Auto-DJ pool in about 86–95 ms but could query queue position 2 and reach `next audio source is null` as early as about 208 ms. The historical 1.8 s command-settling guard is retained only for the accepted legacy `ex3` path. The 4.2.1 path crosses the already proven `qr.z(initial-deficit)` boundary after a short bounded native preparation window, before playback can observe an empty next position.
 
 ### Recommendation-pool latency
 
@@ -140,6 +143,10 @@ For the Smart-editor add-rule action, resolve only a method declared directly by
 The 2026-10-08 `70b44c814aef` runtime probe then advanced past `Q1(dt4)` and exposed the next stale assumption: a generic two-argument query-helper shape admitted six 4.2.1 methods (`ot0.E/F/G/H/J/K`) for the old equality-helper role. Playlist Link does not guess one. Equality was needed only to manufacture the fail-closed `ID = Long.MIN_VALUE` predicate, so the repair now builds that already accepted native leaf rule and asks the resolved native leaf-rule evaluator to compile it. The same centralized sentinel encoding is used by the portability compatibility rules. This removes an unnecessary R8-specific operator mapping while keeping predicate semantics owned by GMMP.
 
 The following `efc069cead61` device run advanced beyond that repair and failed only because the track-column holder still required the literal historical field name `URI`. Historical accepted traces identify that native value semantically as `track_uri`, so 4.2.1 now resolves a unique static query-field object whose native representation is exactly `track_uri`; `URI` remains only a fast path. The same run again observed `as4$g.accept(...)` with payload `bk3`, and its native event stack identifies `fc1` as the live 4.2.1 EventBus family, so `fc1` is included as a shape-validated fast path. Native OR grouping remains optional at binding time: ordinary links fitting one bounded IN clause must not be disabled by an unproven remapped group class, while a source requiring multiple chunks fails closed unless that native group constructor is uniquely resolved.
+
+Runtime `e95176162041` then showed that semantic-value matching was still too strict because it tested the declared field type before reading the static value. The resolver was changed to accept a candidate only when the **runtime value** is an instance of the already resolved native query-field class and its semantic representation is `track_uri`, preserving uniqueness and fail-closed ambiguity.
+
+Runtime `d5ff3ddabff2` proved that this runtime-type repair still stopped at the same `w75/z75` holder boundary: neither static candidate exposed `track_uri` through the query-field object's direct representation. The next resolver therefore remains read-only and bounded but inspects the already loaded in-memory value graph of type-compatible static constants for the exact native identifier. It invokes no unknown methods, executes no query and still requires exactly one semantic `track_uri` candidate. Historical holder names remain bounded fast-path evidence; no new obfuscated mapping is guessed. Device re-acceptance remains pending.
 
 ## 5. Accepted-version performance contract
 

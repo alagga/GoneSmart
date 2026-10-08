@@ -38,6 +38,10 @@ class PlaylistBridgeReflectionResolverTest {
         override fun toString(): String = sql
     }
 
+    private class OpaqueQueryColumn(private val sql: String) : QueryFieldMarker {
+        override fun toString(): String = "opaque-column"
+    }
+
     private object QueryFieldsFixture {
         @JvmField val a = QueryColumn("song_id")
         @JvmField val b = QueryColumn("track_uri")
@@ -46,6 +50,11 @@ class PlaylistBridgeReflectionResolverTest {
     private object ErasedQueryFieldsFixture {
         @JvmField val a: QueryFieldMarker = QueryColumn("song_id")
         @JvmField val b: QueryFieldMarker = QueryColumn("track_uri")
+    }
+
+    private object OpaqueQueryFieldsFixture {
+        @JvmField val a: QueryFieldMarker = OpaqueQueryColumn("song_id")
+        @JvmField val b: QueryFieldMarker = OpaqueQueryColumn("track_uri")
     }
 
     private object AmbiguousQueryFieldsFixture {
@@ -151,6 +160,22 @@ class PlaylistBridgeReflectionResolverTest {
         }
         assertEquals("b", field.name)
         assertSame(QueryFieldMarker::class.java, field.type)
+    }
+
+    @Test
+    fun semanticStaticFieldCanReadOpaqueRuntimeValueGraph() {
+        val field = PlaylistBridgeReflectionResolver.field(
+            OpaqueQueryFieldsFixture::class.java,
+            listOf("URI"),
+            "semantic query field"
+        ) { candidate ->
+            PlaylistBridgeReflectionResolver.matchesStaticFieldSemanticValue(
+                field = candidate,
+                valueClass = QueryFieldMarker::class.java,
+                expectedValue = "track_uri"
+            )
+        }
+        assertEquals("b", field.name)
     }
 
     @Test(expected = IllegalArgumentException::class)

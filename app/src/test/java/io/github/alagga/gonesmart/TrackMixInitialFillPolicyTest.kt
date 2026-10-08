@@ -47,4 +47,15 @@ class TrackMixInitialFillPolicyTest {
             )
         )
     }
+
+    @Test fun keepsLegacyCommandBoundaryButRefills421BeforeNextSourceLookup() {
+        assertEquals(
+            1_800L,
+            TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(true)
+        )
+        assertEquals(
+            90L,
+            TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(false)
+        )
+    }
 }
