@@ -72,6 +72,7 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Playlist and Smart-Playlist folders preserve GMMP native rows, styling, parsing, actions and writers wherever those exist.
 - Playlist Link is portable/fail-closed. Disabling it leaves old Smart Playlists openable and GoneSmart-only semantics inert.
 - Playlist Link must share semantic/runtime GMMP boundaries with the accepted Playlist/Smart-Playlist stack. Historical 4.2.0 obfuscated names are fast-path evidence only; the leaf rule, presenter, parser, query builder, playlist DAO/model and Smart writer must be shape-validated and ambiguity must fail closed.
+- Playlist Link is not accepted on a new GMMP mapping until one bundled device pass verifies **add → save → reopen/edit → evaluate/play** and then changes the linked source playlist once to prove that membership remains live rather than copied.
 - Multi-selection changes only the intended add/move/create action.
 - UI extensions follow GMMP's live theme/navigation surfaces rather than fixed assumptions where possible.
 - Attached but offscreen ViewPager pages are effectively idle.
