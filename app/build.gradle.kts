@@ -56,6 +56,31 @@ val releaseSigningConfigured =
         !releaseKeyAlias.isNullOrBlank() &&
         !releaseKeyPassword.isNullOrBlank()
 
+fun gitOutput(vararg args: String): String? =
+    runCatching {
+        val process = ProcessBuilder(listOf("git", *args))
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream
+            .bufferedReader()
+            .use { it.readText() }
+            .trim()
+        if (process.waitFor() == 0) output else null
+    }.getOrNull()
+
+val gitHead =
+    gitOutput("rev-parse", "--short=12", "HEAD")
+        ?.takeUnless(String::isBlank)
+        ?: "unknown"
+
+val gitDirty =
+    gitOutput("status", "--porcelain")
+        ?.isNotBlank() == true
+
+val buildRevision =
+    if (gitDirty) "$gitHead-dirty" else gitHead
+
 android {
     namespace = "io.github.alagga.gonesmart"
 
@@ -77,6 +102,11 @@ android {
             "String",
             "LASTFM_API_KEY",
             "\"$lastFmApiKey\""
+        )
+        buildConfigField(
+            "String",
+            "GIT_REVISION",
+            "\"$buildRevision\""
         )
     }
 

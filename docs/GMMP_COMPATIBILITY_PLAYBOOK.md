@@ -32,7 +32,7 @@ Tested obfuscated names may be fast paths. They are never proof by themselves. I
 
 ### Detect
 
-Compare the installed GMMP version with the tested version. Missing/unknown versions are never green Compatibility.
+Compare the installed GMMP version with the tested version. Missing/unknown versions are never green Compatibility. For every device acceptance/debug run, first verify the runtime `BuildConfig.GIT_REVISION` against the intended GoneSmart branch head; a `-dirty` suffix identifies local uncommitted source. Do not diagnose a feature regression from a log whose GoneSmart build identity is absent or mismatched.
 
 ### Run one bounded read-only self-test
 

@@ -119,6 +119,8 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 
 Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and user-visible failures.
 
+Every device-debug build exposes the exact local Git revision through `BuildConfig.GIT_REVISION`; local uncommitted source is suffixed `-dirty`. The startup compatibility line and Playlist Link readiness/presenter logs include that revision. Before interpreting a device failure or asking for another probe build, verify that the captured runtime revision matches the intended branch head. A missing/mismatched revision means build identity is unverified and must be resolved before changing feature logic.
+
 Broad class/method/recycler inventories are gated to unknown/failing compatibility boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
 
 Accepted actions may retain one bounded postcondition check, not discovery-era polling loops.

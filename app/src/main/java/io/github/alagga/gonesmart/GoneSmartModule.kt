@@ -581,6 +581,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartCompat",
             "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
                 " | moduleVersion=${BuildConfig.VERSION_NAME}" +
+                " | git=${BuildConfig.GIT_REVISION}" +
                 " | buildDebug=${BuildConfig.DEBUG}"
         )
         compatibilityExecutor.execute {
@@ -3289,7 +3290,9 @@ class GoneSmartModule : XposedModule() {
         installed += installPlaylistBridgeEvaluationHook(loader)
 
         playlistBridgeInfo(
-            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady"
+            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady" +
+                " | enabled=${playlistBridgeController.isEnabled()}" +
+                " | git=${BuildConfig.GIT_REVISION}"
         )
         if (bindingsReady && playlistBridgeController.isEnabled()) {
             runtimeReporter.reportEvent(

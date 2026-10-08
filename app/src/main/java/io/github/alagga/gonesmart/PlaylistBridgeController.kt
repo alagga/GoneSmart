@@ -191,9 +191,12 @@ internal class PlaylistBridgeController {
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
         context?.let { contextRef = WeakReference(it) }
-        if (enabled) {
-            Log.i(TAG, "BRIDGE PRESENTER | captured=${presenter.javaClass.name}")
-        }
+        Log.i(
+            TAG,
+            "BRIDGE PRESENTER | captured=${presenter.javaClass.name}" +
+                " | enabled=$enabled" +
+                " | git=${BuildConfig.GIT_REVISION}"
+        )
     }
 
     fun onMenuInflated(menuResId: Int, menu: Menu?, inflater: Any?) {
