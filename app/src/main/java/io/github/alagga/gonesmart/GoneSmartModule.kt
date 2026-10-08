@@ -130,15 +130,6 @@ class GoneSmartModule : XposedModule() {
     private val compatibilityStaticProbeStarted =
         AtomicBoolean(false)
 
-    // Temporary, bounded read-only correlation for the still-unaccepted
-    // GMMP 4.2.1 Playlist Link action boundary. Retire after the real native
-    // call chain has been passively observed on device.
-    private val playlistBridgeActionProbeUntilMs =
-        AtomicLong(0L)
-
-    private val playlistBridgeActionProbeDialogsLeft =
-        AtomicLong(0L)
-
     private val compatibilityRecyclerSnapshots =
         java.util.Collections.synchronizedSet(
             mutableSetOf<String>()
@@ -3292,7 +3283,6 @@ class GoneSmartModule : XposedModule() {
         param: PackageReadyParam
     ) {
         val loader = param.classLoader
-        installPlaylistBridgeActionProbe(loader)
         val bindingsReady = playlistBridgeController.configure(loader)
         var installed = 0
         installed += installPlaylistBridgeEditorHooks(loader)
@@ -3305,138 +3295,6 @@ class GoneSmartModule : XposedModule() {
             runtimeReporter.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_SYSTEM,
                 "Playlist Link is available in the Smart-Playlist editor."
-            )
-        }
-    }
-
-    private fun installPlaylistBridgeActionProbe(loader: ClassLoader) {
-        runCatching {
-            val presenterClass = loader.loadClass("as4")
-            val presenterConstructor = presenterClass.declaredConstructors
-                .singleOrNull { constructor ->
-                    constructor.parameterTypes.contentEquals(
-                        arrayOf(
-                            android.content.Context::class.java,
-                            android.os.Bundle::class.java
-                        )
-                    )
-                }
-                ?: error("4.2.1 Smart editor constructor is not unique")
-            presenterConstructor.isAccessible = true
-
-            hook(presenterConstructor).intercept { chain ->
-                val result = chain.proceed()
-                if (playlistBridgeController.isEnabled()) {
-                    val now = SystemClock.elapsedRealtime()
-                    playlistBridgeActionProbeUntilMs.set(now + 30_000L)
-                    playlistBridgeActionProbeDialogsLeft.set(3L)
-
-                    val methods = presenterClass.declaredMethods
-                        .asSequence()
-                        .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
-                        .sortedWith(
-                            compareBy<Method>({ it.name }, { it.parameterCount })
-                        )
-                        .take(64)
-                        .joinToString(",") { method ->
-                            method.name + "(" +
-                                method.parameterTypes.joinToString(",") { it.name } +
-                                "):" + method.returnType.name
-                        }
-                    val nested = presenterClass.declaredClasses
-                        .take(24)
-                        .joinToString(",") { it.name }
-                        .ifBlank { "none" }
-                    val ds4 = runCatching { loader.loadClass("ds4") }
-                        .getOrNull()
-                    val ds4Methods = ds4?.declaredMethods
-                        ?.asSequence()
-                        ?.sortedWith(
-                            compareBy<Method>({ it.name }, { it.parameterCount })
-                        )
-                        ?.take(32)
-                        ?.joinToString(",") { method ->
-                            method.name + "(" +
-                                method.parameterTypes.joinToString(",") { it.name } +
-                                "):" + method.returnType.name
-                        }
-                        .orEmpty()
-                        .ifBlank { "none" }
-
-                    Log.w(
-                        PLAYLIST_BRIDGE_TAG,
-                        "BRIDGE ACTION PROBE ARMED | presenter=" +
-                            presenterClass.name +
-                            " | windowMs=30000 | methods=" + methods +
-                            " | nested=" + nested +
-                            " | ds4Methods=" + ds4Methods
-                    )
-                }
-                result
-            }
-
-            val dialogShow = android.app.Dialog::class.java
-                .getDeclaredMethod("show")
-                .apply { isAccessible = true }
-            hook(dialogShow).intercept { chain ->
-                val now = SystemClock.elapsedRealtime()
-                if (
-                    playlistBridgeController.isEnabled() &&
-                    now <= playlistBridgeActionProbeUntilMs.get()
-                ) {
-                    var claim = false
-                    while (true) {
-                        val remaining = playlistBridgeActionProbeDialogsLeft.get()
-                        if (remaining <= 0L) break
-                        if (
-                            playlistBridgeActionProbeDialogsLeft.compareAndSet(
-                                remaining,
-                                remaining - 1L
-                            )
-                        ) {
-                            claim = true
-                            break
-                        }
-                    }
-                    if (claim) {
-                        val stack = Throwable().stackTrace
-                            .asSequence()
-                            .filterNot { frame ->
-                                val name = frame.className
-                                name.startsWith("android.") ||
-                                    name.startsWith("java.") ||
-                                    name.startsWith("kotlin.") ||
-                                    name.startsWith("io.github.alagga.gonesmart.") ||
-                                    name.startsWith("io.github.libxposed.")
-                            }
-                            .take(32)
-                            .joinToString(" <- ") { frame ->
-                                frame.className + "." + frame.methodName +
-                                    ":" + frame.lineNumber
-                            }
-                            .ifBlank { "platform-only" }
-                        Log.w(
-                            PLAYLIST_BRIDGE_TAG,
-                            "BRIDGE ACTION DIALOG TRACE | dialog=" +
-                                (chain.getThisObject()?.javaClass?.name ?: "unknown") +
-                                " | remaining=" +
-                                playlistBridgeActionProbeDialogsLeft.get() +
-                                " | stack=" + stack
-                        )
-                    }
-                }
-                chain.proceed()
-            }
-
-            Log.i(
-                PLAYLIST_BRIDGE_TAG,
-                "BRIDGE ACTION PROBE READY | passive Dialog.show correlation"
-            )
-        }.onFailure { error ->
-            Log.w(
-                PLAYLIST_BRIDGE_TAG,
-                "BRIDGE ACTION PROBE UNAVAILABLE | native behavior unchanged",
-                error
             )
         }
     }
@@ -3468,31 +3326,46 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart editor presenter hook unavailable", it)
         }
 
-        runCatching {
-            hook(targets.presenterLinkSmartPlaylist).intercept { chain ->
-                if (playlistBridgeController.shouldBypassNativeLinkHook()) {
-                    return@intercept chain.proceed()
+        targets.presenterLinkSmartPlaylist?.let { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    if (playlistBridgeController.shouldBypassNativeLinkHook()) {
+                        return@intercept chain.proceed()
+                    }
+                    val edit = chain.getArg(0) as? Boolean == true
+                    if (
+                        playlistBridgeController.interceptNativeLinkAction(
+                            chain.getThisObject(),
+                            edit
+                        )
+                    ) {
+                        null
+                    } else {
+                        chain.proceed()
+                    }
                 }
-                val edit = chain.getArg(0) as? Boolean == true
-                if (
-                    playlistBridgeController.interceptNativeLinkAction(
-                        chain.getThisObject(),
-                        edit
-                    )
-                ) {
-                    null
-                } else {
-                    chain.proceed()
-                }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn("Smart link chooser hook unavailable", it)
             }
-            installed++
-        }.onFailure {
-            playlistBridgeWarn("Smart link chooser hook unavailable", it)
         }
 
         targets.chooserConsumerAccept?.let { method ->
             runCatching {
                 hook(method).intercept { chain ->
+                    // GMMP 4.2.1: this exact callback is the passively proven
+                    // action boundary from the real native dialog stack.
+                    if (
+                        targets.presenterLinkSmartPlaylist == null &&
+                        !playlistBridgeController.shouldBypassNativeLinkHook() &&
+                        playlistBridgeController.interceptNativeChooserCallback(
+                            chain.getThisObject(),
+                            chain.getArg(0)
+                        )
+                    ) {
+                        return@intercept null
+                    }
+
                     val previous = playlistBridgeSmartChooserTitleDepth.get()
                     playlistBridgeSmartChooserTitleDepth.set(previous + 1)
                     try {
@@ -3503,7 +3376,7 @@ class GoneSmartModule : XposedModule() {
                 }
                 installed++
             }.onFailure {
-                playlistBridgeWarn("Smart chooser title scope unavailable", it)
+                playlistBridgeWarn("Smart chooser callback hook unavailable", it)
             }
         }
 

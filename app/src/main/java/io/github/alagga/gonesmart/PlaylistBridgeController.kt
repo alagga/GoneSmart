@@ -83,7 +83,7 @@ internal class PlaylistBridgeController {
         val eventBusGet: Method,
         val eventBusPost: Method,
         val unitValue: Any?,
-        val presenterLinkSmartPlaylist: Method,
+        val presenterLinkSmartPlaylist: Method?,
         val popupMenuConstructor: Constructor<*>,
         val popupMenuGetMenu: Method,
         val popupMenuSetListener: Method,
@@ -114,13 +114,21 @@ internal class PlaylistBridgeController {
     @Volatile private var contextRef: WeakReference<Context>? = null
     private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
 
+    private data class NativeSmartChooserContinuation(
+        val callback: Any,
+        val payload: Any?
+    )
+
+    @Volatile
+    private var nativeSmartChooserContinuation: NativeSmartChooserContinuation? = null
+
     internal data class PortableSaveToken(
         val originals: List<Pair<Any, String?>>
     )
 
     internal data class HookTargets(
         val presenterConstructor: Constructor<*>,
-        val presenterLinkSmartPlaylist: Method,
+        val presenterLinkSmartPlaylist: Method?,
         val chooserConsumerAccept: Method?,
         val ruleLabelFormatter: Method?,
         val evaluationMethod: Method
@@ -139,7 +147,10 @@ internal class PlaylistBridgeController {
     fun setEnabled(value: Boolean) {
         if (enabled == value) return
         enabled = value
-        if (!value) cache.clear()
+        if (!value) {
+            cache.clear()
+            nativeSmartChooserContinuation = null
+        }
         Log.i(TAG, "BRIDGE SETTINGS | enabled=$value")
     }
 
@@ -206,7 +217,8 @@ internal class PlaylistBridgeController {
 
         // Keep GMMP's one ORIGINAL toolbar action/icon. Its click now opens
         // the host AppCompat popup menu below that exact action item and
-        // dispatches either back into ds4.g2(false) or Playlist Bridge.
+        // dispatches either back into the proven native continuation or
+        // Playlist Bridge.
         original.setOnMenuItemClickListener {
             if (!enabled) {
                 return@setOnMenuItemClickListener false
@@ -320,7 +332,10 @@ internal class PlaylistBridgeController {
                         }
                         when (selected?.order) {
                             0 -> openNativeSmartPlaylistChooser()
-                            1 -> openChooser(edit = false)
+                            1 -> {
+                                nativeSmartChooserContinuation = null
+                                openChooser(edit = false)
+                            }
                         }
                         true
                     }
@@ -344,6 +359,46 @@ internal class PlaylistBridgeController {
 
     private fun openNativeSmartPlaylistChooser() {
         val native = bindings ?: return
+
+        // GMMP 4.2.1: resume the exact native callback instance/payload that
+        // was naturally reached by the real toolbar action. This keeps the
+        // original async result/event chain intact instead of guessing an
+        // upstream obfuscated presenter method.
+        val continuation = nativeSmartChooserContinuation
+        val accept = native.chooserConsumerAccept
+        if (
+            continuation != null &&
+            accept != null &&
+            accept.declaringClass.isInstance(continuation.callback)
+        ) {
+            nativeSmartChooserContinuation = null
+            runCatching {
+                nativeSmartChooserBypass.set(true)
+                try {
+                    accept.invoke(continuation.callback, continuation.payload)
+                } finally {
+                    nativeSmartChooserBypass.set(false)
+                }
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "BRIDGE SMART CHOOSER | captured native callback failed",
+                    it
+                )
+            }
+            return
+        }
+        nativeSmartChooserContinuation = null
+
+        // Accepted GMMP 4.2.0 fallback. Do not structurally substitute another
+        // boolean method on remapped versions: only ds4.g2(boolean) is proven.
+        val legacyAction = native.presenterLinkSmartPlaylist ?: run {
+            Log.w(
+                TAG,
+                "BRIDGE SMART CHOOSER | no proven native continuation available"
+            )
+            return
+        }
         val presenter = presenterRef?.get() ?: run {
             Log.w(TAG, "BRIDGE SMART CHOOSER | no active SmartEditorPresenter")
             return
@@ -351,7 +406,7 @@ internal class PlaylistBridgeController {
         runCatching {
             nativeSmartChooserBypass.set(true)
             try {
-                native.presenterLinkSmartPlaylist.invoke(presenter, false)
+                legacyAction.invoke(presenter, false)
             } finally {
                 nativeSmartChooserBypass.set(false)
             }
@@ -366,6 +421,50 @@ internal class PlaylistBridgeController {
 
     fun shouldBypassNativeLinkHook(): Boolean =
         nativeSmartChooserBypass.get()
+
+    /**
+     * GMMP 4.2.1 dispatch boundary proven from the naturally opened native
+     * MaterialDialog stack: as4$g.accept(...). Store that exact callback and
+     * payload only while GoneSmart owns an add-link choice. Native edit paths
+     * and disabled mode pass through unchanged.
+     */
+    fun interceptNativeChooserCallback(
+        callback: Any?,
+        payload: Any?
+    ): Boolean {
+        if (!enabled || callback == null || nativeSmartChooserBypass.get()) {
+            return false
+        }
+        val native = bindings ?: return false
+        if (native.presenterLinkSmartPlaylist != null) {
+            // Accepted 4.2.0 keeps its exact ds4.g2(boolean) boundary.
+            return false
+        }
+        val accept = native.chooserConsumerAccept ?: return false
+        if (!accept.declaringClass.isInstance(callback)) return false
+        val presenter = presenterRef?.get() ?: return false
+        if (!native.presenterClass.isInstance(presenter)) return false
+
+        // The editor's native selected-rule state is the semantic distinction
+        // between add and edit. Do not infer the old boolean argument from an
+        // unrelated remapped method signature.
+        val edit = selectedRule(presenter) != null
+        if (!edit) {
+            nativeSmartChooserContinuation =
+                NativeSmartChooserContinuation(callback, payload)
+        }
+
+        val intercepted = interceptNativeLinkAction(presenter, edit)
+        if (edit || !intercepted) {
+            nativeSmartChooserContinuation = null
+        }
+        Log.i(
+            TAG,
+            "BRIDGE LINK DISPATCH | proven chooser callback" +
+                " | edit=$edit | intercepted=$intercepted"
+        )
+        return intercepted
+    }
 
     private fun decoratedPlaylistTitle(context: Context): CharSequence {
         val playlist = NativeGmmpUiText.string(context, "playlist")
@@ -1295,13 +1394,24 @@ internal class PlaylistBridgeController {
                     method.parameterTypes[0].isAssignableFrom(presenterView.type) ||
                     presenterView.type.isAssignableFrom(method.parameterTypes[0]))
         }
-        val presenterLinkSmartPlaylist = r.method(
-            presenterClass,
-            listOf("g2"),
-            "native linked-Smart-Playlist action"
-        ) { method ->
-            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
-                method.parameterTypes.contentEquals(arrayOf(java.lang.Boolean.TYPE))
+        // Only the accepted GMMP 4.2.0 boundary is authoritative here.
+        // On 4.2.1 as4 exposes h2(boolean), but the real user action was
+        // passively correlated downstream at as4$g.accept(...); never promote
+        // h2 solely because it has the old boolean shape.
+        val presenterLinkSmartPlaylist = if (presenterClass.name == "ds4") {
+            presenterClass.declaredMethods.singleOrNull { method ->
+                method.name == "g2" &&
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.parameterTypes.contentEquals(
+                        arrayOf(java.lang.Boolean.TYPE)
+                    ) &&
+                    method.returnType == java.lang.Void.TYPE
+            }?.apply { isAccessible = true }
+                ?: throw IllegalStateException(
+                    "Accepted ds4.g2(boolean) link action is unavailable"
+                )
+        } else {
+            null
         }
         val ruleIdGetter = r.optionalMethod(smartRuleClass, listOf("d")) { method ->
             method.parameterCount == 0 &&
@@ -1677,7 +1787,13 @@ internal class PlaylistBridgeController {
                 " | smart=${smartPlaylistClass.name}" +
                 " | parser=${parserClass.name}" +
                 " | dao=${playlistDaoClass.name}" +
-                " | predicate=${predicateClass.name}"
+                " | predicate=${predicateClass.name}" +
+                " | linkBoundary=" +
+                (presenterLinkSmartPlaylist?.let {
+                    it.declaringClass.name + "." + it.name
+                } ?: chooserConsumerAccept?.let {
+                    it.declaringClass.name + "." + it.name
+                } ?: "none")
         )
 
         return Bindings(
