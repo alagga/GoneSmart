@@ -87,6 +87,23 @@ internal object PlaylistBridgeReflectionResolver {
             method.parameterTypes.contentEquals(arrayOf(baseRuleClass)) &&
             method.returnType == java.lang.Void.TYPE
 
+    fun matchesStaticFieldSemanticValue(
+        field: Field,
+        valueClass: Class<*>,
+        expectedValue: String
+    ): Boolean {
+        if (
+            !java.lang.reflect.Modifier.isStatic(field.modifiers) ||
+            !valueClass.isAssignableFrom(field.type)
+        ) {
+            return false
+        }
+        return runCatching {
+            field.isAccessible = true
+            field.get(null)?.toString() == expectedValue
+        }.getOrDefault(false)
+    }
+
     fun method(
         type: Class<*>,
         preferredNames: List<String>,

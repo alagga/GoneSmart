@@ -72,7 +72,7 @@ internal class PlaylistBridgeController {
         val fileModelFile: Field,
         val nativeIn: Method,
         val uriField: Any,
-        val whereGroupConstructor: Constructor<*>,
+        val whereGroupConstructor: Constructor<*>?,
         val databaseSingleton: Field,
         val playlistDaoGetter: Method,
         val playlistDaoAll: Method,
@@ -596,7 +596,16 @@ internal class PlaylistBridgeController {
         val result = if (clauses.size == 1) {
             clauses.single()
         } else {
-            native.whereGroupConstructor.newInstance(clauses, "OR")
+            val group = native.whereGroupConstructor
+            if (group == null) {
+                Log.e(
+                    TAG,
+                    "BRIDGE COMPILE | native OR predicate group unavailable; " +
+                        "failing closed | chunks=${clauses.size}"
+                )
+                return falsePredicate(native)
+            }
+            group.newInstance(clauses, "OR")
         }
         Log.i(
             TAG,
@@ -1534,16 +1543,30 @@ internal class PlaylistBridgeController {
             listOf("w75", "z75"),
             "native track query fields"
         ) { type ->
-            runCatching {
-                val uri = type.getDeclaredField("URI")
-                java.lang.reflect.Modifier.isStatic(uri.modifiers) &&
-                    queryFieldClass.isAssignableFrom(uri.type)
-            }.getOrDefault(false)
+            r.fields(type).count { field ->
+                r.matchesStaticFieldSemanticValue(
+                    field = field,
+                    valueClass = queryFieldClass,
+                    expectedValue = "track_uri"
+                )
+            } == 1
         }
-        val uriField = trackFieldClass.getDeclaredField("URI").apply {
-            isAccessible = true
+        val uriField = r.field(
+            trackFieldClass,
+            listOf("URI"),
+            "native track URI query field"
+        ) { field ->
+            r.matchesStaticFieldSemanticValue(
+                field = field,
+                valueClass = queryFieldClass,
+                expectedValue = "track_uri"
+            )
         }.get(null)
+            ?: throw IllegalStateException("Native track URI query field is null")
 
+        // OR grouping is required only when one source exceeds the
+        // bounded IN chunk size. Do not disable every Playlist Link merely
+        // because a remapped optional group class is not yet proven.
         val whereGroupClass = sequenceOf(
             predicateClass,
             r.optionalClass(loader, listOf("ww3", "zw3")) { candidate ->
@@ -1556,15 +1579,16 @@ internal class PlaylistBridgeController {
                     arrayOf(java.util.List::class.java, String::class.java)
                 )
             }
-        } ?: throw IllegalStateException("Native OR predicate group is unavailable")
-        val whereGroupConstructor = r.constructor(
-            whereGroupClass,
-            "native OR predicate group"
-        ) { ctor ->
-            ctor.parameterTypes.contentEquals(
-                arrayOf(java.util.List::class.java, String::class.java)
-            )
         }
+        val whereGroupConstructor = whereGroupClass
+            ?.declaredConstructors
+            ?.filter { ctor ->
+                ctor.parameterTypes.contentEquals(
+                    arrayOf(java.util.List::class.java, String::class.java)
+                )
+            }
+            ?.singleOrNull()
+            ?.apply { isAccessible = true }
 
         val dbClass = loader.loadClass("gonemad.gmmp.data.database.GMDatabase")
         val playlistDaoClass = r.loadClass(
@@ -1626,7 +1650,7 @@ internal class PlaylistBridgeController {
         val dialogCallbackClass = dialogEventConstructor.parameterTypes[2]
         val eventBusClass = r.loadClass(
             loader,
-            listOf("dc1", "gc1"),
+            listOf("fc1", "gc1", "dc1"),
             "native event bus"
         ) { type ->
             r.methods(type).any { method ->
@@ -1797,6 +1821,9 @@ internal class PlaylistBridgeController {
                 " | parser=${parserClass.name}" +
                 " | dao=${playlistDaoClass.name}" +
                 " | predicate=${predicateClass.name}" +
+                " | uriField=" + uriField.toString() +
+                " | orGroup=" +
+                (whereGroupConstructor?.declaringClass?.name ?: "deferred/unavailable") +
                 " | falsePredicate=native-rule-evaluator" +
                 " | linkBoundary=" +
                 (presenterLinkSmartPlaylist?.let {
