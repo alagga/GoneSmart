@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm scripts/apply_playlist_link_421.py scripts/fix_apply_playlist_link_421.py .github/workflows/apply-playlist-link-421.yml
+          git rm -f scripts/apply_playlist_link_421.py scripts/fix_apply_playlist_link_421.py .github/workflows/apply-playlist-link-421.yml
           git add AGENTS.md docs app/src
           git diff --cached --check
           git commit -m "fix(playlist-link): restore GMMP 4.2.1 runtime bindings"
