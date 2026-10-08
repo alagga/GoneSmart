@@ -77,6 +77,16 @@ internal object PlaylistBridgeReflectionResolver {
         return out.values.toList()
     }
 
+    fun matchesDeclaredPresenterRuleAction(
+        method: Method,
+        presenterClass: Class<*>,
+        baseRuleClass: Class<*>
+    ): Boolean =
+        method.declaringClass == presenterClass &&
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+            method.parameterTypes.contentEquals(arrayOf(baseRuleClass)) &&
+            method.returnType == java.lang.Void.TYPE
+
     fun method(
         type: Class<*>,
         preferredNames: List<String>,

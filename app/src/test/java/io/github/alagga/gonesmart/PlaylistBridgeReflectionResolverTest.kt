@@ -21,6 +21,17 @@ class PlaylistBridgeReflectionResolverTest {
         @Suppress("unused") private var other: Int = 1
     }
 
+    private open class RuleBase
+    private class RuleLeaf : RuleBase()
+
+    private open class PresenterParent {
+        @Suppress("unused") fun S1(value: Any) = Unit
+    }
+
+    private class PresenterFixture : PresenterParent() {
+        @Suppress("unused") fun Q1(value: RuleBase) = Unit
+    }
+
     @Test
     fun preferredNameStillRequiresMatchingShape() {
         val method = PlaylistBridgeReflectionResolver.method(
@@ -56,6 +67,25 @@ class PlaylistBridgeReflectionResolverTest {
                 candidate.returnType == Integer.TYPE
         }
         assertNull(method)
+    }
+
+    @Test
+    fun presenterRuleActionIgnoresInheritedBroadDistractors() {
+        val method = PlaylistBridgeReflectionResolver.method(
+            PresenterFixture::class.java,
+            listOf("P1", "Q1"),
+            "presenter rule action"
+        ) { candidate ->
+            PlaylistBridgeReflectionResolver.matchesDeclaredPresenterRuleAction(
+                method = candidate,
+                presenterClass = PresenterFixture::class.java,
+                baseRuleClass = RuleBase::class.java
+            )
+        }
+
+        assertEquals("Q1", method.name)
+        assertSame(PresenterFixture::class.java, method.declaringClass)
+        assertSame(RuleBase::class.java, method.parameterTypes.single())
     }
 
     @Test
