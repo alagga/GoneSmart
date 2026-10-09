@@ -177,6 +177,12 @@ internal object PlaylistBridgeReflectionResolver {
      * dirty v->u. The selected index needs the explicit alias because es4 has
      * several int fields and structural fallback alone is therefore
      * intentionally ambiguous.
+     *
+     * Static 4.2.1 bytecode/XML inspection also proves the Smart-Playlist
+     * MatchAll flag moved from the historical model slot s to ts4.r, while a
+     * nested Smart-rule group's MatchAll flag is gt4.o rather than the old p.
+     * Both classes contain another boolean field, so structural fallback alone
+     * is intentionally ambiguous and must fail closed without these aliases.
      */
     internal fun acceptedFieldNameOrder(
         typeName: String,
@@ -190,6 +196,12 @@ internal object PlaylistBridgeReflectionResolver {
                     "v" -> listOf("u")
                     else -> emptyList()
                 }
+            }
+            "ts4" -> preferredNames.flatMap { name ->
+                if (name == "s") listOf("r") else emptyList()
+            }
+            "gt4" -> preferredNames.flatMap { name ->
+                if (name == "p") listOf("o") else emptyList()
             }
             else -> emptyList()
         }
@@ -587,7 +599,7 @@ internal object PlaylistBridgeReflectionResolver {
         predicate: (Field) -> Boolean
     ): Field {
         val candidates = fields(type).filter(predicate)
-        preferredNames.forEach { name ->
+        acceptedFieldNameOrder(type.name, preferredNames).forEach { name ->
             candidates.filter { it.name == name }.singleOrNull()?.let {
                 it.isAccessible = true
                 return it
