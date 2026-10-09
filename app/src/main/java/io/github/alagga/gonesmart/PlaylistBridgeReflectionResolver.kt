@@ -167,6 +167,35 @@ internal object PlaylistBridgeReflectionResolver {
         return out.values.toList()
     }
 
+    /**
+     * Accepted-version aliases remain fast-path evidence only. The caller's
+     * structural predicate is applied before this order is consulted, so an
+     * R8 name can never make an incompatible field acceptable.
+     *
+     * Static comparison of GMMP 4.2.0 hs4 with 4.2.1 es4 shows the editor
+     * state fields shifted by one slot: paths x->w, selected index y->x and
+     * dirty v->u. The selected index needs the explicit alias because es4 has
+     * several int fields and structural fallback alone is therefore
+     * intentionally ambiguous.
+     */
+    internal fun acceptedFieldNameOrder(
+        typeName: String,
+        preferredNames: List<String>
+    ): List<String> {
+        val aliases = when (typeName) {
+            "es4" -> preferredNames.flatMap { name ->
+                when (name) {
+                    "x" -> listOf("w")
+                    "y" -> listOf("x")
+                    "v" -> listOf("u")
+                    else -> emptyList()
+                }
+            }
+            else -> emptyList()
+        }
+        return (preferredNames + aliases).distinct()
+    }
+
     fun matchesDeclaredPresenterRuleAction(
         method: Method,
         presenterClass: Class<*>,
@@ -577,7 +606,7 @@ internal object PlaylistBridgeReflectionResolver {
         predicate: (Field) -> Boolean
     ): Field? {
         val candidates = fields(type).filter(predicate)
-        preferredNames.forEach { name ->
+        acceptedFieldNameOrder(type.name, preferredNames).forEach { name ->
             candidates.filter { it.name == name }.singleOrNull()?.let {
                 it.isAccessible = true
                 return it
