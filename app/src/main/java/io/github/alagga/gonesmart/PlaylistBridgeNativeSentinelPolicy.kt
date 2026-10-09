@@ -17,4 +17,12 @@ internal object PlaylistBridgeNativeSentinelPolicy {
             Long.MIN_VALUE.toString(),
             0
         )
+
+    fun trackIdEqualsArguments(trackId: Long): Array<Any?> =
+        arrayOf(
+            TRACK_ID_FIELD,
+            EQUALS_OPERATOR,
+            trackId.toString(),
+            0
+        )
 }

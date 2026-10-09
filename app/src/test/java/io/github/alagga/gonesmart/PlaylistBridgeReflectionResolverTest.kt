@@ -80,6 +80,11 @@ class PlaylistBridgeReflectionResolverTest {
         override fun toString(): String = sql
     }
 
+    private class NativePredicateGraph(
+        @Suppress("unused") private val field: QueryFieldMarker,
+        @Suppress("unused") private val nested: Any? = null
+    )
+
     private object BlindQueryFieldsFixture {
         @JvmField val id: QueryFieldMarker = BlindQueryColumn()
         @JvmField val uri: QueryFieldMarker = BlindQueryColumn()
@@ -150,6 +155,38 @@ class PlaylistBridgeReflectionResolverTest {
         ) { it.type == String::class.java }
         assertEquals("wanted", field.name)
         assertSame(String::class.java, field.type)
+    }
+
+    @Test
+    fun nativeQueryFieldCanBeRecoveredFromCompiledPredicateGraph() {
+        val field = QueryColumn("song_id")
+        val root = NativePredicateGraph(
+            field = field,
+            nested = listOf(field)
+        )
+
+        assertSame(
+            field,
+            PlaylistBridgeReflectionResolver.uniqueInstanceInObjectGraph(
+                root = root,
+                valueClass = QueryFieldMarker::class.java
+            )
+        )
+    }
+
+    @Test
+    fun compiledPredicateGraphAmbiguityFailsClosed() {
+        val root = NativePredicateGraph(
+            field = QueryColumn("song_id"),
+            nested = QueryColumn("track_uri")
+        )
+
+        assertNull(
+            PlaylistBridgeReflectionResolver.uniqueInstanceInObjectGraph(
+                root = root,
+                valueClass = QueryFieldMarker::class.java
+            )
+        )
     }
 
     @Test

@@ -62,4 +62,35 @@ internal object QueuePositionNormalizationPolicy {
             currentNewPosition = currentPosition
         )
     }
+    fun rebaseToOne(rows: List<Row>, currentQueueId: Long): Plan? {
+        if (rows.isEmpty()) return null
+        require(rows.all { it.position > 0 }) {
+            "Queue positions must be positive"
+        }
+        require(rows.map { it.queueId }.toSet().size == rows.size) {
+            "Queue IDs must be unique"
+        }
+        require(rows.map { it.position }.toSet().size == rows.size) {
+            "Queue positions must be unique"
+        }
+
+        val ordered = rows.sortedBy { it.position }
+        val currentIndex = ordered.indexOfFirst { it.queueId == currentQueueId }
+        require(currentIndex >= 0) {
+            "Current queue entry must exist in the native rows"
+        }
+
+        val original = ordered.map { it.position }
+        val normalized = List(ordered.size) { index -> index + 1 }
+        if (original == normalized) return null
+
+        return Plan(
+            orderedQueueIds = ordered.map { it.queueId },
+            originalPositions = original,
+            normalizedPositions = normalized,
+            currentQueueId = currentQueueId,
+            currentNewPosition = currentIndex + 1
+        )
+    }
+
 }

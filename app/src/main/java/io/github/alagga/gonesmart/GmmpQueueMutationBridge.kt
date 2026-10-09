@@ -368,6 +368,95 @@ internal class GmmpQueueMutationBridge(
         }
     }
 
+    fun rebaseQueueToOneIfNeeded(): Boolean {
+        val resolved = resolve(
+            requireDelete = false,
+            requireStatePosition = true
+        )
+        val ordered = resolved.rows.sortedBy {
+            number(resolved.position, it).toInt()
+        }
+        if (ordered.isEmpty()) return true
+
+        val current = resolved.context.items.singleOrNull {
+            it.state == QueueItemState.CURRENT
+        } ?: error("GMMP current queue entry unavailable for final rebase")
+        val plan = QueuePositionNormalizationPolicy.rebaseToOne(
+            rows = ordered.map {
+                QueuePositionNormalizationPolicy.Row(
+                    queueId = number(resolved.queueId, it).toLong(),
+                    position = number(resolved.position, it).toInt()
+                )
+            },
+            currentQueueId = current.queueEntryId
+        ) ?: return true
+        val statePosition = resolved.statePosition
+            ?: error("GMMP current-position writer unavailable for final rebase")
+        val oldPositions = ordered.map {
+            number(resolved.position, it).toInt()
+        }
+        val oldState = statePosition.read()
+
+        try {
+            ordered.forEachIndexed { index, row ->
+                setInt(
+                    resolved.position,
+                    row,
+                    plan.normalizedPositions[index]
+                )
+            }
+            resolved.update.invoke(
+                resolved.dao,
+                ArrayList(ordered)
+            )
+            statePosition.write(plan.currentNewPosition)
+
+            val verified = GmmpQueueReader().read(
+                autoDj,
+                statePosition.read()
+            ) ?: error("Queue final-rebase verification unavailable")
+            val verifiedOrdered = verified.items.sortedBy { it.queuePosition }
+            val verifiedIds = verifiedOrdered.map { it.queueEntryId }
+            val verifiedPositions = verifiedOrdered.map { it.queuePosition }
+            val verifiedCurrent = verified.items.singleOrNull {
+                it.state == QueueItemState.CURRENT
+            }?.queueEntryId
+            require(
+                verifiedIds == plan.orderedQueueIds &&
+                    verifiedPositions == plan.normalizedPositions &&
+                    verifiedCurrent == plan.currentQueueId &&
+                    verified.currentQueuePosition == plan.currentNewPosition
+            ) {
+                "GMMP Track Auto-DJ final queue rebase failed postcondition"
+            }
+
+            Log.i(
+                TAG,
+                "QUEUE POSITION REBASE | old=" +
+                    plan.originalPositions.joinToString(",") +
+                    " | new=" + plan.normalizedPositions.joinToString(",") +
+                    " | currentId=" + plan.currentQueueId +
+                    " | currentPosition=" + plan.currentNewPosition +
+                    " | verified=true"
+            )
+            return true
+        } catch (failure: Throwable) {
+            runCatching {
+                ordered.forEachIndexed { index, row ->
+                    setInt(resolved.position, row, oldPositions[index])
+                }
+                resolved.update.invoke(
+                    resolved.dao,
+                    ArrayList(ordered)
+                )
+                statePosition.write(oldState)
+            }.onFailure { rollback ->
+                failure.addSuppressed(rollback)
+            }
+            throw failure
+        }
+    }
+
     private fun resolve(
         requireDelete: Boolean,
         requireStatePosition: Boolean

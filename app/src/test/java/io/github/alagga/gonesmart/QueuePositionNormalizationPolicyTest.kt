@@ -57,6 +57,42 @@ class QueuePositionNormalizationPolicyTest {
     }
 
     @Test
+    fun `verified full Track Mix queue rebases to one through current identity`() {
+        val plan = QueuePositionNormalizationPolicy.rebaseToOne(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(50L, 8),
+                QueuePositionNormalizationPolicy.Row(51L, 9),
+                QueuePositionNormalizationPolicy.Row(52L, 10),
+                QueuePositionNormalizationPolicy.Row(53L, 11),
+                QueuePositionNormalizationPolicy.Row(54L, 12)
+            ),
+            currentQueueId = 50L
+        )!!
+
+        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)
+        assertEquals(1, plan.currentNewPosition)
+        assertEquals(50L, plan.currentQueueId)
+    }
+
+    @Test
+    fun `final rebase keeps a middle current entry by identity`() {
+        val plan = QueuePositionNormalizationPolicy.rebaseToOne(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(60L, 8),
+                QueuePositionNormalizationPolicy.Row(61L, 9),
+                QueuePositionNormalizationPolicy.Row(62L, 10),
+                QueuePositionNormalizationPolicy.Row(63L, 11),
+                QueuePositionNormalizationPolicy.Row(64L, 12)
+            ),
+            currentQueueId = 62L
+        )!!
+
+        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)
+        assertEquals(3, plan.currentNewPosition)
+        assertEquals(62L, plan.currentQueueId)
+    }
+
+    @Test
     fun `already contiguous positions need no native mutation`() {
         assertNull(
             QueuePositionNormalizationPolicy.plan(

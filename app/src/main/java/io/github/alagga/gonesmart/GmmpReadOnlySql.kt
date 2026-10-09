@@ -90,6 +90,22 @@ internal object GmmpReadOnlySql {
         return cursor.use(reader)
     }
 
+    private class DirectDatabaseHost(
+        val database: Any
+    )
+
+    fun <T> queryDatabase(
+        databaseInstance: Any,
+        sql: String,
+        args: Array<Any?> = emptyArray(),
+        reader: (Cursor) -> T
+    ): T = query(
+        autoDjInstance = DirectDatabaseHost(databaseInstance),
+        sql = sql,
+        args = args,
+        reader = reader
+    )
+
     fun canResolve(autoDjInstance: Any): Boolean =
         runCatching { resolve(autoDjInstance) }.isSuccess
 

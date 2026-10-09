@@ -219,6 +219,68 @@ internal object PlaylistBridgeReflectionResolver {
     }
 
 
+    internal fun uniqueInstanceInObjectGraph(
+        root: Any,
+        valueClass: Class<*>,
+        maxDepth: Int = 6
+    ): Any? {
+        val seen = java.util.IdentityHashMap<Any, Boolean>()
+        val matches = java.util.IdentityHashMap<Any, Boolean>()
+
+        fun visit(candidate: Any?, depth: Int) {
+            if (candidate == null || depth < 0) return
+            if (valueClass.isInstance(candidate)) {
+                matches[candidate] = true
+                return
+            }
+            when (candidate) {
+                is CharSequence, is Number, is Boolean, is Char,
+                is Enum<*>, is Class<*> -> return
+                is Collection<*> -> {
+                    candidate.take(256).forEach { visit(it, depth - 1) }
+                    return
+                }
+                is Map<*, *> -> {
+                    candidate.entries.take(256).forEach { entry ->
+                        visit(entry.key, depth - 1)
+                        visit(entry.value, depth - 1)
+                    }
+                    return
+                }
+            }
+            if (candidate.javaClass.isArray) {
+                val length = java.lang.reflect.Array.getLength(candidate)
+                repeat(length.coerceAtMost(256)) { index ->
+                    visit(java.lang.reflect.Array.get(candidate, index), depth - 1)
+                }
+                return
+            }
+            if (seen.put(candidate, true) != null || depth == 0) return
+
+            var type: Class<*>? = candidate.javaClass
+            while (type != null && type != Any::class.java) {
+                val name = type.name
+                if (
+                    name.startsWith("java.") ||
+                    name.startsWith("kotlin.") ||
+                    name.startsWith("android.")
+                ) break
+                declaredFieldsSafely(type)
+                    .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                    .forEach { field ->
+                        runCatching {
+                            field.isAccessible = true
+                            visit(field.get(candidate), depth - 1)
+                        }
+                    }
+                type = runCatching { type.superclass }.getOrNull()
+            }
+        }
+
+        visit(root, maxDepth)
+        return matches.keys.toList().singleOrNull()
+    }
+
     private fun readNamedField(instance: Any, name: String): Any? {
         var type: Class<*>? = instance.javaClass
         while (type != null) {

@@ -112,6 +112,28 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
+    @Test fun gmmp421BootstrapsOnlyOneContinuityTrackBeforeSmartRemainder() {
+        val totalMissing =
+            TrackMixInitialFillPolicy.nativeInitialRefillCount(
+                initialSize = 5,
+                seedQueueSize = 1
+            )
+        assertEquals(
+            1,
+            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
+                totalMissing = totalMissing,
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            4,
+            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
+                totalMissing = totalMissing,
+                legacyQueue = true
+            )
+        )
+    }
+
     @Test fun isolatedTrackMixSeedNeverWaitsForSmartPool() {
         assertFalse(
             TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(

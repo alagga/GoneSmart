@@ -78,6 +78,9 @@ class GoneSmartModule : XposedModule() {
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
 
+        private const val TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS =
+            12L
+
         // Track Auto-DJ must never strand playback on the isolated seed while
         // the network recommendation pipeline takes many seconds. Once the
         // seed is isolated, the native Initial Size refill is immediate;
@@ -472,6 +475,9 @@ class GoneSmartModule : XposedModule() {
         requestNativeRefill = { count -> requestNativeTrackMixRefill(count) },
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
+        },
+        awaitSmartInitialPool = { autoDj, count ->
+            awaitTrackMixSmartInitialPool(autoDj, count)
         }
     )
 
@@ -5509,6 +5515,66 @@ class GoneSmartModule : XposedModule() {
                 "session=${session.sessionId} | " +
                 "target=${sizing.targetSize}"
         )
+    }
+
+    private fun awaitTrackMixSmartInitialPool(
+        autoDjInstance: Any,
+        requestedTracks: Int
+    ): Boolean {
+        if (requestedTracks <= 0) return true
+
+        fun readyNow(): Boolean {
+            val context = readQueueContext(autoDjInstance) ?: return false
+            val session = queueSessionTracker.observe(context)
+            return recommendationPool.hasEnough(
+                expectedSessionId = session.sessionId,
+                count = requestedTracks,
+                excludedTrackIds = context.items.map { it.track.id }.toSet()
+            )
+        }
+
+        if (readyNow()) {
+            Log.i(
+                TAG,
+                "SMART DJ TRACK MIX REMAINDER | pool already ready | " +
+                    "requested=$requestedTracks"
+            )
+            return true
+        }
+
+        val future = synchronized(poolFillLock) {
+            activePoolFillFuture
+        } ?: return false
+
+        val completed = try {
+            future.get(
+                TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS,
+                TimeUnit.SECONDS
+            )
+        } catch (_: TimeoutException) {
+            Log.w(
+                TAG,
+                "SMART DJ TRACK MIX REMAINDER | bounded wait timed out | " +
+                    "requested=$requestedTracks | poolFill=continuing"
+            )
+            false
+        } catch (failure: Throwable) {
+            Log.w(
+                TAG,
+                "SMART DJ TRACK MIX REMAINDER | pool wait failed; " +
+                    "native fallback remains available",
+                failure
+            )
+            false
+        }
+
+        val ready = completed && readyNow()
+        Log.i(
+            TAG,
+            "SMART DJ TRACK MIX REMAINDER | wait complete | " +
+                "requested=$requestedTracks | ready=$ready"
+        )
+        return ready
     }
 
     private fun ensureRecommendationPoolReady(

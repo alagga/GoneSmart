@@ -71,7 +71,7 @@ internal class PlaylistBridgeController {
         val playlistEntries: Field,
         val fileModelFile: Field,
         val nativeIn: Method,
-        val uriField: Any,
+        val trackIdField: Any?,
         val whereGroupConstructor: Constructor<*>?,
         val databaseSingleton: Field,
         val playlistDaoGetter: Method,
@@ -589,10 +589,54 @@ internal class PlaylistBridgeController {
             return falsePredicate(native)
         }
 
-        val clauses = membership.paths
-            .distinct()
-            .chunked(MAX_IN_VALUES)
-            .map { values -> native.nativeIn.invoke(null, native.uriField, values) }
+        val trackIds = runCatching {
+            resolveTrackIds(native, membership.paths)
+        }.onFailure {
+            Log.e(TAG, "BRIDGE COMPILE | native track-id lookup failed", it)
+        }.getOrNull() ?: return falsePredicate(native)
+        if (trackIds.isEmpty()) {
+            Log.i(
+                TAG,
+                "BRIDGE COMPILE | source has no GMMP library tracks -> false predicate"
+            )
+            return falsePredicate(native)
+        }
+
+        val nativeTrackIdField = native.trackIdField
+        val strategy: String
+        val clauses: List<Any> = if (nativeTrackIdField != null) {
+            strategy = "native-id-in"
+            trackIds.chunked(MAX_IN_VALUES).map { values ->
+                native.nativeIn.invoke(null, nativeTrackIdField, values)
+                    ?: throw IllegalStateException(
+                        "GMMP native Track-ID IN builder returned null"
+                    )
+            }
+        } else {
+            if (trackIds.size > MAX_IN_VALUES) {
+                Log.e(
+                    TAG,
+                    "BRIDGE COMPILE | Track-ID field is opaque and equality " +
+                        "fallback exceeds bounded clause count; failing closed | " +
+                        "tracks=${trackIds.size}"
+                )
+                return falsePredicate(native)
+            }
+            strategy = "native-id-equality"
+            trackIds.map { trackId ->
+                val nativeRule = native.smartRuleConstructor.newInstance(
+                    *PlaylistBridgeNativeSentinelPolicy.trackIdEqualsArguments(trackId)
+                )
+                native.evaluationMethod.invoke(
+                    nativeRule,
+                    java.util.LinkedHashSet<Any>(),
+                    0
+                ) ?: throw IllegalStateException(
+                    "GMMP native Track-ID rule evaluator returned null"
+                )
+            }
+        }
+
         val result = if (clauses.size == 1) {
             clauses.single()
         } else {
@@ -601,7 +645,7 @@ internal class PlaylistBridgeController {
                 Log.e(
                     TAG,
                     "BRIDGE COMPILE | native OR predicate group unavailable; " +
-                        "failing closed | chunks=${clauses.size}"
+                        "failing closed | clauses=${clauses.size}"
                 )
                 return falsePredicate(native)
             }
@@ -610,7 +654,9 @@ internal class PlaylistBridgeController {
         Log.i(
             TAG,
             "BRIDGE COMPILE | entries=${membership.paths.size}" +
-                " | chunks=${clauses.size}" +
+                " | libraryTrackIds=${trackIds.size}" +
+                " | clauses=${clauses.size}" +
+                " | strategy=$strategy" +
                 " | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}" +
                 " | " + PlaylistBridgePolicy.safePath(reference.path)
         )
@@ -1243,6 +1289,39 @@ internal class PlaylistBridgeController {
         return loaded
     }
 
+    private fun resolveTrackIds(
+        native: Bindings,
+        paths: List<String>
+    ): List<Long> {
+        val database = native.databaseSingleton.get(null)
+            ?: throw IllegalStateException("GMDatabase singleton is null")
+        val result = linkedSetOf<Long>()
+        paths.distinct().chunked(MAX_IN_VALUES).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            val args = Array<Any?>(chunk.size) { index -> chunk[index] }
+            val ids = GmmpReadOnlySql.queryDatabase(
+                databaseInstance = database,
+                sql = "SELECT song_id FROM tracks WHERE track_uri IN (" +
+                    placeholders + ")",
+                args = args
+            ) { cursor ->
+                val idColumn = cursor.getColumnIndex("song_id")
+                require(idColumn >= 0) {
+                    "GMMP track-id query did not expose song_id"
+                }
+                buildList {
+                    while (cursor.moveToNext()) add(cursor.getLong(idColumn))
+                }
+            }
+            result.addAll(ids)
+        }
+        Log.i(
+            TAG,
+            "BRIDGE SOURCE IDS | paths=${paths.size} | library=${result.size}"
+        )
+        return result.toList()
+    }
+
     private fun falsePredicate(native: Bindings): Any {
         val rule = native.smartRuleConstructor.newInstance(
             *PlaylistBridgeNativeSentinelPolicy.ruleArguments(false)
@@ -1538,22 +1617,17 @@ internal class PlaylistBridgeController {
                     predicateClass.isAssignableFrom(method.returnType))
         }
         val queryFieldClass = nativeIn.parameterTypes[0]
-        val uriFieldMember = r.resolveStaticFieldBySemanticValue(
-            loader = loader,
-            preferredHolderNames = listOf("w75", "z75"),
-            valueClass = queryFieldClass,
-            expectedValue = "track_uri",
-            description = "native track URI query field",
-            valueProbe = { queryField ->
-                nativeIn.invoke(
-                    null,
-                    queryField,
-                    listOf("gonesmart-playlist-link-binding-probe")
-                )
-            }
+        val trackIdField = r.uniqueInstanceInObjectGraph(
+            root = failClosedPredicateProbe,
+            valueClass = queryFieldClass
         )
-        val uriField = uriFieldMember.get(null)
-            ?: throw IllegalStateException("Native track URI query field is null")
+        if (trackIdField == null) {
+            Log.w(
+                TAG,
+                "BRIDGE MAPPING | native Track-ID query field is opaque; " +
+                    "using native Track-ID equality evaluator fallback"
+            )
+        }
 
         // OR grouping is required only when one source exceeds the
         // bounded IN chunk size. Do not disable every Playlist Link merely
@@ -1812,7 +1886,8 @@ internal class PlaylistBridgeController {
                 " | parser=${parserClass.name}" +
                 " | dao=${playlistDaoClass.name}" +
                 " | predicate=${predicateClass.name}" +
-                " | uriField=" + uriField.toString() +
+                " | trackIdPredicate=" +
+                (if (trackIdField != null) "native-in" else "native-equality") +
                 " | orGroup=" +
                 (whereGroupConstructor?.declaringClass?.name ?: "deferred/unavailable") +
                 " | falsePredicate=native-rule-evaluator" +
@@ -1849,7 +1924,7 @@ internal class PlaylistBridgeController {
             playlistEntries = playlistEntries,
             fileModelFile = fileModelFile,
             nativeIn = nativeIn,
-            uriField = uriField,
+            trackIdField = trackIdField,
             whereGroupConstructor = whereGroupConstructor,
             databaseSingleton = databaseSingleton,
             playlistDaoGetter = playlistDaoGetter,

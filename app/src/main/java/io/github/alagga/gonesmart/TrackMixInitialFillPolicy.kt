@@ -4,8 +4,10 @@ package io.github.alagga.gonesmart
  * Track Mix starts Auto-DJ from one already-playing native seed. GMMP's normal
  * AUTO_DJ command subsequently asks for its regular `upcoming` refill count;
  * that is not the Initial Size contract. Track Mix therefore suppresses that
- * transitional refill and invokes the same native refill boundary exactly once
- * with the number of rows missing from Initial Size.
+ * transitional refill. On 4.2.1 it first requests one native continuity row so
+ * playback can never observe an empty next slot, then requests the remaining
+ * Initial Size rows after the already-running GoneSmart pool had a bounded
+ * chance to become ready. Legacy 4.2.0 keeps its accepted single full refill.
  */
 internal object TrackMixInitialFillPolicy {
     enum class NativeRefillAction {
@@ -55,4 +57,12 @@ internal object TrackMixInitialFillPolicy {
         seedQueueSize: Int
     ): Int = (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0))
         .coerceAtLeast(0)
+
+    fun continuityBootstrapRefillCount(
+        totalMissing: Int,
+        legacyQueue: Boolean
+    ): Int {
+        val missing = totalMissing.coerceAtLeast(0)
+        return if (legacyQueue) missing else missing.coerceAtMost(1)
+    }
 }

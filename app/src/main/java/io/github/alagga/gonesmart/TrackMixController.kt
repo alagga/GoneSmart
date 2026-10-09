@@ -36,7 +36,8 @@ import kotlin.math.roundToInt
 internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
     private val requestNativeRefill: (Int) -> Boolean,
-    private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null }
+    private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },
+    private val awaitSmartInitialPool: (Any, Int) -> Boolean = { _, _ -> false }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -207,6 +208,22 @@ internal class TrackMixController(
             Log.e(
                 TAG,
                 "MIX QUEUE NORMALIZE | native 4.2.1 position repair failed",
+                it
+            )
+        }.getOrDefault(false)
+    }
+
+    fun rebaseManagedQueueAfterInitialFill(autoDj: Any): Boolean {
+        if (managedAutoDj?.get() !== autoDj) return false
+        return runCatching {
+            GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+            ).rebaseQueueToOneIfNeeded()
+        }.onFailure {
+            Log.e(
+                TAG,
+                "MIX QUEUE REBASE | final 4.2.1 Initial Size rebase failed",
                 it
             )
         }.getOrDefault(false)
@@ -648,11 +665,23 @@ internal class TrackMixController(
                 SystemClock.elapsedRealtime() + 7_000L
             awaitAutoDjCommandRefillBoundary(request)
 
-            val initialRequest =
+            val totalInitialRequest =
                 TrackMixInitialFillPolicy.nativeInitialRefillCount(
                     initialSize = initial,
                     seedQueueSize = cleared.ids.size
                 )
+            val legacyQueue =
+                nativeAutoDj?.get()?.let { autoDj ->
+                    field(autoDj, "q")?.javaClass?.name == "ex3"
+                } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
+            val bootstrapRequest =
+                TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
+                    totalMissing = totalInitialRequest,
+                    legacyQueue = legacyQueue
+                )
+            val smartRemainder =
+                (totalInitialRequest - bootstrapRequest).coerceAtLeast(0)
+
             Log.i(
                 TAG,
                 "MIX AUTO-DJ | command=sent | initialSize=$initial | " +
@@ -661,12 +690,46 @@ internal class TrackMixController(
             Log.i(
                 TAG,
                 "MIX INITIAL FILL | initial=$initial | " +
-                    "seedSize=${cleared.ids.size} | requested=$initialRequest | " +
-                    "boundary=native-refill-once"
+                    "seedSize=${cleared.ids.size} | totalMissing=$totalInitialRequest | " +
+                    "bootstrap=$bootstrapRequest | smartRemainder=$smartRemainder | " +
+                    "legacy=$legacyQueue"
             )
 
+            val bootstrapAccepted =
+                requestHeldNativeRefill(bootstrapRequest)
+            val smartPoolReady = if (
+                bootstrapAccepted &&
+                smartRemainder > 0 &&
+                !legacyQueue
+            ) {
+                val autoDj = nativeAutoDj?.get()
+                autoDj != null &&
+                    awaitSmartInitialPool(autoDj, smartRemainder)
+            } else {
+                true
+            }
+            if (smartRemainder > 0 && !legacyQueue) {
+                Log.i(
+                    TAG,
+                    "MIX SMART REMAINDER | requested=$smartRemainder | " +
+                        "poolReady=$smartPoolReady | " +
+                        if (smartPoolReady) {
+                            "source=GoneSmart"
+                        } else {
+                            "source=native-fallback-after-bounded-wait"
+                        }
+                )
+            }
+            val remainderAccepted = if (
+                bootstrapAccepted &&
+                smartRemainder > 0
+            ) {
+                requestHeldNativeRefill(smartRemainder)
+            } else {
+                true
+            }
             val fillRequestAccepted =
-                requestHeldNativeRefill(initialRequest)
+                bootstrapAccepted && remainderAccepted
             var filled = if (!fillRequestAccepted) {
                 Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
                 null
@@ -674,6 +737,29 @@ internal class TrackMixController(
                 awaitQueue(request, 65_000L) {
                     it.currentId == selectedId &&
                         it.ids.size == initial
+                }
+            }
+
+            if (filled != null && !legacyQueue) {
+                val autoDj = nativeAutoDj?.get()
+                val rebased = autoDj != null &&
+                    rebaseManagedQueueAfterInitialFill(autoDj)
+                if (rebased) {
+                    filled = queueSnapshot()?.takeIf { snapshot ->
+                        snapshot.currentId == selectedId &&
+                            snapshot.ids.size == initial
+                    } ?: filled
+                    Log.i(
+                        TAG,
+                        "MIX INITIAL REBASE | queue=1..$initial | " +
+                            "currentEntryPreserved=true"
+                    )
+                } else {
+                    Log.w(
+                        TAG,
+                        "MIX INITIAL REBASE | skipped/failed; " +
+                            "verified queue retained without destructive fallback"
+                    )
                 }
             }
 
