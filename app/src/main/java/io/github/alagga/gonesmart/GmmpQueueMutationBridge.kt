@@ -233,6 +233,11 @@ internal class GmmpQueueMutationBridge(
      * into MusicService. This allows GMMP to invalidate its playback/prefetch
      * state together with the visible queue instead of GoneSmart changing only
      * Room rows after a next AudioSource may already have been prepared.
+     *
+     * The command owns queue-table row lifecycle. A successful clear may
+     * therefore recreate the surviving row with a new queue_id. Track Mix
+     * verifies semantic playback identity (one selected CURRENT track) rather
+     * than requiring that transient native row identifier to survive.
      */
     fun isolateCurrentTrack(selectedTrackId: Long): Boolean {
         fun read(): QueueContext? = GmmpQueueReader().read(
@@ -265,16 +270,26 @@ internal class GmmpQueueMutationBridge(
         while (SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(50L)
             val verified = read() ?: continue
-            val only = verified.items.singleOrNull() ?: continue
+            val currentRows = verified.items.filter {
+                it.state == QueueItemState.CURRENT
+            }
+            val currentTrackId = currentRows.singleOrNull()?.track?.id
             if (
-                only.track.id == selectedTrackId &&
-                only.queueEntryId == current.queueEntryId &&
-                only.state == QueueItemState.CURRENT
+                TrackMixNativeClearPolicy.isIsolated(
+                    selectedTrackId = selectedTrackId,
+                    queueSize = verified.items.size,
+                    currentTrackId = currentTrackId,
+                    currentRows = currentRows.size
+                )
             ) {
+                val only = verified.items.single()
                 Log.i(
                     TAG,
                     "TRACK MIX NATIVE CLEAR | verified=true | track=" +
-                        selectedTrackId + " | queueId=" + only.queueEntryId +
+                        selectedTrackId + " | oldQueueId=" + current.queueEntryId +
+                        " | newQueueId=" + only.queueEntryId +
+                        " | rowReplaced=" +
+                        (only.queueEntryId != current.queueEntryId) +
                         " | position=" + only.queuePosition
                 )
                 return true
@@ -282,14 +297,18 @@ internal class GmmpQueueMutationBridge(
         }
 
         val final = read()
+        val finalCurrentRows = final?.items?.filter {
+            it.state == QueueItemState.CURRENT
+        }.orEmpty()
+        val finalCurrent = finalCurrentRows.singleOrNull()
         Log.w(
             TAG,
             "TRACK MIX NATIVE CLEAR | verified=false | selectedTrack=" +
                 selectedTrackId + " | finalSize=" +
                 (final?.items?.size ?: -1) + " | finalCurrent=" +
-                (final?.items?.singleOrNull {
-                    it.state == QueueItemState.CURRENT
-                }?.track?.id ?: -1L)
+                (finalCurrent?.track?.id ?: -1L) + " | finalCurrentRows=" +
+                finalCurrentRows.size + " | finalQueueId=" +
+                (finalCurrent?.queueEntryId ?: -1L)
         )
         return false
     }
