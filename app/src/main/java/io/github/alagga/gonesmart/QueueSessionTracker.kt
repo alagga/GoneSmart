@@ -470,6 +470,31 @@ class QueueSessionTracker {
             )
         }
 
+        // GMMP 4.2.1's public CLEAR_QUEUE may recreate the surviving Current
+        // queue_table row with a new queue_id. Queue-entry identity therefore
+        // cannot by itself define a new recommendation session. When the new
+        // queue is exactly one Current row and the previously playing Track ID
+        // is unchanged, preserve the semantic session/anchors. This is also the
+        // safe interpretation of a user clearing upcoming rows while keeping
+        // the same song playing. A different Current track still follows the
+        // ordinary new-session heuristics below.
+        val previousCurrentTrackId = previousItemsByEntryId
+            .values
+            .singleOrNull { it.state == QueueItemState.CURRENT }
+            ?.track
+            ?.id
+        val currentTrackId = context.currentItem?.track?.id
+        if (
+            currentIds.size == 1 &&
+            currentTrackId != null &&
+            currentTrackId == previousCurrentTrackId
+        ) {
+            return SessionBoundaryDecision(
+                isNewSession = false,
+                reason = "current track preserved across queue row replacement"
+            )
+        }
+
         val sharedCount =
             previousIds
                 .count {

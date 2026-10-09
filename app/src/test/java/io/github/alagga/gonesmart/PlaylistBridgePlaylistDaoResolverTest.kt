@@ -26,6 +26,12 @@ class PlaylistBridgePlaylistDaoResolverTest {
         abstract fun lookup(path: String): String
     }
 
+    private open class HistoricalLookingBase {
+        @Suppress("unused") fun inheritedRows(): List<String> = emptyList()
+    }
+
+    private class HistoricalLookingUiClass : HistoricalLookingBase()
+
     @Test
     fun `accepts playlist dao without relying on obfuscated method names`() {
         assertTrue(
@@ -40,6 +46,15 @@ class PlaylistBridgePlaylistDaoResolverTest {
         assertFalse(
             PlaylistBridgeReflectionResolver.matchesPlaylistDaoType(
                 UnrelatedListDao::class.java
+            )
+        )
+    }
+
+    @Test
+    fun `rejects historical-looking UI class that only inherits a list reader`() {
+        assertFalse(
+            PlaylistBridgeReflectionResolver.matchesPlaylistDaoType(
+                HistoricalLookingUiClass::class.java
             )
         )
     }

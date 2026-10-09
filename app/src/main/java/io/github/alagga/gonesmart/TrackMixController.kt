@@ -37,7 +37,7 @@ internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
     private val requestNativeRefill: (Int) -> Boolean,
     private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },
-    private val awaitSmartInitialPool: (Any, Int) -> Boolean = { _, _ -> false }
+    private val prepareSmartInitialPool: (Any, Long, Int) -> Int = { _, _, _ -> 0 }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -613,16 +613,78 @@ internal class TrackMixController(
             val loaded = loadedPlay.snapshot
             val selectedId = loadedPlay.selectedTrackId
 
+            val nativeSettings = settings.read()
+            val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
+            val upcoming = nativeSettings.upcomingTrackCount
+            val legacyQueue =
+                nativeAutoDj?.get()?.let { autoDj ->
+                    field(autoDj, "q")?.javaClass?.name == "ex3"
+                } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
+            val plannedMissing =
+                TrackMixInitialFillPolicy.nativeInitialRefillCount(
+                    initialSize = initial,
+                    seedQueueSize = 1
+                )
+
+            // 4.2.1: prepare recommendations for exactly the selected Current
+            // track while GMMP's original source queue is still intact. The
+            // provider/local-match pipeline may take seconds, but current+1
+            // remains native and playable during this whole phase. No queue
+            // row is consumed merely to warm the GoneSmart pool.
+            var preparedSmartCount = 0
+            if (!legacyQueue && plannedMissing > 0) {
+                request.stage = "PREWARM"
+                val autoDj = nativeAutoDj?.get()
+                preparedSmartCount = if (autoDj != null) {
+                    prepareSmartInitialPool(
+                        autoDj,
+                        selectedId,
+                        plannedMissing
+                    ).coerceIn(0, plannedMissing)
+                } else {
+                    0
+                }
+                Log.i(
+                    TAG,
+                    "MIX PRE-CLEAR SMART POOL | needed=$plannedMissing | " +
+                        "prepared=$preparedSmartCount | selected=$selectedId"
+                )
+
+                // Prime GMMP's own Auto-DJ candidate machinery before the
+                // destructive clear as well. This explicit qr.z(1) is forced
+                // through as native-only and may append one disposable row to
+                // the still-safe source queue; it does not consume GoneSmart's
+                // prepared pool. Once it returns, both the native candidate DB
+                // and the smart pool are ready before current+1 is removed.
+                request.stage = "PRIME_NATIVE"
+                val primeCount =
+                    TrackMixInitialFillPolicy.preClearNativePrimeRefillCount(
+                        totalMissing = plannedMissing,
+                        legacyQueue = legacyQueue
+                    )
+                if (primeCount > 0 && !requestHeldNativeRefill(primeCount)) {
+                    fail("Could not prepare Auto-DJ for this song.", request.context)
+                    return
+                }
+                Log.i(
+                    TAG,
+                    "MIX PRE-CLEAR NATIVE PRIME | requested=$primeCount | " +
+                        "ready=${primeCount == 0 || isCurrent(request)}"
+                )
+            }
+
+            if (!isCurrent(request)) return
             request.stage = "CLEARING"
             val cleared = if (
                 loaded.ids.size == 1 &&
-                loaded.currentId == selectedId
+                loaded.currentId == selectedId &&
+                legacyQueue
             ) {
                 loaded
             } else {
-                // Deterministic native isolation: remove every other queue
-                // entry and move the exact originally selected track to
-                // position 1 inside GMMP's own Room writers.
+                // 4.2.1 uses GMMP's public CLEAR_QUEUE boundary; legacy 4.2.0
+                // keeps its already accepted native transaction. Either way,
+                // the selected playing track must remain the sole Current row.
                 isolateNativeSeed(request, selectedId)
             }
             if (cleared == null) {
@@ -643,22 +705,18 @@ internal class TrackMixController(
             Log.i(
                 TAG,
                 "MIX SEED | queueSize=${cleared.ids.size} | " +
-                    "currentPreserved=true"
+                    "currentPreserved=true | preparedSmart=$preparedSmartCount"
             )
             armManagedAutoDjSession()
 
             request.stage = "FILLING"
-            val nativeSettings = settings.read()
-            val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
-            val upcoming = nativeSettings.upcomingTrackCount
 
-            // Keep the refill barrier armed while enabling Auto-DJ. GMMP's
-            // command path normally follows this by requesting its regular
-            // `upcoming` count (1 in the captured configuration), which is not
-            // the Initial Size contract for a freshly isolated Track Mix seed.
-            // That transitional request is suppressed. We then call the SAME
-            // native qr.z(count) refill boundary once with exactly the number
-            // of tracks missing from Initial Size.
+            // GMMP's AUTO_DJ command owns enabling the native mode. Its normal
+            // `upcoming` refill is suppressed inside this short Track-Mix-owned
+            // window because it is not the Initial Size contract. The native
+            // candidate machinery was primed before CLEAR_QUEUE, so after the
+            // bounded command boundary the explicit refill can populate
+            // current+1 immediately instead of racing the decoder.
             request.transitionalRefillSuppressed = false
             sendCommand(request.context, COMMAND_AUTO_DJ)
             nativeToastSuppressionUntilMs =
@@ -670,17 +728,10 @@ internal class TrackMixController(
                     initialSize = initial,
                     seedQueueSize = cleared.ids.size
                 )
-            val legacyQueue =
-                nativeAutoDj?.get()?.let { autoDj ->
-                    field(autoDj, "q")?.javaClass?.name == "ex3"
-                } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
-            val bootstrapRequest =
-                TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
-                    totalMissing = totalInitialRequest,
-                    legacyQueue = legacyQueue
-                )
-            val smartRemainder =
-                (totalInitialRequest - bootstrapRequest).coerceAtLeast(0)
+            val smartInitialRequest =
+                minOf(totalInitialRequest, preparedSmartCount)
+            val nativeRemainder =
+                (totalInitialRequest - smartInitialRequest).coerceAtLeast(0)
 
             Log.i(
                 TAG,
@@ -691,45 +742,22 @@ internal class TrackMixController(
                 TAG,
                 "MIX INITIAL FILL | initial=$initial | " +
                     "seedSize=${cleared.ids.size} | totalMissing=$totalInitialRequest | " +
-                    "bootstrap=$bootstrapRequest | smartRemainder=$smartRemainder | " +
+                    "smartPrepared=$smartInitialRequest | nativeRemainder=$nativeRemainder | " +
                     "legacy=$legacyQueue"
             )
 
-            val bootstrapAccepted =
-                requestHeldNativeRefill(bootstrapRequest)
-            val smartPoolReady = if (
-                bootstrapAccepted &&
-                smartRemainder > 0 &&
-                !legacyQueue
-            ) {
-                val autoDj = nativeAutoDj?.get()
-                autoDj != null &&
-                    awaitSmartInitialPool(autoDj, smartRemainder)
+            // If at least one selected-seed match was prepared, insert those
+            // rows first. Position 2 therefore uses GoneSmart ranking. Only a
+            // genuine shortfall is then allowed to fall through to native
+            // GMMP selection. Both requests cross the same proven qr.z writer.
+            val smartAccepted =
+                requestHeldNativeRefill(smartInitialRequest)
+            val remainderAccepted = if (smartAccepted) {
+                requestHeldNativeRefill(nativeRemainder)
             } else {
-                true
+                false
             }
-            if (smartRemainder > 0 && !legacyQueue) {
-                Log.i(
-                    TAG,
-                    "MIX SMART REMAINDER | requested=$smartRemainder | " +
-                        "poolReady=$smartPoolReady | " +
-                        if (smartPoolReady) {
-                            "source=GoneSmart"
-                        } else {
-                            "source=native-fallback-after-bounded-wait"
-                        }
-                )
-            }
-            val remainderAccepted = if (
-                bootstrapAccepted &&
-                smartRemainder > 0
-            ) {
-                requestHeldNativeRefill(smartRemainder)
-            } else {
-                true
-            }
-            val fillRequestAccepted =
-                bootstrapAccepted && remainderAccepted
+            val fillRequestAccepted = smartAccepted && remainderAccepted
             var filled = if (!fillRequestAccepted) {
                 Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
                 null
@@ -801,9 +829,6 @@ internal class TrackMixController(
                     "${request.menuLabel}: ${filled.ids.size - 1} " +
                         "tracks queued after the selected song."
                 )
-                // The user sees exactly one GoneSmart confirmation after
-                // actual queue verification, while GMMP's intermediate
-                // Play/Clear/Auto-DJ toasts are scoped out above.
                 toast(request.context, request.confirmation)
                 nativeToastSuppressionUntilMs =
                     SystemClock.elapsedRealtime() + 3_000L

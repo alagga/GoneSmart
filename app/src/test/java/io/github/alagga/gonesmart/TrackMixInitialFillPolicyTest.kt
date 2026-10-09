@@ -76,6 +76,15 @@ class TrackMixInitialFillPolicyTest {
             TrackMixInitialFillPolicy.nativeRefillAction(
                 holdActive = true,
                 explicitAllowance = false,
+                stage = "PREWARM",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
                 stage = "CLEARING",
                 legacyQueue = false
             )
@@ -110,9 +119,18 @@ class TrackMixInitialFillPolicyTest {
                 legacyQueue = false
             )
         )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "PRIME_NATIVE",
+                legacyQueue = false
+            )
+        )
     }
 
-    @Test fun gmmp421BootstrapsOnlyOneContinuityTrackBeforeSmartRemainder() {
+    @Test fun gmmp421PrimesExactlyOneNativeCandidateBeforeClear() {
         val totalMissing =
             TrackMixInitialFillPolicy.nativeInitialRefillCount(
                 initialSize = 5,
@@ -120,16 +138,23 @@ class TrackMixInitialFillPolicyTest {
             )
         assertEquals(
             1,
-            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
+            TrackMixInitialFillPolicy.preClearNativePrimeRefillCount(
                 totalMissing = totalMissing,
                 legacyQueue = false
             )
         )
         assertEquals(
-            4,
-            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(
+            0,
+            TrackMixInitialFillPolicy.preClearNativePrimeRefillCount(
                 totalMissing = totalMissing,
                 legacyQueue = true
+            )
+        )
+        assertEquals(
+            0,
+            TrackMixInitialFillPolicy.preClearNativePrimeRefillCount(
+                totalMissing = 0,
+                legacyQueue = false
             )
         )
     }

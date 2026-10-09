@@ -19,6 +19,16 @@ internal object PlaylistBridgeReflectionResolver {
         description: String,
         predicate: (Class<*>) -> Boolean = { true }
     ): Class<*> {
+        // GMMP 4.2.1 still contains historical-looking ho3/ko3 classes, but
+        // they no longer own Playlist persistence. Resolve this boundary from
+        // GMDatabase FIRST so a stale R8 name can never pre-empt the semantic
+        // DAO contract merely because it happens to expose a List method.
+        // E/lo3 are accepted-version evidence only; future renames still work
+        // when the unique database accessor returns the Playlist DAO shape.
+        if (description == "native Playlist DAO") {
+            resolvePlaylistDaoFromDatabase(loader, predicate)?.let { return it }
+        }
+
         val rejected = arrayListOf<String>()
         candidateNames.distinct().forEach { name ->
             val type = runCatching { loader.loadClass(name) }.getOrNull()
@@ -27,15 +37,6 @@ internal object PlaylistBridgeReflectionResolver {
                 return type
             }
             rejected += name
-        }
-
-        // GMMP 4.2.1 moved the Playlist DAO from the historical ko3 family
-        // to lo3. Do not chase that R8 name: derive the DAO from GMDatabase's
-        // own accessor and validate the Playlist-specific interface shape.
-        // E is only a tested fast path (4.2.0 + 4.2.1); a future rename may
-        // still resolve when the semantic accessor remains unique.
-        if (description == "native Playlist DAO") {
-            resolvePlaylistDaoFromDatabase(loader, predicate)?.let { return it }
         }
 
         throw IllegalStateException(

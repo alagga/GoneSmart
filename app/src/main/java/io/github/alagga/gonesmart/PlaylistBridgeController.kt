@@ -1661,10 +1661,7 @@ internal class PlaylistBridgeController {
             listOf("ho3", "ko3"),
             "native Playlist DAO"
         ) { type ->
-            r.methods(type).any { method ->
-                method.parameterCount == 0 &&
-                    java.util.List::class.java.isAssignableFrom(method.returnType)
-            }
+            r.matchesPlaylistDaoType(type)
         }
         val databaseSingleton = r.field(
             dbClass,

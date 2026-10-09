@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r25"
+            "gmmp421-r26"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -476,8 +476,8 @@ class GoneSmartModule : XposedModule() {
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
         },
-        awaitSmartInitialPool = { autoDj, count ->
-            awaitTrackMixSmartInitialPool(autoDj, count)
+        prepareSmartInitialPool = { autoDj, selectedTrackId, count ->
+            prepareTrackMixSmartInitialPool(autoDj, selectedTrackId, count)
         }
     )
 
@@ -1664,16 +1664,37 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["playlistLink"] = result {
-            val leaf = loader.loadClass("ft4")
-            require(leaf.declaredConstructors.any {
-                val p = it.parameterTypes
-                p.size == 4 &&
-                    p[0] == Integer.TYPE &&
-                    p[1] == Integer.TYPE &&
-                    p[2] == String::class.java &&
-                    p[3] == Integer.TYPE
-            })
-            "READY_LEGACY"
+            val resolver = PlaylistBridgeReflectionResolver
+            val playlistDao = resolver.loadClass(
+                loader = loader,
+                candidateNames = listOf("ho3", "ko3"),
+                description = "native Playlist DAO"
+            ) { type ->
+                resolver.matchesPlaylistDaoType(type)
+            }
+            val database = loader.loadClass(
+                "gonemad.gmmp.data.database.GMDatabase"
+            )
+            val daoAccessors = resolver.methods(database).filter { method ->
+                method.parameterCount == 0 &&
+                    playlistDao.isAssignableFrom(method.returnType)
+            }
+            require(
+                daoAccessors.count { it.name == "E" } == 1 ||
+                    daoAccessors.size == 1
+            )
+
+            val presenter = loader.loadClass("as4")
+            val baseRule = loader.loadClass("dt4")
+            val addRule = resolver.methods(presenter).filter { method ->
+                resolver.matchesDeclaredPresenterRuleAction(
+                    method = method,
+                    presenterClass = presenter,
+                    baseRuleClass = baseRule
+                )
+            }
+            require(addRule.size == 1)
+            "READY_STRUCTURAL"
         }
 
         checks["flipQueue"] = "OPEN_CURRENT_POSITION_WRITER"
@@ -5517,36 +5538,88 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun awaitTrackMixSmartInitialPool(
+    private fun prepareTrackMixSmartInitialPool(
         autoDjInstance: Any,
+        selectedTrackId: Long,
         requestedTracks: Int
-    ): Boolean {
-        if (requestedTracks <= 0) return true
+    ): Int {
+        if (requestedTracks <= 0) return 0
 
-        fun readyNow(): Boolean {
-            val context = readQueueContext(autoDjInstance) ?: return false
-            val session = queueSessionTracker.observe(context)
-            return recommendationPool.hasEnough(
-                expectedSessionId = session.sessionId,
-                count = requestedTracks,
-                excludedTrackIds = context.items.map { it.track.id }.toSet()
+        val liveContext = readQueueContext(autoDjInstance) ?: return 0
+        val selected = liveContext.currentItem
+            ?.takeIf { it.track.id == selectedTrackId }
+            ?: run {
+                Log.w(
+                    TAG,
+                    "SMART DJ TRACK MIX PRE-CLEAR | selected Current unavailable | " +
+                        "requested=$requestedTracks | selected=$selectedTrackId"
+                )
+                return 0
+            }
+
+        // Observe the real source queue once so the recommendation session has
+        // its stable ID. The actual provider/local matching below is detached
+        // from the rest of that source queue on purpose: Track Mix semantics
+        // are based on the selected song, and all other source rows will be
+        // removed before these recommendations are consumed.
+        val liveSession = queueSessionTracker.observe(liveContext)
+        val nativeSettings = gmmpAutoDjSettingsReader.read()
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(nativeSettings)
+
+        // Explicit Track Mix direction supersedes any older pool for this
+        // session. This also cancels an in-flight startup/background fill so a
+        // stale seed set cannot become the first post-clear recommendation.
+        resetRecommendationPoolForSession(liveSession, sizing)
+
+        val isolatedContext = QueueContext(
+            currentQueuePosition = selected.queuePosition,
+            items = listOf(
+                selected.copy(
+                    orderIndex = 0,
+                    state = QueueItemState.CURRENT
+                )
             )
-        }
-
-        if (readyNow()) {
-            Log.i(
-                TAG,
-                "SMART DJ TRACK MIX REMAINDER | pool already ready | " +
-                    "requested=$requestedTracks"
+        )
+        val isolatedSession = QueueSessionSnapshot(
+            sessionId = liveSession.sessionId,
+            isNewSession = false,
+            reason = "track-mix selected-seed pre-clear",
+            currentItem = selected,
+            pastItems = emptyList(),
+            upcomingItems = emptyList(),
+            manualUpcomingItems = emptyList(),
+            sessionItems = listOf(selected),
+            userAnchorTracks = listOf(selected.track),
+            recentGeneratedTracks = emptyList(),
+            originsByEntryId = mapOf(
+                selected.queueEntryId to QueueEntryOrigin.USER_QUEUE
             )
-            return true
-        }
+        )
+        val seeds = listOf(
+            RecommendationSeed(
+                track = selected.track,
+                type = SeedType.CURRENT,
+                recency = 0,
+                weightMultiplier = 1.0
+            )
+        )
 
-        val future = synchronized(poolFillLock) {
-            activePoolFillFuture
-        } ?: return false
+        Log.i(
+            TAG,
+            "SMART DJ TRACK MIX PRE-CLEAR | start | session=${liveSession.sessionId} | " +
+                "selected=$selectedTrackId | requested=$requestedTracks"
+        )
 
-        val completed = try {
+        val future = startPoolFill(
+            seeds = seeds,
+            autoDjInstance = autoDjInstance,
+            queueContext = isolatedContext,
+            session = isolatedSession,
+            sizing = sizing,
+            background = false
+        )
+
+        try {
             future.get(
                 TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS,
                 TimeUnit.SECONDS
@@ -5554,27 +5627,30 @@ class GoneSmartModule : XposedModule() {
         } catch (_: TimeoutException) {
             Log.w(
                 TAG,
-                "SMART DJ TRACK MIX REMAINDER | bounded wait timed out | " +
+                "SMART DJ TRACK MIX PRE-CLEAR | bounded wait timed out | " +
                     "requested=$requestedTracks | poolFill=continuing"
             )
-            false
         } catch (failure: Throwable) {
             Log.w(
                 TAG,
-                "SMART DJ TRACK MIX REMAINDER | pool wait failed; " +
+                "SMART DJ TRACK MIX PRE-CLEAR | pool preparation failed; " +
                     "native fallback remains available",
                 failure
             )
-            false
         }
 
-        val ready = completed && readyNow()
+        val prepared = recommendationPool.peek(
+            expectedSessionId = liveSession.sessionId,
+            count = requestedTracks,
+            excludedTrackIds = setOf(selectedTrackId)
+        ).size
         Log.i(
             TAG,
-            "SMART DJ TRACK MIX REMAINDER | wait complete | " +
-                "requested=$requestedTracks | ready=$ready"
+            "SMART DJ TRACK MIX PRE-CLEAR | complete | " +
+                "requested=$requestedTracks | prepared=$prepared | " +
+                recommendationPool.describe(liveSession.sessionId)
         )
-        return ready
+        return prepared
     }
 
     private fun ensureRecommendationPoolReady(
