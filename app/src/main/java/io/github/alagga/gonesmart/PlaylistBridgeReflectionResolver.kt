@@ -28,10 +28,86 @@ internal object PlaylistBridgeReflectionResolver {
             }
             rejected += name
         }
+
+        // GMMP 4.2.1 moved the Playlist DAO from the historical ko3 family
+        // to lo3. Do not chase that R8 name: derive the DAO from GMDatabase's
+        // own accessor and validate the Playlist-specific interface shape.
+        // E is only a tested fast path (4.2.0 + 4.2.1); a future rename may
+        // still resolve when the semantic accessor remains unique.
+        if (description == "native Playlist DAO") {
+            resolvePlaylistDaoFromDatabase(loader, predicate)?.let { return it }
+        }
+
         throw IllegalStateException(
             "Could not resolve $description from ${candidateNames.joinToString()}" +
                 if (rejected.isEmpty()) "" else " (shape rejected: ${rejected.joinToString()})"
         )
+    }
+
+    private fun resolvePlaylistDaoFromDatabase(
+        loader: ClassLoader,
+        predicate: (Class<*>) -> Boolean
+    ): Class<*>? {
+        val database = runCatching {
+            loader.loadClass("gonemad.gmmp.data.database.GMDatabase")
+        }.getOrNull() ?: return null
+
+        val candidates = methods(database)
+            .asSequence()
+            .filter {
+                !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 0 &&
+                    it.returnType != java.lang.Void.TYPE &&
+                    !it.returnType.isPrimitive
+            }
+            .filter { method ->
+                runCatching {
+                    predicate(method.returnType) &&
+                        matchesPlaylistDaoType(method.returnType)
+                }.getOrDefault(false)
+            }
+            .toList()
+
+        candidates.filter { it.name == "E" }.singleOrNull()?.let {
+            return it.returnType
+        }
+        return candidates.singleOrNull()?.returnType
+    }
+
+    /**
+     * Playlist DAO contract shared by the accepted 4.2.0 ko3 and the
+     * statically inspected 4.2.1 lo3 interface: a zero-arg list reader plus a
+     * String lookup returning a Playlist row/model with at least two Strings
+     * (stored path/URI and display name). Names such as G1/J1 are deliberately
+     * not required.
+     */
+    internal fun matchesPlaylistDaoType(type: Class<*>): Boolean {
+        val typeMethods = methods(type)
+        val hasListReader = typeMethods.any { method ->
+            !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                method.parameterCount == 0 &&
+                java.util.List::class.java.isAssignableFrom(method.returnType)
+        }
+        if (!hasListReader) return false
+
+        return typeMethods.any { method ->
+            if (
+                java.lang.reflect.Modifier.isStatic(method.modifiers) ||
+                !method.parameterTypes.contentEquals(arrayOf(String::class.java)) ||
+                method.returnType == java.lang.Void.TYPE ||
+                method.returnType.isPrimitive
+            ) {
+                return@any false
+            }
+            val model = method.returnType
+            val instanceStrings = declaredFieldsSafely(model).count { field ->
+                !java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                    field.type == String::class.java
+            }
+            instanceStrings >= 2 || model.declaredConstructors.any { ctor ->
+                ctor.parameterTypes.count { it == String::class.java } >= 2
+            }
+        }
     }
 
     fun optionalClass(
@@ -217,7 +293,6 @@ internal object PlaylistBridgeReflectionResolver {
             }
         }.getOrDefault(false)
     }
-
 
     internal fun uniqueInstanceInObjectGraph(
         root: Any,
