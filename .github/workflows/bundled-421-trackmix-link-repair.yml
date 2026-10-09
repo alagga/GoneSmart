@@ -1,4 +1,4 @@
-name: Bundled 4.2.1 Track Mix and Link repair
+name: Bundled 4.2.1 repair
 
 on:
   push:
@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.head_commit.message == 'chore: run bundled 4.2.1 Track Mix and Link repair'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,207 +16,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply bundled repair
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one anchor, found {count}: {old[:120]!r}')
-              p.write_text(text.replace(old, new, 1))
-
-          def insert_before_once(path, marker, addition):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(marker)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one marker, found {count}: {marker[:120]!r}')
-              p.write_text(text.replace(marker, addition + marker, 1))
-
-          # --- Track Mix policy: one immediate continuity row on 4.2.1. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixInitialFillPolicy.kt'
-          replace_once(
-              path,
-              ''' * AUTO_DJ command subsequently asks for its regular `upcoming` refill count;\n * that is not the Initial Size contract. Track Mix therefore suppresses that\n * transitional refill and invokes the same native refill boundary exactly once\n * with the number of rows missing from Initial Size.\n''',
-              ''' * AUTO_DJ command subsequently asks for its regular `upcoming` refill count;\n * that is not the Initial Size contract. Track Mix therefore suppresses that\n * transitional refill. On 4.2.1 it first requests one native continuity row so\n * playback can never observe an empty next slot, then requests the remaining\n * Initial Size rows after the already-running GoneSmart pool had a bounded\n * chance to become ready. Legacy 4.2.0 keeps its accepted single full refill.\n'''
-          )
-          replace_once(
-              path,
-              '''    fun nativeInitialRefillCount(\n        initialSize: Int,\n        seedQueueSize: Int\n    ): Int = (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0))\n        .coerceAtLeast(0)\n}''',
-              '''    fun nativeInitialRefillCount(\n        initialSize: Int,\n        seedQueueSize: Int\n    ): Int = (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0))\n        .coerceAtLeast(0)\n\n    fun continuityBootstrapRefillCount(\n        totalMissing: Int,\n        legacyQueue: Boolean\n    ): Int {\n        val missing = totalMissing.coerceAtLeast(0)\n        return if (legacyQueue) missing else missing.coerceAtMost(1)\n    }\n}'''
-          )
-
-          # --- Track Mix controller: split initial fill and final safe rebase. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt'
-          replace_once(
-              path,
-              '''internal class TrackMixController(\n    private val enableSmartDj: (Context) -> Boolean,\n    private val requestNativeRefill: (Int) -> Boolean,\n    private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null }\n) {''',
-              '''internal class TrackMixController(\n    private val enableSmartDj: (Context) -> Boolean,\n    private val requestNativeRefill: (Int) -> Boolean,\n    private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },\n    private val awaitSmartInitialPool: (Any, Int) -> Boolean = { _, _ -> false }\n) {'''
-          )
-          insert_before_once(
-              path,
-              '''    private fun armManagedAutoDjSession() {\n''',
-              '''    fun rebaseManagedQueueAfterInitialFill(autoDj: Any): Boolean {\n        if (managedAutoDj?.get() !== autoDj) return false\n        return runCatching {\n            GmmpQueueMutationBridge(\n                autoDj = autoDj,\n                verifiedPositionWriter = nativePositionWriterProvider(autoDj)\n            ).rebaseQueueToOneIfNeeded()\n        }.onFailure {\n            Log.e(\n                TAG,\n                "MIX QUEUE REBASE | final 4.2.1 Initial Size rebase failed",\n                it\n            )\n        }.getOrDefault(false)\n    }\n\n'''
-          )
-          p = Path(path)
-          text = p.read_text()
-          start_marker = '''            val initialRequest =\n                TrackMixInitialFillPolicy.nativeInitialRefillCount(\n'''
-          end_marker = '''            // Initial Size is now verified (or the bounded fill failed). Only\n'''
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('TrackMixController: initial fill block markers missing')
-          replacement = '''            val totalInitialRequest =\n                TrackMixInitialFillPolicy.nativeInitialRefillCount(\n                    initialSize = initial,\n                    seedQueueSize = cleared.ids.size\n                )\n            val legacyQueue =\n                nativeAutoDj?.get()?.let { autoDj ->\n                    field(autoDj, "q")?.javaClass?.name == "ex3"\n                } == true || nativeQueue?.get()?.javaClass?.name == "ex3"\n            val bootstrapRequest =\n                TrackMixInitialFillPolicy.continuityBootstrapRefillCount(\n                    totalMissing = totalInitialRequest,\n                    legacyQueue = legacyQueue\n                )\n            val smartRemainder =\n                (totalInitialRequest - bootstrapRequest).coerceAtLeast(0)\n\n            Log.i(\n                TAG,\n                "MIX AUTO-DJ | command=sent | initialSize=$initial | " +\n                    "upcoming=$upcoming | seed=$selectedId"\n            )\n            Log.i(\n                TAG,\n                "MIX INITIAL FILL | initial=$initial | " +\n                    "seedSize=${cleared.ids.size} | totalMissing=$totalInitialRequest | " +\n                    "bootstrap=$bootstrapRequest | smartRemainder=$smartRemainder | " +\n                    "legacy=$legacyQueue"\n            )\n\n            val bootstrapAccepted =\n                requestHeldNativeRefill(bootstrapRequest)\n            val smartPoolReady = if (\n                bootstrapAccepted &&\n                smartRemainder > 0 &&\n                !legacyQueue\n            ) {\n                val autoDj = nativeAutoDj?.get()\n                autoDj != null &&\n                    awaitSmartInitialPool(autoDj, smartRemainder)\n            } else {\n                true\n            }\n            if (smartRemainder > 0 && !legacyQueue) {\n                Log.i(\n                    TAG,\n                    "MIX SMART REMAINDER | requested=$smartRemainder | " +\n                        "poolReady=$smartPoolReady | " +\n                        if (smartPoolReady) {\n                            "source=GoneSmart"\n                        } else {\n                            "source=native-fallback-after-bounded-wait"\n                        }\n                )\n            }\n            val remainderAccepted = if (\n                bootstrapAccepted &&\n                smartRemainder > 0\n            ) {\n                requestHeldNativeRefill(smartRemainder)\n            } else {\n                true\n            }\n            val fillRequestAccepted =\n                bootstrapAccepted && remainderAccepted\n            var filled = if (!fillRequestAccepted) {\n                Log.w(TAG, "MIX INITIAL FILL | native refill request failed")\n                null\n            } else {\n                awaitQueue(request, 65_000L) {\n                    it.currentId == selectedId &&\n                        it.ids.size == initial\n                }\n            }\n\n            if (filled != null && !legacyQueue) {\n                val autoDj = nativeAutoDj?.get()\n                val rebased = autoDj != null &&\n                    rebaseManagedQueueAfterInitialFill(autoDj)\n                if (rebased) {\n                    filled = queueSnapshot()?.takeIf { snapshot ->\n                        snapshot.currentId == selectedId &&\n                            snapshot.ids.size == initial\n                    } ?: filled\n                    Log.i(\n                        TAG,\n                        "MIX INITIAL REBASE | queue=1..$initial | " +\n                            "currentEntryPreserved=true"\n                    )\n                } else {\n                    Log.w(\n                        TAG,\n                        "MIX INITIAL REBASE | skipped/failed; " +\n                            "verified queue retained without destructive fallback"\n                    )\n                }\n            }\n\n'''
-          p.write_text(text[:start] + replacement + text[end:])
-
-          # --- Queue policy: retain anchored compaction during fill, but support
-          # a final 1..N rebase once the complete Initial Size is verified. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/QueuePositionNormalizationPolicy.kt'
-          p = Path(path)
-          text = p.read_text()
-          insert = '''\n    fun rebaseToOne(rows: List<Row>, currentQueueId: Long): Plan? {\n        if (rows.isEmpty()) return null\n        require(rows.all { it.position > 0 }) {\n            "Queue positions must be positive"\n        }\n        require(rows.map { it.queueId }.toSet().size == rows.size) {\n            "Queue IDs must be unique"\n        }\n        require(rows.map { it.position }.toSet().size == rows.size) {\n            "Queue positions must be unique"\n        }\n\n        val ordered = rows.sortedBy { it.position }\n        val currentIndex = ordered.indexOfFirst { it.queueId == currentQueueId }\n        require(currentIndex >= 0) {\n            "Current queue entry must exist in the native rows"\n        }\n\n        val original = ordered.map { it.position }\n        val normalized = List(ordered.size) { index -> index + 1 }\n        if (original == normalized) return null\n\n        return Plan(\n            orderedQueueIds = ordered.map { it.queueId },\n            originalPositions = original,\n            normalizedPositions = normalized,\n            currentQueueId = currentQueueId,\n            currentNewPosition = currentIndex + 1\n        )\n    }\n'''
-          marker = '\n}\n'
-          if not text.endswith(marker):
-              raise SystemExit('QueuePositionNormalizationPolicy: unexpected ending')
-          p.write_text(text[:-len(marker)] + insert + marker)
-
-          # --- Native queue bridge: post-fill rebase with proven current writer,
-          # Cursor postcondition and full rollback. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/GmmpQueueMutationBridge.kt'
-          insert_before_once(
-              path,
-              '''    private fun resolve(\n        requireDelete: Boolean,\n        requireStatePosition: Boolean\n    ): Resolved {\n''',
-              '''    fun rebaseQueueToOneIfNeeded(): Boolean {\n        val resolved = resolve(\n            requireDelete = false,\n            requireStatePosition = true\n        )\n        val ordered = resolved.rows.sortedBy {\n            number(resolved.position, it).toInt()\n        }\n        if (ordered.isEmpty()) return true\n\n        val current = resolved.context.items.singleOrNull {\n            it.state == QueueItemState.CURRENT\n        } ?: error("GMMP current queue entry unavailable for final rebase")\n        val plan = QueuePositionNormalizationPolicy.rebaseToOne(\n            rows = ordered.map {\n                QueuePositionNormalizationPolicy.Row(\n                    queueId = number(resolved.queueId, it).toLong(),\n                    position = number(resolved.position, it).toInt()\n                )\n            },\n            currentQueueId = current.queueEntryId\n        ) ?: return true\n        val statePosition = resolved.statePosition\n            ?: error("GMMP current-position writer unavailable for final rebase")\n        val oldPositions = ordered.map {\n            number(resolved.position, it).toInt()\n        }\n        val oldState = statePosition.read()\n\n        try {\n            ordered.forEachIndexed { index, row ->\n                setInt(\n                    resolved.position,\n                    row,\n                    plan.normalizedPositions[index]\n                )\n            }\n            resolved.update.invoke(\n                resolved.dao,\n                ArrayList(ordered)\n            )\n            statePosition.write(plan.currentNewPosition)\n\n            val verified = GmmpQueueReader().read(\n                autoDj,\n                statePosition.read()\n            ) ?: error("Queue final-rebase verification unavailable")\n            val verifiedOrdered = verified.items.sortedBy { it.queuePosition }\n            val verifiedIds = verifiedOrdered.map { it.queueEntryId }\n            val verifiedPositions = verifiedOrdered.map { it.queuePosition }\n            val verifiedCurrent = verified.items.singleOrNull {\n                it.state == QueueItemState.CURRENT\n            }?.queueEntryId\n            require(\n                verifiedIds == plan.orderedQueueIds &&\n                    verifiedPositions == plan.normalizedPositions &&\n                    verifiedCurrent == plan.currentQueueId &&\n                    verified.currentQueuePosition == plan.currentNewPosition\n            ) {\n                "GMMP Track Auto-DJ final queue rebase failed postcondition"\n            }\n\n            Log.i(\n                TAG,\n                "QUEUE POSITION REBASE | old=" +\n                    plan.originalPositions.joinToString(",") +\n                    " | new=" + plan.normalizedPositions.joinToString(",") +\n                    " | currentId=" + plan.currentQueueId +\n                    " | currentPosition=" + plan.currentNewPosition +\n                    " | verified=true"\n            )\n            return true\n        } catch (failure: Throwable) {\n            runCatching {\n                ordered.forEachIndexed { index, row ->\n                    setInt(resolved.position, row, oldPositions[index])\n                }\n                resolved.update.invoke(\n                    resolved.dao,\n                    ArrayList(ordered)\n                )\n                statePosition.write(oldState)\n            }.onFailure { rollback ->\n                failure.addSuppressed(rollback)\n            }\n            throw failure\n        }\n    }\n\n'''
-          )
-
-          # --- GoneSmart module: wait for Smart pool only after one native next
-          # row exists, then ask for the remaining Initial Size rows. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt'
-          replace_once(
-              path,
-              '''        private const val SMART_PREPARE_TIMEOUT_SECONDS =\n            60L\n\n        // Track Auto-DJ must never strand playback on the isolated seed while\n''',
-              '''        private const val SMART_PREPARE_TIMEOUT_SECONDS =\n            60L\n\n        private const val TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS =\n            12L\n\n        // Track Auto-DJ must never strand playback on the isolated seed while\n'''
-          )
-          replace_once(
-              path,
-              '''        nativePositionWriterProvider = { autoDj ->\n            queueFlipController.verifiedPositionWriter(autoDj)\n        }\n    )''',
-              '''        nativePositionWriterProvider = { autoDj ->\n            queueFlipController.verifiedPositionWriter(autoDj)\n        },\n        awaitSmartInitialPool = { autoDj, count ->\n            awaitTrackMixSmartInitialPool(autoDj, count)\n        }\n    )'''
-          )
-          insert_before_once(
-              path,
-              '''    private fun ensureRecommendationPoolReady(\n''',
-              '''    private fun awaitTrackMixSmartInitialPool(\n        autoDjInstance: Any,\n        requestedTracks: Int\n    ): Boolean {\n        if (requestedTracks <= 0) return true\n\n        fun readyNow(): Boolean {\n            val context = readQueueContext(autoDjInstance) ?: return false\n            val session = queueSessionTracker.observe(context)\n            return recommendationPool.hasEnough(\n                expectedSessionId = session.sessionId,\n                count = requestedTracks,\n                excludedTrackIds = context.items.map { it.track.id }.toSet()\n            )\n        }\n\n        if (readyNow()) {\n            Log.i(\n                TAG,\n                "SMART DJ TRACK MIX REMAINDER | pool already ready | " +\n                    "requested=$requestedTracks"\n            )\n            return true\n        }\n\n        val future = synchronized(poolFillLock) {\n            activePoolFillFuture\n        } ?: return false\n\n        val completed = try {\n            future.get(\n                TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS,\n                TimeUnit.SECONDS\n            )\n        } catch (_: TimeoutException) {\n            Log.w(\n                TAG,\n                "SMART DJ TRACK MIX REMAINDER | bounded wait timed out | " +\n                    "requested=$requestedTracks | poolFill=continuing"\n            )\n            false\n        } catch (failure: Throwable) {\n            Log.w(\n                TAG,\n                "SMART DJ TRACK MIX REMAINDER | pool wait failed; " +\n                    "native fallback remains available",\n                failure\n            )\n            false\n        }\n\n        val ready = completed && readyNow()\n        Log.i(\n            TAG,\n            "SMART DJ TRACK MIX REMAINDER | wait complete | " +\n                "requested=$requestedTracks | ready=$ready"\n        )\n        return ready\n    }\n\n'''
-          )
-
-          # --- Read-only direct database helper for Playlist Link URI -> song_id. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/GmmpReadOnlySql.kt'
-          insert_before_once(
-              path,
-              '''    fun canResolve(autoDjInstance: Any): Boolean =\n''',
-              '''    private class DirectDatabaseHost(\n        val database: Any\n    )\n\n    fun <T> queryDatabase(\n        databaseInstance: Any,\n        sql: String,\n        args: Array<Any?> = emptyArray(),\n        reader: (Cursor) -> T\n    ): T = query(\n        autoDjInstance = DirectDatabaseHost(databaseInstance),\n        sql = sql,\n        args = args,\n        reader = reader\n    )\n\n'''
-          )
-
-          # --- Playlist Link sentinel helper: build proven Track-ID equality leaves. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/PlaylistBridgeNativeSentinelPolicy.kt'
-          replace_once(
-              path,
-              '''    fun ruleArguments(shouldMatch: Boolean): Array<Any?> =\n        arrayOf(\n            TRACK_ID_FIELD,\n            if (shouldMatch) NOT_EQUALS_OPERATOR else EQUALS_OPERATOR,\n            Long.MIN_VALUE.toString(),\n            0\n        )\n}''',
-              '''    fun ruleArguments(shouldMatch: Boolean): Array<Any?> =\n        arrayOf(\n            TRACK_ID_FIELD,\n            if (shouldMatch) NOT_EQUALS_OPERATOR else EQUALS_OPERATOR,\n            Long.MIN_VALUE.toString(),\n            0\n        )\n\n    fun trackIdEqualsArguments(trackId: Long): Array<Any?> =\n        arrayOf(\n            TRACK_ID_FIELD,\n            EQUALS_OPERATOR,\n            trackId.toString(),\n            0\n        )\n}'''
-          )
-
-          # --- Reflection resolver: recover the exact native Track-ID field from
-          # the already compiled native fail-closed predicate, no static dex scan. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/PlaylistBridgeReflectionResolver.kt'
-          insert_before_once(
-              path,
-              '''    private fun readNamedField(instance: Any, name: String): Any? {\n''',
-              '''    internal fun uniqueInstanceInObjectGraph(\n        root: Any,\n        valueClass: Class<*>,\n        maxDepth: Int = 6\n    ): Any? {\n        val seen = java.util.IdentityHashMap<Any, Boolean>()\n        val matches = java.util.IdentityHashMap<Any, Boolean>()\n\n        fun visit(candidate: Any?, depth: Int) {\n            if (candidate == null || depth < 0) return\n            if (valueClass.isInstance(candidate)) {\n                matches[candidate] = true\n                return\n            }\n            when (candidate) {\n                is CharSequence, is Number, is Boolean, is Char, is Enum<*>, is Class<*> ->\n                    return\n                is Collection<*> -> {\n                    candidate.take(256).forEach { visit(it, depth - 1) }\n                    return\n                }\n                is Map<*, *> -> {\n                    candidate.entries.take(256).forEach { entry ->\n                        visit(entry.key, depth - 1)\n                        visit(entry.value, depth - 1)\n                    }\n                    return\n                }\n            }\n            if (candidate.javaClass.isArray) {\n                val length = java.lang.reflect.Array.getLength(candidate)\n                repeat(length.coerceAtMost(256)) { index ->\n                    visit(java.lang.reflect.Array.get(candidate, index), depth - 1)\n                }\n                return\n            }\n            if (seen.put(candidate, true) != null || depth == 0) return\n\n            var type: Class<*>? = candidate.javaClass\n            while (type != null && type != Any::class.java) {\n                val name = type.name\n                if (\n                    name.startsWith("java.") ||\n                    name.startsWith("kotlin.") ||\n                    name.startsWith("android.")\n                ) {\n                    break\n                }\n                declaredFieldsSafely(type)\n                    .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }\n                    .forEach { field ->\n                        runCatching {\n                            field.isAccessible = true\n                            visit(field.get(candidate), depth - 1)\n                        }\n                    }\n                type = runCatching { type.superclass }.getOrNull()\n            }\n        }\n\n        visit(root, maxDepth)\n        return matches.keys.toList().singleOrNull()\n    }\n\n'''
-          )
-
-          # --- Playlist Link: remove static track_uri constant from binding gate,
-          # resolve playlist files read-only to song_id and compile native ID predicates. ---
-          path = 'app/src/main/java/io/github/alagga/gonesmart/PlaylistBridgeController.kt'
-          replace_once(
-              path,
-              '''        val nativeIn: Method,\n        val uriField: Any,\n        val whereGroupConstructor: Constructor<*>?,\n''',
-              '''        val nativeIn: Method,\n        val trackIdField: Any?,\n        val whereGroupConstructor: Constructor<*>?,\n'''
-          )
-          p = Path(path)
-          text = p.read_text()
-          old = '''        val clauses = membership.paths\n            .distinct()\n            .chunked(MAX_IN_VALUES)\n            .map { values -> native.nativeIn.invoke(null, native.uriField, values) }\n        val result = if (clauses.size == 1) {\n            clauses.single()\n        } else {\n            val group = native.whereGroupConstructor\n            if (group == null) {\n                Log.e(\n                    TAG,\n                    "BRIDGE COMPILE | native OR predicate group unavailable; " +\n                        "failing closed | chunks=${clauses.size}"\n                )\n                return falsePredicate(native)\n            }\n            group.newInstance(clauses, "OR")\n        }\n        Log.i(\n            TAG,\n            "BRIDGE COMPILE | entries=${membership.paths.size}" +\n                " | chunks=${clauses.size}" +\n                " | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}" +\n                " | " + PlaylistBridgePolicy.safePath(reference.path)\n        )\n        return result\n'''
-          new = '''        val trackIds = runCatching {\n            resolveTrackIds(native, membership.paths)\n        }.onFailure {\n            Log.e(TAG, "BRIDGE COMPILE | native track-id lookup failed", it)\n        }.getOrNull() ?: return falsePredicate(native)\n        if (trackIds.isEmpty()) {\n            Log.i(\n                TAG,\n                "BRIDGE COMPILE | source has no GMMP library tracks -> false predicate"\n            )\n            return falsePredicate(native)\n        }\n\n        val nativeTrackIdField = native.trackIdField\n        val strategy: String\n        val clauses: List<Any> = if (nativeTrackIdField != null) {\n            strategy = "native-id-in"\n            trackIds.chunked(MAX_IN_VALUES).map { values ->\n                native.nativeIn.invoke(null, nativeTrackIdField, values)\n                    ?: throw IllegalStateException(\n                        "GMMP native Track-ID IN builder returned null"\n                    )\n            }\n        } else {\n            if (trackIds.size > MAX_IN_VALUES) {\n                Log.e(\n                    TAG,\n                    "BRIDGE COMPILE | Track-ID field is opaque and equality " +\n                        "fallback exceeds bounded clause count; failing closed | " +\n                        "tracks=${trackIds.size}"\n                )\n                return falsePredicate(native)\n            }\n            strategy = "native-id-equality"\n            trackIds.map { trackId ->\n                val nativeRule = native.smartRuleConstructor.newInstance(\n                    *PlaylistBridgeNativeSentinelPolicy\n                        .trackIdEqualsArguments(trackId)\n                )\n                native.evaluationMethod.invoke(\n                    nativeRule,\n                    java.util.LinkedHashSet<Any>(),\n                    0\n                ) ?: throw IllegalStateException(\n                    "GMMP native Track-ID rule evaluator returned null"\n                )\n            }\n        }\n\n        val result = if (clauses.size == 1) {\n            clauses.single()\n        } else {\n            val group = native.whereGroupConstructor\n            if (group == null) {\n                Log.e(\n                    TAG,\n                    "BRIDGE COMPILE | native OR predicate group unavailable; " +\n                        "failing closed | clauses=${clauses.size}"\n                )\n                return falsePredicate(native)\n            }\n            group.newInstance(clauses, "OR")\n        }\n        Log.i(\n            TAG,\n            "BRIDGE COMPILE | entries=${membership.paths.size}" +\n                " | libraryTrackIds=${trackIds.size}" +\n                " | clauses=${clauses.size}" +\n                " | strategy=$strategy" +\n                " | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}" +\n                " | " + PlaylistBridgePolicy.safePath(reference.path)\n        )\n        return result\n'''
-          if text.count(old) != 1:
-              raise SystemExit(f'PlaylistBridgeController compile block count={text.count(old)}')
-          p.write_text(text.replace(old, new, 1))
-
-          insert_before_once(
-              path,
-              '''    private fun falsePredicate(native: Bindings): Any {\n''',
-              '''    private fun resolveTrackIds(\n        native: Bindings,\n        paths: List<String>\n    ): List<Long> {\n        val database = native.databaseSingleton.get(null)\n            ?: throw IllegalStateException("GMDatabase singleton is null")\n        val result = linkedSetOf<Long>()\n        paths.distinct().chunked(MAX_IN_VALUES).forEach { chunk ->\n            val placeholders = chunk.joinToString(",") { "?" }\n            val args = Array<Any?>(chunk.size) { index -> chunk[index] }\n            val ids = GmmpReadOnlySql.queryDatabase(\n                databaseInstance = database,\n                sql = "SELECT song_id FROM tracks WHERE track_uri IN (" +\n                    placeholders + ")",\n                args = args\n            ) { cursor ->\n                val idColumn = cursor.getColumnIndex("song_id")\n                require(idColumn >= 0) {\n                    "GMMP track-id query did not expose song_id"\n                }\n                buildList {\n                    while (cursor.moveToNext()) {\n                        add(cursor.getLong(idColumn))\n                    }\n                }\n            }\n            result.addAll(ids)\n        }\n        Log.i(\n            TAG,\n            "BRIDGE SOURCE IDS | paths=${paths.size} | library=${result.size}"\n        )\n        return result.toList()\n    }\n\n'''
-          )
-
-          p = Path(path)
-          text = p.read_text()
-          start_marker = '''        val queryFieldClass = nativeIn.parameterTypes[0]\n        val uriFieldMember = r.resolveStaticFieldBySemanticValue(\n'''
-          end_marker = '''\n        // OR grouping is required only when one source exceeds the\n'''
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('PlaylistBridgeController URI binding block markers missing')
-          replacement = '''        val queryFieldClass = nativeIn.parameterTypes[0]\n        val trackIdField = r.uniqueInstanceInObjectGraph(\n            root = failClosedPredicateProbe,\n            valueClass = queryFieldClass\n        )\n        if (trackIdField == null) {\n            Log.w(\n                TAG,\n                "BRIDGE MAPPING | native Track-ID query field is opaque; " +\n                    "using native Track-ID equality evaluator fallback"\n            )\n        }\n'''
-          p.write_text(text[:start] + replacement + text[end:])
-
-          replace_once(
-              path,
-              '''                " | predicate=${predicateClass.name}" +\n                " | uriField=" + uriField.toString() +\n                " | orGroup=" +\n''',
-              '''                " | predicate=${predicateClass.name}" +\n                " | trackIdPredicate=" +\n                (if (trackIdField != null) "native-in" else "native-equality") +\n                " | orGroup=" +\n'''
-          )
-          replace_once(
-              path,
-              '''            nativeIn = nativeIn,\n            uriField = uriField,\n            whereGroupConstructor = whereGroupConstructor,\n''',
-              '''            nativeIn = nativeIn,\n            trackIdField = trackIdField,\n            whereGroupConstructor = whereGroupConstructor,\n'''
-          )
-
-          # --- Regression tests. ---
-          path = 'app/src/test/java/io/github/alagga/gonesmart/TrackMixInitialFillPolicyTest.kt'
-          insert_before_once(
-              path,
-              '''    @Test fun isolatedTrackMixSeedNeverWaitsForSmartPool() {\n''',
-              '''    @Test fun gmmp421BootstrapsOnlyOneContinuityTrackBeforeSmartRemainder() {\n        val totalMissing =\n            TrackMixInitialFillPolicy.nativeInitialRefillCount(\n                initialSize = 5,\n                seedQueueSize = 1\n            )\n        assertEquals(\n            1,\n            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(\n                totalMissing = totalMissing,\n                legacyQueue = false\n            )\n        )\n        assertEquals(\n            4,\n            TrackMixInitialFillPolicy.continuityBootstrapRefillCount(\n                totalMissing = totalMissing,\n                legacyQueue = true\n            )\n        )\n    }\n\n'''
-          )
-
-          path = 'app/src/test/java/io/github/alagga/gonesmart/QueuePositionNormalizationPolicyTest.kt'
-          insert_before_once(
-              path,
-              '''    @Test\n    fun `already contiguous positions need no native mutation`() {\n''',
-              '''    @Test\n    fun `verified full Track Mix queue rebases to one through current identity`() {\n        val plan = QueuePositionNormalizationPolicy.rebaseToOne(\n            rows = listOf(\n                QueuePositionNormalizationPolicy.Row(50L, 8),\n                QueuePositionNormalizationPolicy.Row(51L, 9),\n                QueuePositionNormalizationPolicy.Row(52L, 10),\n                QueuePositionNormalizationPolicy.Row(53L, 11),\n                QueuePositionNormalizationPolicy.Row(54L, 12)\n            ),\n            currentQueueId = 50L\n        )!!\n\n        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)\n        assertEquals(1, plan.currentNewPosition)\n        assertEquals(50L, plan.currentQueueId)\n    }\n\n    @Test\n    fun `final rebase keeps a middle current entry by identity`() {\n        val plan = QueuePositionNormalizationPolicy.rebaseToOne(\n            rows = listOf(\n                QueuePositionNormalizationPolicy.Row(60L, 8),\n                QueuePositionNormalizationPolicy.Row(61L, 9),\n                QueuePositionNormalizationPolicy.Row(62L, 10),\n                QueuePositionNormalizationPolicy.Row(63L, 11),\n                QueuePositionNormalizationPolicy.Row(64L, 12)\n            ),\n            currentQueueId = 62L\n        )!!\n\n        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)\n        assertEquals(3, plan.currentNewPosition)\n        assertEquals(62L, plan.currentQueueId)\n    }\n\n'''
-          )
-
-          path = 'app/src/test/java/io/github/alagga/gonesmart/PlaylistBridgeReflectionResolverTest.kt'
-          replace_once(
-              path,
-              '''    private class QueryPredicate(private val sql: String) {\n        override fun toString(): String = sql\n    }\n''',
-              '''    private class QueryPredicate(private val sql: String) {\n        override fun toString(): String = sql\n    }\n\n    private class NativePredicateGraph(\n        @Suppress("unused") private val field: QueryFieldMarker,\n        @Suppress("unused") private val nested: Any? = null\n    )\n'''
-          )
-          insert_before_once(
-              path,
-              '''    @Test\n    fun semanticStaticFieldFallbackIgnoresObfuscatedName() {\n''',
-              '''    @Test\n    fun nativeQueryFieldCanBeRecoveredFromCompiledPredicateGraph() {\n        val field = QueryColumn("song_id")\n        val root = NativePredicateGraph(\n            field = field,\n            nested = listOf(field)\n        )\n\n        assertSame(\n            field,\n            PlaylistBridgeReflectionResolver.uniqueInstanceInObjectGraph(\n                root = root,\n                valueClass = QueryFieldMarker::class.java\n            )\n        )\n    }\n\n    @Test\n    fun compiledPredicateGraphAmbiguityFailsClosed() {\n        val root = NativePredicateGraph(\n            field = QueryColumn("song_id"),\n            nested = QueryColumn("track_uri")\n        )\n\n        assertNull(\n            PlaylistBridgeReflectionResolver.uniqueInstanceInObjectGraph(\n                root = root,\n                valueClass = QueryFieldMarker::class.java\n            )\n        )\n    }\n\n'''
-          )
-
-          # Ensure the old critical track_uri dex binding is really gone.
-          controller = Path('app/src/main/java/io/github/alagga/gonesmart/PlaylistBridgeController.kt').read_text()
-          forbidden = 'resolveStaticFieldBySemanticValue(\n            loader = loader,\n            preferredHolderNames = listOf("w75", "z75")'
-          if forbidden in controller:
-              raise SystemExit('Playlist Link still contains the old critical track_uri dex binding')
-          if 'MIX INITIAL FILL | initial=$initial' not in Path('app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt').read_text():
-              raise SystemExit('Track Mix patch sanity marker missing')
-          PY
+      - name: Apply repair
+        run: python3 .github/scripts/apply_421_trackmix_link_repair.py
 
       - name: Verify generated forum copy
         run: python3 scripts/generate_forum_posts.py --check
@@ -248,12 +48,12 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
-      - name: Commit repair and remove helper
-        shell: bash
+      - name: Commit repair and remove helpers
         run: |
           git config user.name "GoneSmart repair bot"
           git config user.email "actions@users.noreply.github.com"
           git rm .github/workflows/bundled-421-trackmix-link-repair.yml
+          git rm .github/scripts/apply_421_trackmix_link_repair.py
           git add app/src/main/java app/src/test/java
           git commit -m "fix: stabilize Track Mix and Playlist Link on GMMP 4.2.1"
           git push origin HEAD:fix/playlist-link-gmmp-4.2.1
