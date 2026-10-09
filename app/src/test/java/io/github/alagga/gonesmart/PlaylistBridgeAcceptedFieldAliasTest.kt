@@ -30,6 +30,24 @@ class PlaylistBridgeAcceptedFieldAliasTest {
     }
 
     @Test
+    fun `GMMP 4_2_1 Smart Playlist MatchAll aliases preserve historical fast paths`() {
+        assertEquals(
+            listOf("s", "r"),
+            PlaylistBridgeReflectionResolver.acceptedFieldNameOrder(
+                typeName = "ts4",
+                preferredNames = listOf("s")
+            )
+        )
+        assertEquals(
+            listOf("p", "o"),
+            PlaylistBridgeReflectionResolver.acceptedFieldNameOrder(
+                typeName = "gt4",
+                preferredNames = listOf("p")
+            )
+        )
+    }
+
+    @Test
     fun `unknown state class keeps only requested fast paths`() {
         assertEquals(
             listOf("y"),
