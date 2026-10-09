@@ -1,18 +1,32 @@
-name: Source snapshot temp
+name: Bundled repair temp
 
 on:
   push:
     branches:
       - fix/playlist-link-gmmp-4.2.1
 
+permissions:
+  contents: write
+
 jobs:
-  snapshot:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
         with:
-          name: GoneSmart-source-snapshot
-          path: .
-          include-hidden-files: true
-          retention-days: 1
+          fetch-depth: 0
+      - name: Apply bundled repair and remove temporary helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH=.github/gonesmart-repair.patch
+          if [[ ! -f "$PATCH" ]]; then
+            echo "Repair patch not present yet; nothing to apply."
+            exit 0
+          fi
+          git apply --index "$PATCH"
+          git rm "$PATCH" .github/workflows/source-snapshot-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: repair GMMP 4.2.1 Playlist Link and Track Mix"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
