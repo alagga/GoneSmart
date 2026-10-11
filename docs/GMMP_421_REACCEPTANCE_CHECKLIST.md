@@ -39,3 +39,11 @@ Required runtime evidence: `current+1` never disappears during the Track Mix sta
 The r27 same-position Current refresh is intentionally absent: device evidence proved it could verify while Track 2 still failed to decode. The r28 clear/pre-command-fill ordering is also retired: device evidence proved `CLEAR_QUEUE` itself could make MusicService cache a null next AudioSource before the later refill started.
 
 Device acceptance remains pending until this complete pass succeeds on the exact CI-built APK.
+
+
+## r30 regression focus
+
+- Playlist Link retains the r29 requirement: `BRIDGE TOOLBAR LINK` then `toolbarAdd=true | edit=false | intercepted=true`, followed by the two-way `Smart Playlist` / `Playlist` chooser.
+- Track Mix must log `MIX PREPLAY TARGET | resolved=true` and `MIX PREPLAY SMART POOL` **before** `MIX START | ... nativePlay=dispatched`. If semantic target resolution is ambiguous, Track Mix must fail before native Play rather than guess.
+- The first target-owned native refill must log `MIX PREPLAY BOOTSTRAP OFFER`, `SMART DJ TRACK MIX BOOTSTRAP` and `MIX PREPLAY NATIVE REFILL`. GoneSmart Track IDs must therefore be present when GMMP first materializes/preloads the upcoming rows; there must be no earlier unrelated Track-2 AudioSource/decoder that is later rewritten.
+- 4.2.1 startup must contain no `CLEAR_QUEUE`, no post-materialization Smart Track-ID retarget, and no playback-refresh workaround. Queue DAO use after bootstrap is prune-only. The first generated Track must naturally open its decoder and play audio.

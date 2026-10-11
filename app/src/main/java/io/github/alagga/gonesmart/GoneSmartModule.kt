@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r29"
+            "gmmp421-r30"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -476,19 +476,28 @@ class GoneSmartModule : XposedModule() {
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
         },
-        prepareSmartInitialPool = { autoDj, selectedTrackId, count ->
-            prepareTrackMixSmartInitialPool(autoDj, selectedTrackId, count)
+        resolvePrePlayTarget = { autoDj, roots ->
+            resolveTrackMixPrePlayTarget(autoDj, roots)
         },
-        commitSmartInitialPool = { prepared ->
-            recommendationPool.commitSelected(
-                expectedSessionId = prepared.sessionId,
-                selectedTrackIds = prepared.trackIds
-            )
+        preparePrePlaySmartPool = { autoDj, track, count ->
+            prepareTrackMixPrePlaySmartPool(autoDj, track, count)
         }
     )
 
     @Volatile
     private var trackMixAutoDj: WeakReference<Any>? = null
+
+    private val trackMixPrePlayTargetResolver = TrackMixPrePlayTargetResolver()
+    private val trackMixBootstrapSessionIds = AtomicLong(-1_000_000L)
+
+    private data class TrackMixBootstrapSelectionWindow(
+        val sessionId: Long,
+        val trackIds: List<Long>,
+        val appliedTrackIds: MutableList<Long> = arrayListOf()
+    )
+
+    private val trackMixBootstrapSelectionWindow =
+        ThreadLocal<TrackMixBootstrapSelectionWindow?>()
 
     private val recommendationPool =
         SessionRecommendationPool()
@@ -4621,6 +4630,47 @@ class GoneSmartModule : XposedModule() {
                         instance = trackDaoField.get(autoDjInstance)
                     )
                 }
+                val trackMixBootstrap =
+                    trackMixController.bootstrapSelectionForNativeRefill(
+                        autoDj = autoDjInstance,
+                        requested = requestedTracks
+                    )
+                if (trackMixBootstrap != null) {
+                    val beforeBootstrap = readQueueContext(autoDjInstance)
+                    beforeBootstrap?.let { queueSessionTracker.observe(it) }
+                    val bootstrapWindow = TrackMixBootstrapSelectionWindow(
+                        sessionId = trackMixBootstrap.sessionId,
+                        trackIds = trackMixBootstrap.trackIds
+                    )
+                    trackMixBootstrapSelectionWindow.set(bootstrapWindow)
+                    val bootstrapResult = try {
+                        chain.proceed()
+                    } finally {
+                        trackMixBootstrapSelectionWindow.remove()
+                    }
+                    val applied = bootstrapWindow.appliedTrackIds.toList()
+                    trackMixController.onBootstrapNativeRefillFinished(applied)
+                    val afterBootstrap = readQueueContext(autoDjInstance)
+                    if (beforeBootstrap != null && afterBootstrap != null) {
+                        queueSessionTracker.commitGeneratedAdditions(
+                            beforeContext = beforeBootstrap,
+                            afterContext = afterBootstrap,
+                            origin = if (applied.isNotEmpty()) {
+                                QueueEntryOrigin.GONESMART
+                            } else {
+                                QueueEntryOrigin.NATIVE_AUTO_DJ
+                            }
+                        )
+                    }
+                    Log.i(
+                        "GoneSmartTrackMix",
+                        "MIX PREPLAY NATIVE REFILL | requested=$requestedTracks | " +
+                            "smartApplied=${applied.size} | nativeRemainder=" +
+                            (requestedTracks - applied.size).coerceAtLeast(0)
+                    )
+                    return@intercept bootstrapResult
+                }
+
                 when (trackMixController.nativeRefillAction()) {
                     TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE -> {
                         // Before 4.2.1 seed isolation, GMMP still owns playback
@@ -5296,6 +5346,52 @@ class GoneSmartModule : XposedModule() {
             val nativeResult =
                 chain.proceed()
 
+            val bootstrapWindow = trackMixBootstrapSelectionWindow.get()
+            if (bootstrapWindow != null) {
+                val bootstrapRows = nativeResult as? List<*>
+                if (bootstrapRows.isNullOrEmpty()) {
+                    Log.w(
+                        "GoneSmartTrackMix",
+                        "SMART DJ TRACK MIX BOOTSTRAP | native selection returned no rows"
+                    )
+                    return@intercept nativeResult
+                }
+                val desired = if (requestedTracks > 0) {
+                    minOf(requestedTracks, bootstrapRows.size)
+                } else {
+                    bootstrapRows.size
+                }
+                val ids = bootstrapWindow.trackIds.take(desired)
+                var applied = 0
+                ids.forEachIndexed { index, trackId ->
+                    val row = bootstrapRows[index] ?: return@forEachIndexed
+                    runCatching {
+                        setAutoDjTrackId(row, trackId)
+                    }.onSuccess {
+                        bootstrapWindow.appliedTrackIds += trackId
+                        applied++
+                    }.onFailure { error ->
+                        Log.e(
+                            "GoneSmartTrackMix",
+                            "SMART DJ TRACK MIX BOOTSTRAP | slot=${index + 1} failed",
+                            error
+                        )
+                    }
+                }
+                if (applied > 0) {
+                    recommendationPool.commitSelected(
+                        expectedSessionId = bootstrapWindow.sessionId,
+                        selectedTrackIds = bootstrapWindow.appliedTrackIds
+                    )
+                }
+                Log.i(
+                    "GoneSmartTrackMix",
+                    "SMART DJ TRACK MIX BOOTSTRAP | applied=$applied/$desired | " +
+                        "nativeRemainder=${(desired - applied).coerceAtLeast(0)}"
+                )
+                return@intercept nativeResult
+            }
+
             val selectionContext =
                 autoDjSelectionWindow.get()
 
@@ -5559,42 +5655,54 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun prepareTrackMixSmartInitialPool(
+    private fun resolveTrackMixPrePlayTarget(
         autoDjInstance: Any,
-        selectedTrackId: Long,
+        roots: List<Any>
+    ): TrackMixPrePlayTargetResolution? {
+        val library = gmmpLibraryReader.read(autoDjInstance)
+            .map { it.track }
+        return trackMixPrePlayTargetResolver.resolve(roots, library)
+    }
+
+    private fun prepareTrackMixPrePlaySmartPool(
+        autoDjInstance: Any,
+        selectedTrack: TrackInfo,
         requestedTracks: Int
     ): TrackMixPreparedInitialPool {
         if (requestedTracks <= 0) return TrackMixPreparedInitialPool.EMPTY
-        val liveContext = readQueueContext(autoDjInstance)
-            ?: return TrackMixPreparedInitialPool.EMPTY
-        val selected = liveContext.currentItem
-            ?.takeIf { it.track.id == selectedTrackId }
-            ?: return TrackMixPreparedInitialPool.EMPTY
-        val liveSession = queueSessionTracker.observe(liveContext)
-        val nativeSettings = gmmpAutoDjSettingsReader.read()
-        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(nativeSettings)
-        resetRecommendationPoolForSession(liveSession, sizing)
-
-        val isolatedContext = QueueContext(
-            currentQueuePosition = selected.queuePosition,
-            items = listOf(selected.copy(orderIndex = 0, state = QueueItemState.CURRENT))
+        val sessionId = trackMixBootstrapSessionIds.decrementAndGet()
+        val syntheticEntryId = sessionId
+        val selected = QueueItemInfo(
+            orderIndex = 0,
+            queuePosition = 1,
+            shufflePosition = 1,
+            queueEntryId = syntheticEntryId,
+            track = selectedTrack,
+            state = QueueItemState.CURRENT
         )
-        val isolatedSession = QueueSessionSnapshot(
-            sessionId = liveSession.sessionId,
+        val queueContext = QueueContext(
+            currentQueuePosition = 1,
+            items = listOf(selected)
+        )
+        val session = QueueSessionSnapshot(
+            sessionId = sessionId,
             isNewSession = false,
-            reason = "track-mix selected-seed pre-retarget",
+            reason = "track-mix pre-play bootstrap",
             currentItem = selected,
             pastItems = emptyList(),
             upcomingItems = emptyList(),
             manualUpcomingItems = emptyList(),
             sessionItems = listOf(selected),
-            userAnchorTracks = listOf(selected.track),
+            userAnchorTracks = listOf(selectedTrack),
             recentGeneratedTracks = emptyList(),
-            originsByEntryId = mapOf(selected.queueEntryId to QueueEntryOrigin.USER_QUEUE)
+            originsByEntryId = mapOf(syntheticEntryId to QueueEntryOrigin.USER_QUEUE)
         )
+        val settings = gmmpAutoDjSettingsReader.read()
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+        resetRecommendationPoolForSession(session, sizing)
         val seeds = listOf(
             RecommendationSeed(
-                track = selected.track,
+                track = selectedTrack,
                 type = SeedType.CURRENT,
                 recency = 0,
                 weightMultiplier = 1.0
@@ -5602,35 +5710,39 @@ class GoneSmartModule : XposedModule() {
         )
         Log.i(
             TAG,
-            "SMART DJ TRACK MIX PRE-RETARGET | start | session=${liveSession.sessionId} | " +
-                "selected=$selectedTrackId | requested=$requestedTracks"
+            "SMART DJ TRACK MIX PREPLAY | start | session=$sessionId | " +
+                "selected=${selectedTrack.id} | requested=$requestedTracks"
         )
         val future = startPoolFill(
             seeds = seeds,
             autoDjInstance = autoDjInstance,
-            queueContext = isolatedContext,
-            session = isolatedSession,
+            queueContext = queueContext,
+            session = session,
             sizing = sizing,
             background = false
         )
         try {
             future.get(TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS, TimeUnit.SECONDS)
         } catch (_: TimeoutException) {
-            Log.w(TAG, "SMART DJ TRACK MIX PRE-RETARGET | bounded wait timed out")
+            Log.w(
+                TAG,
+                "SMART DJ TRACK MIX PREPLAY | bounded wait timed out | " +
+                    "poolFill=continuing"
+            )
         } catch (failure: Throwable) {
-            Log.w(TAG, "SMART DJ TRACK MIX PRE-RETARGET | pool preparation failed", failure)
+            Log.w(TAG, "SMART DJ TRACK MIX PREPLAY | pool preparation failed", failure)
         }
         val preparedIds = recommendationPool.peek(
-            expectedSessionId = liveSession.sessionId,
+            expectedSessionId = sessionId,
             count = requestedTracks,
-            excludedTrackIds = setOf(selectedTrackId)
+            excludedTrackIds = setOf(selectedTrack.id)
         )
         Log.i(
             TAG,
-            "SMART DJ TRACK MIX PRE-RETARGET | complete | requested=$requestedTracks | " +
-                "prepared=${preparedIds.size} | " + recommendationPool.describe(liveSession.sessionId)
+            "SMART DJ TRACK MIX PREPLAY | complete | requested=$requestedTracks | " +
+                "prepared=${preparedIds.size} | " + recommendationPool.describe(sessionId)
         )
-        return TrackMixPreparedInitialPool(liveSession.sessionId, preparedIds)
+        return TrackMixPreparedInitialPool(sessionId, preparedIds)
     }
 
     private fun ensureRecommendationPoolReady(
