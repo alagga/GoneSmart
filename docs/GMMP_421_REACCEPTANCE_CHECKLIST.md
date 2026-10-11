@@ -2,6 +2,8 @@
 
 This checklist is the single device pass for the current Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
+Repair source commit: `93c6270df21b119daeaf9c9d71b7aa3b0234d43d`.
+
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
