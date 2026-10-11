@@ -18,9 +18,9 @@ internal data class TrackMixPrePlayTargetResolution(
  * object is scored. Large framework graphs are not traversed.
  */
 internal class TrackMixPrePlayTargetResolver(
-    private val maxDepth: Int = 4,
-    private val maxObjects: Int = 160,
-    private val maxCollectionItems: Int = 24
+    private val maxDepth: Int = 5,
+    private val maxObjects: Int = 240,
+    private val maxCollectionItems: Int = 48
 ) {
     private data class Node(val value: Any, val depth: Int)
     private data class Candidate(

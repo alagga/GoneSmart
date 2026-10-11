@@ -180,3 +180,10 @@ A release candidate is complete only when:
 12. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
 
 After 0.4.0, new features should start on a normal named feature branch from the chosen clean `main` integration point.
+
+
+## r31 device-proven follow-up rules
+
+- GMMP 4.2.1's accepted direct read-only Room query carrier is parameter-free unless non-zero argument-count ownership is uniquely proved. Playlist Link resolves ordinary-playlist file membership by building a bounded cached `song_id`/`track_uri` index with a parameter-free read and matching canonical paths in GoneSmart. Never guess R8 argument-count/binder fields.
+- Track Auto-DJ pre-Play preparation must not assume `qr` was constructed after GoneSmart hooks installed. Recover the live accepted `qr` passively from natural verified state-writer calls and, if needed, from the bounded context-menu object graph. Discovery never sends a playback/Auto-DJ command; zero or multiple candidates fail closed.
+- Smart-editor labels distinguish native Smart-Playlist references from GoneSmart ordinary-Playlist bridge references: native Smart references use the host Smart-Playlist noun; bridge references use the host Playlist noun.

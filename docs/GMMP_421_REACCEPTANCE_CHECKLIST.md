@@ -1,6 +1,6 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r30** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r31** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
 Repair source commit: `5fe46716b58b60f889ec18c03671333c7991bd7e`.
 
@@ -40,3 +40,12 @@ Required runtime evidence: `current+1` never disappears during Track Mix startup
 The r27 same-position Current refresh is intentionally absent: device evidence proved it could verify while Track 2 still failed to decode. The r28 clear/pre-command-fill ordering is also retired: device evidence proved `CLEAR_QUEUE` itself could make MusicService cache a null next AudioSource before the later refill started.
 
 Device acceptance remains pending until this complete pass succeeds on the exact CI-built APK.
+
+
+## r31 regression focus
+
+- Playlist Link must retain the r30 accepted dispatch path: native Link click -> `toolbarAdd=true | edit=false | intercepted=true` -> the two-way **Smart Playlist / Playlist** menu.
+- In the Smart Playlist editor, a native linked Smart Playlist must render with the host Smart-Playlist label, while a GoneSmart ordinary Playlist bridge must render with the host Playlist label.
+- Opening/evaluating a Smart Playlist linked to an ordinary playlist must log `BRIDGE SOURCE IDS` with resolved library IDs and must not log `GMMP direct query carrier initialization failed` or compile the bridge through the Long.MIN fail-closed sentinel. Changing the source playlist must still change membership on the next evaluation.
+- Track Auto-DJ must log `MIX CLICK`, then `MIX PREPLAY AUTO-DJ | available=true` or `recovered=context-graph`, then a unique `MIX PREPLAY TARGET | resolved=true` and `MIX PREPLAY SMART POOL` before native Play.
+- 4.2.1 Track Auto-DJ still must not use `CLEAR_QUEUE`, post-retarget a materialized `current+1`, or send a discovery command merely to obtain `qr`. The first generated follow-up must naturally decode and play.

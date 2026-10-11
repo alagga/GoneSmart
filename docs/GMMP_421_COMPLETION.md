@@ -28,3 +28,9 @@ Track Mix still failed because `CLEAR_QUEUE` itself caused GMMP to query positio
 ### r30 pending device re-acceptance
 
 r29 is superseded before device acceptance because static/log review showed its in-place post-materialization retarget could still leave GMMP's already-preloaded native Track-2 AudioSource stale. r30 resolves the clicked Track from the native context-menu object graph before Play, prepares immutable GoneSmart Track IDs first, and injects them at the proven native Auto-DJ selection boundary during the first refill that independently verifies the target as Current. No 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID rewrite, and no same-position playback refresh are allowed. Playlist Link keeps the r29 exact-menuLink click classifier. Device acceptance remains pending.
+
+
+### r31 device acceptance pending
+
+- Playlist Link chooser dispatch is device-proven on r30 and retained unchanged. r31 fixes ordinary Playlist membership resolution with a parameter-free cached Track-URI index and makes rule labels type-correct (`Smart-Playlist: …` vs `Playlist: …`).
+- Track Auto-DJ keeps r30's pre-Play bootstrap design but no longer requires a constructor/refill hook to have captured `qr` earlier in the process. Passive recovery is bundled before the next single device pass.

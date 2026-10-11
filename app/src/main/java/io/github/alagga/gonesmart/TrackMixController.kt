@@ -141,6 +141,7 @@ internal class TrackMixController(
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
     private val queueReader = GmmpQueueReader()
+    private val prePlayAutoDjResolver = TrackMixAutoDjResolver()
 
     @Volatile private var pending: Pending? = null
     @Volatile private var nativeQueue: WeakReference<Any>? = null
@@ -608,8 +609,14 @@ internal class TrackMixController(
                     ?: field(it, "mOnMenuItemClickListener")
             }.getOrNull()
         }
-        val prePlayRoots = listOfNotNull(listener, popup, callback)
-            .distinctBy { System.identityHashCode(it) }
+        val prePlayRoots = listOfNotNull(
+            listener, popup, callback, menu, nativePlay
+        ).distinctBy { System.identityHashCode(it) }
+        Log.i(
+            TAG,
+            "MIX CLICK | source=$source | roots=${prePlayRoots.size} | " +
+                "autoDjCaptured=${nativeAutoDj?.get() != null}"
+        )
 
         val nativePlayDispatch: () -> Boolean = runCatching {
             val click = listener?.javaClass?.methods?.firstOrNull {
@@ -642,16 +649,26 @@ internal class TrackMixController(
 
         work.execute {
             val old = queueSnapshot()
-            val autoDj = nativeAutoDj?.get()
+            val capturedAutoDj = nativeAutoDj?.get()
+            val autoDj = capturedAutoDj ?: prePlayAutoDjResolver
+                .resolve(prePlayRoots)
+                ?.also { recovered ->
+                    captureNativeAutoDj(recovered)
+                    Log.i(TAG, "MIX PREPLAY AUTO-DJ | recovered=context-graph")
+                }
             val legacyQueue = autoDj?.let {
                 field(it, "q")?.javaClass?.name == "ex3"
             } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
 
             if (!legacyQueue) {
                 if (autoDj == null) {
+                    Log.w(TAG, "MIX PREPLAY AUTO-DJ | available=false | roots=${prePlayRoots.size}")
                     if (pending === request) pending = null
                     main.post { fail("Could not access Auto-DJ for this song.", context) }
                     return@execute
+                }
+                if (capturedAutoDj != null) {
+                    Log.i(TAG, "MIX PREPLAY AUTO-DJ | available=true | source=captured")
                 }
                 request.stage = "PREPLAY_RESOLVE"
                 val resolution = resolvePrePlayTarget(autoDj, prePlayRoots)

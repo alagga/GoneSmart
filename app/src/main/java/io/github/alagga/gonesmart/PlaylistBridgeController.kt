@@ -31,6 +31,7 @@ internal class PlaylistBridgeController {
         private const val SMART_EDITOR_MENU = "menu_gm_smart_editor"
         private const val NATIVE_LINK_ITEM = "menuLink"
         private const val MAX_IN_VALUES = 800
+        private const val LIBRARY_PATH_INDEX_MAX_AGE_MS = 2L * 60L * 1000L
         private const val LILAC = 0xFFA39AFF.toInt()
         private const val TOOLBAR_ADD_CLICK_WINDOW_MS = 1_500L
         private val SUPPORTED_EXTENSIONS = setOf("m3u", "m3u8", "pls", "wpl")
@@ -46,6 +47,13 @@ internal class PlaylistBridgeController {
         val lastModified: Long,
         val length: Long,
         val paths: List<String>
+    )
+
+    private data class LibraryPathIndex(
+        val databaseIdentity: Int,
+        val createdAtElapsedMs: Long,
+        val idsByPath: Map<String, Long>,
+        val ambiguousPaths: Set<String>
     )
 
     private data class Bindings(
@@ -107,6 +115,7 @@ internal class PlaylistBridgeController {
         Thread(task, "GoneSmartPlaylistBridge").apply { isDaemon = true }
     }
     private val cache = ConcurrentHashMap<String, Membership>()
+    @Volatile private var libraryPathIndex: LibraryPathIndex? = null
 
     @Volatile private var bindings: Bindings? = null
     @Volatile private var enabled: Boolean = true
@@ -152,6 +161,7 @@ internal class PlaylistBridgeController {
         enabled = value
         if (!value) {
             cache.clear()
+            libraryPathIndex = null
             nativeSmartChooserContinuation = null
             activityRef = null
             linkAnchorRef = null
@@ -296,27 +306,31 @@ internal class PlaylistBridgeController {
         rule: Any?,
         original: String?
     ): String? {
-        if (!enabled) return original
+        if (!enabled || rule == null) return original
         val native = bindings ?: return original
-        if (rule == null || !native.smartRuleClass.isInstance(rule)) {
-            return original
-        }
         val value = runCatching {
-            native.ruleValue.get(rule) as? String
+            if (native.ruleValue.declaringClass.isInstance(rule)) {
+                native.ruleValue.get(rule) as? String
+            } else {
+                null
+            }
         }.getOrNull()
-        if (PlaylistBridgeReference.isBridgeValue(value)) return original
-        if (
-            !PlaylistBridgePolicy
-                .isNativeSmartPlaylistReference(value)
-        ) {
-            return original
-        }
-        val display = value
-            ?.substringAfter('|', "")
-            ?.takeUnless(String::isBlank)
-            ?: return original
         val context = contextRef?.get() ?: return original
-        return NativeGmmpUiText.smartPlaylist(context) + ": " + display
+        val playlistLabel = NativeGmmpUiText.string(context, "playlist") ?: "Playlist"
+        val smartPlaylistLabel = NativeGmmpUiText.smartPlaylist(context)
+        val bridgeDisplay = PlaylistBridgeReference.decode(value)?.displayName
+        val nativeSmartDisplay = value
+            ?.takeIf(PlaylistBridgePolicy::isNativeSmartPlaylistReference)
+            ?.substringAfter('|', "")
+            ?.substringBefore('|')
+            ?.takeUnless(String::isBlank)
+        return PlaylistBridgeRuleLabelPolicy.rewrite(
+            original = original,
+            playlistLabel = playlistLabel,
+            smartPlaylistLabel = smartPlaylistLabel,
+            bridgeDisplayName = bridgeDisplay,
+            nativeSmartDisplayName = nativeSmartDisplay
+        )
     }
 
     private fun showLinkTypeMenu(
@@ -1365,33 +1379,88 @@ internal class PlaylistBridgeController {
         native: Bindings,
         paths: List<String>
     ): List<Long> {
+        if (paths.isEmpty()) return emptyList()
         val database = native.databaseSingleton.get(null)
             ?: throw IllegalStateException("GMDatabase singleton is null")
-        val result = linkedSetOf<Long>()
-        paths.distinct().chunked(MAX_IN_VALUES).forEach { chunk ->
-            val placeholders = chunk.joinToString(",") { "?" }
-            val args = Array<Any?>(chunk.size) { index -> chunk[index] }
-            val ids = GmmpReadOnlySql.queryDatabase(
-                databaseInstance = database,
-                sql = "SELECT song_id FROM tracks WHERE track_uri IN (" +
-                    placeholders + ")",
-                args = args
-            ) { cursor ->
-                val idColumn = cursor.getColumnIndex("song_id")
-                require(idColumn >= 0) {
-                    "GMMP track-id query did not expose song_id"
-                }
-                buildList {
-                    while (cursor.moveToNext()) add(cursor.getLong(idColumn))
+        val databaseIdentity = System.identityHashCode(database)
+        val now = SystemClock.elapsedRealtime()
+        val cached = libraryPathIndex?.takeIf { index ->
+            index.databaseIdentity == databaseIdentity &&
+                now - index.createdAtElapsedMs <= LIBRARY_PATH_INDEX_MAX_AGE_MS
+        }
+        val index = cached ?: GmmpReadOnlySql.queryDatabase(
+            databaseInstance = database,
+            sql = "SELECT song_id, track_uri FROM tracks WHERE track_placeholder = 0"
+        ) { cursor ->
+            val idColumn = cursor.getColumnIndex("song_id")
+            val pathColumn = cursor.getColumnIndex("track_uri")
+            require(idColumn >= 0 && pathColumn >= 0) {
+                "GMMP track path index did not expose song_id/track_uri"
+            }
+            val idsByPath = linkedMapOf<String, Long>()
+            val ambiguous = linkedSetOf<String>()
+            while (cursor.moveToNext()) {
+                if (cursor.isNull(pathColumn)) continue
+                val trackId = cursor.getLong(idColumn)
+                trackPathKeys(cursor.getString(pathColumn)).forEach { key ->
+                    if (key in ambiguous) return@forEach
+                    val previous = idsByPath[key]
+                    if (previous == null || previous == trackId) {
+                        idsByPath[key] = trackId
+                    } else {
+                        idsByPath.remove(key)
+                        ambiguous += key
+                    }
                 }
             }
-            result.addAll(ids)
+            LibraryPathIndex(
+                databaseIdentity = databaseIdentity,
+                createdAtElapsedMs = SystemClock.elapsedRealtime(),
+                idsByPath = idsByPath,
+                ambiguousPaths = ambiguous
+            )
+        }.also { loaded ->
+            libraryPathIndex = loaded
+            Log.i(
+                TAG,
+                "BRIDGE LIBRARY INDEX | paths=${loaded.idsByPath.size} | " +
+                    "ambiguous=${loaded.ambiguousPaths.size}"
+            )
+        }
+
+        val result = linkedSetOf<Long>()
+        var ambiguousSources = 0
+        paths.distinct().forEach { sourcePath ->
+            val keys = trackPathKeys(sourcePath)
+            if (keys.any { it in index.ambiguousPaths }) {
+                ambiguousSources++
+                return@forEach
+            }
+            keys.firstNotNullOfOrNull { index.idsByPath[it] }?.let(result::add)
         }
         Log.i(
             TAG,
-            "BRIDGE SOURCE IDS | paths=${paths.size} | library=${result.size}"
+            "BRIDGE SOURCE IDS | paths=${paths.size} | library=${result.size} | " +
+                "index=${index.idsByPath.size} | ambiguous=$ambiguousSources | " +
+                "cache=${cached != null}"
         )
         return result.toList()
+    }
+
+    private fun trackPathKeys(path: String?): List<String> {
+        val raw = path?.trim()?.takeUnless(String::isBlank) ?: return emptyList()
+        val filePath = if (raw.startsWith("file://", ignoreCase = true)) {
+            raw.substring(7)
+        } else {
+            raw
+        }
+        return buildList {
+            add(raw)
+            if (filePath != raw) add(filePath)
+            if (!filePath.contains("://")) {
+                add(canonicalPath(File(filePath)))
+            }
+        }.filter(String::isNotBlank).distinct()
     }
 
     private fun falsePredicate(native: Bindings): Any {
