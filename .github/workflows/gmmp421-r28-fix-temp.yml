@@ -16,21 +16,26 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: fix/playlist-link-gmmp-4.2.1
-          fetch-depth: 2
+          fetch-depth: 3
 
       - name: Recover and apply r28 patch script
         shell: bash
         run: |
-          git show HEAD^:.github/workflows/gmmp421-r28-fix-temp.yml > /tmp/previous-helper.yml
+          git show HEAD~2:.github/workflows/gmmp421-r28-fix-temp.yml > /tmp/original-helper.yml
           python3 - <<'PY'
           from pathlib import Path
-          lines = Path('/tmp/previous-helper.yml').read_text().splitlines()
+          lines = Path('/tmp/original-helper.yml').read_text().splitlines()
           start = lines.index("          python3 - <<'PY'") + 1
           end = lines.index('          PY', start)
           script = []
           for line in lines[start:end]:
               script.append(line[10:] if line.startswith('          ') else line)
-          Path('/tmp/apply-r28.py').write_text('\n'.join(script) + '\n')
+          recovered = '\n'.join(script) + '\n'
+          recovered = recovered.replace(
+              '        // GMMP 4.2.1 must keep its ORIGINAL toolbar listener.\n"""',
+              '        // GMMP 4.2.1 must keep its ORIGINAL toolbar listener. The real Link\n"""'
+          )
+          Path('/tmp/apply-r28.py').write_text(recovered)
           PY
           python3 /tmp/apply-r28.py
 
