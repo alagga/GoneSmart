@@ -1,0 +1,56 @@
+name: Temporary r29 evidence docs
+
+on:
+  push:
+    branches: ['fix/playlist-link-gmmp-4.2.1']
+    paths: ['.github/workflows/r29-docs-temp.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  document:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout active branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Append r29 evidence
+        shell: bash
+        run: |
+          cat >> docs/GMMP_COMPATIBILITY_PLAYBOOK.md <<'EOF'
+
+          ### r29 device evidence and repair
+
+          The 2026-10-11 exact-head `f1fb341f32aa` / `gmmp421-r28` device trace disproved the r28 post-clear ordering. The bridge itself was healthy and reached the proven 4.2.1 Playlist Link callback, but the toolbar Add action logged `edit=true | intercepted=false`: GMMP's selected-index field can remain non-null during a toolbar Link action, so selected-rule state alone cannot distinguish Add from edit. r29 passively observes `View.performClick()` only for the exact captured native `menuLink` View. A recent exact toolbar click classifies the following proven `as4$g.accept(...)` callback as Add; without that marker, selected-rule state continues to identify a genuine edit. GMMP's original toolbar listener remains untouched.
+
+          The same trace proved `CLEAR_QUEUE` itself is too destructive for 4.2.1 Track Mix startup. Immediately after the clear GMMP queried queue position 2 and MusicService cached `next audio source is null` before the later r28 pre-command refill began. The final queue later contained the correct GoneSmart Track IDs and Current metadata advanced naturally, but the first generated Current still never opened its decoder. Therefore r29 retires `CLEAR_QUEUE` entirely from the 4.2.1 Track Mix start path.
+
+          On 4.2.1, native Play/`WAIT_PLAY` continuity rows now remain alive while the selected-current recommendation pool is prepared. If fewer than `Initial Size - 1` future rows exist, only the actual native-slot shortfall is requested before provider work. GoneSmart then retargets the first already materialized contiguous upcoming queue entities in place through the verified Queue DAO `O0(List)` writer, preserving their `queue_id` and `queue_position`. Rewritten `current+1` is independently verified while all old rows still exist; only afterwards are surplus rows removed through the typed native DAO delete. Prepared GoneSmart Track IDs fill the first upcoming slots, while untouched native Track IDs remain only for a real prepared-pool shortfall. There is no second full Initial-Size refill after recommendation preparation. Native `AUTO_DJ` is sent only after the retargeted queue verifies.
+
+          The four native rows visible during a slow recommendation calculation are therefore continuity/safety slots rather than a second Track Mix queue. r29 no longer deletes and re-adds them; it retargets those same native slots in place. Completely suppressing those rows before a robust pre-Play selected-Track identity exists would recreate the already proven missing-`current+1` playback failure, so continuity takes precedence over hiding the temporary native choices.
+
+          Device re-acceptance remains pending. Required evidence is: Playlist Link logs `BRIDGE TOOLBAR LINK` followed by `toolbarAdd=true | edit=false | intercepted=true`; Track Mix contains no 4.2.1 `CLEAR_QUEUE`, logs `TRACK MIX RETARGET | verified=true` and `MIX INITIAL RETARGET | verified=true`, never emits a startup `next audio source is null`, and the first generated Current opens a real decoder/audio source naturally.
+          EOF
+
+          cat >> docs/GMMP_421_COMPLETION.md <<'EOF'
+
+          ### r29 pending device re-acceptance
+
+          The exact-head r28 device pass (`f1fb341f32aa`, `gmmp421-r28`) isolated the two remaining regressions. Playlist Link reached the proven `as4$g.accept(...)` boundary but logged `edit=true | intercepted=false` after the toolbar Link action because GMMP's selected-index field was still non-null. r29 now passively marks clicks only on the exact captured native `menuLink` View and lets that marker classify the following callback as Add, while genuine existing-rule edits still use selected-rule state.
+
+          Track Mix still failed because `CLEAR_QUEUE` itself caused GMMP to query position 2 and cache `next audio source is null` before the later refill. r29 removes 4.2.1 `CLEAR_QUEUE` startup entirely. Native Play/`WAIT_PLAY` future rows stay present while recommendations are prepared; prepared GoneSmart Track IDs then retarget those existing contiguous upcoming native entities in place through the verified Queue DAO writer, and surplus rows are removed only after rewritten `current+1` verifies. This also removes the delete/re-add Initial-Size churn observed by the maintainer. Native safety rows can still be visible while provider work runs, but they are retargeted rather than replaced as a second queue. Device acceptance remains pending until Playlist Link shows the two-way type chooser and Track 2 naturally opens its decoder without manual playback/power intervention.
+          EOF
+
+      - name: Commit docs and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/r29-docs-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "docs: record GMMP 4.2.1 r29 evidence"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
