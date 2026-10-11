@@ -214,3 +214,10 @@ The dated `GMMP_421_*` files retain the investigation chronology. Do not move th
 ## 9. 0.4.0 closure
 
 GMMP 4.2.1 is the accepted target for GoneSmart 0.4.0. The final migration includes the queue/entity remap, passive Current writer proof, Track Auto-DJ r42–r44 continuity/settling corrections, recommendation-pool latency cleanup and ViewPager/badge hot-path cleanup. No known enabled 4.2.1 feature depends on an unsafe guessed state-changing writer.
+
+
+### 2026-10-11 — r27 device re-test: pre-command source ownership
+
+Device build `16a2d76fd574` (`gmmp421-r27`) disproved the same-position playback-refresh repair. Track Mix built the correct five-row queue and `dx3.c2(1)` refresh verified, but the runtime had already asked for queue position 2 while it was absent (`next audio source is null`). At the natural transition GMMP changed Current metadata to the GoneSmart-selected Track ID but never started that track's decoder. The durable 4.2.1 ordering is therefore prevention, not refresh: after `CLEAR_QUEUE`, refill the entire Initial Size through `qr.z(...)` while native Auto-DJ is still off, verify Current + queue size, then send `AUTO_DJ` and hold its delayed natural refill through the bounded command window. `gmmp421-r28` encodes that ordering and removes the r27 playback-refresh policy.
+
+The same run also showed Playlist Link falling through to the native Smart-Playlist dialog because the proven `as4$g.accept(...)` callback reached `showLinkTypeMenu()` with a non-Activity Context (`active Activity unavailable`). The editor now preserves the real Activity and `menuLink` anchor during menu inflation and reuses those weak references at the callback boundary; the native toolbar dispatch/continuation remains intact.

@@ -193,9 +193,11 @@ internal class TrackMixController(
         }
     }
 
-    fun isExplicitInitialRefill(): Boolean =
-        pending?.stage == "FILLING" &&
+    fun isExplicitInitialRefill(): Boolean {
+        val stage = pending?.stage
+        return (stage == "PREFILL_SMART" || stage == "FILLING") &&
             (nativeRefillAllowance.get() ?: 0) > 0
+    }
 
     fun normalizeManagedQueueAfterNativeRefill(autoDj: Any): Boolean {
         if (managedAutoDj?.get() !== autoDj) return false
@@ -227,76 +229,6 @@ internal class TrackMixController(
                 it
             )
         }.getOrDefault(false)
-    }
-
-    /**
-     * GMMP 4.2.1's public CLEAR_QUEUE invalidates its prefetched next source
-     * immediately. The subsequent qr.z refill repairs queue_table, but the
-     * playback engine may retain that transient null AudioSource until the
-     * selected track ends. Once Initial Size is fully present, re-dispatch the
-     * already passively verified native current-position writer on the same
-     * position. This is a native notification/source rebuild only: the Track
-     * ID and queue position must remain unchanged before and after.
-     */
-    private fun refreshManagedPlaybackAfterInitialFill(
-        autoDj: Any,
-        selectedTrackId: Long
-    ): Boolean {
-        if (managedAutoDj?.get() !== autoDj) return false
-        val writer = nativePositionWriterProvider(autoDj) ?: run {
-            Log.w(TAG, "MIX PLAYBACK REFRESH | verified position writer unavailable")
-            return false
-        }
-        val position = writer.read()
-        val before = queueReader.read(autoDj, position) ?: return false
-        val current = before.currentItem
-        if (
-            !TrackMixPlaybackRefreshPolicy.canRefresh(
-                selectedTrackId = selectedTrackId,
-                currentTrackId = current?.track?.id,
-                queueSize = before.items.size,
-                currentPosition = position
-            )
-        ) {
-            Log.w(
-                TAG,
-                "MIX PLAYBACK REFRESH | precondition rejected | selected=" +
-                    selectedTrackId + " | current=" +
-                    (current?.track?.id ?: -1L) + " | size=" +
-                    before.items.size + " | position=" +
-                    (position?.toString() ?: "unavailable")
-            )
-            return false
-        }
-
-        val refreshed = writer.refreshCurrent(position!!)
-        if (!refreshed) {
-            Log.w(
-                TAG,
-                "MIX PLAYBACK REFRESH | native same-position dispatch rejected | " +
-                    "writer=" + writer.description + " | position=" + position
-            )
-            return false
-        }
-
-        // Give GMMP's native observer chain a bounded chance to rebuild its
-        // current/next source after the same-position notification. This is
-        // worker-only and does not block the UI thread.
-        Thread.sleep(120L)
-        val afterPosition = writer.read()
-        val after = queueReader.read(autoDj, afterPosition) ?: return false
-        val afterCurrent = after.currentItem?.track?.id
-        val verified =
-            afterPosition == position &&
-                afterCurrent == selectedTrackId &&
-                after.items.size >= 2
-        Log.i(
-            TAG,
-            "MIX PLAYBACK REFRESH | dispatched=$refreshed | verified=$verified" +
-                " | position=$position | current=$afterCurrent" +
-                " | queueSize=${after.items.size} | writer=${writer.description}"
-        )
-        return verified
     }
 
     private fun armManagedAutoDjSession() {
@@ -489,7 +421,10 @@ internal class TrackMixController(
 
     fun onNativeAutoDjRefillRequested(requested: Int) {
         val request = pending ?: return
-        if (request.stage == "FILLING") {
+        if (request.stage == "PREFILL_SMART" ||
+            request.stage == "PREFILL_NATIVE" ||
+            request.stage == "FILLING"
+        ) {
             request.refillObserved = true
             val total = request.refillRequestedTracks.addAndGet(
                 requested.coerceAtLeast(0)
@@ -779,20 +714,6 @@ internal class TrackMixController(
             )
             armManagedAutoDjSession()
 
-            request.stage = "FILLING"
-
-            // GMMP's AUTO_DJ command owns enabling the native mode. Its normal
-            // `upcoming` refill is suppressed inside this short Track-Mix-owned
-            // window because it is not the Initial Size contract. The native
-            // candidate machinery was primed before CLEAR_QUEUE, so after the
-            // bounded command boundary the explicit refill can populate
-            // current+1 immediately instead of racing the decoder.
-            request.transitionalRefillSuppressed = false
-            sendCommand(request.context, COMMAND_AUTO_DJ)
-            nativeToastSuppressionUntilMs =
-                SystemClock.elapsedRealtime() + 7_000L
-            awaitAutoDjCommandRefillBoundary(request)
-
             val totalInitialRequest =
                 TrackMixInitialFillPolicy.nativeInitialRefillCount(
                     initialSize = initial,
@@ -805,40 +726,89 @@ internal class TrackMixController(
 
             Log.i(
                 TAG,
-                "MIX AUTO-DJ | command=sent | initialSize=$initial | " +
-                    "upcoming=$upcoming | seed=$selectedId"
-            )
-            Log.i(
-                TAG,
                 "MIX INITIAL FILL | initial=$initial | " +
                     "seedSize=${cleared.ids.size} | totalMissing=$totalInitialRequest | " +
                     "smartPrepared=$smartInitialRequest | nativeRemainder=$nativeRemainder | " +
                     "legacy=$legacyQueue"
             )
 
-            // If at least one selected-seed match was prepared, insert those
-            // rows first. Position 2 therefore uses GoneSmart ranking. Only a
-            // genuine shortfall is then allowed to fall through to native
-            // GMMP selection. Both requests cross the same proven qr.z writer.
-            val smartAccepted =
-                requestHeldNativeRefill(smartInitialRequest)
-            val remainderAccepted = if (smartAccepted) {
-                requestHeldNativeRefill(nativeRemainder)
-            } else {
-                false
-            }
-            val fillRequestAccepted = smartAccepted && remainderAccepted
-            var filled = if (!fillRequestAccepted) {
-                Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
-                null
-            } else {
-                awaitQueue(request, 65_000L) {
+            var filled: Snapshot?
+            if (!legacyQueue) {
+                // Critical 4.2.1 ordering: restore current+1 (and the complete
+                // Initial Size) BEFORE AUTO_DJ is enabled. Device r27 proved
+                // GMMP asks for the next AudioSource shortly after AUTO_DJ and
+                // permanently retains null when position 2 is still absent.
+                request.stage = "PREFILL_SMART"
+                val smartAccepted = requestHeldNativeRefill(smartInitialRequest)
+                request.stage = "PREFILL_NATIVE"
+                val remainderAccepted = if (smartAccepted) {
+                    requestHeldNativeRefill(nativeRemainder)
+                } else {
+                    false
+                }
+                if (!smartAccepted || !remainderAccepted) {
+                    Log.w(TAG, "MIX PRE-COMMAND FILL | native refill request failed")
+                    fail("Could not prepare Auto-DJ for this song.", request.context)
+                    return
+                }
+
+                filled = awaitQueue(request, 65_000L) {
                     it.currentId == selectedId &&
                         it.ids.size == initial
                 }
+                if (filled == null) {
+                    Log.w(
+                        TAG,
+                        "MIX PRE-COMMAND FILL | queue not ready | initial=$initial | " +
+                            "actual=${queueSnapshot()?.ids?.size ?: -1}"
+                    )
+                    fail("Could not prepare Auto-DJ for this song.", request.context)
+                    return
+                }
+                Log.i(
+                    TAG,
+                    "MIX PRE-COMMAND FILL | verified=true | initial=$initial | " +
+                        "actual=${filled.ids.size} | current=$selectedId"
+                )
+
+                request.stage = "FILLING"
+                request.transitionalRefillSuppressed = false
+                sendCommand(request.context, COMMAND_AUTO_DJ)
+                nativeToastSuppressionUntilMs =
+                    SystemClock.elapsedRealtime() + 7_000L
+                awaitAutoDjCommandRefillBoundary(request)
+                Log.i(
+                    TAG,
+                    "MIX AUTO-DJ | command=sent-after-initial-fill | initialSize=$initial | " +
+                        "upcoming=$upcoming | seed=$selectedId"
+                )
+            } else {
+                // Keep the accepted 4.2.0 ordering unchanged.
+                request.stage = "FILLING"
+                request.transitionalRefillSuppressed = false
+                sendCommand(request.context, COMMAND_AUTO_DJ)
+                nativeToastSuppressionUntilMs =
+                    SystemClock.elapsedRealtime() + 7_000L
+                awaitAutoDjCommandRefillBoundary(request)
+                Log.i(
+                    TAG,
+                    "MIX AUTO-DJ | command=sent | initialSize=$initial | " +
+                        "upcoming=$upcoming | seed=$selectedId"
+                )
+
+                val accepted = requestHeldNativeRefill(totalInitialRequest)
+                filled = if (!accepted) {
+                    Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
+                    null
+                } else {
+                    awaitQueue(request, 65_000L) {
+                        it.currentId == selectedId &&
+                            it.ids.size == initial
+                    }
+                }
             }
 
-            if (filled != null && !legacyQueue) {
+  if (filled != null && !legacyQueue) {
                 val autoDj = nativeAutoDj?.get()
                 val rebased = autoDj != null &&
                     rebaseManagedQueueAfterInitialFill(autoDj)
@@ -861,31 +831,11 @@ internal class TrackMixController(
                 }
             }
 
-            // CLEAR_QUEUE transiently made position current+1 unavailable,
-            // which GMMP 4.2.1 caches as a null next AudioSource. Once Initial
-            // Size exists again, replay the already verified native current-
-            // position notification so playback rebuilds current/next sources
-            // from the completed queue before the seed reaches its end.
-            if (filled != null && !legacyQueue) {
-                val autoDj = nativeAutoDj?.get()
-                val playbackRefreshed = autoDj != null &&
-                    refreshManagedPlaybackAfterInitialFill(
-                        autoDj = autoDj,
-                        selectedTrackId = selectedId
-                    )
-                if (!playbackRefreshed) {
-                    Log.w(
-                        TAG,
-                        "MIX PLAYBACK REFRESH | unavailable/failed; " +
-                            "queue remains verified but source rebuild is unconfirmed"
-                    )
-                }
-            }
-
-            // Initial Size and the 4.2.1 playback refresh are now verified (or
-            // bounded refresh failed). Only after this point may GMMP resume
-            // its ordinary upcoming refills.
-            refillHold.set(false)
+            // On 4.2.1 the complete Initial Size now exists before AUTO_DJ can
+            // ask for current+1, so no after-the-fact playback/source refresh
+            // is needed. After the bounded command boundary/rebase, ordinary
+            // upcoming refills may resume.
+  refillHold.set(false)
 
             if (!isCurrent(request)) return
             if (filled == null) {

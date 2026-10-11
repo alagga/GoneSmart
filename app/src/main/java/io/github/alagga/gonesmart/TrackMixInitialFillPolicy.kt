@@ -16,7 +16,7 @@ internal object TrackMixInitialFillPolicy {
     }
 
     private const val LEGACY_COMMAND_REFILL_WAIT_MS = 1_800L
-    private const val GMMP_421_COMMAND_PREPARE_WAIT_MS = 90L
+    private const val GMMP_421_COMMAND_PREPARE_WAIT_MS = 800L
 
     fun autoDjCommandBoundaryWaitMs(legacyQueue: Boolean): Long =
         if (legacyQueue) LEGACY_COMMAND_REFILL_WAIT_MS
@@ -34,11 +34,18 @@ internal object TrackMixInitialFillPolicy {
         if (!legacyQueue && stage == "PRIME_NATIVE") {
             return NativeRefillAction.PASS_NATIVE
         }
+        // After CLEAR_QUEUE, a genuine prepared-pool shortfall is restored
+        // natively before AUTO_DJ is sent. Only Track Mix's explicit call may
+        // cross this stage; an unrelated refill remains held.
+        if (!legacyQueue && stage == "PREFILL_NATIVE" && explicitAllowance) {
+            return NativeRefillAction.PASS_NATIVE
+        }
         if (!holdActive || explicitAllowance) return NativeRefillAction.NORMAL
         if (legacyQueue) return NativeRefillAction.SUPPRESS
         return when (stage) {
             "WAIT_PLAY" -> NativeRefillAction.PASS_NATIVE
-            "PREWARM", "CLEARING", "FILLING" -> NativeRefillAction.SUPPRESS
+            "PREWARM", "CLEARING", "PREFILL_SMART", "PREFILL_NATIVE", "FILLING" ->
+                NativeRefillAction.SUPPRESS
             else -> NativeRefillAction.NORMAL
         }
     }

@@ -110,6 +110,8 @@ internal class PlaylistBridgeController {
     @Volatile private var enabled: Boolean = true
     @Volatile private var presenterRef: WeakReference<Any>? = null
     @Volatile private var contextRef: WeakReference<Context>? = null
+    @Volatile private var activityRef: WeakReference<Activity>? = null
+    @Volatile private var linkAnchorRef: WeakReference<View>? = null
     private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
 
     private data class NativeSmartChooserContinuation(
@@ -148,6 +150,8 @@ internal class PlaylistBridgeController {
         if (!value) {
             cache.clear()
             nativeSmartChooserContinuation = null
+            activityRef = null
+            linkAnchorRef = null
         }
         Log.i(TAG, "BRIDGE SETTINGS | enabled=$value")
     }
@@ -188,7 +192,15 @@ internal class PlaylistBridgeController {
         val native = bindings ?: return
         if (presenter == null || !native.presenterClass.isInstance(presenter)) return
         presenterRef = WeakReference(presenter)
-        context?.let { contextRef = WeakReference(it) }
+        context?.let { candidate ->
+            val activity = findActivity(candidate)
+            if (activity != null) {
+                activityRef = WeakReference(activity)
+                contextRef = WeakReference(candidate)
+            } else if (contextRef?.get() == null) {
+                contextRef = WeakReference(candidate)
+            }
+        }
         Log.i(
             TAG,
             "BRIDGE PRESENTER | captured=${presenter.javaClass.name}" +
@@ -214,6 +226,17 @@ internal class PlaylistBridgeController {
         if (original == null) {
             Log.w(TAG, "BRIDGE MENU SKIP | original menuLink missing")
             return
+        }
+
+        // Preserve the editor's real Activity/toolbar anchor before the native
+        // link action enters GMMP's dialog callback chain. Presenter capture can
+        // expose an application/themed Context that cannot be unwrapped later.
+        findActivity(context)?.let { activity ->
+            activityRef = WeakReference(activity)
+            contextRef = WeakReference(context)
+            activity.window?.decorView
+                ?.findViewById<View>(nativeLinkId)
+                ?.let { linkAnchorRef = WeakReference(it) }
         }
 
         // GMMP 4.2.1 must keep its ORIGINAL toolbar listener. The real Link
@@ -298,13 +321,17 @@ internal class PlaylistBridgeController {
     ): Boolean {
         val native = bindings ?: return false
         val activity = findActivity(context)
+            ?: activityRef?.get()
             ?: contextRef?.get()?.let(::findActivity)
             ?: run {
                 Log.w(TAG, "BRIDGE TYPE MENU | active Activity unavailable")
                 return false
             }
-        val anchor = activity.window?.decorView
-            ?.findViewById<View>(nativeLinkId)
+        activityRef = WeakReference(activity)
+        val anchor = linkAnchorRef?.get()
+            ?.takeIf { it.isAttachedToWindow }
+            ?: activity.window?.decorView
+                ?.findViewById<View>(nativeLinkId)
             ?: run {
                 Log.w(
                     TAG,
@@ -312,15 +339,16 @@ internal class PlaylistBridgeController {
                 )
                 return false
             }
+        linkAnchorRef = WeakReference(anchor)
 
         return runCatching {
-            val popup = native.popupMenuConstructor.newInstance(context, anchor)
+            val popup = native.popupMenuConstructor.newInstance(activity, anchor)
             val popupMenu = native.popupMenuGetMenu.invoke(popup) as? Menu
                 ?: return@runCatching false
             popupMenu.clear()
 
-            val smartTitle = NativeGmmpUiText.smartPlaylist(context)
-            val playlistTitle = decoratedPlaylistTitle(context)
+            val smartTitle = NativeGmmpUiText.smartPlaylist(activity)
+            val playlistTitle = decoratedPlaylistTitle(activity)
             popupMenu.add(
                 Menu.NONE,
                 Menu.NONE,

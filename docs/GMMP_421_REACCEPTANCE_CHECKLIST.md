@@ -33,3 +33,9 @@ Required runtime evidence: bridge bindings ready, `as4$g.accept(...)` is interce
 Required runtime evidence: selected-current pool preparation and native Auto-DJ prime complete before `CLEAR_QUEUE`; the clear preserves the same Current Track ID even if `queue_id` changes; prepared Smart rows are requested before any native remainder; after Initial Size, `MIX PLAYBACK REFRESH` is verified on the already proven same-position writer; the recommendation session is not reset solely because GMMP recreated the Current queue row; and the first generated Current produces a real decoder/audio start.
 
 Device acceptance remains pending until this complete pass succeeds on the exact CI-built APK.
+
+
+## r28 regression focus
+
+- Playlist Link: tapping the editor Link action must first show `Smart Playlist` / `Playlist`; choosing Smart Playlist must then enter GMMP's native Smart-Playlist chooser; choosing Playlist must enter GoneSmart's playlist chooser without crashing.
+- Track Mix: after `CLEAR_QUEUE`, logs must show `MIX PRE-COMMAND FILL | verified=true` before `MIX AUTO-DJ | command=sent-after-initial-fill`; there must be no `next audio source is null` during startup, and the first generated Track must naturally decode/play without pause/power toggles.

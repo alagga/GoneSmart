@@ -56,7 +56,7 @@ class TrackMixInitialFillPolicyTest {
             TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(true)
         )
         assertEquals(
-            90L,
+            800L,
             TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(false)
         )
     }
@@ -154,6 +154,46 @@ class TrackMixInitialFillPolicyTest {
             0,
             TrackMixInitialFillPolicy.preClearNativePrimeRefillCount(
                 totalMissing = 0,
+                legacyQueue = false
+            )
+        )
+    }
+
+
+    @Test fun gmmp421PreCommandFillHoldsNaturalRefillsButAllowsOwnedCalls() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "PREFILL_SMART",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "PREFILL_SMART",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "PREFILL_NATIVE",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "PREFILL_NATIVE",
                 legacyQueue = false
             )
         )

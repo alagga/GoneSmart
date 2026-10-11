@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r27"
+            "gmmp421-r28"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
