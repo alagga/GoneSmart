@@ -1,0 +1,490 @@
+name: Temporary GMMP 4.2.1 r28 repair
+
+on:
+  push:
+    branches: ['fix/playlist-link-gmmp-4.2.1']
+    paths: ['.github/workflows/gmmp421-r28-fix-temp.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout active repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Apply r28 repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one exact replacement, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          def sub_once(path, pattern, replacement):
+              p = Path(path)
+              text = p.read_text()
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one regex replacement, found {count}")
+              p.write_text(updated)
+
+          playlist = "app/src/main/java/io/github/alagga/gonesmart/PlaylistBridgeController.kt"
+          replace_once(
+              playlist,
+              """    @Volatile private var presenterRef: WeakReference<Any>? = null
+    @Volatile private var contextRef: WeakReference<Context>? = null
+    private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
+""",
+              """    @Volatile private var presenterRef: WeakReference<Any>? = null
+    @Volatile private var contextRef: WeakReference<Context>? = null
+    @Volatile private var activityRef: WeakReference<Activity>? = null
+    @Volatile private var linkAnchorRef: WeakReference<View>? = null
+    private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
+"""
+          )
+          replace_once(
+              playlist,
+              """        if (!value) {
+            cache.clear()
+            nativeSmartChooserContinuation = null
+        }
+""",
+              """        if (!value) {
+            cache.clear()
+            nativeSmartChooserContinuation = null
+            activityRef = null
+            linkAnchorRef = null
+        }
+"""
+          )
+          replace_once(
+              playlist,
+              """        presenterRef = WeakReference(presenter)
+        context?.let { contextRef = WeakReference(it) }
+""",
+              """        presenterRef = WeakReference(presenter)
+        context?.let { candidate ->
+            val activity = findActivity(candidate)
+            if (activity != null) {
+                activityRef = WeakReference(activity)
+                contextRef = WeakReference(candidate)
+            } else if (contextRef?.get() == null) {
+                contextRef = WeakReference(candidate)
+            }
+        }
+"""
+          )
+          replace_once(
+              playlist,
+              """        if (original == null) {
+            Log.w(TAG, "BRIDGE MENU SKIP | original menuLink missing")
+            return
+        }
+
+        // GMMP 4.2.1 must keep its ORIGINAL toolbar listener.
+""",
+              """        if (original == null) {
+            Log.w(TAG, "BRIDGE MENU SKIP | original menuLink missing")
+            return
+        }
+
+        // Preserve the editor's real Activity/toolbar anchor before the native
+        // link action enters GMMP's dialog callback chain. Presenter capture can
+        // expose an application/themed Context that cannot be unwrapped later.
+        findActivity(context)?.let { activity ->
+            activityRef = WeakReference(activity)
+            contextRef = WeakReference(context)
+            activity.window?.decorView
+                ?.findViewById<View>(nativeLinkId)
+                ?.let { linkAnchorRef = WeakReference(it) }
+        }
+
+        // GMMP 4.2.1 must keep its ORIGINAL toolbar listener.
+"""
+          )
+          replace_once(
+              playlist,
+              """        val activity = findActivity(context)
+            ?: contextRef?.get()?.let(::findActivity)
+            ?: run {
+                Log.w(TAG, "BRIDGE TYPE MENU | active Activity unavailable")
+                return false
+            }
+        val anchor = activity.window?.decorView
+            ?.findViewById<View>(nativeLinkId)
+            ?: run {
+                Log.w(
+                    TAG,
+                    "BRIDGE TYPE MENU | native menuLink anchor unavailable | id=$nativeLinkId"
+                )
+                return false
+            }
+""",
+              """        val activity = findActivity(context)
+            ?: activityRef?.get()
+            ?: contextRef?.get()?.let(::findActivity)
+            ?: run {
+                Log.w(TAG, "BRIDGE TYPE MENU | active Activity unavailable")
+                return false
+            }
+        activityRef = WeakReference(activity)
+        val anchor = linkAnchorRef?.get()
+            ?.takeIf { it.isAttachedToWindow }
+            ?: activity.window?.decorView
+                ?.findViewById<View>(nativeLinkId)
+            ?: run {
+                Log.w(
+                    TAG,
+                    "BRIDGE TYPE MENU | native menuLink anchor unavailable | id=$nativeLinkId"
+                )
+                return false
+            }
+        linkAnchorRef = WeakReference(anchor)
+"""
+          )
+          replace_once(
+              playlist,
+              "val popup = native.popupMenuConstructor.newInstance(context, anchor)",
+              "val popup = native.popupMenuConstructor.newInstance(activity, anchor)"
+          )
+          replace_once(
+              playlist,
+              "val smartTitle = NativeGmmpUiText.smartPlaylist(context)\n            val playlistTitle = decoratedPlaylistTitle(context)",
+              "val smartTitle = NativeGmmpUiText.smartPlaylist(activity)\n            val playlistTitle = decoratedPlaylistTitle(activity)"
+          )
+
+          track = "app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt"
+          sub_once(
+              track,
+              r'''\n    /\*\*\n     \* GMMP 4\.2\.1's public CLEAR_QUEUE invalidates.*?\n    }\n\n    private fun armManagedAutoDjSession\(\) \{''',
+              "\n    private fun armManagedAutoDjSession() {"
+          )
+          replace_once(
+              track,
+              """    fun isExplicitInitialRefill(): Boolean =
+        pending?.stage == "FILLING" &&
+            (nativeRefillAllowance.get() ?: 0) > 0
+""",
+              """    fun isExplicitInitialRefill(): Boolean {
+        val stage = pending?.stage
+        return (stage == "PREFILL_SMART" || stage == "FILLING") &&
+            (nativeRefillAllowance.get() ?: 0) > 0
+    }
+"""
+          )
+          text = Path(track).read_text()
+          old = '        if (request.stage == "FILLING") {\n'
+          if text.count(old) != 1:
+              raise SystemExit(f"{track}: expected one refill stage condition, found {text.count(old)}")
+          Path(track).write_text(text.replace(
+              old,
+              '        if (request.stage == "PREFILL_SMART" ||\n            request.stage == "PREFILL_NATIVE" ||\n            request.stage == "FILLING"\n        ) {\n',
+              1
+          ))
+
+          sub_once(
+              track,
+              r'''            armManagedAutoDjSession\(\)\n\n            request\.stage = "FILLING".*?            if \(filled != null && !legacyQueue\) \{''',
+              '''            armManagedAutoDjSession()
+
+            val totalInitialRequest =
+                TrackMixInitialFillPolicy.nativeInitialRefillCount(
+                    initialSize = initial,
+                    seedQueueSize = cleared.ids.size
+                )
+            val smartInitialRequest =
+                minOf(totalInitialRequest, preparedSmartCount)
+            val nativeRemainder =
+                (totalInitialRequest - smartInitialRequest).coerceAtLeast(0)
+
+            Log.i(
+                TAG,
+                "MIX INITIAL FILL | initial=$initial | " +
+                    "seedSize=${cleared.ids.size} | totalMissing=$totalInitialRequest | " +
+                    "smartPrepared=$smartInitialRequest | nativeRemainder=$nativeRemainder | " +
+                    "legacy=$legacyQueue"
+            )
+
+            var filled: Snapshot?
+            if (!legacyQueue) {
+                // Critical 4.2.1 ordering: restore current+1 (and the complete
+                // Initial Size) BEFORE AUTO_DJ is enabled. Device r27 proved
+                // GMMP asks for the next AudioSource shortly after AUTO_DJ and
+                // permanently retains null when position 2 is still absent.
+                request.stage = "PREFILL_SMART"
+                val smartAccepted = requestHeldNativeRefill(smartInitialRequest)
+                request.stage = "PREFILL_NATIVE"
+                val remainderAccepted = if (smartAccepted) {
+                    requestHeldNativeRefill(nativeRemainder)
+                } else {
+                    false
+                }
+                if (!smartAccepted || !remainderAccepted) {
+                    Log.w(TAG, "MIX PRE-COMMAND FILL | native refill request failed")
+                    fail("Could not prepare Auto-DJ for this song.", request.context)
+                    return
+                }
+
+                filled = awaitQueue(request, 65_000L) {
+                    it.currentId == selectedId &&
+                        it.ids.size == initial
+                }
+                if (filled == null) {
+                    Log.w(
+                        TAG,
+                        "MIX PRE-COMMAND FILL | queue not ready | initial=$initial | " +
+                            "actual=${queueSnapshot()?.ids?.size ?: -1}"
+                    )
+                    fail("Could not prepare Auto-DJ for this song.", request.context)
+                    return
+                }
+                Log.i(
+                    TAG,
+                    "MIX PRE-COMMAND FILL | verified=true | initial=$initial | " +
+                        "actual=${filled.ids.size} | current=$selectedId"
+                )
+
+                request.stage = "FILLING"
+                request.transitionalRefillSuppressed = false
+                sendCommand(request.context, COMMAND_AUTO_DJ)
+                nativeToastSuppressionUntilMs =
+                    SystemClock.elapsedRealtime() + 7_000L
+                awaitAutoDjCommandRefillBoundary(request)
+                Log.i(
+                    TAG,
+                    "MIX AUTO-DJ | command=sent-after-initial-fill | initialSize=$initial | " +
+                        "upcoming=$upcoming | seed=$selectedId"
+                )
+            } else {
+                // Keep the accepted 4.2.0 ordering unchanged.
+                request.stage = "FILLING"
+                request.transitionalRefillSuppressed = false
+                sendCommand(request.context, COMMAND_AUTO_DJ)
+                nativeToastSuppressionUntilMs =
+                    SystemClock.elapsedRealtime() + 7_000L
+                awaitAutoDjCommandRefillBoundary(request)
+                Log.i(
+                    TAG,
+                    "MIX AUTO-DJ | command=sent | initialSize=$initial | " +
+                        "upcoming=$upcoming | seed=$selectedId"
+                )
+
+                val accepted = requestHeldNativeRefill(totalInitialRequest)
+                filled = if (!accepted) {
+                    Log.w(TAG, "MIX INITIAL FILL | native refill request failed")
+                    null
+                } else {
+                    awaitQueue(request, 65_000L) {
+                        it.currentId == selectedId &&
+                            it.ids.size == initial
+                    }
+                }
+            }
+
+            if (filled != null && !legacyQueue) {'''
+          )
+          sub_once(
+              track,
+              r'''\n            // CLEAR_QUEUE transiently made position current\+1 unavailable,.*?            // its ordinary upcoming refills\.\n            refillHold\.set\(false\)''',
+              '''
+            // On 4.2.1 the complete Initial Size now exists before AUTO_DJ can
+            // ask for current+1, so no after-the-fact playback/source refresh
+            // is needed. After the bounded command boundary/rebase, ordinary
+            // upcoming refills may resume.
+            refillHold.set(false)'''
+          )
+
+          policy = "app/src/main/java/io/github/alagga/gonesmart/TrackMixInitialFillPolicy.kt"
+          replace_once(
+              policy,
+              "private const val GMMP_421_COMMAND_PREPARE_WAIT_MS = 90L",
+              "private const val GMMP_421_COMMAND_PREPARE_WAIT_MS = 800L"
+          )
+          replace_once(
+              policy,
+              """        // PRIME_NATIVE deliberately bypasses GoneSmart selection even though
+        // it is an explicit Track Mix qr.z(1): its sole purpose is to make
+        // GMMP finish native candidate preparation while the old queue is safe.
+        if (!legacyQueue && stage == "PRIME_NATIVE") {
+            return NativeRefillAction.PASS_NATIVE
+        }
+        if (!holdActive || explicitAllowance) return NativeRefillAction.NORMAL
+""",
+              """        // PRIME_NATIVE deliberately bypasses GoneSmart selection even though
+        // it is an explicit Track Mix qr.z(1): its sole purpose is to make
+        // GMMP finish native candidate preparation while the old queue is safe.
+        if (!legacyQueue && stage == "PRIME_NATIVE") {
+            return NativeRefillAction.PASS_NATIVE
+        }
+        // After CLEAR_QUEUE, a genuine prepared-pool shortfall is restored
+        // natively before AUTO_DJ is sent. Only Track Mix's explicit call may
+        // cross this stage; an unrelated refill remains held.
+        if (!legacyQueue && stage == "PREFILL_NATIVE" && explicitAllowance) {
+            return NativeRefillAction.PASS_NATIVE
+        }
+        if (!holdActive || explicitAllowance) return NativeRefillAction.NORMAL
+"""
+          )
+          replace_once(
+              policy,
+              '            "PREWARM", "CLEARING", "FILLING" -> NativeRefillAction.SUPPRESS',
+              '            "PREWARM", "CLEARING", "PREFILL_SMART", "PREFILL_NATIVE", "FILLING" ->\n                NativeRefillAction.SUPPRESS'
+          )
+
+          tests = "app/src/test/java/io/github/alagga/gonesmart/TrackMixInitialFillPolicyTest.kt"
+          replace_once(tests, "            90L,", "            800L,")
+          p = Path(tests)
+          t = p.read_text()
+          marker = "\n    @Test fun isolatedTrackMixSeedNeverWaitsForSmartPool() {"
+          if marker not in t:
+              raise SystemExit("TrackMixInitialFillPolicyTest insertion marker missing")
+          extra = '''
+    @Test fun gmmp421PreCommandFillHoldsNaturalRefillsButAllowsOwnedCalls() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "PREFILL_SMART",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "PREFILL_SMART",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = false,
+                stage = "PREFILL_NATIVE",
+                legacyQueue = false
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
+            TrackMixInitialFillPolicy.nativeRefillAction(
+                holdActive = true,
+                explicitAllowance = true,
+                stage = "PREFILL_NATIVE",
+                legacyQueue = false
+            )
+        )
+    }
+'''
+          p.write_text(t.replace(marker, "\n" + extra + marker, 1))
+
+          module = "app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt"
+          replace_once(module, '"gmmp421-r27"', '"gmmp421-r28"')
+
+          # r27's same-position refresh was device-proven ineffective and must
+          # not remain as a tempting alternate repair path.
+          Path("app/src/main/java/io/github/alagga/gonesmart/TrackMixPlaybackRefreshPolicy.kt").unlink()
+          Path("app/src/test/java/io/github/alagga/gonesmart/TrackMixPlaybackRefreshPolicyTest.kt").unlink()
+
+          agents = Path("AGENTS.md")
+          lines = agents.read_text().splitlines()
+          replaced_legacy = replaced_clear = False
+          for index, line in enumerate(lines):
+              if line.startswith("- Preserve the accepted legacy `ex3` command-settling boundary."):
+                  lines[index] = "- Preserve the accepted legacy `ex3` command-settling boundary. On 4.2.1, provider/native preparation still completes before `CLEAR_QUEUE`, but after the clear Track Mix must restore the complete configured Initial Size through the proven `qr.z(...)` boundary **before** sending native `AUTO_DJ`: prepared GoneSmart rows first, then only a genuine shortfall through native selection. The Auto-DJ command's own natural refill stays held until that pre-command queue is verified."
+                  replaced_legacy = True
+              elif line.startswith("- `CLEAR_QUEUE` may transiently invalidate GMMP 4.2.1's prefetched `current+1` AudioSource"):
+                  lines[index] = "- `CLEAR_QUEUE` can make GMMP cache a missing `current+1` AudioSource. Do not try to repair that after the fact with a same-position Current writer: r27 device evidence showed the writer could verify while Track 2 still had no decoder. Prevent the null instead by materializing position 2/full Initial Size before `AUTO_DJ` is sent."
+                  replaced_clear = True
+          if not (replaced_legacy and replaced_clear):
+              raise SystemExit("AGENTS Track Mix architecture lines not found")
+          agents.write_text("\n".join(lines) + "\n")
+
+          playbook = Path("docs/GMMP_COMPATIBILITY_PLAYBOOK.md")
+          pb = playbook.read_text()
+          marker = "### 2026-10-11 — r27 device re-test: pre-command source ownership"
+          if marker not in pb:
+              pb += '''
+
+### 2026-10-11 — r27 device re-test: pre-command source ownership
+
+Device build `16a2d76fd574` (`gmmp421-r27`) disproved the same-position playback-refresh repair. Track Mix built the correct five-row queue and `dx3.c2(1)` refresh verified, but the runtime had already asked for queue position 2 while it was absent (`next audio source is null`). At the natural transition GMMP changed Current metadata to the GoneSmart-selected Track ID but never started that track's decoder. The durable 4.2.1 ordering is therefore prevention, not refresh: after `CLEAR_QUEUE`, refill the entire Initial Size through `qr.z(...)` while native Auto-DJ is still off, verify Current + queue size, then send `AUTO_DJ` and hold its delayed natural refill through the bounded command window. `gmmp421-r28` encodes that ordering and removes the r27 playback-refresh policy.
+
+The same run also showed Playlist Link falling through to the native Smart-Playlist dialog because the proven `as4$g.accept(...)` callback reached `showLinkTypeMenu()` with a non-Activity Context (`active Activity unavailable`). The editor now preserves the real Activity and `menuLink` anchor during menu inflation and reuses those weak references at the callback boundary; the native toolbar dispatch/continuation remains intact.
+'''
+              playbook.write_text(pb)
+
+          completion = Path("docs/GMMP_421_COMPLETION.md")
+          cp = completion.read_text()
+          marker = "### r28 pending device re-acceptance"
+          if marker not in cp:
+              cp += '''
+
+### r28 pending device re-acceptance
+
+The r27 device pass confirmed correct Track Mix recommendation selection but not playback continuity: GMMP cached `current+1 = null` before position 2 was inserted, and the later verified same-position Current refresh did not start a decoder for Track 2. r28 changes 4.2.1 Track Mix to restore the full Initial Size before sending `AUTO_DJ` and removes the ineffective refresh path. Playlist Link r28 also retains the editor Activity/menuLink anchor so the Smart Playlist / Playlist type chooser can be shown from the proven native chooser callback instead of falling through when presenter Context cannot unwrap to an Activity. Both changes remain device re-acceptance pending.
+'''
+              completion.write_text(cp)
+
+          checklist = Path("docs/GMMP_421_REACCEPTANCE_CHECKLIST.md")
+          ck = checklist.read_text()
+          marker = "r28 regression focus"
+          if marker not in ck:
+              ck += '''
+
+## r28 regression focus
+
+- Playlist Link: tapping the editor Link action must first show `Smart Playlist` / `Playlist`; choosing Smart Playlist must then enter GMMP's native Smart-Playlist chooser; choosing Playlist must enter GoneSmart's playlist chooser without crashing.
+- Track Mix: after `CLEAR_QUEUE`, logs must show `MIX PRE-COMMAND FILL | verified=true` before `MIX AUTO-DJ | command=sent-after-initial-fill`; there must be no `next audio source is null` during startup, and the first generated Track must naturally decode/play without pause/power toggles.
+'''
+              checklist.write_text(ck)
+
+          print("r28 patch applied")
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Validate repair
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Commit repair and remove helper
+        shell: bash
+        run: |
+          git rm .github/workflows/gmmp421-r28-fix-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: prevent Track Mix null source and restore link chooser"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
