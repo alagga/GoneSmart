@@ -3,6 +3,9 @@ package io.github.alagga.gonesmart
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.ParameterizedType
+import java.lang.reflect.Type
+import java.lang.reflect.WildcardType
 
 /**
  * Small semantic reflection helper for Playlist Link.
@@ -166,6 +169,71 @@ internal object PlaylistBridgeReflectionResolver {
             current = runCatching { declaring.superclass }.getOrNull()
         }
         return out.values.toList()
+    }
+
+    /**
+     * MaterialDialogs invokes its list-selection callback through an erased
+     * Kotlin function interface, so Method.returnType may only be Object. The
+     * event constructor often still carries the concrete generic callback
+     * result type; use that semantic evidence first. GMMP 4.2.1's accepted
+     * fallback is ag5 (the exact type PlainListDialogAdapter casts to). Other
+     * historical singleton-looking classes must not win merely by shape.
+     */
+    internal fun resolveDialogCallbackReturnSingleton(
+        loader: ClassLoader,
+        callbackGenericType: Type?,
+        acceptedFallbackNames: List<String> = listOf("ag5", "uf5", "rf5")
+    ): Any {
+        fun singleton(type: Class<*>): Any? {
+            val fields = declaredFieldsSafely(type).filter { field ->
+                java.lang.reflect.Modifier.isStatic(field.modifiers) &&
+                    type.isAssignableFrom(field.type)
+            }
+            if (fields.size != 1) return null
+            return runCatching {
+                fields.single().apply { isAccessible = true }.get(null)
+            }.getOrNull()?.takeIf(type::isInstance)
+        }
+
+        fun concreteClasses(type: Type?): List<Class<*>> = when (type) {
+            null -> emptyList()
+            is Class<*> -> listOf(type)
+            is ParameterizedType -> buildList {
+                (type.rawType as? Class<*>)?.let(::add)
+                type.actualTypeArguments.forEach { addAll(concreteClasses(it)) }
+            }
+            is WildcardType -> buildList {
+                type.lowerBounds.forEach { addAll(concreteClasses(it)) }
+                type.upperBounds.forEach { addAll(concreteClasses(it)) }
+            }
+            else -> emptyList()
+        }
+
+        val genericCandidates = concreteClasses(callbackGenericType)
+            .distinct()
+            .mapNotNull { type -> singleton(type)?.let { type to it } }
+            .filterNot { (type, _) ->
+                type == Any::class.java ||
+                    type.name.startsWith("java.") ||
+                    type.name.startsWith("android.") ||
+                    type.name.startsWith("com.afollestad.")
+            }
+        if (genericCandidates.size == 1) {
+            return genericCandidates.single().second
+        }
+
+        acceptedFallbackNames.distinct().forEach { name ->
+            val type = runCatching { loader.loadClass(name) }.getOrNull()
+                ?: return@forEach
+            singleton(type)?.let { return it }
+        }
+
+        throw IllegalStateException(
+            "Could not resolve native list-dialog callback return singleton" +
+                if (genericCandidates.isEmpty()) "" else
+                    " (generic candidates=" +
+                        genericCandidates.joinToString { it.first.name } + ")"
+        )
     }
 
     /**

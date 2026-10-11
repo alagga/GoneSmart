@@ -229,6 +229,76 @@ internal class TrackMixController(
         }.getOrDefault(false)
     }
 
+    /**
+     * GMMP 4.2.1's public CLEAR_QUEUE invalidates its prefetched next source
+     * immediately. The subsequent qr.z refill repairs queue_table, but the
+     * playback engine may retain that transient null AudioSource until the
+     * selected track ends. Once Initial Size is fully present, re-dispatch the
+     * already passively verified native current-position writer on the same
+     * position. This is a native notification/source rebuild only: the Track
+     * ID and queue position must remain unchanged before and after.
+     */
+    private fun refreshManagedPlaybackAfterInitialFill(
+        autoDj: Any,
+        selectedTrackId: Long
+    ): Boolean {
+        if (managedAutoDj?.get() !== autoDj) return false
+        val writer = nativePositionWriterProvider(autoDj) ?: run {
+            Log.w(TAG, "MIX PLAYBACK REFRESH | verified position writer unavailable")
+            return false
+        }
+        val position = writer.read()
+        val before = queueReader.read(autoDj, position) ?: return false
+        val current = before.currentItem
+        if (
+            !TrackMixPlaybackRefreshPolicy.canRefresh(
+                selectedTrackId = selectedTrackId,
+                currentTrackId = current?.track?.id,
+                queueSize = before.items.size,
+                currentPosition = position
+            )
+        ) {
+            Log.w(
+                TAG,
+                "MIX PLAYBACK REFRESH | precondition rejected | selected=" +
+                    selectedTrackId + " | current=" +
+                    (current?.track?.id ?: -1L) + " | size=" +
+                    before.items.size + " | position=" +
+                    (position?.toString() ?: "unavailable")
+            )
+            return false
+        }
+
+        val refreshed = writer.refreshCurrent(position!!)
+        if (!refreshed) {
+            Log.w(
+                TAG,
+                "MIX PLAYBACK REFRESH | native same-position dispatch rejected | " +
+                    "writer=" + writer.description + " | position=" + position
+            )
+            return false
+        }
+
+        // Give GMMP's native observer chain a bounded chance to rebuild its
+        // current/next source after the same-position notification. This is
+        // worker-only and does not block the UI thread.
+        Thread.sleep(120L)
+        val afterPosition = writer.read()
+        val after = queueReader.read(autoDj, afterPosition) ?: return false
+        val afterCurrent = after.currentItem?.track?.id
+        val verified =
+            afterPosition == position &&
+                afterCurrent == selectedTrackId &&
+                after.items.size >= 2
+        Log.i(
+            TAG,
+            "MIX PLAYBACK REFRESH | dispatched=$refreshed | verified=$verified" +
+                " | position=$position | current=$afterCurrent" +
+                " | queueSize=${after.items.size} | writer=${writer.description}"
+        )
+        return verified
+    }
+
     private fun armManagedAutoDjSession() {
         val autoDj = nativeAutoDj?.get() ?: return
         val legacyQueue = field(autoDj, "q")
@@ -791,8 +861,30 @@ internal class TrackMixController(
                 }
             }
 
-            // Initial Size is now verified (or the bounded fill failed). Only
-            // after this point may GMMP resume its ordinary upcoming refills.
+            // CLEAR_QUEUE transiently made position current+1 unavailable,
+            // which GMMP 4.2.1 caches as a null next AudioSource. Once Initial
+            // Size exists again, replay the already verified native current-
+            // position notification so playback rebuilds current/next sources
+            // from the completed queue before the seed reaches its end.
+            if (filled != null && !legacyQueue) {
+                val autoDj = nativeAutoDj?.get()
+                val playbackRefreshed = autoDj != null &&
+                    refreshManagedPlaybackAfterInitialFill(
+                        autoDj = autoDj,
+                        selectedTrackId = selectedId
+                    )
+                if (!playbackRefreshed) {
+                    Log.w(
+                        TAG,
+                        "MIX PLAYBACK REFRESH | unavailable/failed; " +
+                            "queue remains verified but source rebuild is unconfirmed"
+                    )
+                }
+            }
+
+            // Initial Size and the 4.2.1 playback refresh are now verified (or
+            // bounded refresh failed). Only after this point may GMMP resume
+            // its ordinary upcoming refills.
             refillHold.set(false)
 
             if (!isCurrent(request)) return

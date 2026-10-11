@@ -80,7 +80,7 @@ internal class PlaylistBridgeController {
         val dialogCallbackClass: Class<*>,
         val eventBusGet: Method,
         val eventBusPost: Method,
-        val unitValue: Any?,
+        val dialogCallbackReturnValue: Any?,
         val presenterLinkSmartPlaylist: Method?,
         val popupMenuConstructor: Constructor<*>,
         val popupMenuGetMenu: Method,
@@ -198,7 +198,7 @@ internal class PlaylistBridgeController {
     }
 
     fun onMenuInflated(menuResId: Int, menu: Menu?, inflater: Any?) {
-        bindings ?: return
+        val native = bindings ?: return
         if (menu == null) return
         val context = menuContext(menu, inflater) ?: contextRef?.get() ?: return
         if (context.packageName != GMMP_PACKAGE) return
@@ -216,28 +216,44 @@ internal class PlaylistBridgeController {
             return
         }
 
-        // Keep GMMP's one ORIGINAL toolbar action/icon. Its click now opens
-        // the host AppCompat popup menu below that exact action item and
-        // dispatches either back into the proven native continuation or
-        // Playlist Bridge.
-        original.setOnMenuItemClickListener {
-            if (!enabled) {
-                return@setOnMenuItemClickListener false
+        // GMMP 4.2.1 must keep its ORIGINAL toolbar listener. The real Link
+        // action naturally reaches the already proven as4$g.accept callback;
+        // intercepting there captures the exact continuation/payload needed to
+        // resume the native Smart-Playlist chooser. Replacing this listener
+        // would bypass that boundary and leave the Smart branch with nothing
+        // to continue. Only accepted 4.2.0 ds4.g2(boolean) owns the toolbar
+        // click directly.
+        if (
+            PlaylistBridgeToolbarDispatchPolicy.installDirectListener(
+                hasAcceptedLegacyAction = native.presenterLinkSmartPlaylist != null
+            )
+        ) {
+            original.setOnMenuItemClickListener {
+                if (!enabled) {
+                    return@setOnMenuItemClickListener false
+                }
+                if (!showLinkTypeMenu(context, nativeLinkId)) {
+                    Log.w(
+                        TAG,
+                        "BRIDGE TYPE MENU FALLBACK | anchor/popup unavailable; " +
+                            "opening original Smart Playlist linker"
+                    )
+                    openNativeSmartPlaylistChooser()
+                }
+                true
             }
-            if (!showLinkTypeMenu(context, nativeLinkId)) {
-                Log.w(
+            if (enabled) {
+                Log.i(
                     TAG,
-                    "BRIDGE TYPE MENU FALLBACK | anchor/popup unavailable; " +
-                        "opening original Smart Playlist linker"
+                    "BRIDGE MENU | accepted legacy menuLink reused as " +
+                        "Smart Playlist / Playlist chooser"
                 )
-                openNativeSmartPlaylistChooser()
             }
-            true
-        }
-        if (enabled) {
+        } else if (enabled) {
             Log.i(
                 TAG,
-                "BRIDGE MENU | original menuLink reused as Smart Playlist / Playlist chooser"
+                "BRIDGE MENU | native menuLink listener retained; " +
+                    "type choice deferred to proven chooser callback"
             )
         }
     }
@@ -1027,7 +1043,7 @@ internal class PlaylistBridgeController {
                             title
                         )
                     }
-                    native.unitValue
+                    native.dialogCallbackReturnValue
                 }
                 "toString" -> "PlaylistBridgeDialogCallback"
                 "hashCode" -> System.identityHashCode(proxy)
@@ -1739,24 +1755,18 @@ internal class PlaylistBridgeController {
                 method.parameterCount == 1 &&
                 method.parameterTypes[0].isAssignableFrom(dialogEventClass)
         }
-        val unitClass = r.loadClass(
-            loader,
-            listOf("rf5", "uf5"),
-            "Kotlin Unit runtime value"
-        ) { type ->
-            r.fields(type).any { field ->
-                java.lang.reflect.Modifier.isStatic(field.modifiers) &&
-                    type.isAssignableFrom(field.type)
-            }
-        }
-        val unitField = r.field(
-            unitClass,
-            listOf("a"),
-            "Kotlin Unit singleton"
-        ) { field ->
-            java.lang.reflect.Modifier.isStatic(field.modifiers) &&
-                unitClass.isAssignableFrom(field.type)
-        }
+        // MaterialDialogs owns this callback ABI, not GMMP's other Kotlin
+        // call sites. 4.2.1 proves its PlainListDialogAdapter casts the
+        // callback result to ag5; returning the unrelated uf5 singleton
+        // crashes after a row tap. Prefer the constructor's generic callback
+        // signature when R8 retained it, then use shape-validated accepted
+        // aliases (ag5 first) as bounded evidence.
+        val dialogCallbackReturnValue =
+            r.resolveDialogCallbackReturnSingleton(
+                loader = loader,
+                callbackGenericType =
+                    dialogEventConstructor.genericParameterTypes.getOrNull(2)
+            )
 
         val popupMenuClass = loader.loadClass("androidx.appcompat.widget.PopupMenu")
         val popupMenuListenerClass = loader.loadClass(
@@ -1930,7 +1940,7 @@ internal class PlaylistBridgeController {
             dialogCallbackClass = dialogCallbackClass,
             eventBusGet = eventBusGet,
             eventBusPost = eventBusPost,
-            unitValue = unitField.get(null),
+            dialogCallbackReturnValue = dialogCallbackReturnValue,
             presenterLinkSmartPlaylist = presenterLinkSmartPlaylist,
             popupMenuConstructor = popupMenuConstructor,
             popupMenuGetMenu = popupMenuGetMenu,

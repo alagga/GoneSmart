@@ -16,6 +16,15 @@ internal interface NativeQueuePositionWriter {
     val description: String
     fun read(): Int?
     fun write(position: Int): Boolean
+
+    /**
+     * Re-dispatch the already verified native position writer even when the
+     * requested position is already Current. This is deliberately separate
+     * from write(): ordinary queue mutation keeps its no-op optimization,
+     * while Track Mix may use the native notification boundary once after a
+     * CLEAR_QUEUE/refill cycle to rebuild GMMP's current/next AudioSources.
+     */
+    fun refreshCurrent(position: Int): Boolean
 }
 
 /**
@@ -172,7 +181,18 @@ internal class NativeQueuePositionWriterObserver(
                 if (before == position) {
                     return isUniqueQueuePosition(autoDj, position)
                 }
+                return invokeAndVerify(position, "WRITE")
+            }
 
+            override fun refreshCurrent(position: Int): Boolean {
+                val before = read() ?: return false
+                if (before != position || !isUniqueQueuePosition(autoDj, position)) {
+                    return false
+                }
+                return invokeAndVerify(position, "REFRESH")
+            }
+
+            private fun invokeAndVerify(position: Int, operation: String): Boolean {
                 val invoked = invokeControlled(
                     proof = proof,
                     receiver = receiver,
@@ -184,15 +204,23 @@ internal class NativeQueuePositionWriterObserver(
                 val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
                 do {
                     val nativePosition = read()
-                    if (nativePosition == position) {
-                        return isUniqueQueuePosition(autoDj, position)
+                    if (nativePosition == position &&
+                        isUniqueQueuePosition(autoDj, position)
+                    ) {
+                        Log.i(
+                            TAG,
+                            "QUEUE POSITION $operation VERIFIED | writer=" +
+                                proof.method.declaringClass.name + "." +
+                                proof.method.name + " | position=" + position
+                        )
+                        return true
                     }
                     Thread.sleep(20L)
                 } while (SystemClock.elapsedRealtime() < deadline)
 
                 Log.e(
                     TAG,
-                    "QUEUE POSITION WRITE REJECTED | writer=" +
+                    "QUEUE POSITION $operation REJECTED | writer=" +
                         proof.method.declaringClass.name + "." +
                         proof.method.name + " | requested=" + position +
                         " | nativeRead=" + (read()?.toString() ?: "unavailable")

@@ -72,6 +72,25 @@ class PlaylistBridgeReflectionResolverTest {
         @JvmField val y = QueryColumn("track_uri")
     }
 
+
+    private interface DialogCallback<R>
+
+    private class DialogCallbackUnit private constructor() {
+        companion object {
+            @JvmField val a = DialogCallbackUnit()
+        }
+    }
+
+    private class WrongDialogSingleton private constructor() {
+        companion object {
+            @JvmField val a = WrongDialogSingleton()
+        }
+    }
+
+    private class DialogEventFixture(
+        @Suppress("unused") val callback: DialogCallback<DialogCallbackUnit>
+    )
+
     private class BlindQueryColumn : QueryFieldMarker {
         override fun toString(): String = "opaque-column"
     }
@@ -296,4 +315,25 @@ class PlaylistBridgeReflectionResolverTest {
         )
         assertEquals("uri", field.name)
     }
+    @Test
+    fun dialogCallbackReturnUsesConcreteGenericResultBeforeAliases() {
+        val constructor = DialogEventFixture::class.java.declaredConstructors.single()
+        val result = PlaylistBridgeReflectionResolver.resolveDialogCallbackReturnSingleton(
+            loader = DialogCallbackUnit::class.java.classLoader!!,
+            callbackGenericType = constructor.genericParameterTypes.single(),
+            acceptedFallbackNames = listOf(WrongDialogSingleton::class.java.name)
+        )
+        assertSame(DialogCallbackUnit.a, result)
+    }
+
+    @Test
+    fun dialogCallbackReturnFallsBackOnlyToValidatedAcceptedSingleton() {
+        val result = PlaylistBridgeReflectionResolver.resolveDialogCallbackReturnSingleton(
+            loader = DialogCallbackUnit::class.java.classLoader!!,
+            callbackGenericType = null,
+            acceptedFallbackNames = listOf(DialogCallbackUnit::class.java.name)
+        )
+        assertSame(DialogCallbackUnit.a, result)
+    }
+
 }
