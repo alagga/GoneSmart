@@ -1,6 +1,6 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r29** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
 Repair source commit: `b7019ba23c638d0567a36d1dc0e31ada99445aca`.
 
