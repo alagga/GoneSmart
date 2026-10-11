@@ -3,6 +3,7 @@ package io.github.alagga.gonesmart
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.app.Activity
 import android.content.ContextWrapper
@@ -31,6 +32,7 @@ internal class PlaylistBridgeController {
         private const val NATIVE_LINK_ITEM = "menuLink"
         private const val MAX_IN_VALUES = 800
         private const val LILAC = 0xFFA39AFF.toInt()
+        private const val TOOLBAR_ADD_CLICK_WINDOW_MS = 1_500L
         private val SUPPORTED_EXTENSIONS = setOf("m3u", "m3u8", "pls", "wpl")
     }
 
@@ -112,6 +114,7 @@ internal class PlaylistBridgeController {
     @Volatile private var contextRef: WeakReference<Context>? = null
     @Volatile private var activityRef: WeakReference<Activity>? = null
     @Volatile private var linkAnchorRef: WeakReference<View>? = null
+    @Volatile private var nativeToolbarLinkClickAtMs = 0L
     private val nativeSmartChooserBypass = ThreadLocal.withInitial { false }
 
     private data class NativeSmartChooserContinuation(
@@ -152,6 +155,7 @@ internal class PlaylistBridgeController {
             nativeSmartChooserContinuation = null
             activityRef = null
             linkAnchorRef = null
+            nativeToolbarLinkClickAtMs = 0L
         }
         Log.i(TAG, "BRIDGE SETTINGS | enabled=$value")
     }
@@ -468,6 +472,25 @@ internal class PlaylistBridgeController {
         nativeSmartChooserBypass.get()
 
     /**
+     * Observe only the exact native menuLink View captured during menu
+     * inflation. The click is passive: GMMP's listener remains untouched.
+     */
+    fun observeNativeToolbarLinkClick(view: View?) {
+        val anchor = linkAnchorRef?.get() ?: return
+        if (view !== anchor) return
+        nativeToolbarLinkClickAtMs = SystemClock.elapsedRealtime()
+        Log.i(TAG, "BRIDGE TOOLBAR LINK | native menuLink click observed")
+    }
+
+    private fun consumeRecentNativeToolbarAdd(): Boolean {
+        val clickedAt = nativeToolbarLinkClickAtMs
+        nativeToolbarLinkClickAtMs = 0L
+        if (clickedAt <= 0L) return false
+        val age = SystemClock.elapsedRealtime() - clickedAt
+        return age in 0L..TOOLBAR_ADD_CLICK_WINDOW_MS
+    }
+
+    /**
      * GMMP 4.2.1 dispatch boundary proven from the naturally opened native
      * MaterialDialog stack: as4$g.accept(...). Store that exact callback and
      * payload only while GoneSmart owns an add-link choice. Native edit paths
@@ -490,10 +513,15 @@ internal class PlaylistBridgeController {
         val presenter = presenterRef?.get() ?: return false
         if (!native.presenterClass.isInstance(presenter)) return false
 
-        // The editor's native selected-rule state is the semantic distinction
-        // between add and edit. Do not infer the old boolean argument from an
-        // unrelated remapped method signature.
-        val edit = selectedRule(presenter) != null
+        // Toolbar Link is authoritative for Add. r28 proved the selected index
+        // may still point at an existing rule during this action, so selected
+        // state alone cannot classify the proven 4.2.1 callback.
+        val toolbarAdd = consumeRecentNativeToolbarAdd()
+        val selected = selectedRule(presenter)
+        val edit = PlaylistBridgeLinkDispatchPolicy.resolveEdit(
+            toolbarAddClick = toolbarAdd,
+            selectedRulePresent = selected != null
+        )
         if (!edit) {
             nativeSmartChooserContinuation =
                 NativeSmartChooserContinuation(callback, payload)
@@ -506,7 +534,7 @@ internal class PlaylistBridgeController {
         Log.i(
             TAG,
             "BRIDGE LINK DISPATCH | proven chooser callback" +
-                " | edit=$edit | intercepted=$intercepted"
+                " | toolbarAdd=$toolbarAdd | edit=$edit | intercepted=$intercepted"
         )
         return intercepted
     }

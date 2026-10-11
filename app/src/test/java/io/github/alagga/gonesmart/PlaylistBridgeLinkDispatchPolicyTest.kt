@@ -17,6 +17,28 @@ class PlaylistBridgeLinkDispatchPolicyTest {
     }
 
     @Test
+    fun exactToolbarClickWinsOverStaleSelectedRule() {
+        assertEquals(
+            false,
+            PlaylistBridgeLinkDispatchPolicy.resolveEdit(
+                toolbarAddClick = true,
+                selectedRulePresent = true
+            )
+        )
+    }
+
+    @Test
+    fun selectedRuleWithoutToolbarClickRemainsEdit() {
+        assertEquals(
+            true,
+            PlaylistBridgeLinkDispatchPolicy.resolveEdit(
+                toolbarAddClick = false,
+                selectedRulePresent = true
+            )
+        )
+    }
+
+    @Test
     fun nativeAddLinkActionShowsTypeMenu() {
         assertEquals(
             PlaylistBridgeLinkAction.SHOW_TYPE_MENU,

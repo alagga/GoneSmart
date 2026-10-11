@@ -7,6 +7,11 @@ internal enum class PlaylistBridgeLinkAction {
 }
 
 internal object PlaylistBridgeLinkDispatchPolicy {
+    fun resolveEdit(
+        toolbarAddClick: Boolean,
+        selectedRulePresent: Boolean
+    ): Boolean = !toolbarAddClick && selectedRulePresent
+
     fun action(
         enabled: Boolean,
         edit: Boolean,

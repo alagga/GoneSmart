@@ -1,8 +1,5 @@
 package io.github.alagga.gonesmart
 
-import android.content.Context
-import android.content.Intent
-import android.os.SystemClock
 import android.util.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -19,14 +16,11 @@ import java.lang.reflect.Modifier
  *    without a real SQLite statement and the resulting entity mapping must
  *    correlate one-to-one with the live Cursor before any writer is invoked.
  *
- * Track Mix is deliberately different from Queue Flip: after native Play,
- * GMMP 4.2.1 may already have prepared the next AudioSource. Deleting or
- * renumbering Room rows behind that playback state can make the Queue UI and
- * the actually decoded next track disagree. Track Mix therefore clears its
- * upcoming queue through GMMP's own public CLEAR_QUEUE command and only reads
- * the database back as a postcondition. Direct Room mutation remains reserved
- * for boundaries such as Queue Flip where the complete native writer contract
- * has already been accepted.
+ * Track Mix 4.2.1 preserves GMMP's already materialized current+1 row. The
+ * accepted queue DAO update/delete writers retarget existing upcoming entities
+ * in place and remove surplus rows only after current+1 has been verified.
+ * CLEAR_QUEUE is intentionally not used: r28 proved it can make MusicService
+ * cache a null next AudioSource before any post-clear refill runs.
  */
 internal class GmmpQueueMutationBridge(
     private val autoDj: Any,
@@ -34,9 +28,6 @@ internal class GmmpQueueMutationBridge(
 ) {
     companion object {
         private const val TAG = "GoneSmartQueue"
-        private const val GMMP_PACKAGE = "gonemad.gmmp"
-        private const val COMMAND_CLEAR_QUEUE = "gonemad.gmmp.command.CLEAR_QUEUE"
-        private const val NATIVE_CLEAR_TIMEOUT_MS = 3_000L
         private val reportedShapes =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
         private val reportedEntityMappings =
@@ -227,90 +218,93 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
-     * Track Mix seed isolation on 4.2.1 must go through GMMP itself. Static
-     * inspection of the 4.2.1 APK confirms the unchanged public command
-     * `gonemad.gmmp.command.CLEAR_QUEUE`, which is mapped by GMMP and delivered
-     * into MusicService. This allows GMMP to invalidate its playback/prefetch
-     * state together with the visible queue instead of GoneSmart changing only
-     * Room rows after a next AudioSource may already have been prepared.
-     *
-     * The command owns queue-table row lifecycle. A successful clear may
-     * therefore recreate the surviving row with a new queue_id. Track Mix
-     * verifies semantic playback identity (one selected CURRENT track) rather
-     * than requiring that transient native row identifier to survive.
+     * Retarget verified existing 4.2.1 upcoming rows without ever removing
+     * current+1. O0(List) updates the native entities first; typed native DAO
+     * deletion runs only after the rewritten future slots verify.
      */
-    fun isolateCurrentTrack(selectedTrackId: Long): Boolean {
-        fun read(): QueueContext? = GmmpQueueReader().read(
+    fun retargetTrackMixUpcoming(
+        selectedTrackId: Long,
+        smartTrackIds: List<Long>,
+        targetQueueSize: Int
+    ): Boolean {
+        val resolved = resolve(requireDelete = true, requireStatePosition = false)
+        val entries = resolved.context.items.map {
+            TrackMixPlan.NativeQueueEntry(
+                queueId = it.queueEntryId,
+                trackId = it.track.id,
+                position = it.queuePosition
+            )
+        }
+        val plan = TrackMixPlan.planNativeRetarget(
+            entries = entries,
+            currentPosition = resolved.context.currentQueuePosition,
+            selectedTrackId = selectedTrackId,
+            targetQueueSize = targetQueueSize,
+            smartTrackIds = smartTrackIds
+        )
+        val rowById = resolved.rows.associateBy {
+            number(resolved.queueId, it).toLong()
+        }
+        val changed = plan.rewriteTrackIds.map { (queueId, trackId) ->
+            val row = rowById[queueId]
+                ?: error("Verified native Track Mix row disappeared")
+            setLong(resolved.trackId, row, trackId)
+            row
+        }
+        if (changed.isNotEmpty()) {
+            resolved.update.invoke(resolved.dao, ArrayList(changed))
+        }
+
+        val interim = GmmpQueueReader().read(
             autoDj,
             verifiedPositionWriter?.read()
-        )
-
-        val before = read() ?: return false
-        val current = before.items.singleOrNull {
-            it.state == QueueItemState.CURRENT
-        } ?: return false
-        if (current.track.id != selectedTrackId) return false
-        if (before.items.size == 1) return true
-
-        val context = currentApplicationContext() ?: run {
-            Log.e(TAG, "TRACK MIX NATIVE CLEAR | application Context unavailable")
-            return false
+        ) ?: error("Track Mix retarget interim verification unavailable")
+        val interimById = interim.items.associateBy { it.queueEntryId }
+        check(interim.items.singleOrNull { it.state == QueueItemState.CURRENT }
+            ?.track?.id == selectedTrackId) {
+            "Track Mix Current changed during retarget"
         }
-        context.sendBroadcast(
-            Intent(COMMAND_CLEAR_QUEUE).setPackage(GMMP_PACKAGE)
-        )
+        plan.rewriteTrackIds.forEach { (queueId, trackId) ->
+            check(interimById[queueId]?.track?.id == trackId) {
+                "Track Mix native update did not retarget queue entry $queueId"
+            }
+        }
+
+        val removeRows = plan.removeEntryIds.map { queueId ->
+            rowById[queueId] ?: error("Verified surplus Track Mix row disappeared")
+        }
+        if (removeRows.isNotEmpty()) {
+            val delete = resolved.delete ?: error("Verified GMMP Queue DAO delete unavailable")
+            delete.invoke(
+                resolved.dao,
+                typedEntityArray(resolved.rows.first().javaClass, removeRows)
+            )
+        }
+
+        val verified = GmmpQueueReader().read(
+            autoDj,
+            verifiedPositionWriter?.read()
+        ) ?: error("Track Mix retarget final verification unavailable")
+        val ordered = verified.items.sortedBy { it.queuePosition }
+        val current = verified.items.singleOrNull { it.state == QueueItemState.CURRENT }
+        check(current?.track?.id == selectedTrackId) {
+            "Track Mix Current changed after retarget"
+        }
+        check(ordered.size == targetQueueSize) {
+            "Track Mix retarget size mismatch: ${ordered.size}/$targetQueueSize"
+        }
+        check(ordered.map { it.track.id } == plan.expectedTrackIds) {
+            "Track Mix retarget order/Track IDs failed verification"
+        }
         Log.i(
             TAG,
-            "TRACK MIX NATIVE CLEAR | command=sent | selectedTrack=" +
-                selectedTrackId + " | queueId=" + current.queueEntryId +
-                " | previousSize=" + before.items.size
+            "TRACK MIX RETARGET | verified=true | currentEntry=" + plan.currentEntryId +
+                " | smart=" + smartTrackIds.size +
+                " | nativeRemainder=" + (targetQueueSize - 1 - smartTrackIds.size) +
+                " | deleted=" + removeRows.size +
+                " | currentPosition=" + verified.currentQueuePosition
         )
-
-        val deadline = SystemClock.elapsedRealtime() + NATIVE_CLEAR_TIMEOUT_MS
-        while (SystemClock.elapsedRealtime() < deadline) {
-            Thread.sleep(50L)
-            val verified = read() ?: continue
-            val currentRows = verified.items.filter {
-                it.state == QueueItemState.CURRENT
-            }
-            val currentTrackId = currentRows.singleOrNull()?.track?.id
-            if (
-                TrackMixNativeClearPolicy.isIsolated(
-                    selectedTrackId = selectedTrackId,
-                    queueSize = verified.items.size,
-                    currentTrackId = currentTrackId,
-                    currentRows = currentRows.size
-                )
-            ) {
-                val only = verified.items.single()
-                Log.i(
-                    TAG,
-                    "TRACK MIX NATIVE CLEAR | verified=true | track=" +
-                        selectedTrackId + " | oldQueueId=" + current.queueEntryId +
-                        " | newQueueId=" + only.queueEntryId +
-                        " | rowReplaced=" +
-                        (only.queueEntryId != current.queueEntryId) +
-                        " | position=" + only.queuePosition
-                )
-                return true
-            }
-        }
-
-        val final = read()
-        val finalCurrentRows = final?.items?.filter {
-            it.state == QueueItemState.CURRENT
-        }.orEmpty()
-        val finalCurrent = finalCurrentRows.singleOrNull()
-        Log.w(
-            TAG,
-            "TRACK MIX NATIVE CLEAR | verified=false | selectedTrack=" +
-                selectedTrackId + " | finalSize=" +
-                (final?.items?.size ?: -1) + " | finalCurrent=" +
-                (finalCurrent?.track?.id ?: -1L) + " | finalCurrentRows=" +
-                finalCurrentRows.size + " | finalQueueId=" +
-                (finalCurrent?.queueEntryId ?: -1L)
-        )
-        return false
+        return true
     }
 
     /**
@@ -340,12 +334,6 @@ internal class GmmpQueueMutationBridge(
         }
     }
 
-    private fun currentApplicationContext(): Context? = runCatching {
-        val activityThread = Class.forName("android.app.ActivityThread")
-        activityThread.getDeclaredMethod("currentApplication")
-            .apply { isAccessible = true }
-            .invoke(null) as? Context
-    }.getOrNull()
 
     private fun resolve(
         requireDelete: Boolean,
@@ -759,6 +747,19 @@ internal class GmmpQueueMutationBridge(
     private fun number(field: Field, target: Any): Number =
         field.get(target) as? Number
             ?: error("GMMP queue numeric field became unavailable")
+
+    private fun setLong(field: Field, target: Any, value: Long) {
+        when (field.type) {
+            java.lang.Long.TYPE -> field.setLong(target, value)
+            java.lang.Long::class.java -> field.set(target, value)
+            Integer.TYPE, Integer::class.java -> {
+                require(value in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong())
+                if (field.type == Integer.TYPE) field.setInt(target, value.toInt())
+                else field.set(target, value.toInt())
+            }
+            else -> error("GMMP queue Track-ID field is not numeric")
+        }
+    }
 
     private fun setInt(field: Field, target: Any, value: Int) {
         if (field.type == Integer.TYPE) {

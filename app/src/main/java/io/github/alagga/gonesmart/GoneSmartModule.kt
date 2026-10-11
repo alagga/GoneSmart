@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r28"
+            "gmmp421-r29"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -478,6 +478,12 @@ class GoneSmartModule : XposedModule() {
         },
         prepareSmartInitialPool = { autoDj, selectedTrackId, count ->
             prepareTrackMixSmartInitialPool(autoDj, selectedTrackId, count)
+        },
+        commitSmartInitialPool = { prepared ->
+            recommendationPool.commitSelected(
+                expectedSessionId = prepared.sessionId,
+                selectedTrackIds = prepared.trackIds
+            )
         }
     )
 
@@ -3354,6 +3360,21 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart editor presenter hook unavailable", it)
         }
 
+        runCatching {
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick")
+                .apply { isAccessible = true }
+            hook(performClick).intercept { chain ->
+                playlistBridgeController.observeNativeToolbarLinkClick(
+                    chain.getThisObject() as? android.view.View
+                )
+                chain.proceed()
+            }
+            installed++
+        }.onFailure {
+            playlistBridgeWarn("Smart editor menuLink click observer unavailable", it)
+        }
+
         targets.presenterLinkSmartPlaylist?.let { method ->
             runCatching {
                 hook(method).intercept { chain ->
@@ -5542,48 +5563,26 @@ class GoneSmartModule : XposedModule() {
         autoDjInstance: Any,
         selectedTrackId: Long,
         requestedTracks: Int
-    ): Int {
-        if (requestedTracks <= 0) return 0
-
-        val liveContext = readQueueContext(autoDjInstance) ?: return 0
+    ): TrackMixPreparedInitialPool {
+        if (requestedTracks <= 0) return TrackMixPreparedInitialPool.EMPTY
+        val liveContext = readQueueContext(autoDjInstance)
+            ?: return TrackMixPreparedInitialPool.EMPTY
         val selected = liveContext.currentItem
             ?.takeIf { it.track.id == selectedTrackId }
-            ?: run {
-                Log.w(
-                    TAG,
-                    "SMART DJ TRACK MIX PRE-CLEAR | selected Current unavailable | " +
-                        "requested=$requestedTracks | selected=$selectedTrackId"
-                )
-                return 0
-            }
-
-        // Observe the real source queue once so the recommendation session has
-        // its stable ID. The actual provider/local matching below is detached
-        // from the rest of that source queue on purpose: Track Mix semantics
-        // are based on the selected song, and all other source rows will be
-        // removed before these recommendations are consumed.
+            ?: return TrackMixPreparedInitialPool.EMPTY
         val liveSession = queueSessionTracker.observe(liveContext)
         val nativeSettings = gmmpAutoDjSettingsReader.read()
         val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(nativeSettings)
-
-        // Explicit Track Mix direction supersedes any older pool for this
-        // session. This also cancels an in-flight startup/background fill so a
-        // stale seed set cannot become the first post-clear recommendation.
         resetRecommendationPoolForSession(liveSession, sizing)
 
         val isolatedContext = QueueContext(
             currentQueuePosition = selected.queuePosition,
-            items = listOf(
-                selected.copy(
-                    orderIndex = 0,
-                    state = QueueItemState.CURRENT
-                )
-            )
+            items = listOf(selected.copy(orderIndex = 0, state = QueueItemState.CURRENT))
         )
         val isolatedSession = QueueSessionSnapshot(
             sessionId = liveSession.sessionId,
             isNewSession = false,
-            reason = "track-mix selected-seed pre-clear",
+            reason = "track-mix selected-seed pre-retarget",
             currentItem = selected,
             pastItems = emptyList(),
             upcomingItems = emptyList(),
@@ -5591,9 +5590,7 @@ class GoneSmartModule : XposedModule() {
             sessionItems = listOf(selected),
             userAnchorTracks = listOf(selected.track),
             recentGeneratedTracks = emptyList(),
-            originsByEntryId = mapOf(
-                selected.queueEntryId to QueueEntryOrigin.USER_QUEUE
-            )
+            originsByEntryId = mapOf(selected.queueEntryId to QueueEntryOrigin.USER_QUEUE)
         )
         val seeds = listOf(
             RecommendationSeed(
@@ -5603,13 +5600,11 @@ class GoneSmartModule : XposedModule() {
                 weightMultiplier = 1.0
             )
         )
-
         Log.i(
             TAG,
-            "SMART DJ TRACK MIX PRE-CLEAR | start | session=${liveSession.sessionId} | " +
+            "SMART DJ TRACK MIX PRE-RETARGET | start | session=${liveSession.sessionId} | " +
                 "selected=$selectedTrackId | requested=$requestedTracks"
         )
-
         val future = startPoolFill(
             seeds = seeds,
             autoDjInstance = autoDjInstance,
@@ -5618,39 +5613,24 @@ class GoneSmartModule : XposedModule() {
             sizing = sizing,
             background = false
         )
-
         try {
-            future.get(
-                TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS,
-                TimeUnit.SECONDS
-            )
+            future.get(TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS, TimeUnit.SECONDS)
         } catch (_: TimeoutException) {
-            Log.w(
-                TAG,
-                "SMART DJ TRACK MIX PRE-CLEAR | bounded wait timed out | " +
-                    "requested=$requestedTracks | poolFill=continuing"
-            )
+            Log.w(TAG, "SMART DJ TRACK MIX PRE-RETARGET | bounded wait timed out")
         } catch (failure: Throwable) {
-            Log.w(
-                TAG,
-                "SMART DJ TRACK MIX PRE-CLEAR | pool preparation failed; " +
-                    "native fallback remains available",
-                failure
-            )
+            Log.w(TAG, "SMART DJ TRACK MIX PRE-RETARGET | pool preparation failed", failure)
         }
-
-        val prepared = recommendationPool.peek(
+        val preparedIds = recommendationPool.peek(
             expectedSessionId = liveSession.sessionId,
             count = requestedTracks,
             excludedTrackIds = setOf(selectedTrackId)
-        ).size
+        )
         Log.i(
             TAG,
-            "SMART DJ TRACK MIX PRE-CLEAR | complete | " +
-                "requested=$requestedTracks | prepared=$prepared | " +
-                recommendationPool.describe(liveSession.sessionId)
+            "SMART DJ TRACK MIX PRE-RETARGET | complete | requested=$requestedTracks | " +
+                "prepared=${preparedIds.size} | " + recommendationPool.describe(liveSession.sessionId)
         )
-        return prepared
+        return TrackMixPreparedInitialPool(liveSession.sessionId, preparedIds)
     }
 
     private fun ensureRecommendationPoolReady(

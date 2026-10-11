@@ -93,6 +93,71 @@ internal object TrackMixPlan {
         )
     }
 
+    data class NativeRetargetPlan(
+        val currentEntryId: Long,
+        val keptUpcomingEntryIds: List<Long>,
+        val rewriteTrackIds: Map<Long, Long>,
+        val removeEntryIds: List<Long>,
+        val expectedTrackIds: List<Long>
+    )
+
+    fun planNativeRetarget(
+        entries: List<NativeQueueEntry>,
+        currentPosition: Int,
+        selectedTrackId: Long,
+        targetQueueSize: Int,
+        smartTrackIds: List<Long>
+    ): NativeRetargetPlan {
+        require(targetQueueSize > 0) { "Target queue size must be positive" }
+        require(entries.isNotEmpty()) { "Native queue is empty" }
+        require(entries.map { it.queueId }.distinct().size == entries.size) {
+            "Native queue IDs are not unique"
+        }
+        require(entries.map { it.position }.distinct().size == entries.size) {
+            "Native queue positions are not unique"
+        }
+        require(smartTrackIds.size <= targetQueueSize - 1) {
+            "Too many Smart tracks for target queue"
+        }
+        val current = entries.singleOrNull { it.position == currentPosition }
+            ?: error("Native current queue entry unavailable")
+        require(current.trackId == selectedTrackId) {
+            "The current native song changed before retarget"
+        }
+        val neededUpcoming = targetQueueSize - 1
+        val upcoming = entries
+            .filter { it.position > currentPosition }
+            .sortedBy { it.position }
+        require(upcoming.size >= neededUpcoming) {
+            "Not enough native upcoming slots for Track Mix"
+        }
+        val kept = upcoming.take(neededUpcoming)
+        kept.forEachIndexed { index, row ->
+            require(row.position == currentPosition + index + 1) {
+                "Native upcoming queue positions are not contiguous"
+            }
+        }
+        val rewrites = linkedMapOf<Long, Long>()
+        smartTrackIds.forEachIndexed { index, trackId ->
+            require(trackId > 0L) { "Smart Track ID must be positive" }
+            rewrites[kept[index].queueId] = trackId
+        }
+        val keepIds = buildSet {
+            add(current.queueId)
+            addAll(kept.map { it.queueId })
+        }
+        val expectedUpcoming = kept.mapIndexed { index, row ->
+            smartTrackIds.getOrNull(index) ?: row.trackId
+        }
+        return NativeRetargetPlan(
+            currentEntryId = current.queueId,
+            keptUpcomingEntryIds = kept.map { it.queueId },
+            rewriteTrackIds = rewrites,
+            removeEntryIds = entries.filter { it.queueId !in keepIds }.map { it.queueId },
+            expectedTrackIds = listOf(selectedTrackId) + expectedUpcoming
+        )
+    }
+
     /**
      * A new native track menu must always put the action immediately
      * after "Play next" without reordering any other native items.
