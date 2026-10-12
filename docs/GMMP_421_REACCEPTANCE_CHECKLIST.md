@@ -2,13 +2,13 @@
 
 This checklist is the single device pass for the current **r36** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `R36_REPAIR_SOURCE_PENDING`.
+Repair source commit: `7759e8dd9a7d95d1d180ff7596967576255b24ca`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r35`;
+- Compatibility startup log reports revision `gmmp421-r36`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -34,8 +34,8 @@ The complete `track_uri -> song_id` index is built together with `GmmpLibraryRea
 4. Once the selected native queue row is proven, verify `MIX CURRENT PIN | entry=... | track=... | verified=true`. During the pending startup this unique native `queue_id` is the authoritative temporary CURRENT identity; a missing/duplicated entry must never be replaced by a track-ID guess.
 5. If GoneSmart prepared recommendations, the explicit shortfall refill must log `MIX REQUEST REFILL | receiver=qr`; it must never attempt `dx3.z(int)`.
 6. The target-owned native refill must reach the existing bootstrap path (`MIX PREPLAY BOOTSTRAP OFFER` / `SMART DJ TRACK MIX BOOTSTRAP` / `MIX PREPLAY NATIVE REFILL`) so prepared GoneSmart IDs are selected before queue-row/playback materialization.
-7. If providers genuinely yield zero recommendations, native Auto-DJ may fill the shortfall, but Track Mix must not fail merely because the GoneSmart prepared pool is empty. A source Smart Playlist must be pruned to GMMP Initial Size while preserving the selected CURRENT row and `current+1`.
-8. Startup must contain no 4.2.1 `CLEAR_QUEUE` / `TRACK MIX NATIVE CLEAR` and no post-materialization Smart Track-ID retarget. Queue DAO use after bootstrap remains prune-only.
+7. If providers genuinely yield zero recommendations, Track Mix must preserve only the exact pinned selected row from the source queue, rebase it to position 1, and let GMMP's native Auto-DJ refill create the Initial-Size followers. Source Smart-Playlist followers must not be retained as a substitute recommendation set.
+8. Startup must contain no 4.2.1 `CLEAR_QUEUE` / `TRACK MIX NATIVE CLEAR` and no post-materialization Smart Track-ID retarget. Prepared-recommendation queue mutation after bootstrap remains prune-only; the zero-provider fallback may delete source rows and compact native queue positions, but it must never rewrite follower Track IDs.
 9. Let playback cross naturally from the selected seed into the first generated follow-up without skip/pause/seek. Track 2 must open a decoder and start audio, not merely update metadata/scrobbling.
 10. Verify subsequent managed refill still works after a natural Current transition; continuity refill must also use the exact controller-owned `qr` receiver.
 
@@ -59,7 +59,7 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 ## r35 regression focus
 - The Smart-Playlist rule label is accepted from r34: it must remain **Smart Playlist: <name>** with native typography/alignment unchanged.
 - Re-run the zero-provider BUNT. Track Mix. The retired `MIX NATIVE PLAY WINDOW` marker must be absent. After the initially proven BUNT. queue entry disappears during Smart-Playlist materialization, expect exactly one `GMMP QUEUE CURRENT | track-mix path rebind ... exact=true` followed by `MIX CURRENT REBIND ... source=exact-path | verified=true`.
-- The rebind must adopt the replacement native `queue_id`, then reach `MIX PLAY VERIFIED`, `MIX CURRENT PIN`, the existing prune/Auto-DJ path, and finally `MIX AUTO-DJ` / `MIX VERIFIED`. Zero or duplicate exact path matches must not rebind.
+- The rebind must adopt the replacement native `queue_id`, then reach `MIX PLAY VERIFIED` and `MIX CURRENT PIN`. Zero or duplicate exact path matches must not rebind.
 - Re-run Avicii `Levels (Radio Edit)` as regression. Its prepared recommendation pool must continue through the accepted controller-owned `qr` bootstrap; no exact-path rebind should be needed in the normal successful path, and the natural Track-2 decoder/audio transition must remain intact.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no same-position playback refresh, no post-materialization Track-ID retarget, and no current selection inferred from track ID alone.
 
@@ -70,4 +70,3 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - Let BUNT. cross naturally into Track 2. The refreshed position-2 row must be the decoder/audio source, not merely the visible queue metadata.
 - Re-run Avicii `Levels (Radio Edit)` as the prepared-pool regression. It must continue through the accepted r35 controller-owned `qr` bootstrap. The r36 zero-pool seed/rebase/next-source-refresh markers must be absent for Levels, and its natural Track-2 transition must remain correct.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, no same-position CURRENT refresh, no hard-coded obfuscated next-source method, and any ambiguous passive boundary fails closed.
-
