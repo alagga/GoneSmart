@@ -6,6 +6,12 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Date
 
+internal data class GmmpLibraryPathIndexSnapshot(
+    val trackCount: Int,
+    val idsByPath: Map<String, Long>,
+    val ambiguousPaths: Set<String>
+)
+
 data class GmmpLibraryTrack(
     val track: TrackInfo,
     val year: Int,
@@ -164,6 +170,9 @@ class GmmpLibraryReader {
         null
 
     @Volatile
+    private var cachedPathIndex: GmmpLibraryPathIndexSnapshot? = null
+
+    @Volatile
     private var cacheCreatedAtElapsedMs:
             Long =
         0L
@@ -241,16 +250,28 @@ class GmmpLibraryReader {
                 loaded.isNotEmpty()
             ) {
 
+                val pathIndex = buildPathIndex(loaded)
+                cachedPathIndex = pathIndex
                 cachedTracks =
                     loaded
 
                 cacheCreatedAtElapsedMs =
                     SystemClock.elapsedRealtime()
+
+                Log.i(
+                    TAG,
+                    "GMMP library path index ready | tracks=${pathIndex.trackCount} | " +
+                        "paths=${pathIndex.idsByPath.size} | " +
+                        "ambiguous=${pathIndex.ambiguousPaths.size}"
+                )
             }
 
             return loaded
         }
     }
+
+    internal fun cachedPathIndexSnapshot(): GmmpLibraryPathIndexSnapshot? =
+        cachedPathIndex
 
     fun hasFreshCache(): Boolean {
 
@@ -279,9 +300,47 @@ class GmmpLibraryReader {
             cachedTracks =
                 null
 
+            cachedPathIndex =
+                null
+
             cacheCreatedAtElapsedMs =
                 0L
         }
+    }
+
+    private fun buildPathIndex(
+        tracks: List<GmmpLibraryTrack>
+    ): GmmpLibraryPathIndexSnapshot {
+        val idsByPath = linkedMapOf<String, Long>()
+        val ambiguous = linkedSetOf<String>()
+        tracks.forEach { libraryTrack ->
+            val trackId = libraryTrack.track.id
+            pathKeys(libraryTrack.track.path).forEach { key ->
+                if (key in ambiguous) return@forEach
+                val previous = idsByPath[key]
+                if (previous == null || previous == trackId) {
+                    idsByPath[key] = trackId
+                } else {
+                    idsByPath.remove(key)
+                    ambiguous += key
+                }
+            }
+        }
+        return GmmpLibraryPathIndexSnapshot(
+            trackCount = tracks.size,
+            idsByPath = idsByPath,
+            ambiguousPaths = ambiguous
+        )
+    }
+
+    private fun pathKeys(path: String?): List<String> {
+        val raw = path?.trim()?.takeUnless(String::isBlank) ?: return emptyList()
+        if (!raw.startsWith("file://", ignoreCase = true)) return listOf(raw)
+        val stripped = raw.substring(7)
+        val decoded = runCatching { android.net.Uri.parse(raw).path }.getOrNull()
+        return listOfNotNull(raw, stripped, decoded)
+            .filter(String::isNotBlank)
+            .distinct()
     }
 
     private fun loadLibrary(

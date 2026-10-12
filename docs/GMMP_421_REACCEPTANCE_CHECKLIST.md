@@ -1,6 +1,6 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r31** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r32** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
 Repair source commit: `b9e4aebc93598de684e54a9a78f083a5fc906e75`.
 
@@ -51,3 +51,13 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - Ordinary Playlist membership is resolved by a short-lived parameter-free `song_id`/`track_uri` index and canonical path matching, never by guessing non-zero direct-query argument fields.
 - Track Auto-DJ passively recovers `qr` from proven natural state-writer calls and, if necessary, the bounded context-menu graph. Discovery itself never changes playback state.
 - 4.2.1 Track Auto-DJ still must not use `CLEAR_QUEUE`, post-retarget a materialized `current+1`, or send a discovery command merely to obtain `qr`.
+
+
+## r32 regression focus
+
+- Playlist Link evaluation must log `BRIDGE LIBRARY INDEX | source=prewarmed-cache` / `BRIDGE SOURCE IDS` and must not touch Room from the Smart-rule evaluator, throw the main-thread database exception, or fall back to `Long.MIN_VALUE` for a valid linked source playlist.
+- Native Smart-Playlist links must render as **Smart Playlist: <name>** (localized host wording), while GoneSmart ordinary-playlist bridges remain **Playlist: <name>**. A changed label should emit one `BRIDGE RULE LABEL` marker identifying the formatter boundary.
+- Track Auto-DJ with prepared GoneSmart IDs must issue the explicit refill on `receiver=qr`, reach the existing bootstrap selection hook, and never attempt `dx3.z(int)`. A genuine zero-recommendation shortfall may be filled natively, but must not fail merely because no GoneSmart recommendations exist.
+- Keep the r30/r31 safety invariants: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, and natural Track 1 -> Track 2 playback must produce a real decoder/audio start.
+
+- r32 performance guard: the complete `track_uri -> song_id` index is constructed together with `GmmpLibraryReader`'s startup/cache refresh off the UI thread. Smart-rule compilation may only consume the finished immutable index; it must not scan/canonicalize the whole library synchronously.

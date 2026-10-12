@@ -245,3 +245,10 @@ r29 removed the `CLEAR_QUEUE` null-source gap, but the r28 device trace also pro
 The r30 device log accepted the Playlist Link two-way chooser but exposed two independent follow-ups. Ordinary `.m3u` parsing succeeded while the subsequent parameterized `track_uri IN (...)` lookup failed because the accepted 4.2.1 direct Room carrier has no uniquely writable non-zero argument-count field. r31 therefore builds a short-lived parameter-free `song_id`/`track_uri` index and performs canonical-path membership matching in GoneSmart. Native Smart-link labels and ordinary Playlist-link labels are also separated at the formatter boundary.
 
 Track Auto-DJ r30 could fail before its first pre-Play diagnostic when no `qr` instance had yet been captured by the constructor/refill hooks. r31 adds passive recovery on already-proven natural `qr` state-writer calls and a bounded read-only context-menu graph lookup. It does not issue a command to discover `qr`, does not restore `CLEAR_QUEUE`, and keeps the pre-Play recommendation/bootstrap invariant.
+
+
+### r32 evidence: Playlist Link main-thread evaluator and Track Mix receiver ownership
+
+The r31 device pass proved that the 4.2.1 Smart-Playlist evaluator calls Playlist Link compilation synchronously on GMMP's main thread. Even a parameter-free direct Room query therefore fails with Room's main-thread guard. Playlist Link must consume the prewarmed in-memory `GmmpLibraryReader` snapshot and must not query Room from that evaluator. The same pass proved that Track Mix can resolve the clicked track and prepare four GoneSmart recommendations correctly while still failing when the module-level refill reference has been overwritten by a `dx3` state object. Explicit Track Mix refill now receives the controller-verified `qr` instance directly.
+
+- r32 performance guard: the complete `track_uri -> song_id` index is constructed together with `GmmpLibraryReader`'s startup/cache refresh off the UI thread. Smart-rule compilation may only consume the finished immutable index; it must not scan/canonicalize the whole library synchronously.

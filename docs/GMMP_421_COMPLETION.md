@@ -34,3 +34,8 @@ r29 is superseded before device acceptance because static/log review showed its 
 
 - Playlist Link chooser dispatch is device-proven on r30 and retained unchanged. r31 fixes ordinary Playlist membership resolution with a parameter-free cached Track-URI index and makes rule labels type-correct (`Smart-Playlist: …` vs `Playlist: …`).
 - Track Auto-DJ keeps r30's pre-Play bootstrap design but no longer requires a constructor/refill hook to have captured `qr` earlier in the process. Passive recovery is bundled before the next single device pass.
+
+
+### r32 pending re-acceptance
+
+The r31 device pass isolated two remaining deterministic regressions: Playlist Link attempted a read-only Room lookup from GMMP's main-thread Smart-rule evaluator, and Track Mix invoked refill through a module reference that had been overwritten by a `dx3` child state object. r32 moves Playlist Link membership lookup to the prewarmed in-memory library snapshot and passes the controller-verified `qr` receiver explicitly for Track Mix refill. Device acceptance remains pending for the bundled r32 pass.

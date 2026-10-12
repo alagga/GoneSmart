@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r31"
+            "gmmp421-r32"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -459,7 +459,11 @@ class GoneSmartModule : XposedModule() {
         NativePlaylistDestinationScope()
 
     private val playlistBridgeController =
-        PlaylistBridgeController()
+        PlaylistBridgeController(
+            libraryPathIndexProvider = {
+                gmmpLibraryReader.cachedPathIndexSnapshot()
+            }
+        )
 
     private val playlistBridgeSmartChooserTitleDepth =
         ThreadLocal.withInitial { 0 }
@@ -472,7 +476,9 @@ class GoneSmartModule : XposedModule() {
     // Smart DJ and uses GMMP's documented native Auto-DJ command.
     private val trackMixController = TrackMixController(
         enableSmartDj = { context -> enableSmartDjForTrackMix(context) },
-        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) },
+        requestNativeRefill = { autoDj, count ->
+            requestNativeTrackMixRefill(autoDj, count)
+        },
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
         },
@@ -971,9 +977,19 @@ class GoneSmartModule : XposedModule() {
         }.getOrDefault(false)
     }
 
-    private fun requestNativeTrackMixRefill(count: Int): Boolean {
+    private fun requestNativeTrackMixRefill(
+        manager: Any,
+        count: Int
+    ): Boolean {
         if (count <= 0) return true
-        val manager = trackMixAutoDj?.get() ?: return false
+        if (manager.javaClass.name != "qr") {
+            Log.e(
+                TAG,
+                "Track Mix native refill rejected non-Auto-DJ receiver: " +
+                    manager.javaClass.name
+            )
+            return false
+        }
         return runCatching {
             manager.javaClass.getDeclaredMethod(
                 "z", Int::class.javaPrimitiveType
@@ -981,7 +997,7 @@ class GoneSmartModule : XposedModule() {
                 .invoke(manager, count)
             Log.i(
                 "GoneSmartTrackMix",
-                "MIX REQUEST REFILL | requested=$count"
+                "MIX REQUEST REFILL | receiver=qr | requested=$count"
             )
             true
         }.onFailure {
@@ -1289,7 +1305,9 @@ class GoneSmartModule : XposedModule() {
                 hook(method).intercept { chain ->
                     val receiver = chain.getThisObject()
                     if (receiver != null) {
-                        trackMixAutoDj = WeakReference(receiver)
+                        if (receiver.javaClass.name == "qr") {
+                            trackMixAutoDj = WeakReference(receiver)
+                        }
                         trackMixController.captureNativeAutoDj(receiver)
                         queueFlipController.captureNativeAutoDj(receiver)
                     }
@@ -3475,18 +3493,32 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart chooser title hook unavailable", it)
         }
 
-        targets.ruleLabelFormatter?.let { method ->
+        targets.ruleLabelFormatters.forEach { method ->
             runCatching {
                 hook(method).intercept { chain ->
                     val original = chain.proceed() as? String
-                    playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
-                        chain.getArg(0),
-                        original
-                    )
+                    val rewritten =
+                        playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
+                            chain.getArg(0),
+                            original
+                        )
+                    if (rewritten != original) {
+                        playlistBridgeInfo(
+                            "BRIDGE RULE LABEL | formatter=" +
+                                method.declaringClass.name + "." + method.name +
+                                " | original=" + original +
+                                " | rewritten=" + rewritten
+                        )
+                    }
+                    rewritten
                 }
                 installed++
             }.onFailure {
-                playlistBridgeWarn("Smart rule label hook unavailable", it)
+                playlistBridgeWarn(
+                    "Smart rule label hook unavailable: " +
+                        method.declaringClass.name + "." + method.name,
+                    it
+                )
             }
         }
 

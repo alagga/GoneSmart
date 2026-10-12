@@ -24,14 +24,15 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-internal class PlaylistBridgeController {
+internal class PlaylistBridgeController(
+    private val libraryPathIndexProvider: () -> GmmpLibraryPathIndexSnapshot? = { null }
+) {
     companion object {
         private const val TAG = "GoneSmartPlaylistBridge"
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val SMART_EDITOR_MENU = "menu_gm_smart_editor"
         private const val NATIVE_LINK_ITEM = "menuLink"
         private const val MAX_IN_VALUES = 800
-        private const val LIBRARY_PATH_INDEX_MAX_AGE_MS = 2L * 60L * 1000L
         private const val LILAC = 0xFFA39AFF.toInt()
         private const val TOOLBAR_ADD_CLICK_WINDOW_MS = 1_500L
         private val SUPPORTED_EXTENSIONS = setOf("m3u", "m3u8", "pls", "wpl")
@@ -49,12 +50,6 @@ internal class PlaylistBridgeController {
         val paths: List<String>
     )
 
-    private data class LibraryPathIndex(
-        val databaseIdentity: Int,
-        val createdAtElapsedMs: Long,
-        val idsByPath: Map<String, Long>,
-        val ambiguousPaths: Set<String>
-    )
 
     private data class Bindings(
         val loader: ClassLoader,
@@ -107,7 +102,7 @@ internal class PlaylistBridgeController {
         val groupRules: Field,
         val groupMatchAll: Field,
         val chooserConsumerAccept: Method?,
-        val ruleLabelFormatter: Method?,
+        val ruleLabelFormatters: List<Method>,
         val evaluationMethod: Method
     )
     private val main = Handler(Looper.getMainLooper())
@@ -115,7 +110,6 @@ internal class PlaylistBridgeController {
         Thread(task, "GoneSmartPlaylistBridge").apply { isDaemon = true }
     }
     private val cache = ConcurrentHashMap<String, Membership>()
-    @Volatile private var libraryPathIndex: LibraryPathIndex? = null
 
     @Volatile private var bindings: Bindings? = null
     @Volatile private var enabled: Boolean = true
@@ -142,7 +136,7 @@ internal class PlaylistBridgeController {
         val presenterConstructor: Constructor<*>,
         val presenterLinkSmartPlaylist: Method?,
         val chooserConsumerAccept: Method?,
-        val ruleLabelFormatter: Method?,
+        val ruleLabelFormatters: List<Method>,
         val evaluationMethod: Method
     )
 
@@ -151,7 +145,7 @@ internal class PlaylistBridgeController {
             presenterConstructor = native.presenterConstructor,
             presenterLinkSmartPlaylist = native.presenterLinkSmartPlaylist,
             chooserConsumerAccept = native.chooserConsumerAccept,
-            ruleLabelFormatter = native.ruleLabelFormatter,
+            ruleLabelFormatters = native.ruleLabelFormatters,
             evaluationMethod = native.evaluationMethod
         )
     }
@@ -161,7 +155,6 @@ internal class PlaylistBridgeController {
         enabled = value
         if (!value) {
             cache.clear()
-            libraryPathIndex = null
             nativeSmartChooserContinuation = null
             activityRef = null
             linkAnchorRef = null
@@ -676,7 +669,7 @@ internal class PlaylistBridgeController {
         }
 
         val trackIds = runCatching {
-            resolveTrackIds(native, membership.paths)
+            resolveTrackIds(membership.paths)
         }.onFailure {
             Log.e(TAG, "BRIDGE COMPILE | native track-id lookup failed", it)
         }.getOrNull() ?: return falsePredicate(native)
@@ -1376,58 +1369,13 @@ internal class PlaylistBridgeController {
     }
 
     private fun resolveTrackIds(
-        native: Bindings,
         paths: List<String>
     ): List<Long> {
         if (paths.isEmpty()) return emptyList()
-        val database = native.databaseSingleton.get(null)
-            ?: throw IllegalStateException("GMDatabase singleton is null")
-        val databaseIdentity = System.identityHashCode(database)
-        val now = SystemClock.elapsedRealtime()
-        val cached = libraryPathIndex?.takeIf { index ->
-            index.databaseIdentity == databaseIdentity &&
-                now - index.createdAtElapsedMs <= LIBRARY_PATH_INDEX_MAX_AGE_MS
-        }
-        val index = cached ?: GmmpReadOnlySql.queryDatabase(
-            databaseInstance = database,
-            sql = "SELECT song_id, track_uri FROM tracks WHERE track_placeholder = 0"
-        ) { cursor ->
-            val idColumn = cursor.getColumnIndex("song_id")
-            val pathColumn = cursor.getColumnIndex("track_uri")
-            require(idColumn >= 0 && pathColumn >= 0) {
-                "GMMP track path index did not expose song_id/track_uri"
-            }
-            val idsByPath = linkedMapOf<String, Long>()
-            val ambiguous = linkedSetOf<String>()
-            while (cursor.moveToNext()) {
-                if (cursor.isNull(pathColumn)) continue
-                val trackId = cursor.getLong(idColumn)
-                trackPathKeys(cursor.getString(pathColumn)).forEach { key ->
-                    if (key in ambiguous) return@forEach
-                    val previous = idsByPath[key]
-                    if (previous == null || previous == trackId) {
-                        idsByPath[key] = trackId
-                    } else {
-                        idsByPath.remove(key)
-                        ambiguous += key
-                    }
-                }
-            }
-            LibraryPathIndex(
-                databaseIdentity = databaseIdentity,
-                createdAtElapsedMs = SystemClock.elapsedRealtime(),
-                idsByPath = idsByPath,
-                ambiguousPaths = ambiguous
+        val index = libraryPathIndexProvider()
+            ?: throw IllegalStateException(
+                "Prewarmed GMMP library path index is unavailable"
             )
-        }.also { loaded ->
-            libraryPathIndex = loaded
-            Log.i(
-                TAG,
-                "BRIDGE LIBRARY INDEX | paths=${loaded.idsByPath.size} | " +
-                    "ambiguous=${loaded.ambiguousPaths.size}"
-            )
-        }
-
         val result = linkedSetOf<Long>()
         var ambiguousSources = 0
         paths.distinct().forEach { sourcePath ->
@@ -1442,25 +1390,19 @@ internal class PlaylistBridgeController {
             TAG,
             "BRIDGE SOURCE IDS | paths=${paths.size} | library=${result.size} | " +
                 "index=${index.idsByPath.size} | ambiguous=$ambiguousSources | " +
-                "cache=${cached != null}"
+                "source=prewarmed-cache"
         )
         return result.toList()
     }
 
     private fun trackPathKeys(path: String?): List<String> {
         val raw = path?.trim()?.takeUnless(String::isBlank) ?: return emptyList()
-        val filePath = if (raw.startsWith("file://", ignoreCase = true)) {
-            raw.substring(7)
-        } else {
-            raw
-        }
-        return buildList {
-            add(raw)
-            if (filePath != raw) add(filePath)
-            if (!filePath.contains("://")) {
-                add(canonicalPath(File(filePath)))
-            }
-        }.filter(String::isNotBlank).distinct()
+        if (!raw.startsWith("file://", ignoreCase = true)) return listOf(raw)
+        val stripped = raw.substring(7)
+        val decoded = runCatching { android.net.Uri.parse(raw).path }.getOrNull()
+        return listOfNotNull(raw, stripped, decoded)
+            .filter(String::isNotBlank)
+            .distinct()
     }
 
     private fun falsePredicate(native: Bindings): Any {
@@ -1999,16 +1941,22 @@ internal class PlaylistBridgeController {
                 method.parameterCount == 1 && method.name == "accept"
             }
         }
-        val ruleLabelFormatter = r.optionalClass(
-            loader,
-            listOf("ls2", "os2")
-        )?.let { formatterClass ->
-            r.optionalMethod(formatterClass, listOf("U")) { method ->
-                method.parameterCount == 1 &&
-                    method.parameterTypes[0].isAssignableFrom(smartRuleClass) &&
-                    method.returnType == String::class.java
+        val ruleLabelFormatters = listOf("ls2", "os2")
+            .mapNotNull { alias ->
+                r.optionalClass(loader, listOf(alias))
             }
-        }
+            .flatMap { formatterClass ->
+                r.methods(formatterClass).filter { method ->
+                    method.parameterCount == 1 &&
+                        method.parameterTypes[0].isAssignableFrom(smartRuleClass) &&
+                        method.returnType == String::class.java
+                }
+            }
+            .distinctBy { method ->
+                method.declaringClass.name + "#" + method.name + "(" +
+                    method.parameterTypes.joinToString(",") { it.name } + ")"
+            }
+            .onEach { it.isAccessible = true }
 
         Log.i(
             TAG,
@@ -2082,7 +2030,7 @@ internal class PlaylistBridgeController {
             groupRules = groupRules,
             groupMatchAll = groupMatchAll,
             chooserConsumerAccept = chooserConsumerAccept,
-            ruleLabelFormatter = ruleLabelFormatter,
+            ruleLabelFormatters = ruleLabelFormatters,
             evaluationMethod = evaluationMethod
         )
     }

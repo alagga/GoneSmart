@@ -187,3 +187,12 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - GMMP 4.2.1's accepted direct read-only Room query carrier is parameter-free unless non-zero argument-count ownership is uniquely proved. Playlist Link resolves ordinary-playlist file membership by building a bounded cached `song_id`/`track_uri` index with a parameter-free read and matching canonical paths in GoneSmart. Never guess R8 argument-count/binder fields.
 - Track Auto-DJ pre-Play preparation must not assume `qr` was constructed after GoneSmart hooks installed. Recover the live accepted `qr` passively from natural verified state-writer calls and, if needed, from the bounded context-menu object graph. Discovery never sends a playback/Auto-DJ command; zero or multiple candidates fail closed.
 - Smart-editor labels distinguish native Smart-Playlist references from GoneSmart ordinary-Playlist bridge references: native Smart references use the host Smart-Playlist noun; bridge references use the host Playlist noun.
+
+
+## r32 device-proven follow-up rules
+
+- GMMP 4.2.1 invokes Playlist Link Smart-rule compilation on the main thread. That synchronous evaluator must never perform a Room/Cursor query. Resolve ordinary-playlist membership only against GoneSmart's already prewarmed immutable GMMP library snapshot; if that snapshot is unavailable, fail closed without blocking the UI.
+- A Track Auto-DJ refill is owned by the exact `qr` instance already verified/captured by `TrackMixController`. Pass that receiver explicitly into `qr.z(int)`. Natural child/state-writer callbacks such as `dx3` must never overwrite the module's Auto-DJ reference or become a refill receiver.
+- Linked-rule label formatting is read-only UI behavior. On accepted 4.2.x mappings, discover all shape-valid `SmartRule -> String` formatter methods across the bounded known formatter families rather than trusting one obfuscated method name; only rewrite the returned linked-rule label and leave GMMP's rule model untouched.
+
+- r32 performance guard: the complete `track_uri -> song_id` index is constructed together with `GmmpLibraryReader`'s startup/cache refresh off the UI thread. Smart-rule compilation may only consume the finished immutable index; it must not scan/canonicalize the whole library synchronously.

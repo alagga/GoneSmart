@@ -44,7 +44,7 @@ internal data class TrackMixPreparedInitialPool(
  */
 internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
-    private val requestNativeRefill: (Int) -> Boolean,
+    private val requestNativeRefill: (Any, Int) -> Boolean,
     private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },
     private val resolvePrePlayTarget: (Any, List<Any>) -> TrackMixPrePlayTargetResolution? =
         { _, _ -> null },
@@ -197,10 +197,11 @@ internal class TrackMixController(
 
     private fun requestHeldNativeRefill(count: Int): Boolean {
         if (count <= 0) return true
+        val autoDj = nativeAutoDj?.get() ?: return false
         val previous = nativeRefillAllowance.get() ?: 0
         nativeRefillAllowance.set(previous + 1)
         return try {
-            requestNativeRefill(count)
+            requestNativeRefill(autoDj, count)
         } finally {
             if (previous == 0) {
                 nativeRefillAllowance.remove()
@@ -334,7 +335,7 @@ internal class TrackMixController(
                         " | boundary=native-qr.z"
                 )
 
-                if (!requestNativeRefill(requested)) {
+                if (!requestNativeRefill(autoDj, requested)) {
                     Log.w(
                         TAG,
                         "MIX CONTINUITY REFILL | native request rejected | " +
