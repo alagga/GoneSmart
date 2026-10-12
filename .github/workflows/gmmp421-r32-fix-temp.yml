@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply r32 repair
-        run: python3 .github/r32_patch.py
+        run: |
+          python3 .github/r32_patch.py
+          python3 .github/r32_fixup.py
 
       - name: Run unit tests and debug build
         run: |
@@ -29,7 +31,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/r32_patch.py .github/workflows/gmmp421-r32-fix-temp.yml
+          git rm .github/r32_patch.py .github/r32_fixup.py .github/workflows/gmmp421-r32-fix-temp.yml
           git add AGENTS.md docs app/src
           git commit -m "fix: repair Playlist Link evaluation and Track Mix refill ownership"
           git push origin HEAD:fix/playlist-link-gmmp-4.2.1
