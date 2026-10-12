@@ -60,10 +60,15 @@ class GmmpQueueReader {
 
     fun read(
         autoDjInstance: Any,
-        currentQueuePositionHint: Int? = null
+        currentQueuePositionHint: Int? = null,
+        currentQueueEntryIdHint: Long? = null
     ): QueueContext? {
         readLegacy(autoDjInstance)?.let { return it }
-        return readThroughCursor(autoDjInstance, currentQueuePositionHint)
+        return readThroughCursor(
+            autoDjInstance,
+            currentQueuePositionHint,
+            currentQueueEntryIdHint
+        )
     }
 
     private fun readLegacy(autoDjInstance: Any): QueueContext? =
@@ -132,7 +137,8 @@ class GmmpQueueReader {
 
     private fun readThroughCursor(
         autoDjInstance: Any,
-        currentQueuePositionHint: Int?
+        currentQueuePositionHint: Int?,
+        currentQueueEntryIdHint: Long?
     ): QueueContext? =
         runCatching {
             val rows = GmmpReadOnlySql.query(
@@ -184,7 +190,8 @@ class GmmpQueueReader {
             val marker = resolveCurrentMarker(
                 autoDjInstance,
                 rows,
-                currentQueuePositionHint
+                currentQueuePositionHint,
+                currentQueueEntryIdHint
             ) ?: return@runCatching null
             val useShuffle =
                 marker.orderKind == OrderKind.SHUFFLE &&
@@ -245,8 +252,28 @@ class GmmpQueueReader {
     private fun resolveCurrentMarker(
         autoDjInstance: Any,
         rows: List<CursorRow>,
-        currentQueuePositionHint: Int?
+        currentQueuePositionHint: Int?,
+        currentQueueEntryIdHint: Long?
     ): CurrentMarker? {
+        currentQueueEntryIdHint?.let { entryId ->
+            val matches = rows.indices.filter { index ->
+                rows[index].queueEntryId == entryId
+            }
+            if (matches.size == 1) {
+                return CurrentMarker(
+                    rowIndex = matches.single(),
+                    orderKind = OrderKind.QUEUE,
+                    source = "track-mix-entry-hint"
+                )
+            }
+            Log.w(
+                TAG,
+                "GMMP QUEUE CURRENT | queue entry hint rejected" +
+                    " | entryId=" + entryId +
+                    " | matches=" + matches.size
+            )
+        }
+
         currentQueuePositionHint?.let { position ->
             val matches = rows.indices.filter { index ->
                 rows[index].queuePosition == position

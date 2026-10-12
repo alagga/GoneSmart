@@ -10,7 +10,7 @@ class PlaylistBridgeRuleLabelPolicyTest {
     @Test fun nativeSmartReferenceUsesSmartPlaylistLabel() {
         assertEquals("Smart-Playlist: Favorites", PlaylistBridgeRuleLabelPolicy.rewrite("Playlist: Favorites", "Playlist", "Smart-Playlist", null, "Favorites"))
     }
-    @Test fun formatterFallbackRewritesPlaylistPrefix() {
-        assertEquals("Smart-Playlist: Favorites", PlaylistBridgeRuleLabelPolicy.rewrite("Playlist: Favorites", "Playlist", "Smart-Playlist", null, null))
+    @Test fun unknownRuleProvenanceLeavesNativeLabelUntouched() {
+        assertEquals("Playlist: Favorites", PlaylistBridgeRuleLabelPolicy.rewrite("Playlist: Favorites", "Playlist", "Smart-Playlist", null, null))
     }
 }

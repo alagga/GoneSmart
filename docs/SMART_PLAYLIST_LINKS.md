@@ -99,3 +99,7 @@ These accepted tests should not be repeated merely because documentation was cle
 - The compatibility contract is verified on the tested GMMP runtime, not promised for unknown future Smart-rule serializers/evaluators.
 
 See also [Smart-Playlist folders](SMART_PLAYLIST_FOLDERS.md), [native GMMP audit](NATIVE_GMMP_AUDIT.md), [architecture](ARCHITECTURE.md), and [persistent coding rules](../AGENTS.md).
+
+
+### GMMP 4.2.1 editor labels (r33)
+The rule row keeps native GMMP vocabulary but distinguishes reference type: a native Smart-Playlist reference is displayed as `Smart Playlist: <name>` (localized host text), while a GoneSmart link to an ordinary playlist remains `Playlist: <name>`. This is a presentation-only change at the exact Smart-rule RecyclerView bind; serialized rule values are not modified.

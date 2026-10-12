@@ -2035,6 +2035,120 @@ internal class PlaylistBridgeController(
         )
     }
 
+
+    fun rewriteBoundNativeSmartRuleLabel(
+        adapter: Any?,
+        holder: Any?,
+        position: Int
+    ): Boolean {
+        if (!enabled || adapter == null || holder == null || position < 0) return false
+        val native = bindings ?: return false
+        val rule = resolveBoundRule(native, adapter, holder, position) ?: return false
+        val value = runCatching { native.ruleValue.get(rule) as? String }.getOrNull()
+            ?: return false
+        if (PlaylistBridgeReference.decode(value) != null) return false
+        if (!PlaylistBridgePolicy.isNativeSmartPlaylistReference(value)) return false
+        val displayName = value.substringAfter('|', "")
+            .trim().takeUnless(String::isBlank) ?: return false
+        val context = currentContext() ?: return false
+        val playlist = NativeGmmpUiText.string(context, "playlist")
+            ?.trim()?.takeUnless(String::isBlank) ?: return false
+        val smartPlaylist = NativeGmmpUiText.smartPlaylist(context)
+            ?.trim()?.takeUnless(String::isBlank) ?: return false
+        val expected = "$playlist: $displayName"
+        val replacement = "$smartPlaylist: $displayName"
+        if (expected == replacement) return false
+        val root = holderItemView(holder) ?: return false
+        val exact = arrayListOf<android.widget.TextView>()
+        fun collect(view: android.view.View) {
+            if (view is android.widget.TextView && view.text?.toString() == expected) {
+                exact += view
+            }
+            if (view is android.view.ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    view.getChildAt(index)?.let(::collect)
+                }
+            }
+        }
+        collect(root)
+        if (exact.size != 1) return false
+        exact.single().text = replacement
+        return true
+    }
+
+    private fun resolveBoundRule(
+        native: Bindings,
+        adapter: Any,
+        holder: Any,
+        position: Int
+    ): Any? {
+        val candidates = java.util.IdentityHashMap<Any, Boolean>()
+        fun add(value: Any?) {
+            if (value != null && native.smartRuleClass.isInstance(value)) {
+                candidates[value] = true
+            }
+        }
+        fun inspectObject(value: Any?) {
+            if (value == null) return
+            add(value)
+            generateSequence<Class<*>>(value.javaClass) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .forEach { field ->
+                    val nested = runCatching {
+                        field.isAccessible = true
+                        field.get(value)
+                    }.getOrNull()
+                    add(nested)
+                }
+        }
+        inspectObject(holder)
+        generateSequence<Class<*>>(adapter.javaClass) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+            .forEach { field ->
+                val carrier = runCatching {
+                    field.isAccessible = true
+                    field.get(adapter)
+                }.getOrNull()
+                when (carrier) {
+                    is List<*> -> inspectObject(carrier.getOrNull(position))
+                    is Array<*> -> inspectObject(carrier.getOrNull(position))
+                }
+            }
+        presenterRef?.get()?.let { presenter ->
+            val state = runCatching { native.presenterState.invoke(presenter) }.getOrNull()
+            val rules = state?.let {
+                runCatching { native.stateRules.invoke(it) as? List<*> }.getOrNull()
+            }
+            inspectObject(rules?.getOrNull(position))
+        }
+        return candidates.keys.toList().singleOrNull()
+    }
+
+    private fun holderItemView(holder: Any): android.view.View? {
+        generateSequence<Class<*>>(holder.javaClass) { it.superclass }.forEach { type ->
+            runCatching {
+                type.getDeclaredField("itemView").apply { isAccessible = true }.get(holder)
+            }.getOrNull()?.let { if (it is android.view.View) return it }
+        }
+        val views = generateSequence<Class<*>>(holder.javaClass) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter {
+                !java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                    android.view.View::class.java.isAssignableFrom(it.type)
+            }
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(holder) as? android.view.View
+                }.getOrNull()
+            }
+            .distinctBy { System.identityHashCode(it) }
+            .toList()
+        return views.singleOrNull()
+    }
+
     private fun menuContext(menu: Menu, inflater: Any?): Context? {
         val viaMenu = runCatching {
             menu.javaClass.methods.firstOrNull {

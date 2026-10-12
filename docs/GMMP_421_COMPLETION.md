@@ -39,3 +39,9 @@ r29 is superseded before device acceptance because static/log review showed its 
 ### r32 pending re-acceptance
 
 The r31 device pass isolated two remaining deterministic regressions: Playlist Link attempted a read-only Room lookup from GMMP's main-thread Smart-rule evaluator, and Track Mix invoked refill through a module reference that had been overwritten by a `dx3` child state object. r32 moves Playlist Link membership lookup to the prewarmed in-memory library snapshot and passes the controller-verified `qr` receiver explicitly for Track Mix refill. Device acceptance remains pending for the bundled r32 pass.
+
+
+## r33 focused repair
+- Pending Track Mix now pins CURRENT by the uniquely proven native queue entry ID across Smart-list materialization/refill/prune. The hint is request-scoped and fails closed if no longer unique.
+- Smart-Playlist link type text is corrected only after the native `smartRuleListRecyclerView` row bind and only for a uniquely proven native Smart-Playlist reference. Ordinary Playlist bridge rules are untouched.
+- r32 Playlist Link membership evaluation remains accepted and unchanged. `CLEAR_QUEUE`, post-materialization Track-ID retarget and same-position playback refresh remain retired.

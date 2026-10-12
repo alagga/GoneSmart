@@ -24,7 +24,8 @@ import java.lang.reflect.Modifier
  */
 internal class GmmpQueueMutationBridge(
     private val autoDj: Any,
-    private val verifiedPositionWriter: NativeQueuePositionWriter? = null
+    private val verifiedPositionWriter: NativeQueuePositionWriter? = null,
+    private val currentQueueEntryIdHint: Long? = null
 ) {
     companion object {
         private const val TAG = "GoneSmartQueue"
@@ -257,7 +258,8 @@ internal class GmmpQueueMutationBridge(
 
         val interim = GmmpQueueReader().read(
             autoDj,
-            verifiedPositionWriter?.read()
+            verifiedPositionWriter?.read(),
+            currentQueueEntryIdHint
         ) ?: error("Track Mix retarget interim verification unavailable")
         val interimById = interim.items.associateBy { it.queueEntryId }
         check(interim.items.singleOrNull { it.state == QueueItemState.CURRENT }
@@ -283,7 +285,8 @@ internal class GmmpQueueMutationBridge(
 
         val verified = GmmpQueueReader().read(
             autoDj,
-            verifiedPositionWriter?.read()
+            verifiedPositionWriter?.read(),
+            currentQueueEntryIdHint
         ) ?: error("Track Mix retarget final verification unavailable")
         val ordered = verified.items.sortedBy { it.queuePosition }
         val current = verified.items.singleOrNull { it.state == QueueItemState.CURRENT }
@@ -340,7 +343,11 @@ internal class GmmpQueueMutationBridge(
         requireStatePosition: Boolean
     ): Resolved {
         val absoluteHint = verifiedPositionWriter?.read()
-        val context = GmmpQueueReader().read(autoDj, absoluteHint)
+        val context = GmmpQueueReader().read(
+            autoDj,
+            absoluteHint,
+            currentQueueEntryIdHint
+        )
             ?: error("GMMP queue Cursor mapping unavailable")
 
         val daoResolution = NativeQueueDaoResolver.resolve(autoDj)

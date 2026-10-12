@@ -1,6 +1,6 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r32** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r33** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
 Repair source commit: `721b8d08d297cef8ee2089231f728980a15b4ca4`.
 
@@ -41,3 +41,11 @@ The complete `track_uri -> song_id` index is built together with `GmmpLibraryRea
 The r27 same-position Current refresh remains retired because it could verify while Track 2 still failed to decode. The r28 clear/pre-command-fill ordering remains retired because `CLEAR_QUEUE` itself could cache a null next AudioSource. r32 also forbids child/state-writer receivers such as `dx3` from becoming Track Mix refill owners.
 
 Device acceptance remains pending until this complete pass succeeds on the exact CI-built APK.
+
+
+## r33 regression focus
+- Playlist Link membership evaluation is already accepted from r32 and must remain unchanged.
+- Open a Smart Playlist editor containing both a native Smart-Playlist link and a GoneSmart ordinary Playlist link. The native row must log `BRIDGE RULE ROW LABEL ... rewritten=true` and display **Smart Playlist: <name>**; the ordinary bridge must remain **Playlist: <name>**.
+- Start Track Auto-DJ from the BUNT. Smart-Playlist row used in r32. After `MIX PLAY DETECTED`, the selected native `queue_id` must log `MIX CURRENT PIN`; the original Smart-Playlist queue must be pruned to GMMP Initial Size while preserving selected/current+1, then Track Mix must reach `MIX AUTO-DJ` rather than falsely report that the selected song never started.
+- Start Track Auto-DJ on Avicii `Levels (Radio Edit)`. The four prepared GoneSmart IDs must still reach `SMART DJ TRACK MIX BOOTSTRAP`, then the pinned queue entry must allow post-refill verification, prune and the native Auto-DJ command. Let playback cross naturally into Track 2 and verify decoder/audio, not only metadata.
+- Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, no same-position playback refresh, and no current selection inferred from track ID alone.

@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r32"
+            "gmmp421-r33"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -467,6 +467,9 @@ class GoneSmartModule : XposedModule() {
 
     private val playlistBridgeSmartChooserTitleDepth =
         ThreadLocal.withInitial { 0 }
+
+    private val playlistBridgeRuleBindHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val queueFlipController =
         QueueFlipController()
@@ -3352,6 +3355,7 @@ class GoneSmartModule : XposedModule() {
         var installed = 0
         installed += installPlaylistBridgeEditorHooks(loader)
         installed += installPlaylistBridgeEvaluationHook(loader)
+        installed += installPlaylistBridgeRuleRowHooks(loader)
 
         playlistBridgeInfo(
             "BRIDGE READY | hooks=$installed | bindings=$bindingsReady" +
@@ -3523,6 +3527,87 @@ class GoneSmartModule : XposedModule() {
         }
 
         return installed
+    }
+
+
+    private fun installPlaylistBridgeRuleRowHooks(loader: ClassLoader): Int {
+        return runCatching {
+            val recycler = loader.loadClass("androidx.recyclerview.widget.RecyclerView")
+            val setAdapter = recycler.declaredMethods.firstOrNull {
+                it.name == "setAdapter" && it.parameterCount == 1
+            } ?: throw NoSuchMethodException("RecyclerView.setAdapter")
+            setAdapter.isAccessible = true
+            hook(setAdapter).intercept { chain ->
+                val result = chain.proceed()
+                val list = chain.getThisObject() as? android.view.View
+                val adapter = chain.getArg(0)
+                if (list != null && adapter != null &&
+                    compatibilityResourceName(list) == "smartRuleListRecyclerView"
+                ) {
+                    installPlaylistBridgeConcreteRuleBindHooks(adapter)
+                }
+                result
+            }
+            playlistBridgeInfo(
+                "BRIDGE RULE ROW | smartRuleListRecyclerView adapter observer ready"
+            )
+            1
+        }.getOrElse {
+            playlistBridgeWarn("Smart rule RecyclerView observer unavailable", it)
+            0
+        }
+    }
+
+    private fun installPlaylistBridgeConcreteRuleBindHooks(adapter: Any) {
+        val methods = GmmpReflectionPolicy.callableMethods(adapter.javaClass)
+            .filter { method ->
+                !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.name == "onBindViewHolder" &&
+                    method.returnType == Void.TYPE &&
+                    method.parameterCount in 2..3 &&
+                    method.parameterTypes.getOrNull(1) == Integer.TYPE
+            }
+            .distinctBy { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name }
+            }
+        methods.forEach { method ->
+            val key = method.declaringClass.name + "|" + method.name + "|" +
+                method.parameterTypes.joinToString(",") { it.name }
+            if (!playlistBridgeRuleBindHookKeys.add(key)) return@forEach
+            runCatching {
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    val holder = chain.getArg(0)
+                    val position = (chain.getArg(1) as? Number)?.toInt() ?: -1
+                    val changed = runCatching {
+                        playlistBridgeController.rewriteBoundNativeSmartRuleLabel(
+                            chain.getThisObject(),
+                            holder,
+                            position
+                        )
+                    }.onFailure {
+                        playlistBridgeWarn("Smart rule row label rewrite failed", it)
+                    }.getOrDefault(false)
+                    if (changed) {
+                        playlistBridgeInfo(
+                            "BRIDGE RULE ROW LABEL | adapter=" +
+                                adapter.javaClass.name +
+                                " | position=$position | rewritten=true"
+                        )
+                    }
+                    result
+                }
+                playlistBridgeInfo(
+                    "BRIDGE RULE ROW HOOK | adapter=" + adapter.javaClass.name +
+                        " | method=" + method.declaringClass.name + "." + method.name
+                )
+            }.onFailure {
+                playlistBridgeRuleBindHookKeys.remove(key)
+                playlistBridgeWarn("Smart rule row bind hook unavailable", it)
+            }
+        }
     }
 
     private fun installPlaylistBridgeEvaluationHook(

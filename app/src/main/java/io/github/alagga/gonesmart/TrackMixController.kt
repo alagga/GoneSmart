@@ -756,6 +756,15 @@ internal class TrackMixController(
             if (!isCurrent(request)) return
             val loaded = loadedPlay.snapshot
             val selectedId = loadedPlay.selectedTrackId
+            val selectedEntryId = loaded.currentEntryId ?: run {
+                Log.e(TAG, "MIX CURRENT PIN | selected queue_id unavailable")
+                fail("Could not identify the selected queue entry safely.", request.context)
+                return
+            }
+            Log.i(
+                TAG,
+                "MIX CURRENT PIN | entry=$selectedEntryId | track=$selectedId | verified=true"
+            )
 
             val nativeSettings = settings.read()
             val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
@@ -790,7 +799,11 @@ internal class TrackMixController(
                         fail("Could not prepare Auto-DJ queue slots.", request.context)
                         return
                     }
-                    currentSnapshot = awaitQueue(request, 8_000L) { snapshot ->
+                    currentSnapshot = awaitQueue(
+                        request,
+                        8_000L,
+                        selectedEntryId
+                    ) { snapshot ->
                         snapshot.currentId == selectedId &&
                             (snapshot.ids.size - snapshot.currentIndex - 1) >= requiredUpcoming
                     } ?: run {
@@ -831,7 +844,8 @@ internal class TrackMixController(
                 val pruned = runCatching {
                     GmmpQueueMutationBridge(
                         autoDj = autoDj,
-                        verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+                        verifiedPositionWriter = nativePositionWriterProvider(autoDj),
+                        currentQueueEntryIdHint = selectedEntryId
                     ).retargetTrackMixUpcoming(
                         selectedTrackId = selectedId,
                         smartTrackIds = emptyList(),
@@ -844,7 +858,7 @@ internal class TrackMixController(
                     fail("Could not finalize the Track Auto-DJ queue.", request.context)
                     return
                 }
-                filled = queueSnapshot()?.takeIf {
+                filled = queueSnapshot(selectedEntryId)?.takeIf {
                     it.currentId == selectedId && it.ids.size == initial
                 }
                 if (filled == null) {
@@ -900,7 +914,11 @@ internal class TrackMixController(
 
             if (!isCurrent(request)) return
             if (filled == null) {
-                val current = queueSnapshot()
+                val current = if (!legacyQueue) {
+                    queueSnapshot(loaded.currentEntryId)
+                } else {
+                    queueSnapshot()
+                }
                 if (current != null &&
                     current.currentId == selectedId &&
                     current.ids.size == initial
@@ -1142,7 +1160,7 @@ internal class TrackMixController(
             // position writer owns CURRENT, so a slower structural cadence is
             // sufficient and avoids repeatedly materializing a large queue.
             Thread.sleep(if (targetIdentity == null) 160L else 400L)
-            val current = queueSnapshot() ?: continue
+            val current = queueSnapshot(targetIdentity?.queueEntryId) ?: continue
             val currentTrack = current.currentId ?: continue
             val identity = TrackMixPlaybackIdentityPolicy.Identity(
                 queueEntryId = current.currentEntryId,
@@ -1302,12 +1320,13 @@ internal class TrackMixController(
     private fun awaitQueue(
         request: Pending,
         timeoutMs: Long,
+        currentQueueEntryIdHint: Long? = null,
         condition: (Snapshot) -> Boolean
     ): Snapshot? {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (isCurrent(request) && SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(175)
-            val snapshot = queueSnapshot()
+            val snapshot = queueSnapshot(currentQueueEntryIdHint)
             if (snapshot != null && condition(snapshot)) return snapshot
         }
         return null
@@ -1316,7 +1335,9 @@ internal class TrackMixController(
     private fun isCurrent(request: Pending): Boolean =
         pending === request
 
-    private fun queueSnapshot(): Snapshot? = runCatching {
+    private fun queueSnapshot(
+        currentQueueEntryIdHint: Long? = null
+    ): Snapshot? = runCatching {
         nativeAutoDj?.get()?.let { autoDj ->
             // Once Queue Flip has passively proved GMMP's real writable
             // queue-position boundary, reuse that exact native readback here.
@@ -1327,7 +1348,8 @@ internal class TrackMixController(
             val positionWriter = nativePositionWriterProvider(autoDj)
             val context = queueReader.read(
                 autoDj,
-                positionWriter?.read()
+                positionWriter?.read(),
+                currentQueueEntryIdHint
             ) ?: return@runCatching null
             val currentIndex = context.items.indexOfFirst {
                 it.state == QueueItemState.CURRENT
