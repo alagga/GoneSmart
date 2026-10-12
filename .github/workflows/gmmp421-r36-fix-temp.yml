@@ -1,0 +1,35 @@
+name: GMMP 4.2.1 r36 repair temp
+
+on:
+  push:
+    branches:
+      - fix/playlist-link-gmmp-4.2.1
+    paths:
+      - .github/r36_patch.py
+      - .github/workflows/gmmp421-r36-fix-temp.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+      - name: Apply r36 repair
+        run: python3 .github/r36_patch.py
+      - name: Run unit tests and debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Commit repair and remove helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/r36_patch.py .github/workflows/gmmp421-r36-fix-temp.yml
+          git add AGENTS.md docs app/src
+          git commit -m "fix: replace zero-pool Smart source with native Auto-DJ"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
