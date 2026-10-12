@@ -1,0 +1,35 @@
+name: GMMP 4.2.1 r33 repair temp
+
+on:
+  push:
+    branches:
+      - fix/playlist-link-gmmp-4.2.1
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Apply r33 repair
+        run: python3 .github/r33_patch.py
+
+      - name: Run unit tests and debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Commit repair and remove helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/r33_patch.py .github/workflows/gmmp421-r33-fix-temp.yml
+          git add AGENTS.md docs app/src
+          git commit -m "fix: pin Track Mix current identity and Smart rule labels"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
