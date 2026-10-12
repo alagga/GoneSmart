@@ -1,8 +1,8 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r35** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r36** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `f6dd9287db21aa16b2088940e821f69e76299e1c`.
+Repair source commit: `R36_REPAIR_SOURCE_PENDING`.
 
 ## Before device install
 
@@ -62,3 +62,12 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - The rebind must adopt the replacement native `queue_id`, then reach `MIX PLAY VERIFIED`, `MIX CURRENT PIN`, the existing prune/Auto-DJ path, and finally `MIX AUTO-DJ` / `MIX VERIFIED`. Zero or duplicate exact path matches must not rebind.
 - Re-run Avicii `Levels (Radio Edit)` as regression. Its prepared recommendation pool must continue through the accepted controller-owned `qr` bootstrap; no exact-path rebind should be needed in the normal successful path, and the natural Track-2 decoder/audio transition must remain intact.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no same-position playback refresh, no post-materialization Track-ID retarget, and no current selection inferred from track ID alone.
+
+## r36 regression focus
+- The accepted r35 exact-path rebind must still occur for the zero-provider BUNT. run, but the final queue must no longer retain source Smart-Playlist followers. Expect a passively observed state-writer candidate, one promoted Track Mix rebase write, `TRACK MIX ZERO-POOL SEED ... oldPosition=6 | newPosition=1`, an explicit native refill for four tracks, `TRACK MIX ZERO-POOL REBASE ... currentPosition=1`, and `MIX NEXT SOURCE REFRESH ... position=2`.
+- The queue UI must settle at **1 of 5**, not `6 of 5`. The five native rows must have compact queue positions 1..5; BUNT. remains the exact pinned CURRENT row at position 1.
+- The four rows after BUNT. must be created by GMMP's native Auto-DJ refill after source isolation (`nativeGenerated=4`), not retained rows from the source Smart Playlist. No Track ID is rewritten in place.
+- Let BUNT. cross naturally into Track 2. The refreshed position-2 row must be the decoder/audio source, not merely the visible queue metadata.
+- Re-run Avicii `Levels (Radio Edit)` as the prepared-pool regression. It must continue through the accepted r35 controller-owned `qr` bootstrap. The r36 zero-pool seed/rebase/next-source-refresh markers must be absent for Levels, and its natural Track-2 transition must remain correct.
+- Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, no same-position CURRENT refresh, no hard-coded obfuscated next-source method, and any ambiguous passive boundary fails closed.
+

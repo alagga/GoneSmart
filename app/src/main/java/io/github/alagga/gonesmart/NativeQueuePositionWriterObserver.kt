@@ -65,7 +65,21 @@ internal class NativeQueuePositionWriterObserver(
         val sameHostReader: NativeQueueObservedStateBinding.Reader?
     )
 
+    private data class PassiveSameValue(
+        val receiver: WeakReference<Any>,
+        val autoDj: WeakReference<Any>,
+        val method: Method,
+        val looper: Looper?,
+        val signalSource: String
+    )
+
     private val controlledWrite = ThreadLocal<Boolean>()
+
+    @Volatile
+    private var passiveSameValue: PassiveSameValue? = null
+
+    @Volatile
+    private var passiveSameValueAmbiguous = false
     private val stateWriterSignatures = ConcurrentHashMap<Class<*>, Set<String>>()
     private val broadFallbackAttempted = ConcurrentHashMap.newKeySet<String>()
 
@@ -116,6 +130,30 @@ internal class NativeQueuePositionWriterObserver(
                 sameHostReader = null
             )
             return result
+        }
+
+        val sameValueUnique =
+            stateWriter &&
+                before != null &&
+                after != null &&
+                before.value == argument &&
+                after.value == argument &&
+                isUniqueQueuePosition(autoDj, argument)
+        if (TrackMixZeroPoolPolicy.acceptPassivePositionWriter(
+                isStateWriter = stateWriter,
+                before = before?.value,
+                after = after?.value,
+                argument = argument,
+                uniqueQueuePosition = sameValueUnique
+            )
+        ) {
+            recordPassiveSameValue(
+                receiver = service,
+                autoDj = autoDj,
+                method = method,
+                looper = invocationLooper,
+                signalSource = after?.source ?: before?.source ?: "native-signal"
+            )
         }
 
         if (!stateWriter) return result
@@ -228,6 +266,126 @@ internal class NativeQueuePositionWriterObserver(
                 return false
             }
         }
+    }
+
+    /**
+     * Track Mix may need to move the exact CURRENT row from a Smart-source
+     * absolute queue position to position 1 before native Auto-DJ refill.
+     * Queue Flip still uses [binding] and therefore never consumes this weaker
+     * same-value observation. A controlled Track Mix write promotes the
+     * candidate only after the independent native signal and queue row both
+     * verify the new value.
+     */
+    fun trackMixBinding(autoDj: Any): NativeQueuePositionWriter? {
+        binding(autoDj)?.let { return it }
+        if (passiveSameValueAmbiguous) return null
+        val candidate = passiveSameValue ?: return null
+        if (candidate.autoDj.get() !== autoDj) return null
+        val receiver = candidate.receiver.get() ?: return null
+        val provisional = Verified(
+            receiver = candidate.receiver,
+            autoDj = candidate.autoDj,
+            method = candidate.method,
+            looper = candidate.looper,
+            signalSource = candidate.signalSource,
+            sameHostReader = null
+        )
+        return object : NativeQueuePositionWriter {
+            override val description: String =
+                candidate.method.declaringClass.name + "." +
+                    candidate.method.name +
+                    "(int) via passive-same-value-track-mix"
+
+            override fun read(): Int? = readSignal(autoDj)?.value
+
+            override fun write(position: Int): Boolean {
+                val before = read() ?: return false
+                if (before == position) {
+                    return isUniqueQueuePosition(autoDj, position)
+                }
+                if (!invokeControlled(
+                        proof = provisional,
+                        receiver = receiver,
+                        autoDj = autoDj,
+                        position = position
+                    )
+                ) return false
+
+                val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
+                do {
+                    val reading = readSignal(autoDj)
+                    if (reading?.value == position &&
+                        isUniqueQueuePosition(autoDj, position)
+                    ) {
+                        record(
+                            receiver = receiver,
+                            autoDj = autoDj,
+                            method = candidate.method,
+                            looper = candidate.looper,
+                            signalSource = reading.source,
+                            sameHostReader = null
+                        )
+                        Log.i(
+                            TAG,
+                            "QUEUE POSITION TRACK MIX WRITE VERIFIED | writer=" +
+                                candidate.method.declaringClass.name + "." +
+                                candidate.method.name +
+                                " | position=" + position +
+                                " | promoted=true"
+                        )
+                        return true
+                    }
+                    Thread.sleep(20L)
+                } while (SystemClock.elapsedRealtime() < deadline)
+                return false
+            }
+
+            override fun refreshCurrent(position: Int): Boolean = false
+        }
+    }
+
+    @Synchronized
+    private fun recordPassiveSameValue(
+        receiver: Any,
+        autoDj: Any,
+        method: Method,
+        looper: Looper?,
+        signalSource: String
+    ) {
+        val existing = passiveSameValue
+        if (existing != null && existing.autoDj.get() !== autoDj) {
+            passiveSameValue = null
+            passiveSameValueAmbiguous = false
+        }
+        val current = passiveSameValue
+        if (current == null) {
+            method.isAccessible = true
+            passiveSameValue = PassiveSameValue(
+                receiver = WeakReference(receiver),
+                autoDj = WeakReference(autoDj),
+                method = method,
+                looper = looper,
+                signalSource = signalSource
+            )
+            Log.i(
+                TAG,
+                "QUEUE POSITION WRITER PASSIVE CANDIDATE | writer=" +
+                    method.declaringClass.name + "." + method.name +
+                    "(int) | signal=" + signalSource +
+                    " | sameValue=true"
+            )
+            return
+        }
+        if (current.receiver.get() === receiver &&
+            current.autoDj.get() === autoDj &&
+            sameMethod(current.method, method)
+        ) return
+
+        passiveSameValueAmbiguous = true
+        Log.w(
+            TAG,
+            "QUEUE POSITION WRITER PASSIVE AMBIGUOUS | Track Mix rebase disabled"
+        )
     }
 
     private fun invokeControlled(

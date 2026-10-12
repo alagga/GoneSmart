@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r35"
+            "gmmp421-r36"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -484,6 +484,9 @@ class GoneSmartModule : XposedModule() {
         },
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
+        },
+        nativeTrackMixPositionWriterProvider = { autoDj ->
+            queueFlipController.trackMixPositionWriter(autoDj)
         },
         resolvePrePlayTarget = { autoDj, roots ->
             resolveTrackMixPrePlayTarget(autoDj, roots)
@@ -1270,10 +1273,17 @@ class GoneSmartModule : XposedModule() {
             positionCandidates.forEach { method ->
                 method.isAccessible = true
                 hook(method).intercept { chain ->
-                    queueFlipController.aroundNativePositionCommand(
-                        service = chain.getThisObject(),
+                    val service = chain.getThisObject()
+                    val value = (chain.getArg(0) as? Number)?.toInt()
+                    trackMixController.observeNativePositionCommand(
+                        service = service,
                         method = method,
-                        value = (chain.getArg(0) as? Number)?.toInt()
+                        value = value
+                    )
+                    queueFlipController.aroundNativePositionCommand(
+                        service = service,
+                        method = method,
+                        value = value
                     ) {
                         chain.proceed()
                     }
