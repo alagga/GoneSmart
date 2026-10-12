@@ -120,6 +120,8 @@ internal class TrackMixController(
         @Volatile var nativeSource = ""
         @Volatile var prePlayTarget: TrackInfo? = null
         @Volatile var prePlayPrepared: TrackMixPreparedInitialPool = TrackMixPreparedInitialPool.EMPTY
+        @Volatile var prePlayInitialSize = 0
+        @Volatile var nativePlaybackWindowApplied = false
         @Volatile var bootstrapAppliedTrackIds: List<Long> = emptyList()
         @Volatile var bootstrapRefillObserved = false
     }
@@ -492,6 +494,87 @@ internal class TrackMixController(
         if (action == 0) onNativePlaybackQueueUpdated("MusicService.w1")
     }
 
+    /**
+     * r34: if provider recommendations are genuinely empty, bound a native
+     * Playlist/Smart-Playlist Play source before queue materialization. This
+     * prevents GMMP from replacing a short-lived selected queue_id with an
+     * entire source list while still leaving GMMP in charge of current+1 and
+     * AudioSource preparation. Prepared Smart-DJ bootstrap requests keep the
+     * proven r33 path unchanged.
+     */
+    fun windowNativePlaybackForTrackMix(
+        action: Int?,
+        tracks: List<*>
+    ): List<Any>? {
+        val request = pending ?: return null
+        if (action != 0 || request.stage != "WAIT_PLAY") return null
+        if (request.nativePlaybackWindowApplied) return null
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return null
+        val target = request.prePlayTarget ?: return null
+        val initial = request.prePlayInitialSize.coerceAtLeast(1)
+        if (tracks.size <= initial || tracks.isEmpty()) return null
+
+        val first = tracks.firstOrNull() ?: return null
+        val nativeClass = first.javaClass
+        val source = ArrayList<Any>(tracks.size)
+        val ids = ArrayList<Long>(tracks.size)
+        for (candidate in tracks) {
+            val track = candidate ?: run {
+                Log.w(TAG, "MIX NATIVE PLAY WINDOW | skipped=null-row")
+                return null
+            }
+            if (!nativeClass.isInstance(track)) {
+                Log.w(TAG, "MIX NATIVE PLAY WINDOW | skipped=mixed-model")
+                return null
+            }
+            val id = nativePlaybackTrackId(track) ?: run {
+                Log.w(
+                    TAG,
+                    "MIX NATIVE PLAY WINDOW | skipped=id-unresolved | model=" +
+                        nativeClass.name
+                )
+                return null
+            }
+            source += track
+            ids += id
+        }
+
+        val plan = TrackMixNativePlayWindowPolicy.plan(
+            trackIds = ids,
+            targetTrackId = target.id,
+            initialSize = initial
+        )
+        if (plan == null) {
+            Log.w(
+                TAG,
+                "MIX NATIVE PLAY WINDOW | skipped=target-ambiguous-or-missing" +
+                    " | original=${tracks.size} | target=${target.id}"
+            )
+            return null
+        }
+
+        val bounded = ArrayList(
+            source.subList(plan.startIndex, plan.endExclusive)
+        )
+        if (bounded.isEmpty()) return null
+        request.nativePlaybackWindowApplied = true
+        Log.i(
+            TAG,
+            "MIX NATIVE PLAY WINDOW | original=${tracks.size}" +
+                " | targetIndex=${plan.startIndex}" +
+                " | forwarded=${bounded.size}" +
+                " | initial=$initial | target=${target.id} | prepared=0"
+        )
+        return bounded
+    }
+
+    private fun nativePlaybackTrackId(track: Any): Long? = runCatching {
+        val getter = track.javaClass.methods.filter {
+            it.name == "getId" && it.parameterCount == 0
+        }.singleOrNull() ?: return@runCatching null
+        (getter.invoke(track) as? Number)?.toLong()
+    }.getOrNull()
+
     fun onNativeAutoDjRefillRequested(requested: Int) {
         val request = pending ?: return
         if (request.stage == "PREFILL_SMART" ||
@@ -691,6 +774,7 @@ internal class TrackMixController(
                 )
 
                 val initial = settings.read().initialQueueSize.coerceAtLeast(1)
+                request.prePlayInitialSize = initial
                 val requiredUpcoming = (initial - 1).coerceAtLeast(0)
                 request.stage = "PREPLAY_PREPARE"
                 request.prePlayPrepared = preparePrePlaySmartPool(

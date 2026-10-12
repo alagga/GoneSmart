@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r33"
+            "gmmp421-r34"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -1382,12 +1382,21 @@ class GoneSmartModule : XposedModule() {
             hook(playListMethod).intercept { chain ->
                 val action = chain.getArg(actionIndex) as? Int
                 val originalList = chain.getArg(listIndex) as? List<*>
+                val trackMixWindow = originalList?.let { source ->
+                    trackMixController.windowNativePlaybackForTrackMix(
+                        action,
+                        source
+                    )
+                }
+                val effectiveList = trackMixWindow ?: originalList
                 val reversed = queueFlipController
                     .consumeReversePlaylistForNativePlay(
                         action,
-                        originalList
+                        effectiveList
                     )
-                if (reversed == null) {
+                val replacementList: List<*>? =
+                    reversed?.tracks ?: trackMixWindow
+                if (replacementList == null) {
                     val result = chain.proceed()
                     trackMixController.onNativePlaybackMethodFinished(action)
                     result
@@ -1395,22 +1404,27 @@ class GoneSmartModule : XposedModule() {
                     val args = Array<Any?>(playListMethod.parameterCount) {
                         chain.getArg(it)
                     }
-                    args[listIndex] = reversed.tracks
-                    Log.i(
-                        "GoneSmartFlip",
-                        "FLIP SERVICE | method=" + playListMethod.name +
-                            " | action=" + action +
-                            " | originalCount=" + originalList?.size +
-                            " | reversedCount=" + reversed.tracks.size
-                    )
+                    args[listIndex] = replacementList
+                    if (reversed != null) {
+                        Log.i(
+                            "GoneSmartFlip",
+                            "FLIP SERVICE | method=" + playListMethod.name +
+                                " | action=" + action +
+                                " | originalCount=" + originalList?.size +
+                                " | reversedCount=" + reversed.tracks.size
+                        )
+                    }
                     val result = playListMethod.invoke(
                         chain.getThisObject(),
                         *args
                     )
-                    queueFlipController.verifyNativePlaylistPlayback(
-                        reversed.tracks,
-                        reversed.sourceKind
-                    )
+                    if (reversed != null) {
+                        queueFlipController.verifyNativePlaylistPlayback(
+                            reversed.tracks,
+                            reversed.sourceKind
+                        )
+                    }
+                    trackMixController.onNativePlaybackMethodFinished(action)
                     result
                 }
             }

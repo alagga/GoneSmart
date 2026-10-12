@@ -258,3 +258,9 @@ The r31 device pass proved that the 4.2.1 Smart-Playlist evaluator calls Playlis
 - Pending Track Mix now pins CURRENT by the uniquely proven native queue entry ID across Smart-list materialization/refill/prune. The hint is request-scoped and fails closed if no longer unique.
 - Smart-Playlist link type text is corrected only after the native `smartRuleListRecyclerView` row bind and only for a uniquely proven native Smart-Playlist reference. Ordinary Playlist bridge rules are untouched.
 - r32 Playlist Link membership evaluation remains accepted and unchanged. `CLEAR_QUEUE`, post-materialization Track-ID retarget and same-position playback refresh remain retired.
+
+
+## r34 focused repair
+- Preserve the native styled Smart-rule `CharSequence`; relabel only its proven `Playlist` prefix. No TextView geometry/typography mutation is allowed.
+- If Track Mix has zero prepared GoneSmart recommendations and GMMP is about to materialize a larger Playlist/Smart-Playlist through the accepted `MusicService.w1(action=0)` boundary, bound that native source pre-materialization to the unique selected target plus the available Initial-Size suffix. This prevents the selected temporary queue entry from being discarded by the full source rebuild while preserving GMMP ownership of current+1/AudioSource preparation.
+- Prepared-recommendation Track Mix (including the r33 Levels acceptance path) is unchanged. Missing/duplicate targets fail closed. `CLEAR_QUEUE`, post-materialization Track-ID retarget and same-position refresh stay retired.

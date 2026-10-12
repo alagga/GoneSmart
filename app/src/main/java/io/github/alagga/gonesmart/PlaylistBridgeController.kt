@@ -2072,7 +2072,16 @@ internal class PlaylistBridgeController(
         }
         collect(root)
         if (exact.size != 1) return false
-        exact.single().text = replacement
+        val target = exact.single()
+        val originalText = target.text ?: return false
+        if (originalText.toString() != expected) return false
+        val prefixEnd = playlist.length
+        if (prefixEnd <= 0 || prefixEnd > originalText.length) return false
+        // Keep GMMP's native CharSequence spans. Replacing the whole value
+        // with a plain String drops row-specific size/alignment styling.
+        val styled = android.text.SpannableStringBuilder(originalText)
+        styled.replace(0, prefixEnd, smartPlaylist)
+        target.text = styled
         return true
     }
 
