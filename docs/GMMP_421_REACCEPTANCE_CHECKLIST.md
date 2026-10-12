@@ -2,7 +2,7 @@
 
 This checklist is the single device pass for the current **r34** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `f296870c68e7eeecd99882d5be8601de99cc1ea5`.
+Repair source commit: `5216cd5b7a6182ea3f43ded54d4f720b9db5c03e`.
 
 ## Before device install
 
