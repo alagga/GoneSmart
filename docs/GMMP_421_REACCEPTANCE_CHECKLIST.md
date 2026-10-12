@@ -2,13 +2,13 @@
 
 This checklist is the single device pass for the current **r35** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `R35_REPAIR_SOURCE_PENDING`.
+Repair source commit: `f6dd9287db21aa16b2088940e821f69e76299e1c`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r34`;
+- Compatibility startup log reports revision `gmmp421-r35`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -51,11 +51,10 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - Start Track Auto-DJ on Avicii `Levels (Radio Edit)`. The four prepared GoneSmart IDs must still reach `SMART DJ TRACK MIX BOOTSTRAP`, then the pinned queue entry must allow post-refill verification, prune and the native Auto-DJ command. Let playback cross naturally into Track 2 and verify decoder/audio, not only metadata.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, no same-position playback refresh, and no current selection inferred from track ID alone.
 
-
 ## r34 regression focus
-- Native Smart-Playlist rule rows must still read **Smart Playlist: <name>**, but their typography/alignment must be visually identical to the original native row. `BRIDGE RULE ROW LABEL ... rewritten=true` remains expected; no gravity/text-size/layout mutation is allowed.
-- Re-run the zero-provider BUNT. Smart-Playlist Track Mix. Before materialization it should log `MIX NATIVE PLAY WINDOW` with `prepared=0`; the forwarded list must be no larger than GMMP Initial Size and begin at the uniquely pre-resolved BUNT. target. The request must then reach `MIX AUTO-DJ`/`MIX VERIFIED` instead of timing out on the discarded temporary queue_id.
-- Re-run Avicii `Levels (Radio Edit)` as a regression. Because it has prepared GoneSmart recommendations, there must be **no** `MIX NATIVE PLAY WINDOW`; the accepted r33 `qr` bootstrap/prune path and natural Track-2 decoder transition must remain intact.
+- Native Smart-Playlist rule rows must still read **Smart Playlist: <name>**, with typography/alignment identical to the original native row. The span-preserving prefix replacement is accepted and remains invariant.
+- The r34 zero-provider `MusicService.w1` source-window experiment is retired: the exact-head BUNT. log proved that context-track Play never crossed this list boundary, so `MIX NATIVE PLAY WINDOW` must not be required or revived.
+- Avicii `Levels (Radio Edit)` remains the accepted prepared-pool regression: the r33 controller-owned `qr` bootstrap/prune path and natural Track-2 decoder transition must remain intact.
 
 ## r35 regression focus
 - The Smart-Playlist rule label is accepted from r34: it must remain **Smart Playlist: <name>** with native typography/alignment unchanged.
@@ -63,4 +62,3 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - The rebind must adopt the replacement native `queue_id`, then reach `MIX PLAY VERIFIED`, `MIX CURRENT PIN`, the existing prune/Auto-DJ path, and finally `MIX AUTO-DJ` / `MIX VERIFIED`. Zero or duplicate exact path matches must not rebind.
 - Re-run Avicii `Levels (Radio Edit)` as regression. Its prepared recommendation pool must continue through the accepted controller-owned `qr` bootstrap; no exact-path rebind should be needed in the normal successful path, and the natural Track-2 decoder/audio transition must remain intact.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no same-position playback refresh, no post-materialization Track-ID retarget, and no current selection inferred from track ID alone.
-
