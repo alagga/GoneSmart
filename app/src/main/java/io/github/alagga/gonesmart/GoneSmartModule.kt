@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r34"
+            "gmmp421-r35"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -1382,20 +1382,12 @@ class GoneSmartModule : XposedModule() {
             hook(playListMethod).intercept { chain ->
                 val action = chain.getArg(actionIndex) as? Int
                 val originalList = chain.getArg(listIndex) as? List<*>
-                val trackMixWindow = originalList?.let { source ->
-                    trackMixController.windowNativePlaybackForTrackMix(
-                        action,
-                        source
-                    )
-                }
-                val effectiveList = trackMixWindow ?: originalList
                 val reversed = queueFlipController
                     .consumeReversePlaylistForNativePlay(
                         action,
-                        effectiveList
+                        originalList
                     )
-                val replacementList: List<*>? =
-                    reversed?.tracks ?: trackMixWindow
+                val replacementList: List<*>? = reversed?.tracks
                 if (replacementList == null) {
                     val result = chain.proceed()
                     trackMixController.onNativePlaybackMethodFinished(action)

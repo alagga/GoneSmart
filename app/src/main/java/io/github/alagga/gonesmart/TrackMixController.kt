@@ -91,7 +91,8 @@ internal class TrackMixController(
     private data class Snapshot(
         val ids: List<Long>,
         val currentIndex: Int,
-        val entryIds: List<Long> = emptyList()
+        val entryIds: List<Long> = emptyList(),
+        val currentResolutionSource: String? = null
     ) {
         val currentId: Long? get() = ids.getOrNull(currentIndex)
         val currentEntryId: Long? get() = entryIds.getOrNull(currentIndex)
@@ -121,7 +122,6 @@ internal class TrackMixController(
         @Volatile var prePlayTarget: TrackInfo? = null
         @Volatile var prePlayPrepared: TrackMixPreparedInitialPool = TrackMixPreparedInitialPool.EMPTY
         @Volatile var prePlayInitialSize = 0
-        @Volatile var nativePlaybackWindowApplied = false
         @Volatile var bootstrapAppliedTrackIds: List<Long> = emptyList()
         @Volatile var bootstrapRefillObserved = false
     }
@@ -493,87 +493,6 @@ internal class TrackMixController(
     fun onNativePlaybackMethodFinished(action: Int?) {
         if (action == 0) onNativePlaybackQueueUpdated("MusicService.w1")
     }
-
-    /**
-     * r34: if provider recommendations are genuinely empty, bound a native
-     * Playlist/Smart-Playlist Play source before queue materialization. This
-     * prevents GMMP from replacing a short-lived selected queue_id with an
-     * entire source list while still leaving GMMP in charge of current+1 and
-     * AudioSource preparation. Prepared Smart-DJ bootstrap requests keep the
-     * proven r33 path unchanged.
-     */
-    fun windowNativePlaybackForTrackMix(
-        action: Int?,
-        tracks: List<*>
-    ): List<Any>? {
-        val request = pending ?: return null
-        if (action != 0 || request.stage != "WAIT_PLAY") return null
-        if (request.nativePlaybackWindowApplied) return null
-        if (request.prePlayPrepared.trackIds.isNotEmpty()) return null
-        val target = request.prePlayTarget ?: return null
-        val initial = request.prePlayInitialSize.coerceAtLeast(1)
-        if (tracks.size <= initial || tracks.isEmpty()) return null
-
-        val first = tracks.firstOrNull() ?: return null
-        val nativeClass = first.javaClass
-        val source = ArrayList<Any>(tracks.size)
-        val ids = ArrayList<Long>(tracks.size)
-        for (candidate in tracks) {
-            val track = candidate ?: run {
-                Log.w(TAG, "MIX NATIVE PLAY WINDOW | skipped=null-row")
-                return null
-            }
-            if (!nativeClass.isInstance(track)) {
-                Log.w(TAG, "MIX NATIVE PLAY WINDOW | skipped=mixed-model")
-                return null
-            }
-            val id = nativePlaybackTrackId(track) ?: run {
-                Log.w(
-                    TAG,
-                    "MIX NATIVE PLAY WINDOW | skipped=id-unresolved | model=" +
-                        nativeClass.name
-                )
-                return null
-            }
-            source += track
-            ids += id
-        }
-
-        val plan = TrackMixNativePlayWindowPolicy.plan(
-            trackIds = ids,
-            targetTrackId = target.id,
-            initialSize = initial
-        )
-        if (plan == null) {
-            Log.w(
-                TAG,
-                "MIX NATIVE PLAY WINDOW | skipped=target-ambiguous-or-missing" +
-                    " | original=${tracks.size} | target=${target.id}"
-            )
-            return null
-        }
-
-        val bounded = ArrayList(
-            source.subList(plan.startIndex, plan.endExclusive)
-        )
-        if (bounded.isEmpty()) return null
-        request.nativePlaybackWindowApplied = true
-        Log.i(
-            TAG,
-            "MIX NATIVE PLAY WINDOW | original=${tracks.size}" +
-                " | targetIndex=${plan.startIndex}" +
-                " | forwarded=${bounded.size}" +
-                " | initial=$initial | target=${target.id} | prepared=0"
-        )
-        return bounded
-    }
-
-    private fun nativePlaybackTrackId(track: Any): Long? = runCatching {
-        val getter = track.javaClass.methods.filter {
-            it.name == "getId" && it.parameterCount == 0
-        }.singleOrNull() ?: return@runCatching null
-        (getter.invoke(track) as? Number)?.toLong()
-    }.getOrNull()
 
     fun onNativeAutoDjRefillRequested(requested: Int) {
         val request = pending ?: return
@@ -1221,6 +1140,7 @@ internal class TrackMixController(
         var detectedQueueSize = -1
         var stableSnapshot: Snapshot? = null
         var stableAt = 0L
+        var pathRebindApplied = false
         val deadline = SystemClock.elapsedRealtime() +
             TrackMixQueueSettlingPolicy.WAIT_TIMEOUT_MS
         val completionGuard =
@@ -1244,7 +1164,22 @@ internal class TrackMixController(
             // position writer owns CURRENT, so a slower structural cadence is
             // sufficient and avoids repeatedly materializing a large queue.
             Thread.sleep(if (targetIdentity == null) 160L else 400L)
-            val current = queueSnapshot(targetIdentity?.queueEntryId) ?: continue
+            val sampleAt = SystemClock.elapsedRealtime()
+            val rebindPathHint = if (
+                targetIdentity != null &&
+                !pathRebindApplied &&
+                detectedAt > 0L &&
+                completionGuard > 0L &&
+                sampleAt - detectedAt <= completionGuard
+            ) {
+                request.prePlayTarget?.path
+            } else {
+                null
+            }
+            val current = queueSnapshot(
+                currentQueueEntryIdHint = targetIdentity?.queueEntryId,
+                currentTrackPathHint = rebindPathHint
+            ) ?: continue
             val currentTrack = current.currentId ?: continue
             val identity = TrackMixPlaybackIdentityPolicy.Identity(
                 queueEntryId = current.currentEntryId,
@@ -1312,6 +1247,41 @@ internal class TrackMixController(
             }
 
             val target = targetIdentity ?: continue
+            if (current.currentResolutionSource == "track-mix-path-rebind") {
+                val replacementEntry = identity.queueEntryId
+                if (
+                    replacementEntry != null &&
+                    replacementEntry != target.queueEntryId &&
+                    identity.trackId == target.trackId
+                ) {
+                    pathRebindApplied = true
+                    Log.i(
+                        TAG,
+                        "MIX CURRENT REBIND | oldEntry=" +
+                            (target.queueEntryId ?: -1L) +
+                            " | newEntry=" + replacementEntry +
+                            " | track=" + identity.trackId +
+                            " | source=exact-path | verified=true"
+                    )
+                    targetIdentity = identity
+                    detectedAt = now
+                    detectedQueueSize = current.ids.size
+                    stableSnapshot = current
+                    stableAt = now
+                    continue
+                }
+                Log.w(
+                    TAG,
+                    "MIX CURRENT REBIND | rejected=true" +
+                        " | oldEntry=" + (target.queueEntryId ?: -1L) +
+                        " | candidateEntry=" + (replacementEntry ?: -1L) +
+                        " | oldTrack=" + target.trackId +
+                        " | candidateTrack=" + identity.trackId
+                )
+                stableSnapshot = null
+                stableAt = now
+                continue
+            }
             val currentStillSelected =
                 TrackMixPlaybackIdentityPolicy.sameCurrent(target, identity)
             val selectedOccurrences = current.ids.count {
@@ -1420,7 +1390,8 @@ internal class TrackMixController(
         pending === request
 
     private fun queueSnapshot(
-        currentQueueEntryIdHint: Long? = null
+        currentQueueEntryIdHint: Long? = null,
+        currentTrackPathHint: String? = null
     ): Snapshot? = runCatching {
         nativeAutoDj?.get()?.let { autoDj ->
             // Once Queue Flip has passively proved GMMP's real writable
@@ -1433,7 +1404,8 @@ internal class TrackMixController(
             val context = queueReader.read(
                 autoDj,
                 positionWriter?.read(),
-                currentQueueEntryIdHint
+                currentQueueEntryIdHint,
+                currentTrackPathHint
             ) ?: return@runCatching null
             val currentIndex = context.items.indexOfFirst {
                 it.state == QueueItemState.CURRENT
@@ -1442,7 +1414,8 @@ internal class TrackMixController(
             return@runCatching Snapshot(
                 context.items.map { it.track.id },
                 currentIndex,
-                context.items.map { it.queueEntryId }
+                context.items.map { it.queueEntryId },
+                context.currentResolutionSource
             )
         }
 
