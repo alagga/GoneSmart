@@ -2,13 +2,13 @@
 
 This checklist is the single device pass for the current **r38** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `R38_REPAIR_SOURCE_PENDING`.
+Repair source commit: `12f808c94ce7c9d3feb18bd0ee2a6985e8c5965f`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r37`;
+- Compatibility startup log reports revision `gmmp421-r38`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
