@@ -70,3 +70,6 @@ The r31 device pass isolated two remaining deterministic regressions: Playlist L
 - The same r36 pass proved the zero-provider BUNT. path reached `MIX CURRENT PIN` but failed before mutation because the Track-Mix Current writer was assumed to share `queue_position` coordinates. Natural device evidence showed the structural state call with argument 4 while GMMP owned queue position 5. r37 therefore treats the Track-Mix-only state writer as request-scoped and infers only offset 0 or 1 between the natural method argument/read signal and the exact pinned queue position. Wider, stale or ambiguous mappings fail closed.
 - The r37 mapping never promotes the weaker Track-Mix state candidate into Queue Flip's global writer proof. `CLEAR_QUEUE`, post-materialization Track-ID retarget and same-position CURRENT refresh remain forbidden.
 
+### r38 Track Mix owner wiring
+
+The prepared-pool Levels regression is accepted from r37. The remaining zero-provider Smart-Playlist failure was traced to state-child ownership: the passive `dx3.c2(int)` hook replaced the captured `qr` owner immediately before writer correlation. r38 keeps child receivers observational only so the existing request-scoped 0/1 Current mapping can correlate against the real Auto-DJ owner. No recommendation ranking, prepared bootstrap, exact-path rebind, queue isolation or next-source boundary changed.

@@ -283,3 +283,6 @@ The r31 device pass proved that the 4.2.1 Smart-Playlist evaluator calls Playlis
 - The same r36 pass proved the zero-provider BUNT. path reached `MIX CURRENT PIN` but failed before mutation because the Track-Mix Current writer was assumed to share `queue_position` coordinates. Natural device evidence showed the structural state call with argument 4 while GMMP owned queue position 5. r37 therefore treats the Track-Mix-only state writer as request-scoped and infers only offset 0 or 1 between the natural method argument/read signal and the exact pinned queue position. Wider, stale or ambiguous mappings fail closed.
 - The r37 mapping never promotes the weaker Track-Mix state candidate into Queue Flip's global writer proof. `CLEAR_QUEUE`, post-materialization Track-ID retarget and same-position CURRENT refresh remain forbidden.
 
+### GMMP 4.2.1 Track Mix owner retention
+
+State-writer hooks are installed on child/state-host methods discovered from fields of the native Auto-DJ owner. The hook receiver is therefore evidence for the writer boundary, not a replacement Auto-DJ owner. Preserve the independently captured controller-owned Auto-DJ instance across child callbacks; otherwise request-scoped Current-writer correlation will inspect the child as though it were the owner and fail closed even when the natural writer call was observed.

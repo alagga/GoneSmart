@@ -59,6 +59,7 @@ class NativeQueuePlaybackDiagnosticsTest {
         val methods = NativeQueuePlaybackDiagnostics.stateWriterMethods(AutoDj::class.java)
         assertEquals(1, methods.size)
         assertEquals("setPosition", methods.single().name)
+        assertEquals(StateHost::class.java, methods.single().declaringClass)
     }
 
     @Test

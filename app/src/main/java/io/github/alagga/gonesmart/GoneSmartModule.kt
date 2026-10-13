@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r37"
+            "gmmp421-r38"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -1320,13 +1320,9 @@ class GoneSmartModule : XposedModule() {
                 method.isAccessible = true
                 hook(method).intercept { chain ->
                     val receiver = chain.getThisObject()
-                    if (receiver != null) {
-                        if (receiver.javaClass.name == "qr") {
-                            trackMixAutoDj = WeakReference(receiver)
-                        }
-                        trackMixController.captureNativeAutoDj(receiver)
-                        queueFlipController.captureNativeAutoDj(receiver)
-                    }
+                    // stateWriterCandidates are methods on Auto-DJ child/state hosts.
+                    // Their receiver is not the controller-owned Auto-DJ instance and must
+                    // never replace the independently captured refill/service owner.
                     queueFlipController.aroundNativeStatePositionCommand(
                         receiver = receiver,
                         method = method,
