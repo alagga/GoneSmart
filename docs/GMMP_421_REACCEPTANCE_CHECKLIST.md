@@ -2,7 +2,7 @@
 
 This checklist is the single device pass for the current **r39** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `R39_REPAIR_SOURCE_PENDING`.
+Repair source commit: `abfee93177808f13e1611e943551b6d796a99240`.
 
 ## Before device install
 
