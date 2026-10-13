@@ -1,0 +1,35 @@
+name: GMMP 4.2.1 r37 repair temp
+
+on:
+  push:
+    branches:
+      - fix/playlist-link-gmmp-4.2.1
+    paths:
+      - .github/r37_patch.py
+      - .github/workflows/gmmp421-r37-fix-temp.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+      - name: Apply r37 repair
+        run: python3 .github/r37_patch.py
+      - name: Run unit tests and debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Commit repair and remove helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/r37_patch.py .github/workflows/gmmp421-r37-fix-temp.yml
+          git add AGENTS.md docs app/src
+          git commit -m "fix: preserve prepared Track Mix matches and map Current index"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
