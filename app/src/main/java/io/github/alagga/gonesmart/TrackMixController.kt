@@ -49,7 +49,8 @@ internal class TrackMixController(
     private val enableSmartDj: (Context) -> Boolean,
     private val requestNativeRefill: (Any, Int) -> Boolean,
     private val nativePositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },
-    private val nativeTrackMixPositionWriterProvider: (Any) -> NativeQueuePositionWriter? = { null },
+    private val nativeTrackMixPositionWriterProvider: (Any, Int) -> NativeQueuePositionWriter? =
+        { _, _ -> null },
     private val resolvePrePlayTarget: (Any, List<Any>) -> TrackMixPrePlayTargetResolution? =
         { _, _ -> null },
     private val preparePrePlaySmartPool: (Any, TrackInfo, Int) -> TrackMixPreparedInitialPool =
@@ -136,6 +137,7 @@ internal class TrackMixController(
         @Volatile var prePlayTarget: TrackInfo? = null
         @Volatile var prePlayPrepared: TrackMixPreparedInitialPool = TrackMixPreparedInitialPool.EMPTY
         @Volatile var prePlayInitialSize = 0
+        @Volatile var verifiedCurrentQueueEntryId: Long? = null
         @Volatile var bootstrapAppliedTrackIds: List<Long> = emptyList()
         @Volatile var bootstrapRefillObserved = false
         val nativePositionCommands = CopyOnWriteArrayList<ObservedNativePositionCommand>()
@@ -497,17 +499,19 @@ internal class TrackMixController(
         val prepared = request.prePlayPrepared
         if (prepared.trackIds.isEmpty()) return null
 
+        val pinnedEntryId = request.verifiedCurrentQueueEntryId
         val currentId = runCatching {
             queueReader.read(
                 autoDj,
-                nativePositionWriterProvider(autoDj)?.read()
+                nativePositionWriterProvider(autoDj)?.read(),
+                pinnedEntryId
             )?.currentItem?.track?.id
         }.getOrNull()
         if (currentId != target.id) {
             Log.i(
                 TAG,
                 "MIX PREPLAY BOOTSTRAP SKIP | current=$currentId | target=${target.id} | " +
-                    "requested=$requested"
+                    "requested=$requested | pinnedEntry=" + (pinnedEntryId ?: -1L)
             )
             return null
         }
@@ -825,10 +829,16 @@ internal class TrackMixController(
                 fail("Could not identify the selected queue entry safely.", request.context)
                 return
             }
+            request.verifiedCurrentQueueEntryId = selectedEntryId
             Log.i(
                 TAG,
                 "MIX CURRENT PIN | entry=$selectedEntryId | track=$selectedId | verified=true"
             )
+            val selectedQueuePosition = loaded.currentQueuePosition ?: run {
+                Log.e(TAG, "MIX CURRENT PIN | selected queue_position unavailable")
+                fail("Could not identify the selected queue position safely.", request.context)
+                return
+            }
 
             val nativeSettings = settings.read()
             val initial = nativeSettings.initialQueueSize.coerceAtLeast(1)
@@ -857,6 +867,7 @@ internal class TrackMixController(
                         request = request,
                         selectedId = selectedId,
                         selectedEntryId = selectedEntryId,
+                        selectedQueuePosition = selectedQueuePosition,
                         initial = initial,
                         upcomingSetting = upcoming
                     ) ?: run {
@@ -1293,6 +1304,7 @@ internal class TrackMixController(
         request: Pending,
         selectedId: Long,
         selectedEntryId: Long,
+        selectedQueuePosition: Int,
         initial: Int,
         upcomingSetting: Int
     ): Snapshot? {
@@ -1306,7 +1318,10 @@ internal class TrackMixController(
             )
             return null
         }
-        val rebaseWriter = nativeTrackMixPositionWriterProvider(autoDj)
+        val rebaseWriter = nativeTrackMixPositionWriterProvider(
+            autoDj,
+            selectedQueuePosition
+        )
         if (rebaseWriter == null) {
             Log.e(
                 TAG,
@@ -1353,8 +1368,7 @@ internal class TrackMixController(
         } ?: return null
 
         val finalWriter = nativePositionWriterProvider(autoDj)
-            ?: nativeTrackMixPositionWriterProvider(autoDj)
-            ?: return null
+            ?: rebaseWriter
         val compact = runCatching {
             GmmpQueueMutationBridge(
                 autoDj = autoDj,

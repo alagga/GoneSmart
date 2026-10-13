@@ -48,19 +48,27 @@ internal object TrackMixZeroPoolPolicy {
         )
     }
 
-    fun acceptPassivePositionWriter(
-        isStateWriter: Boolean,
-        before: Int?,
-        after: Int?,
-        argument: Int,
-        uniqueQueuePosition: Boolean
-    ): Boolean =
-        isStateWriter &&
-            uniqueQueuePosition &&
-            before != null &&
-            after != null &&
-            before == argument &&
-            after == argument
+    data class StateWriterMapping(
+        val argumentOffset: Int,
+        val signalOffset: Int
+    )
+
+    fun resolveStateWriterMapping(
+        currentQueuePosition: Int,
+        observedArgument: Int,
+        signalValue: Int,
+        ageMs: Long,
+        maxAgeMs: Long = 10_000L
+    ): StateWriterMapping? {
+        if (currentQueuePosition <= 0 || ageMs !in 0..maxAgeMs) return null
+        val argumentOffset = currentQueuePosition - observedArgument
+        val signalOffset = currentQueuePosition - signalValue
+        if (argumentOffset !in 0..1 || signalOffset !in 0..1) return null
+        return StateWriterMapping(
+            argumentOffset = argumentOffset,
+            signalOffset = signalOffset
+        )
+    }
 
     fun seedPlan(
         entries: List<TrackMixPlan.NativeQueueEntry>,

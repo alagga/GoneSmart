@@ -3,8 +3,7 @@ package io.github.alagga.gonesmart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class TrackMixZeroPoolPolicyTest {
@@ -44,32 +43,47 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `passive same value writer candidate needs structural ownership and unique row`() {
-        assertTrue(
-            TrackMixZeroPoolPolicy.acceptPassivePositionWriter(
-                isStateWriter = true,
-                before = 15,
-                after = 15,
-                argument = 15,
-                uniqueQueuePosition = true
+    fun `track mix state writer maps zero based argument and signal to queue position`() {
+        val mapping = TrackMixZeroPoolPolicy.resolveStateWriterMapping(
+            currentQueuePosition = 5,
+            observedArgument = 4,
+            signalValue = 4,
+            ageMs = 500
+        )
+        assertNotNull(mapping)
+        assertEquals(1, mapping!!.argumentOffset)
+        assertEquals(1, mapping.signalOffset)
+    }
+
+    @Test
+    fun `track mix state writer allows mixed absolute signal and zero based argument`() {
+        val mapping = TrackMixZeroPoolPolicy.resolveStateWriterMapping(
+            currentQueuePosition = 5,
+            observedArgument = 4,
+            signalValue = 5,
+            ageMs = 500
+        )
+        assertNotNull(mapping)
+        assertEquals(1, mapping!!.argumentOffset)
+        assertEquals(0, mapping.signalOffset)
+    }
+
+    @Test
+    fun `track mix state writer refuses stale or wider coordinate guesses`() {
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveStateWriterMapping(
+                currentQueuePosition = 5,
+                observedArgument = 3,
+                signalValue = 4,
+                ageMs = 500
             )
         )
-        assertFalse(
-            TrackMixZeroPoolPolicy.acceptPassivePositionWriter(
-                isStateWriter = false,
-                before = 15,
-                after = 15,
-                argument = 15,
-                uniqueQueuePosition = true
-            )
-        )
-        assertFalse(
-            TrackMixZeroPoolPolicy.acceptPassivePositionWriter(
-                isStateWriter = true,
-                before = 15,
-                after = 15,
-                argument = 15,
-                uniqueQueuePosition = false
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveStateWriterMapping(
+                currentQueuePosition = 5,
+                observedArgument = 4,
+                signalValue = 4,
+                ageMs = 10_001
             )
         )
     }

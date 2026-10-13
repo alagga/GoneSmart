@@ -1,14 +1,14 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r36** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r37** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `7759e8dd9a7d95d1d180ff7596967576255b24ca`.
+Repair source commit: `R37_REPAIR_SOURCE_PENDING`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r36`;
+- Compatibility startup log reports revision `gmmp421-r37`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -70,3 +70,10 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - Let BUNT. cross naturally into Track 2. The refreshed position-2 row must be the decoder/audio source, not merely the visible queue metadata.
 - Re-run Avicii `Levels (Radio Edit)` as the prepared-pool regression. It must continue through the accepted r35 controller-owned `qr` bootstrap. The r36 zero-pool seed/rebase/next-source-refresh markers must be absent for Levels, and its natural Track-2 transition must remain correct.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no post-materialization Track-ID retarget, no same-position CURRENT refresh, no hard-coded obfuscated next-source method, and any ambiguous passive boundary fails closed.
+
+## r37 regression focus
+- Re-run Avicii `Levels (Radio Edit)`. The provider/local-matching stage should still report a populated prepared pool (the r36 device run produced 20 accepted local matches and `prepared=4`). After `MIX CURRENT PIN`, every remaining bootstrap refill must resolve CURRENT through the pinned native queue entry rather than log `MIX PREPLAY BOOTSTRAP SKIP | current=null`. All four prepared IDs must materialize before prune; no `SMART DJ NATIVE FALLBACK` may replace the remaining prepared slots with GMMP random tracks.
+- Re-run zero-provider BUNT. The accepted r35 exact-path rebind and r36 next-source boundary must still occur. The Track-Mix-only Current writer should log a request-scoped mapping whose argument/signal offsets are each 0 or 1, then the zero-pool seed must rebase the exact pinned BUNT. entry to queue position 1, refill four native Auto-DJ rows, compact 1..5 and refresh native position 2.
+- BUNT. must end at **1 of 5** and naturally transition into the newly generated Track 2. Levels must keep the four GoneSmart recommendation slots and naturally decode Track 2.
+- Safety invariants remain: no `CLEAR_QUEUE`, no Track-ID rewrite after playback materialization, no same-position CURRENT refresh, no hard-coded `dx3.c2`/`MusicService.I2`, and stale/ambiguous coordinate evidence fails closed.
+
