@@ -2,7 +2,7 @@
 
 This checklist is the single device pass for the current **r37** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `R37_REPAIR_SOURCE_PENDING`.
+Repair source commit: `07f3fa20547ff307825c5cc95dec6bad8cd3bec1`.
 
 ## Before device install
 
@@ -76,4 +76,3 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - Re-run zero-provider BUNT. The accepted r35 exact-path rebind and r36 next-source boundary must still occur. The Track-Mix-only Current writer should log a request-scoped mapping whose argument/signal offsets are each 0 or 1, then the zero-pool seed must rebase the exact pinned BUNT. entry to queue position 1, refill four native Auto-DJ rows, compact 1..5 and refresh native position 2.
 - BUNT. must end at **1 of 5** and naturally transition into the newly generated Track 2. Levels must keep the four GoneSmart recommendation slots and naturally decode Track 2.
 - Safety invariants remain: no `CLEAR_QUEUE`, no Track-ID rewrite after playback materialization, no same-position CURRENT refresh, no hard-coded `dx3.c2`/`MusicService.I2`, and stale/ambiguous coordinate evidence fails closed.
-
