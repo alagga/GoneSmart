@@ -73,3 +73,7 @@ The r31 device pass isolated two remaining deterministic regressions: Playlist L
 ### r38 Track Mix owner wiring
 
 The prepared-pool Levels regression is accepted from r37. The remaining zero-provider Smart-Playlist failure was traced to state-child ownership: the passive `dx3.c2(int)` hook replaced the captured `qr` owner immediately before writer correlation. r38 keeps child receivers observational only so the existing request-scoped 0/1 Current mapping can correlate against the real Auto-DJ owner. No recommendation ranking, prepared bootstrap, exact-path rebind, queue isolation or next-source boundary changed.
+
+### r39 Track Mix transient-CURRENT gate
+
+The r38 BUNT. pass failed before zero-pool mutation because `queue-current-change` promoted transient Track 19133 as the selected identity while the already resolved clicked target was Track 19118. The subsequent exact-path lookup found BUNT. correctly but was rejected against the wrong provisional Track ID. r39 gates initial Track Mix identity by the pre-Play target: a mismatching CURRENT change is transition-only, its disappearing queue entry can open the bounded exact-path recovery for the known target, and the normal one-shot post-target rebind remains available for GMMP's second source rebuild. Prepared-pool Levels behavior, recommendation ranking and zero-pool mutation logic are unchanged.

@@ -58,7 +58,7 @@ Queue Flip and Play flipped are accepted on 4.2.1. Once a writer/readback has be
 The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 
 - Dispatch GMMP's exact native Play action for the clicked row.
-- Treat the first CURRENT from the generic track menu as provisional during the bounded Smart-Playlist completion guard.
+- Treat the first CURRENT from the generic track menu as provisional during the bounded Smart-Playlist completion guard. If a unique pre-Play target is already resolved, a different CURRENT track may prove only that native Play entered a transition; it must not become Track Mix's selected identity. During the same bounded guard, retain its queue entry only as a rebind anchor. If that temporary entry disappears, the exact pre-Play target path may recover the target only when the recovered Track ID also equals the pre-Play target. After that promotion, the normal one-shot exact-path rebind remains available for one further native source rebuild.
 - If the first candidate survives the native rebuild exactly once, preserve it even if CURRENT temporarily drifts.
 - If that provisional candidate disappears completely **inside the guard** and a different playback identity is independently observed, retarget and restart settling.
 - Outside the guard, fail closed rather than following unrelated/manual playback.

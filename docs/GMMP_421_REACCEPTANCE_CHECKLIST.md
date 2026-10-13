@@ -1,14 +1,14 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r38** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r39** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `12f808c94ce7c9d3feb18bd0ee2a6985e8c5965f`.
+Repair source commit: `R39_REPAIR_SOURCE_PENDING`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r38`;
+- Compatibility startup log reports revision `gmmp421-r39`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -84,3 +84,11 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - After the accepted exact-path rebind and `MIX CURRENT PIN`, expect `QUEUE POSITION TRACK MIX MAPPING` with only a 0/1 request-scoped offset, then seed isolation/rebase to queue position 1, four native Auto-DJ followers, compact positions 1..5 and the already accepted next-source refresh for position 2.
 - BUNT. must finish at **1 of 5** and transition naturally into the newly generated Track 2.
 - Safety invariants remain: no `CLEAR_QUEUE`, no materialized Track-ID rewrite, no same-position CURRENT refresh, no hard-coded state/next-source method identity, and ambiguous/stale owner or coordinate evidence fails closed.
+
+## r39 regression focus
+
+- Re-run zero-provider BUNT. The first unrelated CURRENT change must log `MIX PLAY TRANSITION` rather than `MIX PLAY DETECTED`; its Track ID must not become the selected Track Mix identity.
+- When that temporary queue entry disappears during Smart-Playlist materialization, expect `GMMP QUEUE CURRENT | track-mix path rebind` to recover Track 19118 and then `MIX PLAY DETECTED | source=preplay-exact-path-after-transition` for the exact pre-Play target.
+- If GMMP replaces that first recovered BUNT. queue row once more, the existing `MIX CURRENT REBIND ... verified=true` path must still be available exactly once. After settling, expect `MIX CURRENT PIN`, request-scoped Current-writer mapping, zero-pool seed isolation/rebase to queue position 1, four native Auto-DJ followers, compact positions 1..5 and native next-source refresh for position 2.
+- BUNT. must finish at **1 of 5** and naturally transition into the newly generated Track 2. Avicii `Levels (Radio Edit)` remains the prepared-pool regression check and must keep all four GoneSmart recommendation slots.
+- Safety invariants remain: no `CLEAR_QUEUE`, no materialized Track-ID rewrite, no same-position CURRENT refresh, no hard-coded obfuscated writer identity, and ambiguous/stale target recovery fails closed.

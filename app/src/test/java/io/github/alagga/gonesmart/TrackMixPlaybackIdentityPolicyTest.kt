@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -111,6 +112,74 @@ class TrackMixPlaybackIdentityPolicyTest {
                 current = current,
                 stableMs = 400L,
                 actionAgeMs = 500L
+            )
+        )
+    }
+
+    @Test fun mismatchingCurrentChangeIsTransitionOnlyWhenPrePlayTargetIsKnown() {
+        val current = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 700L,
+            trackId = 19133L,
+            currentIndex = 5
+        )
+
+        assertEquals(
+            TrackMixPlaybackIdentityPolicy.InitialCandidateRole.TRANSITION_ONLY,
+            TrackMixPlaybackIdentityPolicy.classifyInitialCandidate(
+                expectedTrackId = 19118L,
+                hasPlaybackEvidence = true,
+                current = current
+            )
+        )
+    }
+
+    @Test fun exactPrePlayTargetMayBecomeInitialTargetAfterTransition() {
+        val current = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 701L,
+            trackId = 19118L,
+            currentIndex = 0
+        )
+
+        assertEquals(
+            TrackMixPlaybackIdentityPolicy.InitialCandidateRole.TARGET,
+            TrackMixPlaybackIdentityPolicy.classifyInitialCandidate(
+                expectedTrackId = 19118L,
+                hasPlaybackEvidence = true,
+                current = current
+            )
+        )
+    }
+
+    @Test fun initialCandidateWithoutPlaybackEvidenceIsIgnored() {
+        val current = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 701L,
+            trackId = 19118L,
+            currentIndex = 0
+        )
+
+        assertEquals(
+            TrackMixPlaybackIdentityPolicy.InitialCandidateRole.IGNORE,
+            TrackMixPlaybackIdentityPolicy.classifyInitialCandidate(
+                expectedTrackId = 19118L,
+                hasPlaybackEvidence = false,
+                current = current
+            )
+        )
+    }
+
+    @Test fun legacyFlowWithoutPrePlayTargetKeepsPlaybackChangeBehavior() {
+        val current = TrackMixPlaybackIdentityPolicy.Identity(
+            queueEntryId = 701L,
+            trackId = 42L,
+            currentIndex = 0
+        )
+
+        assertEquals(
+            TrackMixPlaybackIdentityPolicy.InitialCandidateRole.TARGET,
+            TrackMixPlaybackIdentityPolicy.classifyInitialCandidate(
+                expectedTrackId = null,
+                hasPlaybackEvidence = true,
+                current = current
             )
         )
     }

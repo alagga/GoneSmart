@@ -13,6 +13,24 @@ internal object TrackMixPlaybackIdentityPolicy {
         val currentIndex: Int
     )
 
+    enum class InitialCandidateRole {
+        TARGET,
+        TRANSITION_ONLY,
+        IGNORE
+    }
+
+    fun classifyInitialCandidate(
+        expectedTrackId: Long?,
+        hasPlaybackEvidence: Boolean,
+        current: Identity
+    ): InitialCandidateRole {
+        if (!hasPlaybackEvidence) return InitialCandidateRole.IGNORE
+        if (expectedTrackId == null || current.trackId == expectedTrackId) {
+            return InitialCandidateRole.TARGET
+        }
+        return InitialCandidateRole.TRANSITION_ONLY
+    }
+
     fun changed(before: Identity?, current: Identity): Boolean =
         before == null ||
             current.queueEntryId != before.queueEntryId ||

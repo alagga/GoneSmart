@@ -1422,6 +1422,8 @@ internal class TrackMixController(
         var stableSnapshot: Snapshot? = null
         var stableAt = 0L
         var pathRebindApplied = false
+        var transitionIdentity: TrackMixPlaybackIdentityPolicy.Identity? = null
+        var transitionDetectedAt = 0L
         val deadline = SystemClock.elapsedRealtime() +
             TrackMixQueueSettlingPolicy.WAIT_TIMEOUT_MS
         val completionGuard =
@@ -1446,19 +1448,27 @@ internal class TrackMixController(
             // sufficient and avoids repeatedly materializing a large queue.
             Thread.sleep(if (targetIdentity == null) 160L else 400L)
             val sampleAt = SystemClock.elapsedRealtime()
-            val rebindPathHint = if (
+            val targetRebindActive =
                 targetIdentity != null &&
-                !pathRebindApplied &&
-                detectedAt > 0L &&
-                completionGuard > 0L &&
-                sampleAt - detectedAt <= completionGuard
-            ) {
+                    !pathRebindApplied &&
+                    detectedAt > 0L &&
+                    completionGuard > 0L &&
+                    sampleAt - detectedAt <= completionGuard
+            val transitionRebindActive =
+                targetIdentity == null &&
+                    transitionIdentity != null &&
+                    transitionDetectedAt > 0L &&
+                    completionGuard > 0L &&
+                    sampleAt - transitionDetectedAt <= completionGuard
+            val rebindPathHint = if (targetRebindActive || transitionRebindActive) {
                 request.prePlayTarget?.path
             } else {
                 null
             }
+            val currentEntryHint = targetIdentity?.queueEntryId
+                ?: if (transitionRebindActive) transitionIdentity?.queueEntryId else null
             val current = queueSnapshot(
-                currentQueueEntryIdHint = targetIdentity?.queueEntryId,
+                currentQueueEntryIdHint = currentEntryHint,
                 currentTrackPathHint = rebindPathHint
             ) ?: continue
             val currentTrack = current.currentId ?: continue
@@ -1484,22 +1494,63 @@ internal class TrackMixController(
             val now = SystemClock.elapsedRealtime()
 
             if (targetIdentity == null && playbackChanged) {
-                targetIdentity = identity
-                detectedAt = now
-                detectedQueueSize = current.ids.size
-                stableSnapshot = current
-                stableAt = now
-                request.provisionalCurrentQueuePosition = current.currentQueuePosition
-                tryPromoteNextSourceBoundary(request)
-                Log.i(
-                    TAG,
-                    "MIX PLAY DETECTED | source=queue-current-change" +
-                        " | entry=" + (identity.queueEntryId ?: -1L) +
-                        " | track=" + identity.trackId +
-                        " | queueSize=" + current.ids.size +
-                        " | completionGuardMs=" + completionGuard
-                )
-                continue
+                when (
+                    TrackMixPlaybackIdentityPolicy.classifyInitialCandidate(
+                        expectedTrackId = request.prePlayTarget?.id,
+                        hasPlaybackEvidence = true,
+                        current = identity
+                    )
+                ) {
+                    TrackMixPlaybackIdentityPolicy.InitialCandidateRole.TRANSITION_ONLY -> {
+                        if (transitionIdentity == null &&
+                            completionGuard > 0L &&
+                            identity.queueEntryId != null
+                        ) {
+                            transitionIdentity = identity
+                            transitionDetectedAt = now
+                            Log.i(
+                                TAG,
+                                "MIX PLAY TRANSITION | candidateEntry=" +
+                                    identity.queueEntryId +
+                                    " | candidateTrack=" + identity.trackId +
+                                    " | expectedTrack=" +
+                                    (request.prePlayTarget?.id ?: -1L) +
+                                    " | completionGuardMs=" + completionGuard +
+                                    " | targetDeferred=true"
+                            )
+                        }
+                        continue
+                    }
+                    TrackMixPlaybackIdentityPolicy.InitialCandidateRole.TARGET -> {
+                        val recoveredAfterTransition =
+                            transitionIdentity != null &&
+                                current.currentResolutionSource ==
+                                    "track-mix-path-rebind"
+                        targetIdentity = identity
+                        detectedAt = now
+                        detectedQueueSize = current.ids.size
+                        stableSnapshot = current
+                        stableAt = now
+                        transitionIdentity = null
+                        transitionDetectedAt = 0L
+                        request.provisionalCurrentQueuePosition =
+                            current.currentQueuePosition
+                        tryPromoteNextSourceBoundary(request)
+                        Log.i(
+                            TAG,
+                            "MIX PLAY DETECTED | source=" +
+                                (if (recoveredAfterTransition)
+                                    "preplay-exact-path-after-transition"
+                                else "queue-current-change") +
+                                " | entry=" + (identity.queueEntryId ?: -1L) +
+                                " | track=" + identity.trackId +
+                                " | queueSize=" + current.ids.size +
+                                " | completionGuardMs=" + completionGuard
+                        )
+                        continue
+                    }
+                    TrackMixPlaybackIdentityPolicy.InitialCandidateRole.IGNORE -> Unit
+                }
             }
 
             if (targetIdentity == null &&
@@ -1511,7 +1562,9 @@ internal class TrackMixController(
                     current = identity,
                     stableMs = now - request.createdAt,
                     actionAgeMs = now - request.createdAt
-                )
+                ) &&
+                (request.prePlayTarget == null ||
+                    identity.trackId == request.prePlayTarget?.id)
             ) {
                 targetIdentity = identity
                 detectedAt = now
