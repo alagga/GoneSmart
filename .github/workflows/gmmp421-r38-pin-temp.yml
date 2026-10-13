@@ -1,0 +1,44 @@
+name: GMMP 4.2.1 r38 pin temp
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gmmp421-r38-pin-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+      - name: Pin r38 source and startup revision
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('docs/GMMP_421_REACCEPTANCE_CHECKLIST.md')
+          text = p.read_text()
+          old = 'Repair source commit: `R38_REPAIR_SOURCE_PENDING`.'
+          new = 'Repair source commit: `12f808c94ce7c9d3feb18bd0ee2a6985e8c5965f`.'
+          if old not in text:
+              raise SystemExit('r38 source placeholder missing')
+          text = text.replace(old, new, 1)
+          old_rev = 'Compatibility startup log reports revision `gmmp421-r37`;'
+          new_rev = 'Compatibility startup log reports revision `gmmp421-r38`;'
+          if old_rev not in text:
+              raise SystemExit('stale startup revision line missing')
+          text = text.replace(old_rev, new_rev, 1)
+          p.write_text(text)
+          PY
+      - name: Commit pin and remove helper
+        run: |
+          rm .github/workflows/gmmp421-r38-pin-temp.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: pin GMMP 4.2.1 r38 re-acceptance'
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
