@@ -79,8 +79,8 @@ hook = '''        // r45: 4.2.1 reused the historical class name ex3 for a conte
                     java.util.List::class.java.isAssignableFrom(
                         method.parameterTypes[1]
                     ) &&
-                    (method.returnType == Boolean.TYPE ||
-                        method.returnType == java.lang.Boolean::class.java)
+                    (method.returnType == Boolean::class.javaPrimitiveType ||
+                        method.returnType == Boolean::class.javaObjectType)
             }
             check(candidates.size == 1) {
                 "Expected one context Play boundary candidate, found ${candidates.size}"
@@ -89,7 +89,7 @@ hook = '''        // r45: 4.2.1 reused the historical class name ex3 for a conte
             hook(method).intercept { chain ->
                 trackMixController.observeNativeContextPlayBoundary(
                     chain.getArg(0) as? android.view.MenuItem,
-                    chain.getArg(1) as? java.util.List<*>
+                    chain.getArg(1) as? List<*>
                 )
                 chain.proceed()
             }
