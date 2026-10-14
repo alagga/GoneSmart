@@ -484,6 +484,41 @@ internal class TrackMixController(
     }
 
     /**
+     * r45 bounded read-only mapping for GMMP 4.2.1's context-action
+     * MenuItem,List -> boolean boundary. It runs only while the native Play
+     * dispatched by this Track Mix request is settling. No argument is
+     * modified and no host method is invoked from this observer.
+     */
+    fun observeNativeContextPlayBoundary(
+        menuItem: MenuItem?,
+        nativeItems: List<*>?
+    ) {
+        val request = pending ?: return
+        if (request.stage != "WAIT_PLAY") return
+        val item = menuItem ?: return
+        val playId = request.context.resources.getIdentifier(
+            "menuContextPlay", "id", GMMP_PACKAGE
+        )
+        if (playId == 0 || item.itemId != playId) return
+        val items = nativeItems.orEmpty().filterNotNull()
+        val classes = items.map { it.javaClass.name }.distinct().take(6)
+        val autoDj = nativeAutoDj?.get()
+        val resolution = if (autoDj != null && items.isNotEmpty()) {
+            runCatching {
+                resolvePrePlayTarget(autoDj, items)
+            }.getOrNull()
+        } else null
+        val expected = request.prePlayTarget?.id
+        Log.i(
+            TAG,
+            "MIX CONTEXT PLAY BOUNDARY | observed=true | item=${item.itemId} | " +
+                "listSize=${items.size} | elementClasses=${classes.joinToString(",")} | " +
+                "resolvedTrack=${resolution?.track?.id ?: -1L} | " +
+                "expectedTrack=${expected ?: -1L} | readOnly=true"
+        )
+    }
+
+    /**
      * Called from the proven native qr.z refill hook before GMMP materializes
      * its Auto-DJ selection rows. Only a refill whose native Current already
      * matches the pre-Play-resolved target may consume bootstrap Track IDs.

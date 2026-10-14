@@ -1248,6 +1248,45 @@ class GoneSmartModule : XposedModule() {
         // r40: observe the real 4.2.1 playback-position boundary passively.
         // r39 proved that the natural title transition bypasses the three
         // one-Int MusicService commands and also disproved qr.t/ur.b as the
+        // r45: 4.2.1 reused the historical class name ex3 for a context-
+        // action handler. Its only declared MenuItem,List -> boolean method is
+        // a useful pre-materialization mapping candidate. Observe the exact
+        // native Play call only while Track Mix is pending; never mutate the
+        // list and never invoke this method ourselves.
+        runCatching {
+            val contextActionClass = param.classLoader.loadClass("ex3")
+            val candidates = contextActionClass.declaredMethods.filter { method ->
+                method.parameterCount == 2 &&
+                    android.view.MenuItem::class.java.isAssignableFrom(
+                        method.parameterTypes[0]
+                    ) &&
+                    java.util.List::class.java.isAssignableFrom(
+                        method.parameterTypes[1]
+                    ) &&
+                    (method.returnType == Boolean::class.javaPrimitiveType ||
+                        method.returnType == Boolean::class.javaObjectType)
+            }
+            check(candidates.size == 1) {
+                "Expected one context Play boundary candidate, found ${candidates.size}"
+            }
+            val method = candidates.single().apply { isAccessible = true }
+            hook(method).intercept { chain ->
+                trackMixController.observeNativeContextPlayBoundary(
+                    chain.getArg(0) as? android.view.MenuItem,
+                    chain.getArg(1) as? List<*>
+                )
+                chain.proceed()
+            }
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX CONTEXT PLAY OBSERVER READY | method=" +
+                    method.declaringClass.name + "." + method.name +
+                    "(MenuItem,List) | readOnly=true"
+            )
+        }.onFailure {
+            Log.w(TAG, "Track Mix context Play observer unavailable", it)
+        }
+
         // current queue_position. Bundle service-event and Auto-DJ child
         // writer observation in one device pass. No candidate is invoked by
         // discovery; every hook only wraps a call GMMP makes naturally.
