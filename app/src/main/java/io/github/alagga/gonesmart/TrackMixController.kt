@@ -76,6 +76,10 @@ internal class TrackMixController(
         private var activeManagedController:
             WeakReference<TrackMixController>? = null
 
+        @Volatile
+        private var activePendingController:
+            WeakReference<TrackMixController>? = null
+
         /**
          * QueueFlipController calls this only after GMMP itself naturally
          * changes the verified CURRENT position. It is an event signal, not
@@ -85,6 +89,11 @@ internal class TrackMixController(
             autoDj: Any,
             currentPosition: Int?
         ) {
+            activePendingController?.get()
+                ?.prepareZeroPoolAtNaturalCurrentBoundary(
+                    autoDj = autoDj,
+                    currentPosition = currentPosition
+                )
             activeManagedController?.get()
                 ?.scheduleManagedRefillCheck(
                     autoDj = autoDj,
@@ -144,6 +153,8 @@ internal class TrackMixController(
         @Volatile var provisionalCurrentQueuePosition: Int? = null
         @Volatile var nextSourceBoundary: ObservedNativePositionCommand? = null
         @Volatile var nextSourceBoundaryAmbiguous = false
+        @Volatile var zeroPoolBoundaryAttempted = false
+        @Volatile var zeroPoolBoundaryPrepared = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -173,6 +184,7 @@ internal class TrackMixController(
     // session we created; unrelated native list Play disarms it.
     @Volatile private var managedAutoDj: WeakReference<Any>? = null
     private val managedRefillInFlight = AtomicBoolean(false)
+    private val zeroPoolBoundaryInFlight = AtomicBoolean(false)
     @Volatile private var lastManagedObservedPosition = Int.MIN_VALUE
 
     @Volatile private var enabled = true
@@ -810,23 +822,16 @@ internal class TrackMixController(
                     requiredUpcoming > 0 &&
                     request.prePlayPrepared.trackIds.isEmpty()
                 ) {
-                    // GMMP 4.2.1 can already have a stale current+1
-                    // AudioSource cached while native Play is settling. Do
-                    // not dispatch Play and then mutate that materialized row
-                    // when GoneSmart has no real recommendation pool.
-                    Log.w(
+                    // 4.2.0 treated an empty GoneSmart pool as a native
+                    // Auto-DJ fallback, not as a Track Mix failure. On 4.2.1
+                    // preserve that contract, but wait for GMMP's proven
+                    // natural CURRENT writer so isolation/refill finishes
+                    // before the caller can materialize current+1.
+                    Log.i(
                         TAG,
                         "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
-                            "native Play not dispatched | failClosed=true"
+                            "awaiting verified native Current boundary"
                     )
-                    if (pending === request) pending = null
-                    main.post {
-                        fail(
-                            "No suitable GoneSmart matches were found for this song.",
-                            context
-                        )
-                    }
-                    return@execute
                 }
             }
 
@@ -847,6 +852,14 @@ internal class TrackMixController(
                     return@post
                 }
 
+                if (
+                    request.prePlayTarget != null &&
+                    request.prePlayPrepared.trackIds.isEmpty() &&
+                    request.prePlayInitialSize > 1
+                ) {
+                    activePendingController = WeakReference(this@TrackMixController)
+                }
+
                 val started = runCatching {
                     nativePlayDispatch()
                 }.onFailure { Log.e(TAG, "Native track Play failed", it) }
@@ -854,6 +867,9 @@ internal class TrackMixController(
 
                 if (!started) {
                     if (pending === request) pending = null
+                    if (activePendingController?.get() === this@TrackMixController) {
+                        activePendingController = null
+                    }
                     refillHold.set(false)
                     fail("Could not start this song.", context)
                     return@post
@@ -1109,6 +1125,10 @@ internal class TrackMixController(
             refillHold.set(false)
             request.stage = "DONE"
             if (pending === request) pending = null
+            if (activePendingController?.get() === this) {
+                activePendingController = null
+            }
+            zeroPoolBoundaryInFlight.set(false)
             if (!managedSessionReady) {
                 disarmManagedAutoDjSession("track-mix-not-verified")
             }
@@ -1357,6 +1377,157 @@ internal class TrackMixController(
         return ok
     }
 
+    /**
+     * GMMP 4.2.1 equivalent of the old 4.2.0 seed-isolation boundary.
+     * QueueFlipController calls this synchronously after GMMP's naturally
+     * observed CURRENT writer has returned but before that native caller
+     * resumes and asks for current+1. Zero-provider Track Mix therefore
+     * finishes seed isolation, native qr.z fill and position compaction
+     * before the next AudioSource can be materialized.
+     */
+    private fun prepareZeroPoolAtNaturalCurrentBoundary(
+        autoDj: Any,
+        currentPosition: Int?
+    ) {
+        val request = pending ?: return
+        val position = currentPosition ?: return
+        if (
+            position <= 0 ||
+            request.stage != "WAIT_PLAY" ||
+            request.prePlayTarget == null ||
+            request.prePlayPrepared.trackIds.isNotEmpty() ||
+            request.prePlayInitialSize <= 1 ||
+            request.zeroPoolBoundaryPrepared ||
+            request.zeroPoolBoundaryAttempted ||
+            nativeAutoDj?.get() !== autoDj
+        ) return
+
+        val target = request.prePlayTarget ?: return
+        val boundaryContext = runCatching {
+            queueReader.read(autoDj, position)
+        }.onFailure {
+            Log.w(TAG, "MIX ZERO-POOL BOUNDARY | native Current read failed", it)
+        }.getOrNull() ?: return
+        val current = boundaryContext.currentItem ?: return
+
+        // Natural position writers also occur for the old/current source while
+        // Play is rebuilding. Only the exact pre-Play-resolved selected track
+        // may acquire the mutation boundary.
+        if (current.track.id != target.id) return
+
+        val currentWriter = nativeTrackMixPositionWriterProvider(
+            autoDj,
+            position
+        ) ?: run {
+            Log.w(
+                TAG,
+                "MIX ZERO-POOL BOUNDARY | verified Current writer unavailable; retrying on next natural boundary"
+            )
+            return
+        }
+        if (!zeroPoolBoundaryInFlight.compareAndSet(false, true)) return
+
+        request.zeroPoolBoundaryAttempted = true
+        try {
+            check(isCurrent(request) && request.stage == "WAIT_PLAY") {
+                "Track Auto-DJ request changed before zero-pool boundary"
+            }
+            request.verifiedCurrentQueueEntryId = current.queueEntryId
+            request.provisionalCurrentQueuePosition = position
+            request.stage = "ZERO_POOL_BOUNDARY"
+
+            val isolated = GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = currentWriter,
+                currentQueueEntryIdHint = current.queueEntryId
+            ).isolateTrackMixZeroPoolSeed(target.id)
+            check(isolated) {
+                "Could not isolate selected Track Auto-DJ seed at Current boundary"
+            }
+
+            val initial = request.prePlayInitialSize.coerceAtLeast(1)
+            val refillCount = (initial - 1).coerceAtLeast(0)
+
+            // Reuse the already-established explicit Initial Size fill. The
+            // native hook therefore bypasses GoneSmart provider waiting and
+            // lets GMMP choose the fallback tracks, matching the working 4.2.0
+            // zero-provider contract.
+            request.stage = "FILLING"
+            request.transitionalRefillSuppressed = false
+            check(requestHeldNativeRefill(refillCount)) {
+                "GMMP rejected zero-pool native Initial Size refill"
+            }
+
+            val afterRefill = queueReader.read(
+                autoDj,
+                currentWriter.read(),
+                current.queueEntryId
+            )
+            check(
+                afterRefill != null &&
+                    afterRefill.currentItem?.queueEntryId == current.queueEntryId &&
+                    afterRefill.currentItem?.track?.id == target.id &&
+                    afterRefill.items.size == initial
+            ) {
+                "Native zero-pool refill did not preserve the selected seed and Initial Size"
+            }
+
+            val compact = GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = currentWriter,
+                currentQueueEntryIdHint = current.queueEntryId
+            ).rebaseTrackMixZeroPoolInitialQueue(
+                selectedTrackId = target.id,
+                expectedSize = initial
+            )
+            check(compact) {
+                "Could not compact native zero-pool Initial Size before decode"
+            }
+
+            val verified = queueReader.read(
+                autoDj,
+                currentWriter.read(),
+                current.queueEntryId
+            )
+            check(
+                verified != null &&
+                    verified.currentQueuePosition == 1 &&
+                    verified.currentItem?.queueEntryId == current.queueEntryId &&
+                    verified.currentItem?.track?.id == target.id &&
+                    verified.items.size == initial &&
+                    verified.items.map { it.queuePosition }.sorted() ==
+                        (1..initial).toList()
+            ) {
+                "Zero-pool queue was not compact and decoder-ready"
+            }
+
+            request.provisionalCurrentQueuePosition = 1
+            request.zeroPoolBoundaryPrepared = true
+            request.stage = "WAIT_PLAY"
+            if (activePendingController?.get() === this) {
+                activePendingController = null
+            }
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL BOUNDARY | verified=true | beforeDecoder=true | " +
+                    "seed=${target.id} | initial=$initial | nativeGenerated=$refillCount | " +
+                    "oldCurrentPosition=$position | currentPosition=1"
+            )
+        } catch (failure: Throwable) {
+            request.stage = "WAIT_PLAY"
+            if (activePendingController?.get() === this) {
+                activePendingController = null
+            }
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL BOUNDARY | preparation failed; fail closed",
+                failure
+            )
+        } finally {
+            zeroPoolBoundaryInFlight.set(false)
+        }
+    }
+
     private fun fillZeroPoolNativeFallback(
         request: Pending,
         selectedId: Long,
@@ -1365,109 +1536,55 @@ internal class TrackMixController(
         initial: Int,
         upcomingSetting: Int
     ): Snapshot? {
-        val autoDj = nativeAutoDj?.get() ?: return null
-        if (request.nextSourceBoundary == null ||
-            request.nextSourceBoundaryAmbiguous
-        ) {
+        if (!request.zeroPoolBoundaryPrepared) {
             Log.e(
                 TAG,
-                "MIX ZERO-POOL | next-source boundary unavailable; fail closed"
+                "MIX ZERO-POOL | verified pre-decoder Current boundary was not prepared; fail closed"
             )
             return null
         }
-        val rebaseWriter = nativeTrackMixPositionWriterProvider(
-            autoDj,
-            selectedQueuePosition
-        )
-        if (rebaseWriter == null) {
+        if (selectedQueuePosition != 1) {
             Log.e(
                 TAG,
-                "MIX ZERO-POOL | passively observed Current writer unavailable; fail closed"
+                "MIX ZERO-POOL | selected Current position changed after pre-decoder preparation: $selectedQueuePosition"
             )
             return null
         }
 
-        request.stage = "ZERO_POOL_SEED"
-        val isolated = runCatching {
-            GmmpQueueMutationBridge(
-                autoDj = autoDj,
-                verifiedPositionWriter = rebaseWriter,
-                currentQueueEntryIdHint = selectedEntryId
-            ).isolateTrackMixZeroPoolSeed(selectedId)
-        }.onFailure {
-            Log.e(TAG, "MIX ZERO-POOL | native seed isolation failed", it)
-        }.getOrDefault(false)
-        if (!isolated) return null
+        val filled = queueSnapshot(selectedEntryId)?.takeIf { snapshot ->
+            snapshot.currentId == selectedId &&
+                snapshot.currentIndex == 0 &&
+                snapshot.currentQueuePosition == 1 &&
+                snapshot.ids.size == initial
+        } ?: run {
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL | prepared native queue changed before verification"
+            )
+            return null
+        }
 
-        request.stage = "FILLING"
+        // Initial fallback tracks already came from GMMP's own qr.z at the
+        // natural CURRENT boundary. Now only arm normal Auto-DJ continuation;
+        // never retarget current+1 or manually refresh MusicService after the
+        // decoder has started.
         armManagedAutoDjSession()
+        request.stage = "FILLING"
         request.transitionalRefillSuppressed = false
         sendCommand(request.context, COMMAND_AUTO_DJ)
         nativeToastSuppressionUntilMs = SystemClock.elapsedRealtime() + 7_000L
         awaitAutoDjCommandRefillBoundary(request)
 
-        val refillCount = (initial - 1).coerceAtLeast(0)
-        if (!requestHeldNativeRefill(refillCount)) {
-            Log.e(TAG, "MIX ZERO-POOL | explicit native refill rejected")
-            return null
-        }
-        var filled = if (refillCount == 0) {
-            queueSnapshot(selectedEntryId)
-        } else {
-            awaitQueue(
-                request = request,
-                timeoutMs = 8_000L,
-                currentQueueEntryIdHint = selectedEntryId
-            ) { snapshot ->
-                snapshot.currentId == selectedId &&
-                    snapshot.ids.size == initial
-            }
-        } ?: return null
-
-        val finalWriter = nativePositionWriterProvider(autoDj)
-            ?: rebaseWriter
-        val compact = runCatching {
-            GmmpQueueMutationBridge(
-                autoDj = autoDj,
-                verifiedPositionWriter = finalWriter,
-                currentQueueEntryIdHint = selectedEntryId
-            ).rebaseTrackMixZeroPoolInitialQueue(
-                selectedTrackId = selectedId,
-                expectedSize = initial
-            )
-        }.onFailure {
-            Log.e(TAG, "MIX ZERO-POOL | native refill position rebase failed", it)
-        }.getOrDefault(false)
-        if (!compact) return null
-
-        filled = queueSnapshot(selectedEntryId)?.takeIf { snapshot ->
-            snapshot.currentId == selectedId &&
-                snapshot.currentIndex == 0 &&
-                snapshot.currentQueuePosition == 1 &&
-                snapshot.ids.size == initial
-        } ?: return null
-
-        if (initial > 1 && !invokeNextSourceBoundary(request, 2)) {
-            Log.e(
-                TAG,
-                "MIX ZERO-POOL | could not refresh native current+1 AudioSource"
-            )
-            return null
-        }
-
         Log.i(
             TAG,
-            "MIX PREPLAY QUEUE | verified=true | initial=" + initial +
-                " | smart=0 | nativeGenerated=" + refillCount +
-                " | current=" + selectedId +
-                " | currentPosition=1"
+            "MIX PREPLAY QUEUE | verified=true | initial=$initial | " +
+                "smart=0 | nativeGenerated=${(initial - 1).coerceAtLeast(0)} | " +
+                "current=$selectedId | currentPosition=1 | boundary=natural-current-pre-decoder"
         )
         Log.i(
             TAG,
-            "MIX AUTO-DJ | command=sent-zero-pool-native-fallback" +
-                " | initialSize=" + initial +
-                " | upcoming=" + upcomingSetting +
-                " | seed=" + selectedId
+            "MIX AUTO-DJ | command=sent-zero-pool-native-fallback | " +
+                "initialSize=$initial | upcoming=$upcomingSetting | seed=$selectedId"
         )
         return filled
     }

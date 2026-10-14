@@ -237,3 +237,11 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - r35 exact-path CURRENT rebind and r37 pinned `queue_id` bootstrap remain compatibility adaptations; neither changes recommendation ownership or permits post-materialization Track-ID mutation.
 
 - r45 carries one bounded read-only mapping observer for GMMP 4.2.1's unique declared `MenuItem,List -> boolean` context-action boundary (`ex3.r` on the tested build). It is request-local, observes only native Play, does not mutate arguments, and is intended to determine whether this pre-materialization boundary can replace the lost 4.2.0 queue-owner transaction. Retire it after one conclusive device trace.
+
+
+## GMMP 4.2.1 Track Auto-DJ zero-pool invariant (R46)
+
+- A zero GoneSmart recommendation pool is **not** a Track Auto-DJ failure. Preserve the working 4.2.0 contract by letting GMMP generate the Initial Size fallback tracks natively.
+- On GMMP 4.2.1, zero-pool seed isolation + native `qr.z(...)` fill + position compaction may run only at the passively verified natural CURRENT-writer boundary, synchronously before that native caller resumes and materializes `current+1`.
+- Never repair zero-pool playback after decode with a guessed/manual `MusicService` current+1 refresh or late retarget. If the verified pre-decoder boundary cannot be acquired, fail closed.
+- Keep the non-empty GoneSmart bootstrap path separate and unchanged; a zero-pool compatibility fix must not regress the proven Smart recommendation path.

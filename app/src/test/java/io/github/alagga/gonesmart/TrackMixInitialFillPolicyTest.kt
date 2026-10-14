@@ -20,12 +20,19 @@ class TrackMixInitialFillPolicyTest {
             TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
             TrackMixInitialFillPolicy.nativeRefillAction(true, false, "WAIT_PLAY", false)
         )
-        listOf("PREWARM", "PRIME_NATIVE", "RETARGETING", "FILLING").forEach { stage ->
+        listOf("PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "FILLING").forEach { stage ->
             assertEquals(
                 TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
                 TrackMixInitialFillPolicy.nativeRefillAction(true, false, stage, false)
             )
         }
+    }
+
+    @Test fun explicitZeroPoolInitialFillCrossesTheHoldNatively() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
+            TrackMixInitialFillPolicy.nativeRefillAction(true, true, "FILLING", false)
+        )
     }
 
     @Test fun onlyOwnedSlotShortfallCrossesPrimeStage() {

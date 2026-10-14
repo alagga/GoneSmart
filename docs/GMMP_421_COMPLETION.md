@@ -87,3 +87,12 @@ Latest device evidence shows the r39 BUNT. queue reached five correct rows but G
 ## GMMP 4.2.1 Track Mix architecture correction (r45)
 
 The 2026-10-14 r44 device trace proved that native-fallback preselection plus post-materialization `current+1` retargeting violates the accepted playback ownership model: BUNT. had zero GoneSmart recommendations but was presented as a successful four-track prepared pool, and the queue row for slot 2 diverged from GMMP's already cached decoder AudioSource. r45 retires that path. Track Mix again waits on the same provider/local-match pipeline up to the established 60 s preparation bound. A zero real-match result is FALLBACK/red and fails closed before native Play, leaving queue/audio state untouched. Device re-acceptance must first prove Levels uses real GoneSmart matches again; BUNT. must no longer turn green or mutate playback when the smart pool is empty. A native no-match fallback may be restored only after the 4.2.1 equivalent of the accepted 4.2.0 seed-isolation boundary is independently proven before decoder materialization.
+
+
+### R46 Track Auto-DJ zero-pool boundary
+
+R45 proved the non-empty Smart path on GMMP 4.2.1, but deliberately failed before native Play when the prepared GoneSmart pool was empty. The new acceptance evidence shows that the old 4.2.0 behavior was different: zero GoneSmart matches fell through to GMMP native Auto-DJ and still verified Initial Size. R46 restores only that contract.
+
+The 4.2.1 replacement for the legacy seed boundary is the already passively verified natural CURRENT writer. `QueueFlipController` notifies Track Mix synchronously after GMMP's writer returns and before its caller resumes. For a zero-pool request whose native CURRENT is the exact pre-Play-resolved target, Track Mix isolates that row, performs the explicit native `qr.z(initial-1)` fill, compacts the resulting queue to positions `1..Initial Size`, and verifies the same queue entry is CURRENT at position 1 before returning to GMMP. No manual MusicService/current+1 refresh is invoked.
+
+Acceptance requires the runtime log to show `MIX ZERO-POOL BOUNDARY ... beforeDecoder=true` before the next-source decode, followed by `MIX VERIFIED`. The existing non-empty Smart bootstrap path must remain unchanged and continue to verify its prepared GoneSmart tracks.

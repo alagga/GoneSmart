@@ -23,7 +23,7 @@ internal object TrackMixInitialFillPolicy {
         if (legacyQueue) return NativeRefillAction.SUPPRESS
         return when (stage) {
             "WAIT_PLAY" -> NativeRefillAction.PASS_NATIVE
-            "PREWARM", "PRIME_NATIVE", "RETARGETING", "FILLING" ->
+            "PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "FILLING" ->
                 NativeRefillAction.SUPPRESS
             else -> NativeRefillAction.NORMAL
         }
