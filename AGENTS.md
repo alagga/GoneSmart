@@ -227,12 +227,11 @@ After 0.4.0, new features should start on a normal named feature branch from the
 
 
 
-## GMMP 4.2.1 Track Mix native-fallback continuity (r44)
 
-- r39 device evidence retires the r36/r37 zero-provider algorithm. A playing CURRENT must never be left without a native current+1 row, even briefly: GMMP immediately cached `next audio source is null`, and a later `MusicService.I2(2)` replay did not repair decoder state.
-- Manual replay/invocation of the passively observed `MusicService(Int)->void` next-source boundary is forbidden. The boundary is observation/priming evidence only.
-- When provider/local matching yields zero Track Mix recommendations and native fallback is allowed, preselect the complete Initial-Size remainder through the already verified native Auto-DJ selection DAO before native Play. This selection is read-only with respect to `queue_table`.
-- The first fallback Track ID must be written only into the existing temporary current+1 native queue row before GMMP's naturally observed current+1 AudioSource read. Preserve that exact Track ID as final queue slot 2 after any Smart-Playlist rebuild.
-- Final native-fallback reconciliation may rewrite rebuilt future queue rows only to the already preselected native fallback IDs, then prune surplus rows and compact positions. It must never delete current+1 before its replacement decoder identity exists.
-- If native preselection, natural current+1 priming, exact CURRENT identity, or same-ID reconciliation cannot be independently verified, fail closed without source-queue isolation. If priming already happened, best-effort recovery must align rebuilt current+1 to the same primed Track ID before returning failure.
-- The accepted SMART/prepared Levels path remains separate: native-fallback priming must never run for `TrackMixPreparedOrigin.SMART`.
+## GMMP 4.2.1 Track Mix architecture correction (r45)
+
+- The accepted behavioral baseline is the v0.3.2 Smart-DJ pipeline plus the last known-good GMMP 4.2.0 Track Auto-DJ implementation (`fcc9a9003a0b64196ac61b04e53d003dc056ab92`). Porting to 4.2.1 may change native bindings/timing, not selection semantics.
+- r44 native-fallback preselection/retarget is retired. Native GMMP candidates must never be reclassified as successful GoneSmart matches, and an already materialized `current+1` Track ID must never be rewritten.
+- GMMP 4.2.1 eagerly prepares `current+1` during native Play, so selected-seed GoneSmart preparation remains before Play. Use the established 60 s Smart-DJ preparation bound rather than falling back while the same provider/local-match future is still running.
+- If Track Mix has zero real GoneSmart matches, set FALLBACK/red state and fail closed before native Play. Leave playback/queue untouched until a 4.2.1 native seed-isolation boundary equivalent to the accepted 4.2.0 transaction is independently proven.
+- r35 exact-path CURRENT rebind and r37 pinned `queue_id` bootstrap remain compatibility adaptations; neither changes recommendation ownership or permits post-materialization Track-ID mutation.

@@ -1,3 +1,5 @@
+> **Retired by r45:** device evidence showed queue/decoder divergence and false-success fallback semantics. Keep this file as historical evidence only; do not re-enable its post-materialization current+1 retarget design.
+
 # GMMP 4.2.1 Queue Compatibility — r44
 
 Source repair commit: `ab139568db9df78f49929e6621ca7c222c5fe359`.

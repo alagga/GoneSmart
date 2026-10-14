@@ -18,6 +18,7 @@ import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.lang.reflect.Proxy
 import java.util.WeakHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -26,23 +27,12 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
-internal enum class TrackMixPreparedOrigin {
-    NONE,
-    SMART,
-    NATIVE_FALLBACK
-}
-
 internal data class TrackMixPreparedInitialPool(
     val sessionId: Long,
-    val trackIds: List<Long>,
-    val origin: TrackMixPreparedOrigin = TrackMixPreparedOrigin.SMART
+    val trackIds: List<Long>
 ) {
     companion object {
-        val EMPTY = TrackMixPreparedInitialPool(
-            sessionId = -1L,
-            trackIds = emptyList(),
-            origin = TrackMixPreparedOrigin.NONE
-        )
+        val EMPTY = TrackMixPreparedInitialPool(-1L, emptyList())
     }
 }
 
@@ -152,12 +142,8 @@ internal class TrackMixController(
         @Volatile var bootstrapRefillObserved = false
         val nativePositionCommands = CopyOnWriteArrayList<ObservedNativePositionCommand>()
         @Volatile var provisionalCurrentQueuePosition: Int? = null
-        @Volatile var provisionalCurrentQueueEntryId: Long? = null
         @Volatile var nextSourceBoundary: ObservedNativePositionCommand? = null
         @Volatile var nextSourceBoundaryAmbiguous = false
-        @Volatile var nativeFallbackPrimedTrackId: Long? = null
-        @Volatile var nativeFallbackPrimedNextQueueEntryId: Long? = null
-        @Volatile var nativeFallbackPrimingFailed = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -455,11 +441,11 @@ internal class TrackMixController(
     }
 
     /**
-     * Record the bounded natural MusicService current+1 boundary for the
-     * request-local native-fallback path. The hook runs BEFORE GMMP reads the
-     * next AudioSource, so the temporary current+1 row can be retargeted to
-     * the exact native fallback Track ID that will also occupy final slot 2.
-     * No native playback method is replayed later.
+     * Record bounded natural MusicService Int->void calls while a zero-provider
+     * Track Mix is starting. Nothing is invoked here. Once transient CURRENT
+     * is independently known, exactly one call whose natural argument was
+     * CURRENT queue_position + 1 may become the request-local next-source
+     * refresh boundary.
      */
     fun observeNativePositionCommand(
         service: Any?,
@@ -468,7 +454,7 @@ internal class TrackMixController(
     ) {
         val request = pending ?: return
         if (request.stage != "WAIT_PLAY") return
-        if (request.prePlayPrepared.origin != TrackMixPreparedOrigin.NATIVE_FALLBACK) return
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return
         if (request.prePlayTarget == null || service == null || value == null) return
         if (method.parameterCount != 1 ||
             (method.parameterTypes[0] != Integer.TYPE &&
@@ -482,73 +468,19 @@ internal class TrackMixController(
 
         val key = method.declaringClass.name + "." + method.name +
             "(int)@" + System.identityHashCode(service)
-        val observed = ObservedNativePositionCommand(
-            key = key,
-            service = WeakReference(service),
-            method = method.apply { isAccessible = true },
-            value = value,
-            looper = Looper.myLooper(),
-            observedAt = SystemClock.elapsedRealtime()
-        )
-        val existing = request.nativePositionCommands.indexOfFirst { it.key == key }
-        if (existing >= 0) {
-            request.nativePositionCommands[existing] = observed
-        } else {
+        if (request.nativePositionCommands.none { it.key == key }) {
             if (request.nativePositionCommands.size >= 12) return
-            request.nativePositionCommands += observed
+            method.isAccessible = true
+            request.nativePositionCommands += ObservedNativePositionCommand(
+                key = key,
+                service = WeakReference(service),
+                method = method,
+                value = value,
+                looper = Looper.myLooper(),
+                observedAt = SystemClock.elapsedRealtime()
+            )
         }
-
         tryPromoteNextSourceBoundary(request)
-        val boundary = request.nextSourceBoundary ?: return
-        if (boundary.key != key || boundary.value != value) return
-        primeNativeFallbackCurrentPlusOne(request)
-    }
-
-    private fun primeNativeFallbackCurrentPlusOne(request: Pending): Boolean {
-        request.nativeFallbackPrimedTrackId?.let { return true }
-        if (request.nativeFallbackPrimingFailed) return false
-        val target = request.prePlayTarget ?: return false
-        val prepared = request.prePlayPrepared
-        if (prepared.origin != TrackMixPreparedOrigin.NATIVE_FALLBACK) return false
-        val fallbackTrackId = prepared.trackIds.firstOrNull() ?: return false
-        val currentEntryId = request.provisionalCurrentQueueEntryId ?: return false
-        val currentPosition = request.provisionalCurrentQueuePosition ?: return false
-        val autoDj = nativeAutoDj?.get() ?: return false
-
-        val nextEntryId = runCatching {
-            GmmpQueueMutationBridge(
-                autoDj = autoDj,
-                verifiedPositionWriter = nativePositionWriterProvider(autoDj),
-                currentQueueEntryIdHint = currentEntryId
-            ).retargetTrackMixPreloadedNext(
-                selectedTrackId = target.id,
-                replacementTrackId = fallbackTrackId,
-                expectedCurrentQueuePosition = currentPosition
-            )
-        }.onFailure {
-            Log.e(
-                TAG,
-                "MIX NATIVE FALLBACK PRELOAD | primed=false | fail-closed=true",
-                it
-            )
-        }.getOrNull()
-
-        if (nextEntryId == null) {
-            request.nativeFallbackPrimingFailed = true
-            return false
-        }
-        request.nativeFallbackPrimedTrackId = fallbackTrackId
-        request.nativeFallbackPrimedNextQueueEntryId = nextEntryId
-        Log.i(
-            TAG,
-            "MIX NATIVE FALLBACK PRELOAD | primed=true" +
-                " | currentEntry=" + currentEntryId +
-                " | nextEntry=" + nextEntryId +
-                " | track=" + fallbackTrackId +
-                " | position=" + (currentPosition + 1) +
-                " | boundary=natural-current-plus-one"
-        )
-        return true
     }
 
     /**
@@ -565,7 +497,6 @@ internal class TrackMixController(
         if (request.stage != "WAIT_PLAY") return null
         val target = request.prePlayTarget ?: return null
         val prepared = request.prePlayPrepared
-        if (prepared.origin != TrackMixPreparedOrigin.SMART) return null
         if (prepared.trackIds.isEmpty()) return null
 
         val pinnedEntryId = request.verifiedCurrentQueueEntryId
@@ -838,21 +769,25 @@ internal class TrackMixController(
                 Log.i(
                     TAG,
                     "MIX PREPLAY SMART POOL | target=${resolution.track.id} | " +
-                        "requested=$requiredUpcoming | prepared=${request.prePlayPrepared.trackIds.size} | " +
-                        "origin=${request.prePlayPrepared.origin}"
+                        "requested=$requiredUpcoming | prepared=${request.prePlayPrepared.trackIds.size}"
                 )
                 if (
                     requiredUpcoming > 0 &&
-                    request.prePlayPrepared.origin == TrackMixPreparedOrigin.NONE
+                    request.prePlayPrepared.trackIds.isEmpty()
                 ) {
-                    Log.e(
+                    // GMMP 4.2.1 can already have a stale current+1
+                    // AudioSource cached while native Play is settling. Do
+                    // not dispatch Play and then mutate that materialized row
+                    // when GoneSmart has no real recommendation pool.
+                    Log.w(
                         TAG,
-                        "MIX PREPLAY FALLBACK | no safe prepared/native fallback tracks; native Play not dispatched"
+                        "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
+                            "native Play not dispatched | failClosed=true"
                     )
                     if (pending === request) pending = null
                     main.post {
                         fail(
-                            "Could not prepare a safe Track Auto-DJ queue for this song.",
+                            "No suitable GoneSmart matches were found for this song.",
                             context
                         )
                     }
@@ -949,11 +884,8 @@ internal class TrackMixController(
                     return
                 }
 
-                if (
-                    request.prePlayPrepared.origin ==
-                    TrackMixPreparedOrigin.NATIVE_FALLBACK
-                ) {
-                    filled = finalizeNativeFallbackPreparedQueue(
+                if (request.prePlayPrepared.trackIds.isEmpty()) {
+                    filled = fillZeroPoolNativeFallback(
                         request = request,
                         selectedId = selectedId,
                         selectedEntryId = selectedEntryId,
@@ -962,21 +894,11 @@ internal class TrackMixController(
                         upcomingSetting = upcoming
                     ) ?: run {
                         fail(
-                            "Could not safely finalize the native Track Auto-DJ fallback queue.",
+                            "Could not safely replace the source queue with native Auto-DJ tracks.",
                             request.context
                         )
                         return
                     }
-                } else if (request.prePlayPrepared.trackIds.isEmpty()) {
-                    Log.e(
-                        TAG,
-                        "MIX PREPLAY VERIFY | prepared origin empty after native Play; fail closed"
-                    )
-                    fail(
-                        "Could not safely prepare the Track Auto-DJ queue.",
-                        request.context
-                    )
-                    return
                 } else {
                     var currentSnapshot = loaded
                     var availableUpcoming =
@@ -1364,39 +1286,43 @@ internal class TrackMixController(
         )
     }
 
-    private fun recoverNativeFallbackCurrentPlusOne(
+    private fun invokeNextSourceBoundary(
         request: Pending,
-        selectedId: Long,
-        selectedEntryId: Long
+        nextQueuePosition: Int
     ): Boolean {
-        val fallbackTrackId = request.nativeFallbackPrimedTrackId ?: return false
-        val autoDj = nativeAutoDj?.get() ?: return false
-        val current = queueSnapshot(selectedEntryId) ?: return false
-        if (current.currentId != selectedId) return false
-        val currentPosition = current.currentQueuePosition ?: return false
-        val recovered = runCatching {
-            GmmpQueueMutationBridge(
-                autoDj = autoDj,
-                verifiedPositionWriter = nativePositionWriterProvider(autoDj),
-                currentQueueEntryIdHint = selectedEntryId
-            ).retargetTrackMixPreloadedNext(
-                selectedTrackId = selectedId,
-                replacementTrackId = fallbackTrackId,
-                expectedCurrentQueuePosition = currentPosition
-            ) != null
-        }.onFailure {
-            Log.e(TAG, "MIX NATIVE FALLBACK RECOVER | failed", it)
-        }.getOrDefault(false)
+        if (request.nextSourceBoundaryAmbiguous || nextQueuePosition <= 0) return false
+        val boundary = request.nextSourceBoundary ?: return false
+        val service = boundary.service.get() ?: return false
+        val invoke = {
+            runCatching {
+                boundary.method.isAccessible = true
+                boundary.method.invoke(service, nextQueuePosition)
+            }.onFailure {
+                Log.e(TAG, "MIX NEXT SOURCE REFRESH | native invocation failed", it)
+            }.isSuccess
+        }
+        val ok = if (boundary.looper != null && Looper.myLooper() != boundary.looper) {
+            val done = CountDownLatch(1)
+            var result = false
+            Handler(boundary.looper).post {
+                result = invoke()
+                done.countDown()
+            }
+            done.await(1_500L, TimeUnit.MILLISECONDS) && result
+        } else {
+            invoke()
+        }
         Log.i(
             TAG,
-            "MIX NATIVE FALLBACK RECOVER | nextAligned=$recovered" +
-                " | track=" + fallbackTrackId +
-                " | currentPosition=" + currentPosition
+            "MIX NEXT SOURCE REFRESH | invoked=" + ok +
+                " | position=" + nextQueuePosition +
+                " | command=" + boundary.method.declaringClass.name + "." +
+                boundary.method.name + "(int)"
         )
-        return recovered
+        return ok
     }
 
-    private fun finalizeNativeFallbackPreparedQueue(
+    private fun fillZeroPoolNativeFallback(
         request: Pending,
         selectedId: Long,
         selectedEntryId: Long,
@@ -1404,116 +1330,109 @@ internal class TrackMixController(
         initial: Int,
         upcomingSetting: Int
     ): Snapshot? {
-        val prepared = request.prePlayPrepared
-        val expectedFallbackCount = (initial - 1).coerceAtLeast(0)
-        if (prepared.origin != TrackMixPreparedOrigin.NATIVE_FALLBACK ||
-            prepared.trackIds.size != expectedFallbackCount
-        ) {
-            Log.e(
-                TAG,
-                "MIX NATIVE FALLBACK | prepared set incomplete" +
-                    " | expected=" + expectedFallbackCount +
-                    " | actual=" + prepared.trackIds.size
-            )
-            return null
-        }
-        if (expectedFallbackCount > 0 &&
-            (request.nativeFallbackPrimingFailed ||
-                request.nativeFallbackPrimedTrackId != prepared.trackIds.first())
-        ) {
-            Log.e(
-                TAG,
-                "MIX NATIVE FALLBACK | natural current+1 preload was not verified; source queue untouched"
-            )
-            return null
-        }
-
         val autoDj = nativeAutoDj?.get() ?: return null
+        if (request.nextSourceBoundary == null ||
+            request.nextSourceBoundaryAmbiguous
+        ) {
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL | next-source boundary unavailable; fail closed"
+            )
+            return null
+        }
         val rebaseWriter = nativeTrackMixPositionWriterProvider(
             autoDj,
             selectedQueuePosition
-        ) ?: run {
+        )
+        if (rebaseWriter == null) {
             Log.e(
                 TAG,
-                "MIX NATIVE FALLBACK | passively verified Current writer unavailable; source queue untouched"
+                "MIX ZERO-POOL | passively observed Current writer unavailable; fail closed"
             )
-            recoverNativeFallbackCurrentPlusOne(request, selectedId, selectedEntryId)
             return null
         }
 
-        request.stage = "RETARGETING"
-        val retargeted = runCatching {
+        request.stage = "ZERO_POOL_SEED"
+        val isolated = runCatching {
             GmmpQueueMutationBridge(
                 autoDj = autoDj,
                 verifiedPositionWriter = rebaseWriter,
                 currentQueueEntryIdHint = selectedEntryId
-            ).retargetTrackMixUpcoming(
-                selectedTrackId = selectedId,
-                smartTrackIds = prepared.trackIds,
-                targetQueueSize = initial
-            )
+            ).isolateTrackMixZeroPoolSeed(selectedId)
         }.onFailure {
-            Log.e(TAG, "MIX NATIVE FALLBACK | same-ID queue reconciliation failed", it)
+            Log.e(TAG, "MIX ZERO-POOL | native seed isolation failed", it)
         }.getOrDefault(false)
-        if (!retargeted) {
-            recoverNativeFallbackCurrentPlusOne(request, selectedId, selectedEntryId)
+        if (!isolated) return null
+
+        request.stage = "FILLING"
+        armManagedAutoDjSession()
+        request.transitionalRefillSuppressed = false
+        sendCommand(request.context, COMMAND_AUTO_DJ)
+        nativeToastSuppressionUntilMs = SystemClock.elapsedRealtime() + 7_000L
+        awaitAutoDjCommandRefillBoundary(request)
+
+        val refillCount = (initial - 1).coerceAtLeast(0)
+        if (!requestHeldNativeRefill(refillCount)) {
+            Log.e(TAG, "MIX ZERO-POOL | explicit native refill rejected")
             return null
         }
+        var filled = if (refillCount == 0) {
+            queueSnapshot(selectedEntryId)
+        } else {
+            awaitQueue(
+                request = request,
+                timeoutMs = 8_000L,
+                currentQueueEntryIdHint = selectedEntryId
+            ) { snapshot ->
+                snapshot.currentId == selectedId &&
+                    snapshot.ids.size == initial
+            }
+        } ?: return null
 
+        val finalWriter = nativePositionWriterProvider(autoDj)
+            ?: rebaseWriter
         val compact = runCatching {
             GmmpQueueMutationBridge(
                 autoDj = autoDj,
-                verifiedPositionWriter = rebaseWriter,
+                verifiedPositionWriter = finalWriter,
                 currentQueueEntryIdHint = selectedEntryId
             ).rebaseTrackMixZeroPoolInitialQueue(
                 selectedTrackId = selectedId,
                 expectedSize = initial
             )
         }.onFailure {
-            Log.e(TAG, "MIX NATIVE FALLBACK | final queue rebase failed", it)
+            Log.e(TAG, "MIX ZERO-POOL | native refill position rebase failed", it)
         }.getOrDefault(false)
-        if (!compact) {
-            recoverNativeFallbackCurrentPlusOne(request, selectedId, selectedEntryId)
-            return null
-        }
+        if (!compact) return null
 
-        val expectedIds = TrackMixNativeFallbackPolicy.expectedQueueIds(
-            selectedTrackId = selectedId,
-            fallbackTrackIds = prepared.trackIds
-        )
-        val filled = queueSnapshot(selectedEntryId)?.takeIf { snapshot ->
+        filled = queueSnapshot(selectedEntryId)?.takeIf { snapshot ->
             snapshot.currentId == selectedId &&
                 snapshot.currentIndex == 0 &&
                 snapshot.currentQueuePosition == 1 &&
-                snapshot.ids == expectedIds
-        } ?: run {
-            recoverNativeFallbackCurrentPlusOne(request, selectedId, selectedEntryId)
+                snapshot.ids.size == initial
+        } ?: return null
+
+        if (initial > 1 && !invokeNextSourceBoundary(request, 2)) {
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL | could not refresh native current+1 AudioSource"
+            )
             return null
         }
 
         Log.i(
             TAG,
-            "MIX NATIVE FALLBACK QUEUE | verified=true" +
-                " | preloadPreserved=" +
-                (request.nativeFallbackPrimedTrackId == prepared.trackIds.firstOrNull()) +
-                " | initial=" + initial +
+            "MIX PREPLAY QUEUE | verified=true | initial=" + initial +
+                " | smart=0 | nativeGenerated=" + refillCount +
                 " | current=" + selectedId +
-                " | followers=" + prepared.trackIds.joinToString(",")
+                " | currentPosition=1"
         )
-
-        armManagedAutoDjSession()
-        request.stage = "FILLING"
-        request.transitionalRefillSuppressed = false
-        sendCommand(request.context, COMMAND_AUTO_DJ)
-        nativeToastSuppressionUntilMs = SystemClock.elapsedRealtime() + 7_000L
-        awaitAutoDjCommandRefillBoundary(request)
         Log.i(
             TAG,
-            "MIX AUTO-DJ | command=sent-after-native-fallback-reconcile" +
+            "MIX AUTO-DJ | command=sent-zero-pool-native-fallback" +
                 " | initialSize=" + initial +
                 " | upcoming=" + upcomingSetting +
-                " | seed=" + selectedId +
-                " | manualPlaybackReplay=false"
+                " | seed=" + selectedId
         )
         return filled
     }
@@ -1638,8 +1557,6 @@ internal class TrackMixController(
                         transitionDetectedAt = 0L
                         request.provisionalCurrentQueuePosition =
                             current.currentQueuePosition
-                        request.provisionalCurrentQueueEntryId =
-                            identity.queueEntryId
                         tryPromoteNextSourceBoundary(request)
                         Log.i(
                             TAG,
@@ -1677,7 +1594,6 @@ internal class TrackMixController(
                 stableSnapshot = current
                 stableAt = now
                 request.provisionalCurrentQueuePosition = current.currentQueuePosition
-                request.provisionalCurrentQueueEntryId = identity.queueEntryId
                 tryPromoteNextSourceBoundary(request)
                 Log.i(
                     TAG,
