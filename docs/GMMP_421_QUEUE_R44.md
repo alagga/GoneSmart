@@ -1,5 +1,8 @@
 # GMMP 4.2.1 Queue Compatibility — r44
 
+Source repair commit: `ab139568db9df78f49929e6621ca7c222c5fe359`.
+The install head is defined by the subsequent exact-head CI build and may include documentation-only pin commits.
+
 ## Evidence
 
 The 2026-10-14 BUNT. log reached a visually correct five-row queue but exposed a playback-state break earlier in the transition: after source isolation left only CURRENT, GMMP queried position 2 and cached `next audio source is null`. Four native rows were inserted only afterwards. Replaying the previously observed `MusicService(Int)->void` position-2 boundary did not restore decoder continuity: Track 2 became CURRENT in metadata while no decoder opened, and a subsequent Avicii Track Mix inherited stale playback state.
