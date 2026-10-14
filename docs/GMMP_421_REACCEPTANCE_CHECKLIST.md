@@ -2,7 +2,7 @@
 
 This checklist is the single device pass for the current **r44** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `abfee93177808f13e1611e943551b6d796a99240`.
+Repair source commit: `ab139568db9df78f49929e6621ca7c222c5fe359`.
 
 ## Before device install
 
@@ -34,8 +34,8 @@ The complete `track_uri -> song_id` index is built together with `GmmpLibraryRea
 4. Once the selected native queue row is proven, verify `MIX CURRENT PIN | entry=... | track=... | verified=true`. During the pending startup this unique native `queue_id` is the authoritative temporary CURRENT identity; a missing/duplicated entry must never be replaced by a track-ID guess.
 5. If GoneSmart prepared recommendations, the explicit shortfall refill must log `MIX REQUEST REFILL | receiver=qr`; it must never attempt `dx3.z(int)`.
 6. The target-owned native refill must reach the existing bootstrap path (`MIX PREPLAY BOOTSTRAP OFFER` / `SMART DJ TRACK MIX BOOTSTRAP` / `MIX PREPLAY NATIVE REFILL`) so prepared GoneSmart IDs are selected before queue-row/playback materialization.
-7. If providers genuinely yield zero recommendations, Track Mix must preserve only the exact pinned selected row from the source queue, rebase it to position 1, and let GMMP's native Auto-DJ refill create the Initial-Size followers. Source Smart-Playlist followers must not be retained as a substitute recommendation set.
-8. Startup must contain no 4.2.1 `CLEAR_QUEUE` / `TRACK MIX NATIVE CLEAR` and no post-materialization Smart Track-ID retarget. Prepared-recommendation queue mutation after bootstrap remains prune-only; the zero-provider fallback may delete source rows and compact native queue positions, but it must never rewrite follower Track IDs.
+7. If providers genuinely yield zero recommendations and native fallback is allowed, Track Mix must preselect the complete native GMMP fallback remainder **before native Play**. The first preselected fallback Track ID must be written only into the already existing temporary current+1 row before GMMP's natural position-2 AudioSource read, then preserved as final queue slot 2 through any Smart-Playlist source rebuild. Only after that continuity is verified may rebuilt future rows be reconciled to the remaining already-preselected native fallback IDs, surplus source rows pruned, and positions compacted to 1..Initial Size.
+8. Startup must contain no 4.2.1 `CLEAR_QUEUE` / `TRACK MIX NATIVE CLEAR`, no seed-only interval with missing current+1, and no manual replay/invocation of the observed MusicService next-source boundary. Prepared SMART recommendations retain the accepted pre-materialization bootstrap/prune path. Native-fallback follower Track-ID writes are allowed only as same-ID reconciliation to the **already preselected** fallback IDs, with final slot 2 identical to the Track ID that GMMP naturally preloaded before the source rebuild.
 9. Let playback cross naturally from the selected seed into the first generated follow-up without skip/pause/seek. Track 2 must open a decoder and start audio, not merely update metadata/scrobbling.
 10. Verify subsequent managed refill still works after a natural Current transition; continuity refill must also use the exact controller-owned `qr` receiver.
 
@@ -62,6 +62,10 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - The rebind must adopt the replacement native `queue_id`, then reach `MIX PLAY VERIFIED` and `MIX CURRENT PIN`. Zero or duplicate exact path matches must not rebind.
 - Re-run Avicii `Levels (Radio Edit)` as regression. Its prepared recommendation pool must continue through the accepted controller-owned `qr` bootstrap; no exact-path rebind should be needed in the normal successful path, and the natural Track-2 decoder/audio transition must remain intact.
 - Safety invariants remain: no 4.2.1 `CLEAR_QUEUE`, no same-position playback refresh, no post-materialization Track-ID retarget, and no current selection inferred from track ID alone.
+
+## Historical note: r36-r39 zero-provider mechanics are retired
+
+The sections below document device experiments that led to r44. Their seed-isolation, explicit native-refill and `MIX NEXT SOURCE REFRESH` expectations are **historical evidence only and must not be used as current acceptance criteria**. r44 supersedes those mechanics because the 2026-10-14 device log proved the temporary missing-current+1 interval cached a null AudioSource and manual MusicService replay did not restore decoder continuity.
 
 ## r36 regression focus
 - The accepted r35 exact-path rebind must still occur for the zero-provider BUNT. run, but the final queue must no longer retain source Smart-Playlist followers. Expect a passively observed state-writer candidate, one promoted Track Mix rebase write, `TRACK MIX ZERO-POOL SEED ... oldPosition=6 | newPosition=1`, an explicit native refill for four tracks, `TRACK MIX ZERO-POOL REBASE ... currentPosition=1`, and `MIX NEXT SOURCE REFRESH ... position=2`.
