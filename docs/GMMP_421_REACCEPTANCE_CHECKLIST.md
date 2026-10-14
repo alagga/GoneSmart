@@ -1,14 +1,16 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r44** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r45** Playlist Link / Track Mix architecture-correction and read-only mapping candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
-Repair source commit: `ab139568db9df78f49929e6621ca7c222c5fe359`.
+Architecture correction source: `019c837ce624cdb721621b95829a8080314b1dcf`.
+
+Read-only 4.2.1 context-Play observer source: `6ea2c00f649a524ae0132da1fbe77470d5737815`.
 
 ## Before device install
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r44`;
+- Compatibility startup log reports revision `gmmp421-r45`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -28,18 +30,16 @@ The complete `track_uri -> song_id` index is built together with `GmmpLibraryRea
 
 ## Track Mix
 
-1. Start Track Auto-DJ on a deliberately identifiable selected song.
-2. Verify `MIX CLICK` and `MIX PREPLAY AUTO-DJ | available=true` (or the bounded passive recovery marker).
-3. Verify `MIX PREPLAY TARGET | resolved=true` and `MIX PREPLAY SMART POOL` occur **before** `MIX START | ... nativePlay=dispatched`.
-4. Once the selected native queue row is proven, verify `MIX CURRENT PIN | entry=... | track=... | verified=true`. During the pending startup this unique native `queue_id` is the authoritative temporary CURRENT identity; a missing/duplicated entry must never be replaced by a track-ID guess.
-5. If GoneSmart prepared recommendations, the explicit shortfall refill must log `MIX REQUEST REFILL | receiver=qr`; it must never attempt `dx3.z(int)`.
-6. The target-owned native refill must reach the existing bootstrap path (`MIX PREPLAY BOOTSTRAP OFFER` / `SMART DJ TRACK MIX BOOTSTRAP` / `MIX PREPLAY NATIVE REFILL`) so prepared GoneSmart IDs are selected before queue-row/playback materialization.
-7. If providers genuinely yield zero recommendations and native fallback is allowed, Track Mix must preselect the complete native GMMP fallback remainder **before native Play**. The first preselected fallback Track ID must be written only into the already existing temporary current+1 row before GMMP's natural position-2 AudioSource read, then preserved as final queue slot 2 through any Smart-Playlist source rebuild. Only after that continuity is verified may rebuilt future rows be reconciled to the remaining already-preselected native fallback IDs, surplus source rows pruned, and positions compacted to 1..Initial Size.
-8. Startup must contain no 4.2.1 `CLEAR_QUEUE` / `TRACK MIX NATIVE CLEAR`, no seed-only interval with missing current+1, and no manual replay/invocation of the observed MusicService next-source boundary. Prepared SMART recommendations retain the accepted pre-materialization bootstrap/prune path. Native-fallback follower Track-ID writes are allowed only as same-ID reconciliation to the **already preselected** fallback IDs, with final slot 2 identical to the Track ID that GMMP naturally preloaded before the source rebuild.
-9. Let playback cross naturally from the selected seed into the first generated follow-up without skip/pause/seek. Track 2 must open a decoder and start audio, not merely update metadata/scrobbling.
-10. Verify subsequent managed refill still works after a natural Current transition; continuity refill must also use the exact controller-owned `qr` receiver.
-
-The r27 same-position Current refresh remains retired because it could verify while Track 2 still failed to decode. The r28 clear/pre-command-fill ordering remains retired because `CLEAR_QUEUE` itself could cache a null next AudioSource. r32 also forbids child/state-writer receivers such as `dx3` from becoming Track Mix refill owners.
+1. Start Track Auto-DJ on Avicii `Levels (Radio Edit)` first. This is the positive SMART-path regression.
+2. Verify `MIX CLICK`, `MIX PREPLAY AUTO-DJ | available=true`, and `MIX PREPLAY TARGET | resolved=true | trackId=3737`.
+3. The pre-Play smart preparation may wait up to the established 60 s bound. It must finish with real GoneSmart local matches; `origin=NATIVE_FALLBACK`, `SMART DJ TRACK MIX NATIVE PRESELECT`, `MIX NATIVE FALLBACK PRELOAD`, and post-materialization Track-ID retarget markers are forbidden.
+4. `MIX PREPLAY SMART POOL` must occur before `MIX START | ... nativePlay=dispatched`. Prepared GoneSmart IDs must continue through the accepted target-owned `qr.z(int)` bootstrap before GMMP materializes/caches the following AudioSource.
+5. During this Levels request, the one-shot r45 observer may log `MIX CONTEXT PLAY BOUNDARY ... readOnly=true`. If present, record `listSize`, element classes, `resolvedTrack`, and `expectedTrack`. The observer must not change playback, arguments, queue rows, or method invocation order.
+6. Let Levels cross naturally into Track 2. Queue metadata and the opened decoder/audio path must agree.
+7. Then invoke Track Auto-DJ on the known zero-provider BUNT. / Røam `Nothing Lasts Forever` row. It must finish smart preparation with zero real GoneSmart matches, switch the GoneSmart badge/runtime to FALLBACK/red, log `MIX PREPLAY FALLBACK ... native Play not dispatched | failClosed=true`, and leave the currently playing audio plus queue untouched.
+8. BUNT. must not turn green and must not emit `MIX START`, `SMART DJ TRACK MIX NATIVE PRESELECT`, `MIX NATIVE FALLBACK PRELOAD`, `TRACK MIX PRELOAD NEXT`, post-materialization Track-ID writes, `CLEAR_QUEUE`, or manual replay/refresh of a MusicService next-source boundary.
+9. Do not treat BUNT. native-fallback playback as accepted in r45. Restoring that behavior requires independent proof of a 4.2.1 pre-materialization native boundary equivalent in ownership semantics to the accepted 4.2.0 queue-owner transaction; direct generated-DAO mutation is not sufficient evidence.
+10. Playlist Link and the accepted span-preserving **Smart Playlist:** label remain regression invariants and need no repeated exploratory changes.
 
 Device acceptance remains pending until this complete pass succeeds on the exact CI-built APK.
 
@@ -98,7 +98,7 @@ The sections below document device experiments that led to r44. Their seed-isola
 - Safety invariants remain: no `CLEAR_QUEUE`, no materialized Track-ID rewrite, no same-position CURRENT refresh, no hard-coded obfuscated writer identity, and ambiguous/stale target recovery fails closed.
 
 
-## r44 regression focus
+## Historical r44 regression focus — retired by r45
 
 - BUNT. zero-provider/native-fallback run: expect `SMART DJ TRACK MIX NATIVE PRESELECT ... selected=4`, then `MIX NATIVE FALLBACK PRELOAD | primed=true` before GMMP's natural position-2 AudioSource read. There must be no seed-only interval, no `next audio source is null`, and no `MIX NEXT SOURCE REFRESH`.
 - After Smart-Playlist rebuild/path rebind, expect `MIX NATIVE FALLBACK QUEUE | verified=true | preloadPreserved=true`. Final queue must be positions 1..5 with BUNT. CURRENT at 1 and the exact preloaded fallback Track ID at slot 2.
