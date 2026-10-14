@@ -77,3 +77,8 @@ The prepared-pool Levels regression is accepted from r37. The remaining zero-pro
 ### r39 Track Mix transient-CURRENT gate
 
 The r38 BUNT. pass failed before zero-pool mutation because `queue-current-change` promoted transient Track 19133 as the selected identity while the already resolved clicked target was Track 19118. The subsequent exact-path lookup found BUNT. correctly but was rejected against the wrong provisional Track ID. r39 gates initial Track Mix identity by the pre-Play target: a mismatching CURRENT change is transition-only, its disappearing queue entry can open the bounded exact-path recovery for the known target, and the normal one-shot post-target rebind remains available for GMMP's second source rebuild. Prepared-pool Levels behavior, recommendation ranking and zero-pool mutation logic are unchanged.
+
+
+## r44 native-fallback continuity repair
+
+Latest device evidence shows the r39 BUNT. queue reached five correct rows but GMMP had already cached a null next AudioSource during the earlier one-row seed phase. Track 2 therefore updated metadata without a decoder, and a later Levels Track Mix inherited stale playback state. r44 removes the seed-only phase and all manual next-source replay. Zero-provider Track Mix instead preselects native GMMP fallback IDs before Play, primes temporary current+1 before the natural preload, reconciles the rebuilt queue to the same Track-2 ID, then prunes/rebases and enables Auto-DJ. Prepared SMART recommendations keep the accepted Levels bootstrap path unchanged.

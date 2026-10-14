@@ -225,3 +225,14 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - r36 does not guess an obfuscated next-source method. During the natural zero-provider start it records a bounded set of `MusicService(Int)->void` calls; once the transient selected CURRENT is independently known, exactly one call may be promoted iff its observed argument equals `currentQueuePosition + 1`. After native refill and position compaction, that same naturally observed boundary is invoked for position 2 so GMMP rebuilds `current+1` from the new native Auto-DJ row instead of retaining the already-cached Smart-Playlist AudioSource. Multiple/stale candidates fail closed.
 - `CLEAR_QUEUE`, post-materialization Track-ID rewriting, and the retired same-position CURRENT refresh remain forbidden.
 
+
+
+## GMMP 4.2.1 Track Mix native-fallback continuity (r44)
+
+- r39 device evidence retires the r36/r37 zero-provider algorithm. A playing CURRENT must never be left without a native current+1 row, even briefly: GMMP immediately cached `next audio source is null`, and a later `MusicService.I2(2)` replay did not repair decoder state.
+- Manual replay/invocation of the passively observed `MusicService(Int)->void` next-source boundary is forbidden. The boundary is observation/priming evidence only.
+- When provider/local matching yields zero Track Mix recommendations and native fallback is allowed, preselect the complete Initial-Size remainder through the already verified native Auto-DJ selection DAO before native Play. This selection is read-only with respect to `queue_table`.
+- The first fallback Track ID must be written only into the existing temporary current+1 native queue row before GMMP's naturally observed current+1 AudioSource read. Preserve that exact Track ID as final queue slot 2 after any Smart-Playlist rebuild.
+- Final native-fallback reconciliation may rewrite rebuilt future queue rows only to the already preselected native fallback IDs, then prune surplus rows and compact positions. It must never delete current+1 before its replacement decoder identity exists.
+- If native preselection, natural current+1 priming, exact CURRENT identity, or same-ID reconciliation cannot be independently verified, fail closed without source-queue isolation. If priming already happened, best-effort recovery must align rebuilt current+1 to the same primed Track ID before returning failure.
+- The accepted SMART/prepared Levels path remains separate: native-fallback priming must never run for `TrackMixPreparedOrigin.SMART`.

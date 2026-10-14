@@ -1,6 +1,6 @@
 # GMMP 4.2.1 bundled re-acceptance
 
-This checklist is the single device pass for the current **r39** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
+This checklist is the single device pass for the current **r44** Playlist Link / Track Mix repair candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
 Repair source commit: `abfee93177808f13e1611e943551b6d796a99240`.
 
@@ -8,7 +8,7 @@ Repair source commit: `abfee93177808f13e1611e943551b6d796a99240`.
 
 - exact branch head is recorded by `BuildConfig.GIT_REVISION`;
 - normal `Build` CI passes generated-forum-copy verification, unit tests, Debug APK and unsigned Release smoke test on that exact head;
-- Compatibility startup log reports revision `gmmp421-r39`;
+- Compatibility startup log reports revision `gmmp421-r44`;
 - no temporary repair workflow or helper script remains in the repository.
 
 ## Playlist Link
@@ -92,3 +92,12 @@ Device acceptance remains pending until this complete pass succeeds on the exact
 - If GMMP replaces that first recovered BUNT. queue row once more, the existing `MIX CURRENT REBIND ... verified=true` path must still be available exactly once. After settling, expect `MIX CURRENT PIN`, request-scoped Current-writer mapping, zero-pool seed isolation/rebase to queue position 1, four native Auto-DJ followers, compact positions 1..5 and native next-source refresh for position 2.
 - BUNT. must finish at **1 of 5** and naturally transition into the newly generated Track 2. Avicii `Levels (Radio Edit)` remains the prepared-pool regression check and must keep all four GoneSmart recommendation slots.
 - Safety invariants remain: no `CLEAR_QUEUE`, no materialized Track-ID rewrite, no same-position CURRENT refresh, no hard-coded obfuscated writer identity, and ambiguous/stale target recovery fails closed.
+
+
+## r44 regression focus
+
+- BUNT. zero-provider/native-fallback run: expect `SMART DJ TRACK MIX NATIVE PRESELECT ... selected=4`, then `MIX NATIVE FALLBACK PRELOAD | primed=true` before GMMP's natural position-2 AudioSource read. There must be no seed-only interval, no `next audio source is null`, and no `MIX NEXT SOURCE REFRESH`.
+- After Smart-Playlist rebuild/path rebind, expect `MIX NATIVE FALLBACK QUEUE | verified=true | preloadPreserved=true`. Final queue must be positions 1..5 with BUNT. CURRENT at 1 and the exact preloaded fallback Track ID at slot 2.
+- Let BUNT. finish naturally. Queue slot 2 must open `DecoderCommon` for its exact final path and produce audio; metadata-only advancement is a failure.
+- Immediately start Avicii `Levels (Radio Edit)` afterwards. It must still use `TrackMixPreparedOrigin.SMART`, materialize all prepared GoneSmart IDs through the accepted native bootstrap and start playback normally. Native-fallback preload markers must be absent for Levels.
+- Safety: no `CLEAR_QUEUE`, no seed-only current+1 gap, no manual playback-boundary invocation/replay, no track-ID-only CURRENT guess. Ambiguous priming fails before source pruning; if a temporary next slot was already primed, recovery aligns rebuilt current+1 to that same Track ID.

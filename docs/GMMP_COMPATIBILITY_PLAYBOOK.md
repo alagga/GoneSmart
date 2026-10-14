@@ -290,3 +290,8 @@ State-writer hooks are installed on child/state-host methods discovered from fie
 ### GMMP 4.2.1 Track Mix pre-Play target gate
 
 r38 device evidence exposed a Smart-Playlist race before zero-pool isolation: native Play first changed CURRENT to a transient non-target row even though the clicked track had already been uniquely resolved before Play. A foreign first CURRENT is now transition evidence only. Its native queue entry may be retained as a bounded rebind anchor; if that entry disappears inside the Smart completion guard, the exact pre-Play target path may recover the materialized row only when the recovered Track ID equals the pre-Play target. This initial recovery does not consume the existing one-shot post-target exact-path rebind, because GMMP may replace the first materialized target row once more while completing the source rebuild.
+
+
+### r44 native-fallback AudioSource continuity
+
+The 2026-10-14 BUNT. device log proved that a visually correct five-row queue is insufficient. Seed-only isolation caused GMMP to query queue position 2 while absent and cache `next audio source is null`; after later refill/rebase, Track 2 changed metadata but never opened its decoder, and subsequent Track Mix playback inherited the poisoned service state. Therefore the old zero-provider seed-isolation + manual next-source-refresh sequence is retired. Native fallback must preselect its IDs before Play, prime the existing current+1 row before the natural AudioSource read, preserve that exact slot-2 Track ID through the source rebuild, and only then prune/rebase. No playback method is replayed.

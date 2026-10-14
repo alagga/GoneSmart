@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r39"
+            "gmmp421-r44"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -5880,7 +5880,89 @@ class GoneSmartModule : XposedModule() {
             "SMART DJ TRACK MIX PREPLAY | complete | requested=$requestedTracks | " +
                 "prepared=${preparedIds.size} | " + recommendationPool.describe(sessionId)
         )
-        return TrackMixPreparedInitialPool(sessionId, preparedIds)
+        if (preparedIds.isNotEmpty()) {
+            return TrackMixPreparedInitialPool(
+                sessionId = sessionId,
+                trackIds = preparedIds,
+                origin = TrackMixPreparedOrigin.SMART
+            )
+        }
+
+        val nativeFallbackAllowed =
+            networkStateReader.getState() == GoneSmartNetworkState.OFFLINE ||
+                options.fallbackToNativeAutoDjWhenNoSuitableTracks
+        if (nativeFallbackAllowed) {
+            val nativeIds = preselectTrackMixNativeFallback(
+                autoDjInstance = autoDjInstance,
+                selectedTrackId = selectedTrack.id,
+                requestedTracks = requestedTracks
+            )
+            if (nativeIds.size == requestedTracks) {
+                Log.i(
+                    TAG,
+                    "SMART DJ TRACK MIX NATIVE PRESELECT | requested=$requestedTracks" +
+                        " | selected=${nativeIds.size}" +
+                        " | boundary=verified-selection-dao"
+                )
+                return TrackMixPreparedInitialPool(
+                    sessionId = sessionId,
+                    trackIds = nativeIds,
+                    origin = TrackMixPreparedOrigin.NATIVE_FALLBACK
+                )
+            }
+            Log.w(
+                TAG,
+                "SMART DJ TRACK MIX NATIVE PRESELECT | requested=$requestedTracks" +
+                    " | selected=${nativeIds.size} | fail-closed=true"
+            )
+        }
+        return TrackMixPreparedInitialPool.EMPTY
+    }
+
+    private fun preselectTrackMixNativeFallback(
+        autoDjInstance: Any,
+        selectedTrackId: Long,
+        requestedTracks: Int
+    ): List<Long> {
+        if (requestedTracks <= 0) return emptyList()
+        return runCatching {
+            val trackDaoField = findField(
+                type = autoDjInstance.javaClass,
+                name = "r"
+            ).apply { isAccessible = true }
+            val trackDao = trackDaoField.get(autoDjInstance)
+                ?: error("GMMP Auto-DJ track DAO unavailable")
+            val selection = resolveAutoDjSelectionMethod(trackDao.javaClass).apply {
+                isAccessible = true
+            }
+            val sampleCount = maxOf(
+                requestedTracks + 4,
+                requestedTracks * 3
+            ).coerceAtMost(32)
+            val rows = (selection.invoke(trackDao, sampleCount) as? List<*>)
+                ?.filterNotNull()
+                ?: emptyList()
+            val rawIds = rows.mapNotNull { row ->
+                runCatching {
+                    val idField = findField(
+                        type = row.javaClass,
+                        name = "a"
+                    ).apply { isAccessible = true }
+                    (idField.get(row) as? Number)?.toLong()
+                }.getOrNull()
+            }
+            TrackMixNativeFallbackPolicy.selectNativeTrackIds(
+                rawTrackIds = rawIds,
+                selectedTrackId = selectedTrackId,
+                requested = requestedTracks
+            )
+        }.onFailure {
+            Log.e(
+                TAG,
+                "SMART DJ TRACK MIX NATIVE PRESELECT | verified selection boundary failed",
+                it
+            )
+        }.getOrDefault(emptyList())
     }
 
     private fun ensureRecommendationPoolReady(
