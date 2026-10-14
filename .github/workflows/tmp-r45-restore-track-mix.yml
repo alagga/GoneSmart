@@ -1,0 +1,68 @@
+name: Temporary r45 Track Mix architecture restore
+
+on:
+  push:
+    branches: ['fix/playlist-link-gmmp-4.2.1']
+    paths:
+      - 'scripts/tmp_r45_restore_track_mix_architecture.py'
+      - '.github/workflows/tmp-r45-restore-track-mix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Apply guarded r45 correction
+        run: python3 scripts/tmp_r45_restore_track_mix_architecture.py
+
+      - name: Static architecture guards
+        run: |
+          ! grep -R "primeNativeFallbackCurrentPlusOne" -n app/src/main/java/io/github/alagga/gonesmart
+          ! grep -R "retargetTrackMixPreloadedNext" -n app/src/main/java/io/github/alagga/gonesmart
+          ! grep -R "TrackMixPreparedOrigin.NATIVE_FALLBACK" -n app/src/main/java/io/github/alagga/gonesmart
+          grep -R "gmmp421-r45" -n app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt
+          grep -R "TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS" -n app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Debug compile guard
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Commit source and remove temporary helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/tmp_r45_restore_track_mix_architecture.py .github/workflows/tmp-r45-restore-track-mix.yml
+          git add AGENTS.md docs app/src
+          git status --short
+          git commit -m "fix: restore Track Mix smart-first architecture"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
