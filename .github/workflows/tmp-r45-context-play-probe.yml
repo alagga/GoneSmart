@@ -1,0 +1,50 @@
+name: Temporary r45 context Play mapping probe
+
+on:
+  push:
+    branches: ['fix/playlist-link-gmmp-4.2.1']
+    paths:
+      - 'scripts/tmp_r45_context_play_probe.py'
+      - '.github/workflows/tmp-r45-context-play-probe.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+      - name: Apply guarded observer patch
+        run: python3 scripts/tmp_r45_context_play_probe.py
+      - name: Guard read-only observer
+        run: |
+          grep -R "MIX CONTEXT PLAY BOUNDARY" -n app/src/main/java/io/github/alagga/gonesmart
+          grep -R "MIX CONTEXT PLAY OBSERVER READY" -n app/src/main/java/io/github/alagga/gonesmart
+          ! grep -R "setArg" -n app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+      - run: chmod +x gradlew
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: Debug compile guard
+        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Commit source and remove temporary helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/tmp_r45_context_play_probe.py .github/workflows/tmp-r45-context-play-probe.yml
+          git add AGENTS.md app/src
+          git status --short
+          git commit -m "debug: observe 4.2.1 context Play boundary"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
