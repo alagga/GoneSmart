@@ -5,6 +5,97 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
+internal class GmmpQueueSourceBatchBinding(
+    val dao: Any,
+    private val modelClass: Class<*>,
+    private val trackIdField: Field,
+    private val positionField: Field
+) {
+    data class GuardResult(
+        val batchSize: Int,
+        val currentPosition: Int,
+        val changed: Int,
+        val trackIdsByPosition: Map<Int, Long>
+    )
+
+    fun guardBeforeWrite(
+        payload: Any?,
+        selectedTrackId: Long,
+        nativeFallbackTrackIds: List<Long>,
+        expectedSize: Int
+    ): GuardResult? {
+        val rows = payloadRows(payload) ?: return null
+        val entries = rows.map { row ->
+            TrackMixZeroPoolPolicy.SourceBatchEntry(
+                trackId = number(trackIdField, row).toLong(),
+                position = number(positionField, row).toInt()
+            )
+        }
+        val plan = TrackMixZeroPoolPolicy.sourceBatchGuardPlan(
+            entries = entries,
+            selectedTrackId = selectedTrackId,
+            nativeFallbackTrackIds = nativeFallbackTrackIds,
+            expectedSize = expectedSize
+        ) ?: return null
+        val rowsByPosition = rows.associateBy {
+            number(positionField, it).toInt()
+        }
+        var changed = 0
+        plan.trackIdsByPosition.forEach { (position, trackId) ->
+            val row = rowsByPosition[position] ?: return null
+            if (number(trackIdField, row).toLong() != trackId) {
+                setLong(trackIdField, row, trackId)
+                changed += 1
+            }
+        }
+        check(plan.trackIdsByPosition.all { (position, trackId) ->
+            rowsByPosition[position]?.let {
+                number(trackIdField, it).toLong() == trackId
+            } == true
+        }) {
+            "Native source batch did not retain guarded fallback identity"
+        }
+        return GuardResult(
+            batchSize = rows.size,
+            currentPosition = plan.currentPosition,
+            changed = changed,
+            trackIdsByPosition = plan.trackIdsByPosition
+        )
+    }
+
+    private fun payloadRows(payload: Any?): List<Any>? {
+        val raw: List<*> = when {
+            payload is List<*> -> payload
+            payload != null && payload.javaClass.isArray ->
+                (0 until java.lang.reflect.Array.getLength(payload)).map { index ->
+                    java.lang.reflect.Array.get(payload, index)
+                }
+            else -> return null
+        }
+        if (raw.isEmpty() || raw.any { it == null || !modelClass.isInstance(it) }) {
+            return null
+        }
+        return raw.filterNotNull()
+    }
+
+    private fun number(field: Field, target: Any): Number =
+        field.get(target) as? Number
+            ?: error("GMMP queue batch numeric field became unavailable")
+
+    private fun setLong(field: Field, target: Any, value: Long) {
+        when (field.type) {
+            java.lang.Long.TYPE -> field.setLong(target, value)
+            java.lang.Long::class.java -> field.set(target, value)
+            Integer.TYPE, Integer::class.java -> {
+                require(value in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong())
+                if (field.type == Integer.TYPE) field.setInt(target, value.toInt())
+                else field.set(target, value.toInt())
+            }
+            else -> error("GMMP queue batch Track-ID field is not numeric")
+        }
+    }
+}
+
 /**
  * Native queue mutation bridge for GMMP 4.2.1.
  *
@@ -133,6 +224,24 @@ internal class GmmpQueueMutationBridge(
         val statePosition: StatePositionBinding?,
         val context: QueueContext
     )
+
+    fun sourceBatchBinding(): GmmpQueueSourceBatchBinding {
+        val resolved = resolve(
+            requireDelete = false,
+            requireStatePosition = false
+        )
+        val modelClass = resolved.rows.firstOrNull()?.javaClass
+            ?: error("Verified GMMP queue entity model is unavailable")
+        check(resolved.rows.all(modelClass::isInstance)) {
+            "Verified GMMP queue rows do not share one entity model"
+        }
+        return GmmpQueueSourceBatchBinding(
+            dao = resolved.dao,
+            modelClass = modelClass,
+            trackIdField = resolved.trackId,
+            positionField = resolved.position
+        )
+    }
 
     fun reverseQueue(): Int {
         val resolved = resolve(

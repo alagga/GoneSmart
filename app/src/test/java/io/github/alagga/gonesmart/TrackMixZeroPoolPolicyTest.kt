@@ -172,6 +172,79 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `late source batch carries exact native fallback identities after rebuilt current`() {
+        val entries = (1..12).map { position ->
+            TrackMixZeroPoolPolicy.SourceBatchEntry(
+                trackId = if (position == 6) 19118L else 30_000L + position,
+                position = position
+            )
+        }
+        val plan = TrackMixZeroPoolPolicy.sourceBatchGuardPlan(
+            entries = entries,
+            selectedTrackId = 19118L,
+            nativeFallbackTrackIds = listOf(1400L, 3778L, 6105L, 15523L),
+            expectedSize = 5
+        )
+        assertNotNull(plan)
+        assertEquals(6, plan!!.currentPosition)
+        assertEquals(
+            linkedMapOf(7 to 1400L, 8 to 3778L, 9 to 6105L, 10 to 15523L),
+            plan.trackIdsByPosition
+        )
+    }
+
+    @Test
+    fun `source batch guard ignores initial size and fails closed on ambiguous source`() {
+        assertNull(
+            TrackMixZeroPoolPolicy.sourceBatchGuardPlan(
+                entries = (1..5).map { position ->
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(
+                        trackId = if (position == 1) 19118L else 100L + position,
+                        position = position
+                    )
+                },
+                selectedTrackId = 19118L,
+                nativeFallbackTrackIds = listOf(1400L, 3778L, 6105L, 15523L),
+                expectedSize = 5
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.sourceBatchGuardPlan(
+                entries = listOf(
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(19118L, 6),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(19118L, 7),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(99L, 8),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(98L, 9),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(97L, 10),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(96L, 11)
+                ),
+                selectedTrackId = 19118L,
+                nativeFallbackTrackIds = listOf(1400L, 3778L, 6105L, 15523L),
+                expectedSize = 5
+            )
+        )
+    }
+
+    @Test
+    fun `source batch guard requires all contiguous upcoming source positions`() {
+        assertNull(
+            TrackMixZeroPoolPolicy.sourceBatchGuardPlan(
+                entries = listOf(
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(19118L, 6),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(1L, 7),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(2L, 8),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(3L, 10),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(4L, 11),
+                    TrackMixZeroPoolPolicy.SourceBatchEntry(5L, 12)
+                ),
+                selectedTrackId = 19118L,
+                nativeFallbackTrackIds = listOf(1400L, 3778L, 6105L, 15523L),
+                expectedSize = 5
+            )
+        )
+    }
+
+    @Test
     fun `rebase refuses a queue where the pinned current is not first`() {
         val entries = listOf(
             TrackMixPlan.NativeQueueEntry(20, 200, 1),

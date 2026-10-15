@@ -158,6 +158,56 @@ internal object TrackMixZeroPoolPolicy {
         )
     }
 
+    data class SourceBatchEntry(
+        val trackId: Long,
+        val position: Int
+    )
+
+    data class SourceBatchGuardPlan(
+        val currentPosition: Int,
+        val trackIdsByPosition: Map<Int, Long>
+    )
+
+    /**
+     * R51 late-source-rebuild contract. GMMP may materialize the original
+     * Smart-Playlist source after the first CURRENT+1 decoder was already
+     * prepared correctly. Preserve the exact native fallback identities in
+     * that new source batch before its queue rows become visible to the
+     * internal next-source lookup. No queue ID/order/position is changed.
+     */
+    fun sourceBatchGuardPlan(
+        entries: List<SourceBatchEntry>,
+        selectedTrackId: Long,
+        nativeFallbackTrackIds: List<Long>,
+        expectedSize: Int
+    ): SourceBatchGuardPlan? {
+        val expectedTrackIds = expectedRestoredTrackIds(
+            selectedTrackId = selectedTrackId,
+            nativeFallbackTrackIds = nativeFallbackTrackIds,
+            expectedSize = expectedSize
+        )
+        if (entries.size <= expectedTrackIds.size) return null
+        if (entries.any { it.trackId <= 0L || it.position <= 0 }) return null
+        if (entries.map { it.position }.distinct().size != entries.size) return null
+
+        val current = entries.singleOrNull { it.trackId == selectedTrackId }
+            ?: return null
+        if (current.position > Int.MAX_VALUE - nativeFallbackTrackIds.size) {
+            return null
+        }
+        val byPosition = entries.associateBy { it.position }
+        val rewrites = linkedMapOf<Int, Long>()
+        nativeFallbackTrackIds.forEachIndexed { index, trackId ->
+            val position = current.position + index + 1
+            if (byPosition[position] == null) return null
+            rewrites[position] = trackId
+        }
+        return SourceBatchGuardPlan(
+            currentPosition = current.position,
+            trackIdsByPosition = rewrites
+        )
+    }
+
     fun rebasePlan(
         entries: List<TrackMixPlan.NativeQueueEntry>,
         currentEntryId: Long,

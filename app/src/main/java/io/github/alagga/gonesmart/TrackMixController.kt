@@ -52,7 +52,8 @@ internal class TrackMixController(
     private val resolvePrePlayTarget: (Any, List<Any>) -> TrackMixPrePlayTargetResolution? =
         { _, _ -> null },
     private val preparePrePlaySmartPool: (Any, TrackInfo, Int) -> TrackMixPreparedInitialPool =
-        { _, _, _ -> TrackMixPreparedInitialPool.EMPTY }
+        { _, _, _ -> TrackMixPreparedInitialPool.EMPTY },
+    private val ensureZeroPoolSourceBatchHooks: (Any) -> Boolean = { false }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -157,6 +158,7 @@ internal class TrackMixController(
         @Volatile var zeroPoolNativeFallbackTrackIds: List<Long> = emptyList()
         @Volatile var zeroPoolNextSourceGuardAttempted = false
         @Volatile var zeroPoolNextSourceGuardApplied = false
+        @Volatile var zeroPoolSourceBatchGuardApplied = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -1597,6 +1599,9 @@ internal class TrackMixController(
                 "Zero-pool native fallback identity changed before decoder materialization"
             }
             request.zeroPoolNativeFallbackTrackIds = nativeFallbackTrackIds
+            check(ensureZeroPoolSourceBatchHooks(autoDj)) {
+                "Verified native Queue DAO source-batch hooks are unavailable"
+            }
 
             request.provisionalCurrentQueuePosition = 1
             request.zeroPoolBoundaryPrepared = true
@@ -1623,6 +1628,50 @@ internal class TrackMixController(
         } finally {
             zeroPoolBoundaryInFlight.set(false)
         }
+    }
+
+    fun guardZeroPoolSourceBatchBeforeOriginal(
+        binding: GmmpQueueSourceBatchBinding,
+        method: java.lang.reflect.Method,
+        payload: Any?
+    ) {
+        val request = pending ?: return
+        if (
+            request.stage != "WAIT_PLAY" ||
+            !request.zeroPoolBoundaryPrepared ||
+            !request.zeroPoolNextSourceGuardApplied ||
+            request.prePlayPrepared.trackIds.isNotEmpty() ||
+            request.zeroPoolNativeFallbackTrackIds.isEmpty()
+        ) return
+        val target = request.prePlayTarget ?: return
+        val result = runCatching {
+            binding.guardBeforeWrite(
+                payload = payload,
+                selectedTrackId = target.id,
+                nativeFallbackTrackIds = request.zeroPoolNativeFallbackTrackIds,
+                expectedSize = request.prePlayInitialSize
+            )
+        }.onFailure {
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL SOURCE BATCH | native pre-write guard failed closed",
+                it
+            )
+        }.getOrNull() ?: return
+
+        request.zeroPoolSourceBatchGuardApplied = true
+        Log.i(
+            TAG,
+            "MIX ZERO-POOL SOURCE BATCH | applied=true | beforeOriginal=true" +
+                " | writer=" + method.declaringClass.name + "." + method.name +
+                "(" + method.parameterTypes.firstOrNull()?.name + ")" +
+                " | size=" + result.batchSize +
+                " | currentPosition=" + result.currentPosition +
+                " | changed=" + result.changed +
+                " | upcoming=" + result.trackIdsByPosition.entries.joinToString(",") {
+                    it.key.toString() + ":" + it.value
+                }
+        )
     }
 
     private fun fillZeroPoolNativeFallback(
@@ -1745,10 +1794,17 @@ internal class TrackMixController(
                 )
                 return null
             }
+            if (!request.zeroPoolSourceBatchGuardApplied) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | rebuilt native source batch was not guarded before materialization"
+                )
+                return null
+            }
             Log.i(
                 TAG,
                 "MIX ZERO-POOL RESTORE PLAYBACK | preSourceGuard=true | " +
-                    "position=2 | track=${expectedTrackIds[1]}"
+                    "sourceBatchGuard=true | position=2 | track=${expectedTrackIds[1]}"
             )
         }
 

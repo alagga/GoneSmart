@@ -455,6 +455,14 @@ class GoneSmartModule : XposedModule() {
     private val smartPlaylistSaveHookKeys =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    private val zeroPoolSourceBatchHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private val zeroPoolSourceBatchBindings =
+        java.util.Collections.synchronizedMap(
+            java.util.WeakHashMap<Any, GmmpQueueSourceBatchBinding>()
+        )
+
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 
@@ -496,8 +504,83 @@ class GoneSmartModule : XposedModule() {
         },
         preparePrePlaySmartPool = { autoDj, track, count ->
             prepareTrackMixPrePlaySmartPool(autoDj, track, count)
+        },
+        ensureZeroPoolSourceBatchHooks = { autoDj ->
+            installZeroPoolSourceBatchHooks(autoDj)
         }
     )
+
+    private fun installZeroPoolSourceBatchHooks(autoDj: Any): Boolean =
+        runCatching {
+            val binding = GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = queueFlipController.verifiedPositionWriter(autoDj)
+            ).sourceBatchBinding()
+            synchronized(zeroPoolSourceBatchBindings) {
+                zeroPoolSourceBatchBindings[binding.dao] = binding
+            }
+            val methods = GmmpReflectionPolicy.concreteMethods(binding.dao.javaClass)
+                .filter { method ->
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.parameterCount == 1 &&
+                        method.returnType == Void.TYPE &&
+                        (java.util.List::class.java.isAssignableFrom(
+                            method.parameterTypes[0]
+                        ) || method.parameterTypes[0].isArray)
+                }
+                .distinctBy { method ->
+                    method.declaringClass.name + "|" + method.name + "|" +
+                        method.parameterTypes[0].name
+                }
+            check(methods.isNotEmpty()) {
+                "Verified Queue DAO exposes no concrete batch mutation methods"
+            }
+
+            methods.forEach { method ->
+                val key = method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes[0].name
+                if (zeroPoolSourceBatchHookKeys.add(key)) {
+                    method.isAccessible = true
+                    try {
+                        hook(method).intercept { chain ->
+                            val receiver = chain.getThisObject()
+                            val liveBinding = synchronized(zeroPoolSourceBatchBindings) {
+                                zeroPoolSourceBatchBindings.values.firstOrNull { candidate ->
+                                    candidate.dao === receiver
+                                }
+                            }
+                            if (liveBinding != null) {
+                                trackMixController.guardZeroPoolSourceBatchBeforeOriginal(
+                                    binding = liveBinding,
+                                    method = method,
+                                    payload = chain.getArg(0)
+                                )
+                            }
+                            chain.proceed()
+                        }
+                    } catch (failure: Throwable) {
+                        zeroPoolSourceBatchHookKeys.remove(key)
+                        throw failure
+                    }
+                }
+            }
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX ZERO-POOL SOURCE BATCH HOOKS | ready=true | dao=" +
+                    binding.dao.javaClass.name + " | methods=" +
+                    methods.joinToString(",") {
+                        it.declaringClass.name + "." + it.name +
+                            "(" + it.parameterTypes[0].name + ")"
+                    }
+            )
+            true
+        }.onFailure {
+            Log.e(
+                "GoneSmartTrackMix",
+                "MIX ZERO-POOL SOURCE BATCH HOOKS | ready=false; fail closed",
+                it
+            )
+        }.getOrDefault(false)
 
     @Volatile
     private var trackMixAutoDj: WeakReference<Any>? = null
