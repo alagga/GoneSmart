@@ -2228,6 +2228,28 @@ internal class TrackMixController(
         )
     }
 
+    /**
+     * GoneSmart's own zero-match fallback notice can be emitted while the
+     * short Track Mix native-popup suppression window is active. Route only
+     * that established status notice through the same own-Toast exemption as
+     * the Track Mix confirmation; native GMMP transition Toasts stay hidden.
+     */
+    fun showOwnedStatusNotice(noticeKey: String): Boolean {
+        if (noticeKey != "no-matches-native-fallback") return false
+        val request = pending ?: return false
+        if (request.prePlayTarget == null || request.stage == "DONE") return false
+
+        Log.i(
+            TAG,
+            "MIX NOTICE | key=$noticeKey | route=owned-toast"
+        )
+        toast(
+            request.context,
+            NativeGmmpUiText.smartDjNotice(request.context, noticeKey)
+        )
+        return true
+    }
+
     private fun toast(context: Context, message: String) {
         main.post {
             val notification = Toast.makeText(

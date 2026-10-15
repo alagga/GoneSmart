@@ -7995,7 +7995,12 @@ class GoneSmartModule : XposedModule() {
             // an in-player Toast must use installed GMMP vocabulary.
             Log.i(TAG, "SMART DJ NOTICE | key=" + noticeKey +
                 " | companionDetail=" + message)
-            statusNotifier.showNative(noticeKey)
+            val routedThroughTrackMix =
+                noticeKey == "no-matches-native-fallback" &&
+                    trackMixController.showOwnedStatusNotice(noticeKey)
+            if (!routedThroughTrackMix) {
+                statusNotifier.showNative(noticeKey)
+            }
         }
     }
 
