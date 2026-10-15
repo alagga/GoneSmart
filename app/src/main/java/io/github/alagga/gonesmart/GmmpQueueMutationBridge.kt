@@ -311,6 +311,86 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
+     * R50 one-shot pre-source guard. GMMP has already naturally chosen and
+     * materialized the zero-pool fallback Track IDs before this point. A late
+     * Smart-source rebuild may overwrite queue_position CURRENT+1 just before
+     * MusicService asks for that row. Rewrite only that existing slot back to
+     * the exact first native fallback ID, verify it, and leave source deletion,
+     * position rebasing and playback-state writes to the later settled repair.
+     */
+    fun guardTrackMixZeroPoolNextSource(
+        selectedTrackId: Long,
+        nextQueuePosition: Int,
+        expectedTrackId: Long
+    ): Boolean {
+        require(selectedTrackId > 0L) { "Selected Track ID must be positive" }
+        require(nextQueuePosition > 0) { "Next queue position must be positive" }
+        require(expectedTrackId > 0L) { "Expected next Track ID must be positive" }
+
+        val resolved = resolve(requireDelete = false, requireStatePosition = false)
+        val selectedMatches = resolved.context.items.filter {
+            it.track.id == selectedTrackId
+        }
+        require(selectedMatches.size == 1) {
+            "Selected Track is not uniquely present at natural CURRENT+1 boundary"
+        }
+        val next = resolved.context.items.singleOrNull {
+            it.queuePosition == nextQueuePosition
+        } ?: error("Natural CURRENT+1 queue row is unavailable")
+        val row = resolved.rows.singleOrNull {
+            number(resolved.position, it).toInt() == nextQueuePosition
+        } ?: error("Native CURRENT+1 entity is unavailable")
+        require(number(resolved.queueId, row).toLong() == next.queueEntryId) {
+            "Native CURRENT+1 entity does not match verified Cursor row"
+        }
+
+        val originalTrackId = number(resolved.trackId, row).toLong()
+        if (originalTrackId == expectedTrackId) {
+            Log.i(
+                TAG,
+                "TRACK MIX ZERO-POOL NEXT GUARD | verified=true | changed=false" +
+                    " | position=$nextQueuePosition | track=$expectedTrackId"
+            )
+            return true
+        }
+
+        try {
+            setLong(resolved.trackId, row, expectedTrackId)
+            resolved.update.invoke(resolved.dao, arrayListOf(row))
+
+            val verified = GmmpQueueReader().read(
+                autoDj,
+                verifiedPositionWriter?.read(),
+                currentQueueEntryIdHint
+            ) ?: error("Natural CURRENT+1 repair verification unavailable")
+            val verifiedNext = verified.items.singleOrNull {
+                it.queuePosition == nextQueuePosition
+            } ?: error("Natural CURRENT+1 row disappeared during verification")
+            check(verifiedNext.track.id == expectedTrackId) {
+                "Natural CURRENT+1 Track ID did not update"
+            }
+            check(verified.items.count { it.track.id == selectedTrackId } == 1) {
+                "Selected Track identity changed during CURRENT+1 repair"
+            }
+            Log.i(
+                TAG,
+                "TRACK MIX ZERO-POOL NEXT GUARD | verified=true | changed=true" +
+                    " | position=$nextQueuePosition | previousTrack=$originalTrackId" +
+                    " | track=$expectedTrackId"
+            )
+            return true
+        } catch (failure: Throwable) {
+            runCatching {
+                setLong(resolved.trackId, row, originalTrackId)
+                resolved.update.invoke(resolved.dao, arrayListOf(row))
+            }.onFailure { rollback ->
+                failure.addSuppressed(rollback)
+            }
+            throw failure
+        }
+    }
+
+    /**
      * r36 zero-provider path. The selected row has already been proven by
      * queue_id (including any r35 exact-path rebind). Remove source history,
      * move that exact row to position 1 through a passively observed native

@@ -132,21 +132,30 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `late source rebuild refreshes only the restored current plus one identity`() {
-        val plan = TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
-            restoredTrackIds = listOf(19118L, 6596L, 15651L, 16673L, 6448L),
-            currentQueuePosition = 1
+    fun `natural source guard uses only the persisted first native fallback identity`() {
+        val plan = TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
+            currentQueuePosition = 1,
+            observedArgument = 2,
+            nativeFallbackTrackIds = listOf(10106L, 653L, 11874L, 15245L)
         )
         assertEquals(2, plan.nextQueuePosition)
-        assertEquals(6596L, plan.expectedTrackId)
+        assertEquals(10106L, plan.expectedTrackId)
     }
 
     @Test
-    fun `late source rebuild refresh plan refuses a non-rebased Current`() {
+    fun `natural source guard refuses anything except rebased current plus one`() {
         assertThrows(IllegalArgumentException::class.java) {
-            TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
-                restoredTrackIds = listOf(19118L, 6596L, 15651L, 16673L, 6448L),
-                currentQueuePosition = 6
+            TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
+                currentQueuePosition = 1,
+                observedArgument = 3,
+                nativeFallbackTrackIds = listOf(10106L)
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
+                currentQueuePosition = 6,
+                observedArgument = 7,
+                nativeFallbackTrackIds = listOf(10106L)
             )
         }
     }

@@ -125,33 +125,36 @@ internal object TrackMixZeroPoolPolicy {
         return listOf(selectedTrackId) + nativeFallbackTrackIds
     }
 
-    data class RestoredNextSourceRefreshPlan(
+    data class NaturalNextSourceGuardPlan(
         val nextQueuePosition: Int,
         val expectedTrackId: Long
     )
 
     /**
-     * R49 playback-cache contract after a late source rebuild. Queue identity
-     * must already be restored to the exact predecode order with CURRENT at 1;
-     * the only legal refresh target is therefore queue position 2 and the same
-     * native fallback Track ID that GMMP selected before decode.
+     * R50 pre-source contract. The only guarded source boundary is the unique
+     * natural CURRENT+1 command, and its Track identity must come from the
+     * already persisted native fallback order selected before decode.
      */
-    fun restoredNextSourceRefreshPlan(
-        restoredTrackIds: List<Long>,
-        currentQueuePosition: Int
-    ): RestoredNextSourceRefreshPlan {
+    fun naturalNextSourceGuardPlan(
+        currentQueuePosition: Int,
+        observedArgument: Int,
+        nativeFallbackTrackIds: List<Long>
+    ): NaturalNextSourceGuardPlan {
         require(currentQueuePosition == 1) {
-            "Restored zero-pool Current must be queue position 1"
+            "Zero-pool Current must be rebased to queue position 1"
         }
-        require(restoredTrackIds.size >= 2) {
-            "Restored zero-pool queue has no current+1 Track"
+        require(observedArgument == currentQueuePosition + 1) {
+            "Observed source command is not CURRENT+1"
         }
-        require(restoredTrackIds.all { it > 0L }) {
-            "Restored zero-pool Track IDs must be positive"
+        require(nativeFallbackTrackIds.isNotEmpty()) {
+            "Zero-pool native fallback has no current+1 Track"
         }
-        return RestoredNextSourceRefreshPlan(
-            nextQueuePosition = 2,
-            expectedTrackId = restoredTrackIds[1]
+        require(nativeFallbackTrackIds.all { it > 0L }) {
+            "Zero-pool native fallback Track IDs must be positive"
+        }
+        return NaturalNextSourceGuardPlan(
+            nextQueuePosition = observedArgument,
+            expectedTrackId = nativeFallbackTrackIds.first()
         )
     }
 

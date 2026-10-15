@@ -18,10 +18,8 @@ import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.lang.reflect.Proxy
 import java.util.WeakHashMap
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -157,6 +155,8 @@ internal class TrackMixController(
         @Volatile var zeroPoolBoundaryPrepared = false
         @Volatile var zeroPoolNativePlayListNarrowed = false
         @Volatile var zeroPoolNativeFallbackTrackIds: List<Long> = emptyList()
+        @Volatile var zeroPoolNextSourceGuardAttempted = false
+        @Volatile var zeroPoolNextSourceGuardApplied = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -457,10 +457,11 @@ internal class TrackMixController(
 
     /**
      * Record bounded natural MusicService Int->void calls while a zero-provider
-     * Track Mix is starting. Nothing is invoked here. Once transient CURRENT
-     * is independently known, exactly one call whose natural argument was
-     * CURRENT queue_position + 1 may become the request-local next-source
-     * refresh boundary.
+     * Track Mix is starting. Once transient CURRENT is independently known,
+     * exactly one call whose natural argument is CURRENT queue_position + 1 may
+     * become the request-local next-source boundary. R50 may repair only that
+     * already-existing queue slot synchronously before GMMP's original call
+     * proceeds and materializes the next AudioSource.
      */
     fun observeNativePositionCommand(
         service: Any?,
@@ -496,6 +497,66 @@ internal class TrackMixController(
             )
         }
         tryPromoteNextSourceBoundary(request)
+        guardZeroPoolNaturalNextSource(
+            request = request,
+            service = service,
+            method = method,
+            value = value,
+            key = key
+        )
+    }
+
+    private fun guardZeroPoolNaturalNextSource(
+        request: Pending,
+        service: Any,
+        method: java.lang.reflect.Method,
+        value: Int,
+        key: String
+    ) {
+        if (request.zeroPoolNextSourceGuardAttempted) return
+        if (!request.zeroPoolBoundaryPrepared) return
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return
+        if (request.stage != "WAIT_PLAY") return
+        if (request.prePlayTarget == null) return
+        val boundary = request.nextSourceBoundary ?: return
+        if (request.nextSourceBoundaryAmbiguous || boundary.key != key) return
+        if (boundary.service.get() !== service || boundary.method != method) return
+        val autoDj = nativeAutoDj?.get() ?: return
+        val currentPosition = request.provisionalCurrentQueuePosition ?: return
+        val plan = runCatching {
+            TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
+                currentQueuePosition = currentPosition,
+                observedArgument = value,
+                nativeFallbackTrackIds = request.zeroPoolNativeFallbackTrackIds
+            )
+        }.getOrNull() ?: return
+
+        request.zeroPoolNextSourceGuardAttempted = true
+        val target = request.prePlayTarget ?: return
+        val applied = runCatching {
+            GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+            ).guardTrackMixZeroPoolNextSource(
+                selectedTrackId = target.id,
+                nextQueuePosition = plan.nextQueuePosition,
+                expectedTrackId = plan.expectedTrackId
+            )
+        }.onFailure {
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL NEXT GUARD | pre-source queue repair failed; fail closed",
+                it
+            )
+        }.getOrDefault(false)
+        request.zeroPoolNextSourceGuardApplied = applied
+        Log.i(
+            TAG,
+            "MIX ZERO-POOL NEXT GUARD | applied=$applied | " +
+                "position=${plan.nextQueuePosition} | track=${plan.expectedTrackId} | " +
+                "command=${method.declaringClass.name}.${method.name}(int) | " +
+                "beforeOriginal=true"
+        )
     }
 
     /**
@@ -1394,41 +1455,6 @@ internal class TrackMixController(
         )
     }
 
-    private fun invokeNextSourceBoundary(
-        request: Pending,
-        nextQueuePosition: Int
-    ): Boolean {
-        if (request.nextSourceBoundaryAmbiguous || nextQueuePosition <= 0) return false
-        val boundary = request.nextSourceBoundary ?: return false
-        val service = boundary.service.get() ?: return false
-        val invoke = {
-            runCatching {
-                boundary.method.isAccessible = true
-                boundary.method.invoke(service, nextQueuePosition)
-            }.onFailure {
-                Log.e(TAG, "MIX NEXT SOURCE REFRESH | native invocation failed", it)
-            }.isSuccess
-        }
-        val ok = if (boundary.looper != null && Looper.myLooper() != boundary.looper) {
-            val done = CountDownLatch(1)
-            var result = false
-            Handler(boundary.looper).post {
-                result = invoke()
-                done.countDown()
-            }
-            done.await(1_500L, TimeUnit.MILLISECONDS) && result
-        } else {
-            invoke()
-        }
-        Log.i(
-            TAG,
-            "MIX NEXT SOURCE REFRESH | invoked=" + ok +
-                " | position=" + nextQueuePosition +
-                " | command=" + boundary.method.declaringClass.name + "." +
-                boundary.method.name + "(int)"
-        )
-        return ok
-    }
 
     /**
      * GMMP 4.2.1 equivalent of the old 4.2.0 seed-isolation boundary.
@@ -1555,10 +1581,10 @@ internal class TrackMixController(
             }
 
             // Persist the exact native fallback identities that GMMP itself
-            // selected before current+1 is materialized. If the original
-            // Smart-Playlist Play later rebuilds the source queue, R48 may
-            // restore only these same IDs. It must never choose a new Track 2
-            // after GMMP has already cached its AudioSource.
+            // selected before current+1 is materialized. R50 uses the first
+            // identity to protect the natural CURRENT+1 source boundary before
+            // GMMP decodes it; R48's later queue repair may restore only these
+            // same IDs after the full Smart-source rebuild finishes.
             val verifiedQueue = checkNotNull(verified)
             val orderedVerified = verifiedQueue.items.sortedBy { it.queuePosition }
             val nativeFallbackTrackIds = orderedVerified.drop(1).map { it.track.id }
@@ -1636,12 +1662,10 @@ internal class TrackMixController(
         var filled = verifiedSnapshot(selectedEntryId)
         if (filled == null) {
             // GMMP 4.2.1 may finish the original Smart-Playlist source Play
-            // after R46 already built a decoder-ready native five-row queue.
-            // The rebuilt queue recreates the same selected track under a new
-            // queue_id (r35 exact-path rebind) and puts source followers after
-            // it. Restore only the exact fallback IDs captured before decode;
-            // this keeps the queue row for current+1 identical to the already
-            // cached AudioSource instead of retargeting playback to a new ID.
+            // after R46 already built the native five-row fallback queue. R50
+            // protects CURRENT+1 at the natural MusicService boundary before
+            // decoder materialization. Once the full source rebuild settles,
+            // restore the visible/database queue to those same predecode IDs.
             if (selectedQueuePosition <= 0) {
                 Log.e(TAG, "MIX ZERO-POOL RESTORE | rebuilt Current position unavailable")
                 return null
@@ -1714,58 +1738,24 @@ internal class TrackMixController(
                     request.zeroPoolNativeFallbackTrackIds.joinToString(",")
             )
 
-            // R49: the source rebuild can replace MusicService's already
-            // decoded gapless current+1 even though R48 restores the database
-            // queue to the exact same native fallback IDs. Re-run only the
-            // request-local current+1 boundary that GMMP itself invoked and
-            // that was passively promoted from unique CURRENT+1 evidence.
-            // This refreshes the player cache to the restored Track 2; it does
-            // not select or retarget a different Track ID.
-            val restoredSnapshot = filled ?: return null
-            val refreshPlan = runCatching {
-                TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
-                    restoredTrackIds = expectedTrackIds,
-                    currentQueuePosition = restoredSnapshot.currentQueuePosition ?: -1
-                )
-            }.onFailure {
-                Log.e(TAG, "MIX ZERO-POOL RESTORE NEXT | refresh plan unavailable", it)
-            }.getOrNull() ?: return null
-
-            tryPromoteNextSourceBoundary(request)
-            if (!invokeNextSourceBoundary(request, refreshPlan.nextQueuePosition)) {
+            if (!request.zeroPoolNextSourceGuardApplied) {
                 Log.e(
                     TAG,
-                    "MIX ZERO-POOL RESTORE NEXT | verified native current+1 boundary unavailable; fail closed"
+                    "MIX ZERO-POOL RESTORE | natural CURRENT+1 guard was not verified before decoder materialization"
                 )
                 return null
             }
-            val postRefresh = verifiedSnapshot(selectedEntryId)
-            if (postRefresh == null ||
-                postRefresh.ids.getOrNull(refreshPlan.nextQueuePosition - 1) !=
-                    refreshPlan.expectedTrackId
-            ) {
-                Log.e(
-                    TAG,
-                    "MIX ZERO-POOL RESTORE NEXT | queue identity changed during native current+1 refresh"
-                )
-                return null
-            }
-            filled = postRefresh
             Log.i(
                 TAG,
-                "MIX ZERO-POOL RESTORE NEXT | refreshed=true | " +
-                    "position=${refreshPlan.nextQueuePosition} | " +
-                    "track=${refreshPlan.expectedTrackId} | " +
-                    "evidence=naturally-observed-current-plus-one"
+                "MIX ZERO-POOL RESTORE PLAYBACK | preSourceGuard=true | " +
+                    "position=2 | track=${expectedTrackIds[1]}"
             )
         }
 
         // Initial fallback tracks already came from GMMP's own qr.z at the
-        // natural CURRENT boundary. If GMMP rebuilt the Smart source, the
-        // queue above was restored to those SAME identities and the naturally
-        // observed current+1 boundary was re-run exactly once so the gapless
-        // player cache agrees with restored Track 2. No new Track-2 selection
-        // or post-materialization identity change is performed.
+        // natural CURRENT boundary. R50 protects the same Track 2 at GMMP's
+        // naturally observed CURRENT+1 call before the original method queries
+        // and decodes it. The later queue restore changes no playback identity.
         armManagedAutoDjSession()
         request.stage = "FILLING"
         request.transitionalRefillSuppressed = false
