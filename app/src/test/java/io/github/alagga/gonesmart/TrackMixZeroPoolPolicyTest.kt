@@ -132,6 +132,26 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `late source rebuild refreshes only the restored current plus one identity`() {
+        val plan = TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
+            restoredTrackIds = listOf(19118L, 6596L, 15651L, 16673L, 6448L),
+            currentQueuePosition = 1
+        )
+        assertEquals(2, plan.nextQueuePosition)
+        assertEquals(6596L, plan.expectedTrackId)
+    }
+
+    @Test
+    fun `late source rebuild refresh plan refuses a non-rebased Current`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
+                restoredTrackIds = listOf(19118L, 6596L, 15651L, 16673L, 6448L),
+                currentQueuePosition = 6
+            )
+        }
+    }
+
+    @Test
     fun `late source rebuild fails closed when the predecode fallback identity is incomplete`() {
         assertThrows(IllegalArgumentException::class.java) {
             TrackMixZeroPoolPolicy.expectedRestoredTrackIds(

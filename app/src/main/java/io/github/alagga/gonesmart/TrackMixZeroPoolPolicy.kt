@@ -125,6 +125,36 @@ internal object TrackMixZeroPoolPolicy {
         return listOf(selectedTrackId) + nativeFallbackTrackIds
     }
 
+    data class RestoredNextSourceRefreshPlan(
+        val nextQueuePosition: Int,
+        val expectedTrackId: Long
+    )
+
+    /**
+     * R49 playback-cache contract after a late source rebuild. Queue identity
+     * must already be restored to the exact predecode order with CURRENT at 1;
+     * the only legal refresh target is therefore queue position 2 and the same
+     * native fallback Track ID that GMMP selected before decode.
+     */
+    fun restoredNextSourceRefreshPlan(
+        restoredTrackIds: List<Long>,
+        currentQueuePosition: Int
+    ): RestoredNextSourceRefreshPlan {
+        require(currentQueuePosition == 1) {
+            "Restored zero-pool Current must be queue position 1"
+        }
+        require(restoredTrackIds.size >= 2) {
+            "Restored zero-pool queue has no current+1 Track"
+        }
+        require(restoredTrackIds.all { it > 0L }) {
+            "Restored zero-pool Track IDs must be positive"
+        }
+        return RestoredNextSourceRefreshPlan(
+            nextQueuePosition = 2,
+            expectedTrackId = restoredTrackIds[1]
+        )
+    }
+
     fun rebasePlan(
         entries: List<TrackMixPlan.NativeQueueEntry>,
         currentEntryId: Long,

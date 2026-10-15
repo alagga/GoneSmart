@@ -1709,16 +1709,63 @@ internal class TrackMixController(
             Log.i(
                 TAG,
                 "MIX ZERO-POOL RESTORE | verified=true | sourceRebuild=true | " +
-                    "cachedNextPreserved=true | oldCurrentPosition=$selectedQueuePosition | " +
+                    "queueIdentityRestored=true | oldCurrentPosition=$selectedQueuePosition | " +
                     "currentPosition=1 | nativeFallback=" +
                     request.zeroPoolNativeFallbackTrackIds.joinToString(",")
+            )
+
+            // R49: the source rebuild can replace MusicService's already
+            // decoded gapless current+1 even though R48 restores the database
+            // queue to the exact same native fallback IDs. Re-run only the
+            // request-local current+1 boundary that GMMP itself invoked and
+            // that was passively promoted from unique CURRENT+1 evidence.
+            // This refreshes the player cache to the restored Track 2; it does
+            // not select or retarget a different Track ID.
+            val restoredSnapshot = filled ?: return null
+            val refreshPlan = runCatching {
+                TrackMixZeroPoolPolicy.restoredNextSourceRefreshPlan(
+                    restoredTrackIds = expectedTrackIds,
+                    currentQueuePosition = restoredSnapshot.currentQueuePosition ?: -1
+                )
+            }.onFailure {
+                Log.e(TAG, "MIX ZERO-POOL RESTORE NEXT | refresh plan unavailable", it)
+            }.getOrNull() ?: return null
+
+            tryPromoteNextSourceBoundary(request)
+            if (!invokeNextSourceBoundary(request, refreshPlan.nextQueuePosition)) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE NEXT | verified native current+1 boundary unavailable; fail closed"
+                )
+                return null
+            }
+            val postRefresh = verifiedSnapshot(selectedEntryId)
+            if (postRefresh == null ||
+                postRefresh.ids.getOrNull(refreshPlan.nextQueuePosition - 1) !=
+                    refreshPlan.expectedTrackId
+            ) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE NEXT | queue identity changed during native current+1 refresh"
+                )
+                return null
+            }
+            filled = postRefresh
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL RESTORE NEXT | refreshed=true | " +
+                    "position=${refreshPlan.nextQueuePosition} | " +
+                    "track=${refreshPlan.expectedTrackId} | " +
+                    "evidence=naturally-observed-current-plus-one"
             )
         }
 
         // Initial fallback tracks already came from GMMP's own qr.z at the
         // natural CURRENT boundary. If GMMP rebuilt the Smart source, the
-        // queue above was restored to those SAME identities before Auto-DJ is
-        // armed; no current+1 refresh or new Track-2 selection is performed.
+        // queue above was restored to those SAME identities and the naturally
+        // observed current+1 boundary was re-run exactly once so the gapless
+        // player cache agrees with restored Track 2. No new Track-2 selection
+        // or post-materialization identity change is performed.
         armManagedAutoDjSession()
         request.stage = "FILLING"
         request.transitionalRefillSuppressed = false
