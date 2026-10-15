@@ -104,6 +104,27 @@ internal object TrackMixZeroPoolPolicy {
         )
     }
 
+    /**
+     * R48 identity contract for a late Smart-source rebuild. The fallback IDs
+     * are not newly selected here: they must be the exact native GMMP IDs that
+     * were already present in the decoder-ready predecode Initial Size queue.
+     */
+    fun expectedRestoredTrackIds(
+        selectedTrackId: Long,
+        nativeFallbackTrackIds: List<Long>,
+        expectedSize: Int
+    ): List<Long> {
+        require(selectedTrackId > 0L) { "Selected Track ID must be positive" }
+        require(expectedSize > 0) { "Expected queue size must be positive" }
+        require(nativeFallbackTrackIds.size == expectedSize - 1) {
+            "Native fallback identity count does not match Initial Size"
+        }
+        require(nativeFallbackTrackIds.all { it > 0L }) {
+            "Native fallback Track IDs must be positive"
+        }
+        return listOf(selectedTrackId) + nativeFallbackTrackIds
+    }
+
     fun rebasePlan(
         entries: List<TrackMixPlan.NativeQueueEntry>,
         currentEntryId: Long,

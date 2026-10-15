@@ -156,6 +156,7 @@ internal class TrackMixController(
         @Volatile var zeroPoolBoundaryAttempted = false
         @Volatile var zeroPoolBoundaryPrepared = false
         @Volatile var zeroPoolNativePlayListNarrowed = false
+        @Volatile var zeroPoolNativeFallbackTrackIds: List<Long> = emptyList()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -1553,6 +1554,24 @@ internal class TrackMixController(
                 "Zero-pool queue was not compact and decoder-ready"
             }
 
+            // Persist the exact native fallback identities that GMMP itself
+            // selected before current+1 is materialized. If the original
+            // Smart-Playlist Play later rebuilds the source queue, R48 may
+            // restore only these same IDs. It must never choose a new Track 2
+            // after GMMP has already cached its AudioSource.
+            val verifiedQueue = checkNotNull(verified)
+            val orderedVerified = verifiedQueue.items.sortedBy { it.queuePosition }
+            val nativeFallbackTrackIds = orderedVerified.drop(1).map { it.track.id }
+            val expectedTrackIds = TrackMixZeroPoolPolicy.expectedRestoredTrackIds(
+                selectedTrackId = target.id,
+                nativeFallbackTrackIds = nativeFallbackTrackIds,
+                expectedSize = initial
+            )
+            check(orderedVerified.map { it.track.id } == expectedTrackIds) {
+                "Zero-pool native fallback identity changed before decoder materialization"
+            }
+            request.zeroPoolNativeFallbackTrackIds = nativeFallbackTrackIds
+
             request.provisionalCurrentQueuePosition = 1
             request.zeroPoolBoundaryPrepared = true
             request.stage = "WAIT_PLAY"
@@ -1595,31 +1614,111 @@ internal class TrackMixController(
             )
             return null
         }
-        if (selectedQueuePosition != 1) {
-            Log.e(
-                TAG,
-                "MIX ZERO-POOL | selected Current position changed after pre-decoder preparation: $selectedQueuePosition"
-            )
-            return null
-        }
 
-        val filled = queueSnapshot(selectedEntryId)?.takeIf { snapshot ->
-            snapshot.currentId == selectedId &&
-                snapshot.currentIndex == 0 &&
-                snapshot.currentQueuePosition == 1 &&
-                snapshot.ids.size == initial
-        } ?: run {
-            Log.e(
-                TAG,
-                "MIX ZERO-POOL | prepared native queue changed before verification"
+        val expectedTrackIds = runCatching {
+            TrackMixZeroPoolPolicy.expectedRestoredTrackIds(
+                selectedTrackId = selectedId,
+                nativeFallbackTrackIds = request.zeroPoolNativeFallbackTrackIds,
+                expectedSize = initial
             )
-            return null
+        }.onFailure {
+            Log.e(TAG, "MIX ZERO-POOL | pre-decoder native fallback identity unavailable", it)
+        }.getOrNull() ?: return null
+
+        fun verifiedSnapshot(entryId: Long): Snapshot? =
+            queueSnapshot(entryId)?.takeIf { snapshot ->
+                snapshot.currentId == selectedId &&
+                    snapshot.currentIndex == 0 &&
+                    snapshot.currentQueuePosition == 1 &&
+                    snapshot.ids == expectedTrackIds
+            }
+
+        var filled = verifiedSnapshot(selectedEntryId)
+        if (filled == null) {
+            // GMMP 4.2.1 may finish the original Smart-Playlist source Play
+            // after R46 already built a decoder-ready native five-row queue.
+            // The rebuilt queue recreates the same selected track under a new
+            // queue_id (r35 exact-path rebind) and puts source followers after
+            // it. Restore only the exact fallback IDs captured before decode;
+            // this keeps the queue row for current+1 identical to the already
+            // cached AudioSource instead of retargeting playback to a new ID.
+            if (selectedQueuePosition <= 0) {
+                Log.e(TAG, "MIX ZERO-POOL RESTORE | rebuilt Current position unavailable")
+                return null
+            }
+            val autoDj = nativeAutoDj?.get() ?: run {
+                Log.e(TAG, "MIX ZERO-POOL RESTORE | Auto-DJ owner unavailable")
+                return null
+            }
+            val currentWriter = nativeTrackMixPositionWriterProvider(
+                autoDj,
+                selectedQueuePosition
+            ) ?: run {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | verified rebuilt Current writer unavailable | " +
+                        "currentPosition=$selectedQueuePosition"
+                )
+                return null
+            }
+
+            request.stage = "ZERO_POOL_RESTORE"
+            val restored = runCatching {
+                val bridge = GmmpQueueMutationBridge(
+                    autoDj = autoDj,
+                    verifiedPositionWriter = currentWriter,
+                    currentQueueEntryIdHint = selectedEntryId
+                )
+                check(
+                    bridge.retargetTrackMixUpcoming(
+                        selectedTrackId = selectedId,
+                        smartTrackIds = request.zeroPoolNativeFallbackTrackIds,
+                        targetQueueSize = initial
+                    )
+                ) {
+                    "Could not restore the pre-decoder native fallback IDs"
+                }
+                check(
+                    bridge.rebaseTrackMixZeroPoolInitialQueue(
+                        selectedTrackId = selectedId,
+                        expectedSize = initial
+                    )
+                ) {
+                    "Could not compact the restored native fallback queue"
+                }
+                true
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | identity-preserving source rebuild repair failed",
+                    it
+                )
+            }.getOrDefault(false)
+            if (!restored) return null
+
+            request.verifiedCurrentQueueEntryId = selectedEntryId
+            request.provisionalCurrentQueuePosition = 1
+            filled = verifiedSnapshot(selectedEntryId)
+            if (filled == null) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | final queue identity/postcondition failed"
+                )
+                return null
+            }
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL RESTORE | verified=true | sourceRebuild=true | " +
+                    "cachedNextPreserved=true | oldCurrentPosition=$selectedQueuePosition | " +
+                    "currentPosition=1 | nativeFallback=" +
+                    request.zeroPoolNativeFallbackTrackIds.joinToString(",")
+            )
         }
 
         // Initial fallback tracks already came from GMMP's own qr.z at the
-        // natural CURRENT boundary. Now only arm normal Auto-DJ continuation;
-        // never retarget current+1 or manually refresh MusicService after the
-        // decoder has started.
+        // natural CURRENT boundary. If GMMP rebuilt the Smart source, the
+        // queue above was restored to those SAME identities before Auto-DJ is
+        // armed; no current+1 refresh or new Track-2 selection is performed.
         armManagedAutoDjSession()
         request.stage = "FILLING"
         request.transitionalRefillSuppressed = false

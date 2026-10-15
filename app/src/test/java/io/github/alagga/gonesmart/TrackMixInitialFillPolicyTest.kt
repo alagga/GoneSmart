@@ -20,7 +20,7 @@ class TrackMixInitialFillPolicyTest {
             TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
             TrackMixInitialFillPolicy.nativeRefillAction(true, false, "WAIT_PLAY", false)
         )
-        listOf("PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "FILLING").forEach { stage ->
+        listOf("PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "ZERO_POOL_RESTORE", "FILLING").forEach { stage ->
             assertEquals(
                 TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
                 TrackMixInitialFillPolicy.nativeRefillAction(true, false, stage, false)

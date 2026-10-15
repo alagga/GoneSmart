@@ -247,10 +247,10 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - Keep the non-empty GoneSmart bootstrap path separate and unchanged; a zero-pool compatibility fix must not regress the proven Smart recommendation path.
 
 
-## GMMP 4.2.1 Track Auto-DJ source-list guard (R47)
+## GMMP 4.2.1 Track Auto-DJ source rebuild invariant (R48)
 
-- Device evidence from R46 proves that the zero-provider CURRENT boundary itself is valid: seed isolation, native Initial Size refill and queue compaction all complete successfully before the next source is materialized.
-- GMMP 4.2.1 may still finish the original `MusicService.w1(action=0, ..., List)` source Play afterwards and overwrite that verified five-row queue with the full Smart-Playlist source. Prevent that overwrite at the already verified native `w1` boundary; do not repair it afterwards.
-- During a pending zero-provider Track Mix only, narrow `w1`'s native source list to the exact pre-Play-resolved target row. Resolution must use strong semantic identity (prefer exact path; otherwise ID plus metadata). Weak ambiguous title/artist matches fail open and leave native playback untouched.
-- The source-list guard must never run for a non-empty GoneSmart Track Mix bootstrap, ordinary GMMP playback, or Play flipped. Keep those paths unchanged.
-- A successfully applied Track Mix Smart bootstrap is authoritative Smart mode and must restore the player sparkle/runtime mode to Smart; a previous zero-match fallback must not leave a stale red badge after later Smart success.
+- R47 device evidence reconfirms r35: the BUNT. zero-provider context-track Play does **not** traverse the `MusicService.w1(action=0, ..., List)` boundary. `w1` may still be used by Queue Flip and may passively signal other native Plays, but it must not be a zero-provider Track Mix source-shaping dependency.
+- R46's natural CURRENT boundary remains authoritative: before decoder materialization, isolate the selected seed, let native GMMP choose the complete Initial Size fallback, compact it, and persist the exact native fallback Track IDs in order.
+- If GMMP later rebuilds the original Smart-Playlist source and the request-scoped exact-path CURRENT rebind uniquely proves the same selected track under a replacement `queue_id`, Track Mix may restore the first `Initial Size - 1` upcoming rows only to those **same predecode native fallback IDs**, delete the remaining source rows, and rebase that five-row queue to `1..Initial Size`. This is an identity-preserving reconstruction, not a new recommendation/Track-2 selection.
+- The general ban on post-materialization Track-ID retargeting remains. The only zero-provider exception is restoring identities that were already selected by GMMP and verified before current+1 decode. Missing IDs, changed order/count, unresolved CURRENT, writer ambiguity, or a failed postcondition must fail closed. Never invoke a guessed/manual current+1 refresh or `MusicService.I2(2)` from this repair.
+- The non-empty GoneSmart bootstrap (including the accepted Levels path) remains separate and unchanged. A successfully applied Smart bootstrap remains authoritative Smart mode and restores the player sparkle/runtime mode to Smart.

@@ -1430,21 +1430,12 @@ class GoneSmartModule : XposedModule() {
             hook(playListMethod).intercept { chain ->
                 val action = chain.getArg(actionIndex) as? Int
                 val originalList = chain.getArg(listIndex) as? List<*>
-                val trackMixList = trackMixController
-                    .narrowNativePlaybackListForZeroPool(
+                val reversed = queueFlipController
+                    .consumeReversePlaylistForNativePlay(
                         action,
                         originalList
                     )
-                val reversed = if (trackMixList == null) {
-                    queueFlipController
-                        .consumeReversePlaylistForNativePlay(
-                            action,
-                            originalList
-                        )
-                } else {
-                    null
-                }
-                val replacementList: List<*>? = trackMixList ?: reversed?.tracks
+                val replacementList: List<*>? = reversed?.tracks
                 if (replacementList == null) {
                     val result = chain.proceed()
                     trackMixController.onNativePlaybackMethodFinished(action)

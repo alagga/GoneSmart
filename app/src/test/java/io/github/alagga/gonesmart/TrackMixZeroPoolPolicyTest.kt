@@ -120,6 +120,29 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `late source rebuild restores exactly the predecode native fallback identities`() {
+        assertEquals(
+            listOf(19118L, 12703L, 1987L, 17034L, 6272L),
+            TrackMixZeroPoolPolicy.expectedRestoredTrackIds(
+                selectedTrackId = 19118L,
+                nativeFallbackTrackIds = listOf(12703L, 1987L, 17034L, 6272L),
+                expectedSize = 5
+            )
+        )
+    }
+
+    @Test
+    fun `late source rebuild fails closed when the predecode fallback identity is incomplete`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixZeroPoolPolicy.expectedRestoredTrackIds(
+                selectedTrackId = 19118L,
+                nativeFallbackTrackIds = listOf(12703L, 1987L, 17034L),
+                expectedSize = 5
+            )
+        }
+    }
+
+    @Test
     fun `rebase refuses a queue where the pinned current is not first`() {
         val entries = listOf(
             TrackMixPlan.NativeQueueEntry(20, 200, 1),
