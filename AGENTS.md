@@ -245,3 +245,12 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - On GMMP 4.2.1, zero-pool seed isolation + native `qr.z(...)` fill + position compaction may run only at the passively verified natural CURRENT-writer boundary, synchronously before that native caller resumes and materializes `current+1`.
 - Never repair zero-pool playback after decode with a guessed/manual `MusicService` current+1 refresh or late retarget. If the verified pre-decoder boundary cannot be acquired, fail closed.
 - Keep the non-empty GoneSmart bootstrap path separate and unchanged; a zero-pool compatibility fix must not regress the proven Smart recommendation path.
+
+
+## GMMP 4.2.1 Track Auto-DJ source-list guard (R47)
+
+- Device evidence from R46 proves that the zero-provider CURRENT boundary itself is valid: seed isolation, native Initial Size refill and queue compaction all complete successfully before the next source is materialized.
+- GMMP 4.2.1 may still finish the original `MusicService.w1(action=0, ..., List)` source Play afterwards and overwrite that verified five-row queue with the full Smart-Playlist source. Prevent that overwrite at the already verified native `w1` boundary; do not repair it afterwards.
+- During a pending zero-provider Track Mix only, narrow `w1`'s native source list to the exact pre-Play-resolved target row. Resolution must use strong semantic identity (prefer exact path; otherwise ID plus metadata). Weak ambiguous title/artist matches fail open and leave native playback untouched.
+- The source-list guard must never run for a non-empty GoneSmart Track Mix bootstrap, ordinary GMMP playback, or Play flipped. Keep those paths unchanged.
+- A successfully applied Track Mix Smart bootstrap is authoritative Smart mode and must restore the player sparkle/runtime mode to Smart; a previous zero-match fallback must not leave a stale red badge after later Smart success.

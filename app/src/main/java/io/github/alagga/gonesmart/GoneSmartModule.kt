@@ -1430,12 +1430,21 @@ class GoneSmartModule : XposedModule() {
             hook(playListMethod).intercept { chain ->
                 val action = chain.getArg(actionIndex) as? Int
                 val originalList = chain.getArg(listIndex) as? List<*>
-                val reversed = queueFlipController
-                    .consumeReversePlaylistForNativePlay(
+                val trackMixList = trackMixController
+                    .narrowNativePlaybackListForZeroPool(
                         action,
                         originalList
                     )
-                val replacementList: List<*>? = reversed?.tracks
+                val reversed = if (trackMixList == null) {
+                    queueFlipController
+                        .consumeReversePlaylistForNativePlay(
+                            action,
+                            originalList
+                        )
+                } else {
+                    null
+                }
+                val replacementList: List<*>? = trackMixList ?: reversed?.tracks
                 if (replacementList == null) {
                     val result = chain.proceed()
                     trackMixController.onNativePlaybackMethodFinished(action)
@@ -5561,6 +5570,16 @@ class GoneSmartModule : XposedModule() {
                         selectedTrackIds = bootstrapWindow.appliedTrackIds
                     )
                 }
+                if (desired > 0 && applied == desired) {
+                    playerBadgeController.setMode(
+                        PlayerAutoDjBadgeController.Mode.SMART
+                    )
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_SMART,
+                        message = "GoneSmart Track Mix is using prepared smart recommendations.",
+                        appendEvent = false
+                    )
+                }
                 Log.i(
                     "GoneSmartTrackMix",
                     "SMART DJ TRACK MIX BOOTSTRAP | applied=$applied/$desired | " +
@@ -5931,7 +5950,7 @@ class GoneSmartModule : XposedModule() {
                 mode = GoneSmartRuntimeContract.MODE_FALLBACK,
                 message =
                     "No suitable GoneSmart match for Track Mix. " +
-                        "GMMP playback was left untouched.",
+                        "Using GMMP Auto-DJ fallback.",
                 appendEvent = true
             )
         }

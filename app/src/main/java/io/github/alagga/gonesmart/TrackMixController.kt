@@ -155,6 +155,7 @@ internal class TrackMixController(
         @Volatile var nextSourceBoundaryAmbiguous = false
         @Volatile var zeroPoolBoundaryAttempted = false
         @Volatile var zeroPoolBoundaryPrepared = false
+        @Volatile var zeroPoolNativePlayListNarrowed = false
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -175,6 +176,7 @@ internal class TrackMixController(
     private val settings = GmmpAutoDjSettingsReader()
     private val queueReader = GmmpQueueReader()
     private val prePlayAutoDjResolver = TrackMixAutoDjResolver()
+    private val nativePlayListResolver = TrackMixNativePlayListResolver()
 
     @Volatile private var pending: Pending? = null
     @Volatile private var nativeQueue: WeakReference<Any>? = null
@@ -528,6 +530,56 @@ internal class TrackMixController(
                 "resolvedTrack=${resolution?.track?.id ?: -1L} | " +
                 "expectedTrack=${expected ?: -1L} | readOnly=true"
         )
+    }
+
+    /**
+     * GMMP 4.2.1's native song-context Play can hand MusicService.w1 the
+     * entire Smart-Playlist source. In the zero-provider Track Mix case that
+     * list is queued asynchronously after our verified CURRENT boundary and
+     * can otherwise overwrite the already-correct five-row Auto-DJ queue.
+     *
+     * Narrow only the exact action=0 native Play list, only while this request
+     * has zero prepared GoneSmart tracks, and only when the selected native
+     * row is deterministically resolved from the pre-Play TrackInfo. Normal
+     * playback and the non-empty Smart bootstrap path always return null.
+     */
+    fun narrowNativePlaybackListForZeroPool(
+        action: Int?,
+        nativeItems: List<*>?
+    ): List<*>? {
+        val request = pending ?: return null
+        if (action != 0) return null
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return null
+        if (request.prePlayInitialSize <= 1) return null
+        if (request.zeroPoolNativePlayListNarrowed) return null
+        if (request.stage != "WAIT_PLAY" &&
+            request.stage != "ZERO_POOL_BOUNDARY" &&
+            request.stage != "FILLING"
+        ) return null
+
+        val target = request.prePlayTarget ?: return null
+        val items = nativeItems ?: return null
+        if (items.size <= 1) return null
+
+        val resolved = nativePlayListResolver.resolve(items, target)
+        if (resolved == null) {
+            Log.w(
+                TAG,
+                "MIX ZERO-POOL SOURCE GUARD | resolved=false | target=${target.id} | " +
+                    "sourceRows=${items.size} | nativeListUntouched=true"
+            )
+            return null
+        }
+
+        request.zeroPoolNativePlayListNarrowed = true
+        Log.i(
+            TAG,
+            "MIX ZERO-POOL SOURCE GUARD | resolved=true | target=${target.id} | " +
+                "sourceRows=${items.size} | selectedIndex=${resolved.index} | " +
+                "matches=${resolved.matchCount} | score=${resolved.score} | " +
+                "evidence=${resolved.evidence} | replacementRows=1"
+        )
+        return arrayListOf(resolved.item)
     }
 
     /**

@@ -96,3 +96,12 @@ R45 proved the non-empty Smart path on GMMP 4.2.1, but deliberately failed befor
 The 4.2.1 replacement for the legacy seed boundary is the already passively verified natural CURRENT writer. `QueueFlipController` notifies Track Mix synchronously after GMMP's writer returns and before its caller resumes. For a zero-pool request whose native CURRENT is the exact pre-Play-resolved target, Track Mix isolates that row, performs the explicit native `qr.z(initial-1)` fill, compacts the resulting queue to positions `1..Initial Size`, and verifies the same queue entry is CURRENT at position 1 before returning to GMMP. No manual MusicService/current+1 refresh is invoked.
 
 Acceptance requires the runtime log to show `MIX ZERO-POOL BOUNDARY ... beforeDecoder=true` before the next-source decode, followed by `MIX VERIFIED`. The existing non-empty Smart bootstrap path must remain unchanged and continue to verify its prepared GoneSmart tracks.
+
+
+### R47 Track Auto-DJ source-list guard and badge recovery
+
+R46 device evidence proved the pre-decoder zero-pool boundary itself: BUNT. was reduced to the selected seed, GMMP generated four native fallback rows, positions were compacted to 1..5 and the next source became the native fallback row. Roughly 1.5 seconds later, however, GMMP completed the original Smart-Playlist source Play and replaced the verified queue with 7,214 rows. The final Track Mix verifier then correctly failed because the selected row had moved from queue position 1 to 6.
+
+R47 prevents that second materialization rather than repairing playback after it. GoneSmart already has a proven `MusicService.w1` list-play hook for Play flipped. While and only while a zero-provider Track Mix is pending, that same boundary resolves the exact pre-Play target in the incoming native source list and replaces the source list with a singleton containing that exact native row. Exact path is preferred; ID plus metadata is accepted; ambiguous weak matches fail open. The non-empty Smart bootstrap is excluded from this guard.
+
+The same device run showed a separate UI-state issue: BUNT.'s zero-match preparation set the player badge to fallback/red, while the successful Avicii Track Mix bootstrap applied all prepared Smart rows but did not restore Smart badge/runtime mode. R47 marks a fully applied bootstrap as Smart immediately, so later verified Smart Track Mix playback cannot inherit a stale red sparkle.
