@@ -27,6 +27,25 @@ class RecommendationScoringTest {
     }
 
     @Test
+    fun playlistSizeWeightingCanBeDisabledOrStrengthened() {
+        assertEquals(
+            1.0,
+            PlaylistAffinityScoring.playlistWeight(2500, PlaylistSizeWeighting.OFF),
+            0.0001
+        )
+        val balanced = PlaylistAffinityScoring.playlistWeight(
+            2500,
+            PlaylistSizeWeighting.BALANCED
+        )
+        val strong = PlaylistAffinityScoring.playlistWeight(
+            2500,
+            PlaylistSizeWeighting.STRONG
+        )
+        assertTrue(balanced < 1.0)
+        assertTrue(strong < balanced)
+    }
+
+    @Test
     fun repeatedCoOccurrenceStrengthensAffinity() {
         val one = PlaylistAffinityScoring.score(listOf(25))
         val two = PlaylistAffinityScoring.score(listOf(25, 30))
