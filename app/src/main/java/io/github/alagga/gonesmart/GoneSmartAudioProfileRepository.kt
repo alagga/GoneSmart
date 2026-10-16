@@ -8,7 +8,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
 
     companion object {
         private const val TAG = "GoneSmartAudioProfiles"
-        private const val LOCAL_PREFS = "gonesmart_audio_profiles_local"
+        private const val LOCAL_PREFS = "gonesmart_audio_profiles_local_v2"
         private const val KEY_PENDING = "local.pending_keys"
     }
 
@@ -75,7 +75,15 @@ class GoneSmartAudioProfileRepository(context: Context) {
             ?: GoneSmartAudioProfiles.LOCAL_ROUTE_ID
 
     fun recordObservedRoute(route: AudioRouteProfile) {
-        val id = route.id.ifBlank { GoneSmartAudioProfiles.LOCAL_ROUTE_ID }
+        val id = if (route.bluetooth) {
+            GoneSmartAudioProfiles.bluetoothRouteId(
+                type = 0,
+                address = null,
+                label = route.label
+            )
+        } else {
+            GoneSmartAudioProfiles.LOCAL_ROUTE_ID
+        }
         val keys = mutableSetOf(
             GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE,
             GoneSmartAudioProfiles.KEY_SCHEMA_VERSION
@@ -106,35 +114,61 @@ class GoneSmartAudioProfileRepository(context: Context) {
         synchronizeWithFramework()
     }
 
-    fun overrideValue(routeId: String, settingId: String): String? =
-        local.getString(GoneSmartAudioProfiles.overrideKey(routeId, settingId), null)
+    fun isGroupOverridden(routeId: String, groupId: String): Boolean =
+        local.getBoolean(GoneSmartAudioProfiles.overrideKey(routeId, groupId), false)
 
-    fun nativeValue(settingId: String): String? =
-        local.getString(GoneSmartAudioProfiles.nativeValueKey(settingId), null)
+    fun setGroupOverride(routeId: String, groupId: String, enabled: Boolean) {
+        val group = GoneSmartAudioProfiles.group(groupId) ?: return
+        val overrideKey = GoneSmartAudioProfiles.overrideKey(routeId, groupId)
+        val keys = mutableSetOf(overrideKey)
+        val editor = local.edit()
 
-    fun setNativeValue(settingId: String, rawValue: String) {
-        val setting = GoneSmartAudioProfiles.setting(settingId) ?: return
-        val normalized = setting.normalize(rawValue) ?: return
-        writeString(GoneSmartAudioProfiles.nativeValueKey(settingId), normalized)
-    }
-
-    fun setOverride(routeId: String, settingId: String, rawValue: String?) {
-        val setting = GoneSmartAudioProfiles.setting(settingId) ?: return
-        val key = GoneSmartAudioProfiles.overrideKey(routeId, settingId)
-        if (rawValue == null) {
-            local.edit().remove(key).apply()
-            markPending(setOf(key))
-            synchronizeWithFramework()
-            return
+        if (enabled) {
+            editor.putBoolean(overrideKey, true)
+            group.fields.forEach { field ->
+                val valueKey = GoneSmartAudioProfiles.valueKey(routeId, field.id)
+                if (!local.contains(valueKey)) {
+                    val seed = field.normalize(nativeValue(field.id) ?: field.suggestedDefault)
+                        ?: field.suggestedDefault
+                    editor.putString(valueKey, seed)
+                    keys += valueKey
+                }
+            }
+        } else {
+            // Keep the dormant field values so temporarily returning to GMMP
+            // defaults does not destroy the user's custom profile.
+            editor.remove(overrideKey)
         }
 
-        val normalized = setting.normalize(rawValue) ?: return
-        writeString(key, normalized)
+        editor.apply()
+        markPending(keys)
+        synchronizeWithFramework()
+    }
+
+    fun value(routeId: String, fieldId: String): String? =
+        local.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null)
+
+    fun setValue(routeId: String, fieldId: String, rawValue: String) {
+        val field = GoneSmartAudioProfiles.field(fieldId) ?: return
+        val normalized = field.normalize(rawValue) ?: return
+        writeString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), normalized)
+    }
+
+    fun nativeValue(fieldId: String): String? =
+        local.getString(GoneSmartAudioProfiles.nativeValueKey(fieldId), null)
+
+    fun setNativeValue(fieldId: String, rawValue: String) {
+        val field = GoneSmartAudioProfiles.field(fieldId) ?: return
+        val normalized = field.normalize(rawValue) ?: return
+        writeString(GoneSmartAudioProfiles.nativeValueKey(fieldId), normalized)
     }
 
     fun clearRouteOverrides(routeId: String) {
-        val prefix = GoneSmartAudioProfiles.overrideKey(routeId, "")
-        val keys = local.all.keys.filter { it.startsWith(prefix) }.toSet()
+        val overridePrefix = GoneSmartAudioProfiles.overrideKey(routeId, "")
+        val valuePrefix = GoneSmartAudioProfiles.valueKey(routeId, "")
+        val keys = local.all.keys.filter {
+            it.startsWith(overridePrefix) || it.startsWith(valuePrefix)
+        }.toSet()
         if (keys.isEmpty()) return
         val editor = local.edit()
         keys.forEach(editor::remove)
@@ -145,13 +179,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
 
     fun overrideCount(routeId: String): Int {
         val prefix = GoneSmartAudioProfiles.overrideKey(routeId, "")
-        return local.all.keys.count { it.startsWith(prefix) }
-    }
-
-    fun allOverrides(routeId: String): Map<String, String> = buildMap {
-        GoneSmartAudioProfiles.allSettings.forEach { setting ->
-            overrideValue(routeId, setting.id)?.let { put(setting.id, it) }
-        }
+        return local.all.count { (key, value) -> key.startsWith(prefix) && value == true }
     }
 
     private fun ensureLocalRoute() {
