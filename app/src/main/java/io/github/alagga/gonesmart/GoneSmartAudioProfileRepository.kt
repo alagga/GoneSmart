@@ -11,17 +11,18 @@ class GoneSmartAudioProfileRepository(context: Context) {
         private const val LOCAL_PREFS = "gonesmart_audio_profiles_local_v2"
         private const val KEY_PENDING = "local.pending_keys"
         private const val STANDARD_PREFIX = "standard."
-        private const val NATIVE_PRESET_PREFIX = "native_preset."
     }
 
     private val appContext = context.applicationContext
     private val local = appContext.getSharedPreferences(LOCAL_PREFS, Context.MODE_PRIVATE)
 
     init {
+        AudioProfilePresetStorage.ensureCurrent(local)
         ensureLocalRoute()
     }
 
     fun synchronizeWithFramework() {
+        AudioProfilePresetStorage.ensureCurrent(local)
         val service = GoneSmartApplication.xposedService ?: return
         val remote = runCatching {
             service.getRemotePreferences(GoneSmartAudioProfiles.GROUP)
@@ -30,6 +31,10 @@ class GoneSmartAudioProfileRepository(context: Context) {
             return
         }
 
+        // Schema 1 learned preset labels could be paired with an unrelated
+        // startup curve. Invalidate that cache on both writable stores before
+        // either side is allowed to repopulate the other.
+        AudioProfilePresetStorage.ensureCurrent(remote)
         flushPending(remote)
 
         val pending = pendingKeys()
@@ -169,6 +174,24 @@ class GoneSmartAudioProfileRepository(context: Context) {
         writeString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), normalized)
     }
 
+    /** Atomically save an EQ shape edit and mark that route profile Custom. */
+    fun setEqualizerShapeValue(routeId: String, fieldId: String, rawValue: String): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
+        if (!GoneSmartAudioProfiles.isEqualizerShapeField(fieldId)) return false
+        if (!isGroupOverridden(routeId, GoneSmartAudioProfiles.equalizerGroup.id)) return false
+        val field = GoneSmartAudioProfiles.field(fieldId) ?: return false
+        val normalized = field.normalize(rawValue) ?: return false
+        val valueKey = GoneSmartAudioProfiles.valueKey(routeId, fieldId)
+        val presetKey = GoneSmartAudioProfiles.valueKey(routeId, "eq.preset")
+        local.edit()
+            .putString(valueKey, normalized)
+            .putString(presetKey, GoneSmartAudioProfiles.CUSTOM_PRESET)
+            .apply()
+        markPending(setOf(valueKey, presetKey))
+        synchronizeWithFramework()
+        return true
+    }
+
     /** Last passively observed live GMMP state, which may be temporary on Bluetooth. */
     fun nativeValue(fieldId: String): String? =
         local.getString(GoneSmartAudioProfiles.nativeValueKey(fieldId), null)
@@ -226,6 +249,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
     fun setNativePresetShape(presetName: String, rawShape: Map<String, String>) {
         if (presetName.isBlank() || presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return
         if (rawShape.keys.toSet() != GoneSmartAudioProfiles.equalizerShapeFieldIds.toSet()) return
+        if (!AudioProfilePresetStorage.ensureCurrent(local)) return
         val normalized = GoneSmartAudioProfiles.equalizerShapeFieldIds.associateWith { fieldId ->
             val field = GoneSmartAudioProfiles.field(fieldId) ?: return
             field.normalize(rawShape[fieldId] ?: return) ?: return
@@ -286,10 +310,13 @@ class GoneSmartAudioProfileRepository(context: Context) {
     fun isNativePresetAvailable(presetName: String): Boolean = nativePresetShape(presetName) != null
 
     fun availableNativePresets(): List<String> {
+        if (!AudioProfilePresetStorage.isCurrent(local)) return emptyList()
         val learnedNames = local.all
             .asSequence()
             .filter { (key, value) ->
-                key.startsWith(NATIVE_PRESET_PREFIX) && key.endsWith(".name") && value is String
+                key.startsWith(AudioProfilePresetStorage.PREFIX) &&
+                    key.endsWith(".name") &&
+                    value is String
             }
             .mapNotNull { (_, value) -> (value as? String)?.takeIf { it.isNotBlank() } }
             .toSet()
@@ -301,9 +328,6 @@ class GoneSmartAudioProfileRepository(context: Context) {
             .filter(::isNativePresetAvailable)
             .sortedBy { it.lowercase() }
             .forEach(ordered::add)
-        standardValue("eq.preset")
-            ?.takeIf(::isNativePresetAvailable)
-            ?.let(ordered::add)
         return ordered.toList()
     }
 
@@ -328,21 +352,12 @@ class GoneSmartAudioProfileRepository(context: Context) {
     }
 
     private fun nativePresetShape(presetName: String): Map<String, String>? {
+        if (!AudioProfilePresetStorage.isCurrent(local)) return null
         val stored = GoneSmartAudioProfiles.equalizerShapeFieldIds.mapNotNull { fieldId ->
             local.getString(GoneSmartAudioProfiles.nativePresetValueKey(presetName, fieldId), null)
-                ?.let { fieldId to it }
+                ?.let { raw -> GoneSmartAudioProfiles.field(fieldId)?.normalize(raw)?.let { fieldId to it } }
         }.toMap()
-        if (stored.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) return stored
-
-        // If Standard currently has this named preset, its complete saved shape
-        // is also a valid native reference without relying on a Bluetooth live state.
-        if (standardValue("eq.preset") == presetName) {
-            val standard = GoneSmartAudioProfiles.equalizerShapeFieldIds.mapNotNull { fieldId ->
-                standardValue(fieldId)?.let { fieldId to it }
-            }.toMap()
-            if (standard.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) return standard
-        }
-        return null
+        return stored.takeIf { it.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size }
     }
 
     private fun ensureLocalRoute() {
