@@ -16,6 +16,15 @@ object GoneSmartSettingsKeys {
     const val KEY_FLIP_QUEUE = "flip_queue"
     const val KEY_TRACK_MIX = "track_mix_enabled"
 
+    const val KEY_RECOMMENDATION_MODE = "recommendation_mode"
+    const val KEY_PROVIDER_LISTENBRAINZ_ENABLED = "provider_listenbrainz_enabled"
+    const val KEY_PROVIDER_LASTFM_ENABLED = "provider_lastfm_enabled"
+    const val KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED = "provider_local_playlist_enabled"
+    const val KEY_PROVIDER_LISTENBRAINZ_WEIGHT = "provider_listenbrainz_weight"
+    const val KEY_PROVIDER_LASTFM_WEIGHT = "provider_lastfm_weight"
+    const val KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT = "provider_local_playlist_weight"
+    const val KEY_PLAYLIST_SIZE_WEIGHTING = "playlist_size_weighting"
+
     const val KEY_PREFER_HIGHER_RATED = "prefer_higher_rated"
     const val KEY_MINIMUM_RATING = "minimum_rating"
     const val KEY_SMART_RATING = "smart_rating"
