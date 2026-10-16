@@ -4,16 +4,15 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import dalvik.system.DexFile
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.io.File
 import java.lang.reflect.Method
-import java.lang.reflect.Modifier
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -37,19 +36,17 @@ class GoneSmartAudioModule : XposedModule() {
         private const val PREF_PROBE_WINDOW_MS = 10 * 60 * 1000L
         private const val PREF_PROBE_MAX_EVENTS = 200
         private const val PRESET_CAPTURE_WINDOW_MS = 15_000L
-        private const val PRESET_SNAPSHOT_DELAY_MS = 850L
+        private const val MAX_DYNAMIC_EQ_CLASSES = 12_000
     }
 
     private var audioPreferences: SharedPreferences? = null
     private var activeRouteId: String = GoneSmartAudioProfiles.LOCAL_ROUTE_ID
     private var routeObserver: AudioRouteObserver? = null
     private var nativePreferenceSnapshotDone = false
+    private var equalizerObserverInstalled = false
 
     @Volatile
     private var hostApplication: Application? = null
-
-    @Volatile
-    private var eqStateInstance: Any? = null
 
     @Volatile
     private var currentNativePreset: String? = null
@@ -63,18 +60,13 @@ class GoneSmartAudioModule : XposedModule() {
     @Volatile
     private var pendingPresetUntilElapsed: Long = 0L
 
-    @Volatile
-    private var preGetterVerified = false
-
-    @Volatile
-    private var verifiedBandGainGetterName: String? = null
-
     private val currentEqBands = ConcurrentHashMap<Int, Double>()
     private val publishedNativeValues = ConcurrentHashMap<String, String>()
     private val publishedPresetFingerprints = ConcurrentHashMap<String, String>()
     private val preferenceProbeStartedAt = SystemClock.elapsedRealtime()
     private val preferenceProbeEvents = AtomicInteger(0)
     private val preferenceProbeSeen = ConcurrentHashMap.newKeySet<String>()
+    private val presetCatalogStarted = AtomicBoolean(false)
 
     private val audioPreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
@@ -96,18 +88,13 @@ class GoneSmartAudioModule : XposedModule() {
 
         Log.i(TAG, "Bluetooth audio-profile feature loaded")
 
-        // Both observers are transparent: they never change GMMP arguments or
-        // return values and never write into GMMP/libxposed preferences.
-        installEqualizerObserver(param.classLoader)
+        // Preference observation is keyed by semantic GMMP setting IDs and is
+        // independent of obfuscated GMMP implementation class names.
         installNativePreferenceObserver()
-        resolveApplicationAndStart(attempt = 0)
-
-        if (BuildConfig.DEBUG) {
-            logNativeDspInventory(param.classLoader)
-        }
+        resolveApplicationAndStart(param.classLoader, attempt = 0)
     }
 
-    private fun resolveApplicationAndStart(attempt: Int) {
+    private fun resolveApplicationAndStart(classLoader: ClassLoader, attempt: Int) {
         val application = currentApplication()
         if (application != null) {
             hostApplication = application
@@ -119,13 +106,16 @@ class GoneSmartAudioModule : XposedModule() {
                 routeObserver?.start()
             }
 
+            if (!equalizerObserverInstalled) {
+                equalizerObserverInstalled = installEqualizerObserver(classLoader, application)
+            }
+
             if (!nativePreferenceSnapshotDone) {
                 nativePreferenceSnapshotDone = true
                 snapshotNativePreferences(application)
             }
-            if (eqStateInstance != null) {
-                scheduleEqualizerSnapshot("application-ready")
-            }
+
+            importNativePresetCatalog(application)
             return
         }
 
@@ -133,8 +123,8 @@ class GoneSmartAudioModule : XposedModule() {
             Log.w(TAG, "Could not obtain GMMP application context; audio-route observation unavailable")
             return
         }
-        Handler(Looper.getMainLooper()).postDelayed(
-            { resolveApplicationAndStart(attempt + 1) },
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { resolveApplicationAndStart(classLoader, attempt + 1) },
             CONTEXT_RETRY_MS
         )
     }
@@ -225,75 +215,148 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     /**
-     * Passive runtime observation of the proven GMMP 4.2.1 EQ state object.
-     * r(double) is PRE, z(index,double) is band gain, and d(boolean) is the
-     * enabled state as established by device evidence. The hook is transparent.
+     * Resolve the Equalizer observation owner semantically. The 4.2.1 R8 name
+     * is only a structurally validated fast path; if it changes, a bounded
+     * startup-only Dex scan looks for one unique class with the same semantic
+     * state shape. GoneSmart only hooks natural calls and never invokes a
+     * candidate method to test it.
      */
-    private fun installEqualizerObserver(classLoader: ClassLoader) {
-        val eqClass = runCatching { classLoader.loadClass("r61") }.getOrElse {
-            Log.w(TAG, "EQ state observer unavailable", it)
-            return
+    private fun installEqualizerObserver(classLoader: ClassLoader, application: Application): Boolean {
+        val fast = GmmpEqualizerObservationResolver.resolveFastPath(classLoader)
+        val mapping = fast ?: GmmpEqualizerObservationResolver.resolveDynamic(
+            discoverEqualizerCandidates(classLoader, application)
+        )
+        if (mapping == null) {
+            Log.w(TAG, "EQ state observer unavailable; structural resolver found no unique candidate")
+            return false
         }
 
-        eqClass.declaredMethods
-            .filter { method ->
-                when (method.name) {
-                    "z" -> method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType, Double::class.javaPrimitiveType))
-                    "r" -> method.parameterTypes.contentEquals(arrayOf(Double::class.javaPrimitiveType))
-                    "d" -> method.parameterTypes.contentEquals(arrayOf(Boolean::class.javaPrimitiveType))
-                    "reset", "t" -> method.parameterCount == 0
-                    else -> false
+        Log.i(
+            TAG,
+            "EQ OBSERVER RESOLVED | source=${mapping.source} | owner=${mapping.owner.name} | score=${mapping.score}"
+        )
+
+        val installed = listOf(
+            mapping.preSetter to EqualizerObservationRole.PRE,
+            mapping.bandSetter to EqualizerObservationRole.BAND,
+            mapping.enabledSetter to EqualizerObservationRole.ENABLED
+        ).all { (method, role) -> installEqualizerMethodObserver(method, role) }
+
+        if (!installed) Log.w(TAG, "EQ observer resolved but one or more passive hooks could not be installed")
+        return installed
+    }
+
+    private enum class EqualizerObservationRole { PRE, BAND, ENABLED }
+
+    private fun installEqualizerMethodObserver(method: Method, role: EqualizerObservationRole): Boolean =
+        runCatching {
+            method.isAccessible = true
+            hook(method).intercept { chain ->
+                val args = method.parameterTypes.indices.map { index ->
+                    runCatching { chain.getArg(index) }.getOrNull()
                 }
-            }
-            .forEach { method ->
-                method.isAccessible = true
-                runCatching {
-                    hook(method).intercept { chain ->
-                        eqStateInstance = chain.thisObject
-                        val args = method.parameterTypes.indices.map { index ->
-                            runCatching { chain.getArg(index) }.getOrNull()
-                        }
-                        val caller = if (BuildConfig.DEBUG) preferenceProbeCallSite() else null
-                        val result = chain.proceed()
+                val caller = if (BuildConfig.DEBUG) preferenceProbeCallSite() else null
+                val result = chain.proceed()
 
-                        when (method.name) {
-                            "r" -> (args.getOrNull(0) as? Number)?.toDouble()?.let { raw ->
-                                currentEqPre = raw
-                                NativeAudioObservation.equalizerPre(raw)?.let(::publishNativeValue)
-                                maybeCompletePendingPresetFromObservedShape()
-                            }
-
-                            "z" -> {
-                                val index = (args.getOrNull(0) as? Number)?.toInt()
-                                val raw = (args.getOrNull(1) as? Number)?.toDouble()
-                                if (index != null && raw != null) {
-                                    currentEqBands[index] = raw
-                                    NativeAudioObservation.equalizerBand(index, raw)?.let(::publishNativeValue)
-                                    maybeCompletePendingPresetFromObservedShape()
-                                }
-                            }
-
-                            "d" -> (args.getOrNull(0) as? Boolean)?.let { enabled ->
-                                publishNativeValue(NativeAudioObservation.Value("eq.enabled", enabled.toString()))
-                            }
-
-                            "reset", "t" -> scheduleEqualizerSnapshot("${method.name}()")
-                        }
-
-                        if (BuildConfig.DEBUG) {
-                            Log.i(
-                                PROBE_TAG,
-                                "EQ CALL | method=${method.name}(${method.parameterTypes.joinToString(",") { it.simpleName }})" +
-                                    " | args=${args.joinToString(",") { it?.toString() ?: "null" }}" +
-                                    " | caller=${caller ?: "unresolved"}"
-                            )
-                        }
-                        result
+                when (role) {
+                    EqualizerObservationRole.PRE -> (args.getOrNull(0) as? Number)?.toDouble()?.let { raw ->
+                        currentEqPre = raw
+                        NativeAudioObservation.equalizerPre(raw)?.let(::publishNativeValue)
+                        maybeCompletePendingPresetFromObservedShape()
                     }
-                }.onFailure {
-                    Log.w(TAG, "Could not install EQ observer for ${method.name}", it)
+
+                    EqualizerObservationRole.BAND -> {
+                        val index = (args.getOrNull(0) as? Number)?.toInt()
+                        val raw = (args.getOrNull(1) as? Number)?.toDouble()
+                        if (index != null && raw != null) {
+                            currentEqBands[index] = raw
+                            NativeAudioObservation.equalizerBand(index, raw)?.let(::publishNativeValue)
+                            maybeCompletePendingPresetFromObservedShape()
+                        }
+                    }
+
+                    EqualizerObservationRole.ENABLED -> (args.getOrNull(0) as? Boolean)?.let { enabled ->
+                        publishNativeValue(NativeAudioObservation.Value("eq.enabled", enabled.toString()))
+                    }
                 }
+
+                if (BuildConfig.DEBUG) {
+                    Log.i(
+                        PROBE_TAG,
+                        "EQ CALL | role=$role | method=${method.name}(${method.parameterTypes.joinToString(",") { it.simpleName }})" +
+                            " | args=${args.joinToString(",") { it?.toString() ?: "null" }}" +
+                            " | caller=${caller ?: "unresolved"}"
+                    )
+                }
+                result
             }
+            true
+        }.onFailure {
+            Log.w(TAG, "Could not install passive EQ observer for role=$role", it)
+        }.getOrDefault(false)
+
+    private fun discoverEqualizerCandidates(
+        classLoader: ClassLoader,
+        application: Application
+    ): Sequence<Class<*>> = sequence {
+        var inspected = 0
+        for (path in applicationApkPaths(application)) {
+            if (inspected >= MAX_DYNAMIC_EQ_CLASSES) break
+            val dex = runCatching { DexFile(path) }.getOrNull() ?: continue
+            try {
+                val entries = dex.entries()
+                while (entries.hasMoreElements() && inspected < MAX_DYNAMIC_EQ_CLASSES) {
+                    val name = entries.nextElement()
+                    if (!looksLikeGmmpImplementationClass(name)) continue
+                    inspected += 1
+                    val clazz = runCatching { Class.forName(name, false, classLoader) }.getOrNull() ?: continue
+                    yield(clazz)
+                }
+            } finally {
+                runCatching { dex.close() }
+            }
+        }
+        if (BuildConfig.DEBUG) Log.i(PROBE_TAG, "EQ STRUCTURAL SCAN | inspected=$inspected")
+    }
+
+    private fun looksLikeGmmpImplementationClass(name: String): Boolean {
+        if (name.startsWith("android.") || name.startsWith("androidx.") || name.startsWith("java.") ||
+            name.startsWith("kotlin.") || name.startsWith("com.google.") || name.startsWith("io.github.alagga.")) {
+            return false
+        }
+        if (name.startsWith("gonemad.gmmp.")) return true
+        // R8 implementation classes in the accepted build live in the default
+        // package with short generated names (for example the 4.2.1 fast path).
+        return '.' !in name && name.length in 2..10 && name.all { it.isLetterOrDigit() || it == '_' || it == '$' }
+    }
+
+    private fun applicationApkPaths(application: Application): List<String> = buildList {
+        add(application.applicationInfo.sourceDir)
+        application.applicationInfo.splitSourceDirs?.let(::addAll)
+    }.distinct()
+
+    /**
+     * Import complete native preset curves from GMMP's own installed preset
+     * files. This is read-only, bounded and startup-only; passive runtime
+     * observation remains a fallback for formats that cannot be parsed safely.
+     */
+    private fun importNativePresetCatalog(application: Application) {
+        if (!presetCatalogStarted.compareAndSet(false, true)) return
+        Thread({
+            val result = runCatching { GmmpEqualizerPresetCatalog.discover(application) }
+                .onFailure { Log.w(TAG, "Native EQ preset catalog discovery failed", it) }
+                .getOrNull()
+                ?: return@Thread
+
+            result.entries.forEach { entry ->
+                publishNativePreset(entry.preset.name, entry.preset.shape, "catalog:${entry.source}")
+            }
+            Log.i(
+                TAG,
+                "EQ PRESET CATALOG | imported=${result.entries.size} | candidates=${result.candidateCount}" +
+                    " | rejected=${result.rejectedCount}"
+            )
+        }, "GoneSmart-EqPresetCatalog").apply { isDaemon = true }.start()
     }
 
     /**
@@ -351,10 +414,6 @@ class GoneSmartAudioModule : XposedModule() {
                 pendingPresetName = null
                 pendingPresetUntilElapsed = 0L
             } else {
-                // Startup may race with the natural r()/z() initialization. Keep
-                // any already observed shape so it can prove the initial preset.
-                // A real runtime preset change, however, must discard the old
-                // shape before learning the new one.
                 val startupSnapshot = source.startsWith("startup:")
                 if (!startupSnapshot) {
                     currentEqPre = null
@@ -363,7 +422,6 @@ class GoneSmartAudioModule : XposedModule() {
                 pendingPresetName = mapped.value
                 pendingPresetUntilElapsed = SystemClock.elapsedRealtime() + PRESET_CAPTURE_WINDOW_MS
                 if (startupSnapshot) maybeCompletePendingPresetFromObservedShape()
-                scheduleEqualizerSnapshot("preset:${mapped.value}:$source")
             }
         }
     }
@@ -441,127 +499,8 @@ class GoneSmartAudioModule : XposedModule() {
         bands.forEachIndexed { index, raw ->
             NativeAudioObservation.equalizerBand(index, raw)?.let { shape[it.fieldId] = it.value } ?: return
         }
-        publishNativePreset(preset, shape, "observed setters")
-        // The proven setter shape is also the evidence needed to graduate the
-        // compact read-only getters used for later preset-only transitions.
-        scheduleEqualizerSnapshot("observed-shape:$preset")
+        publishNativePreset(preset, shape, "observed-setters")
     }
-
-    private fun scheduleEqualizerSnapshot(reason: String) {
-        Handler(Looper.getMainLooper()).postDelayed(
-            { snapshotEqualizerState(reason) },
-            PRESET_SNAPSHOT_DELAY_MS
-        )
-    }
-
-    /**
-     * Bounded read-only verification for the observed 4.2.1 r61 getter candidates.
-     * F() is accepted as PRE only after agreeing with r(double); one of K/N is
-     * accepted as the band-gain getter only by range/agreement with observed z().
-     */
-    private fun snapshotEqualizerState(reason: String) {
-        val instance = eqStateInstance ?: return
-        val clazz = instance.javaClass
-        val countMethod = findMethod(clazz, "D") ?: return
-        val preMethod = findMethod(clazz, "F") ?: return
-        val kMethod = findMethod(clazz, "K", Int::class.javaPrimitiveType!!) ?: return
-        val nMethod = findMethod(clazz, "N", Int::class.javaPrimitiveType!!) ?: return
-
-        val count = runCatching { (countMethod.invoke(instance) as? Number)?.toInt() }.getOrNull() ?: return
-        if (count != GoneSmartAudioProfiles.equalizerBandFieldIds.size) {
-            if (BuildConfig.DEBUG) Log.w(PROBE_TAG, "EQ SNAPSHOT skipped | bands=$count | reason=$reason")
-            return
-        }
-
-        val pre = runCatching { (preMethod.invoke(instance) as? Number)?.toDouble() }.getOrNull()
-            ?.takeIf { it.isFinite() && it in -12.001..12.001 }
-            ?: return
-        if (!preGetterVerified) {
-            val observedPre = currentEqPre ?: return
-            if (kotlin.math.abs(pre - observedPre) > 0.001) {
-                if (BuildConfig.DEBUG) {
-                    Log.w(PROBE_TAG, "EQ SNAPSHOT rejected F() as PRE getter | returned=$pre | observed=$observedPre")
-                }
-                return
-            }
-            preGetterVerified = true
-        }
-
-        val kValues = readIndexedDoubles(kMethod, instance, count) ?: return
-        val nValues = readIndexedDoubles(nMethod, instance, count) ?: return
-        val gains = selectGainGetter(kValues, nValues) ?: return
-
-        currentEqPre = pre
-        gains.forEachIndexed { index, value -> currentEqBands[index] = value }
-        NativeAudioObservation.equalizerPre(pre)?.let(::publishNativeValue)
-        gains.forEachIndexed { index, value ->
-            NativeAudioObservation.equalizerBand(index, value)?.let(::publishNativeValue)
-        }
-
-        val preset = currentNativePreset
-        if (!preset.isNullOrBlank() && preset != GoneSmartAudioProfiles.CUSTOM_PRESET) {
-            val shape = linkedMapOf<String, String>()
-            NativeAudioObservation.equalizerPre(pre)?.let { shape[it.fieldId] = it.value }
-            gains.forEachIndexed { index, value ->
-                NativeAudioObservation.equalizerBand(index, value)?.let { shape[it.fieldId] = it.value }
-            }
-            if (shape.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) {
-                publishNativePreset(preset, shape, "getter snapshot:$reason")
-            }
-        }
-
-        if (BuildConfig.DEBUG) {
-            Log.i(
-                PROBE_TAG,
-                "EQ SNAPSHOT | preset=${preset ?: "unknown"} | pre=${AudioProfileField.formatNumber(pre)}" +
-                    " | bands=${gains.joinToString(",") { AudioProfileField.formatNumber(it) }} | reason=$reason"
-            )
-        }
-    }
-
-    private fun selectGainGetter(kValues: List<Double>, nValues: List<Double>): List<Double>? {
-        fun plausible(values: List<Double>): Boolean = values.all { it.isFinite() && it in -12.001..12.001 }
-        val verified = verifiedBandGainGetterName
-        if (verified == "K") return kValues.takeIf(::plausible)
-        if (verified == "N") return nValues.takeIf(::plausible)
-
-        val kPlausible = plausible(kValues)
-        val nPlausible = plausible(nValues)
-        if (kPlausible && !nPlausible) {
-            verifiedBandGainGetterName = "K"
-            return kValues
-        }
-        if (nPlausible && !kPlausible) {
-            verifiedBandGainGetterName = "N"
-            return nValues
-        }
-        if (!kPlausible && !nPlausible) return null
-
-        val observed = currentEqBands.toMap()
-        if (observed.isEmpty()) return null
-        fun error(values: List<Double>): Double = observed.entries
-            .filter { it.key in values.indices }
-            .sumOf { (index, expected) -> kotlin.math.abs(values[index] - expected) }
-        val kError = error(kValues)
-        val nError = error(nValues)
-        val selected = if (kError <= nError) "K" else "N"
-        val selectedError = minOf(kError, nError)
-        if (selectedError > 0.01 * observed.size) return null
-        verifiedBandGainGetterName = selected
-        return if (selected == "K") kValues else nValues
-    }
-
-    private fun readIndexedDoubles(method: Method, instance: Any, count: Int): List<Double>? =
-        (0 until count).map { index ->
-            runCatching { (method.invoke(instance, index) as? Number)?.toDouble() }.getOrNull()
-                ?.takeIf { it.isFinite() }
-                ?: return null
-        }
-
-    private fun findMethod(clazz: Class<*>, name: String, vararg parameterTypes: Class<*>): Method? =
-        runCatching {
-            clazz.getDeclaredMethod(name, *parameterTypes).apply { isAccessible = true }
-        }.getOrNull()
 
     private fun publishNativePreset(preset: String, shape: Map<String, String>, source: String) {
         if (preset.isBlank() || preset == GoneSmartAudioProfiles.CUSTOM_PRESET) return
@@ -600,39 +539,6 @@ class GoneSmartAudioModule : XposedModule() {
         pendingPresetUntilElapsed = 0L
         if (BuildConfig.DEBUG) {
             Log.i(PROBE_TAG, "PRESET SNAPSHOT | preset=$preset | source=$source | fields=${normalized.size}")
-        }
-    }
-
-    /** Debug-only class inventory retained only while the native apply path is unresolved. */
-    private fun logNativeDspInventory(classLoader: ClassLoader) {
-        listOf("r61", "s61", "gb1").forEach { candidateName ->
-            val candidate = runCatching { classLoader.loadClass(candidateName) }.getOrNull() ?: return@forEach
-            val constructors = candidate.declaredConstructors
-                .map { constructor ->
-                    candidate.simpleName + "(" + constructor.parameterTypes.joinToString(",") { it.name } + ")"
-                }
-                .ifEmpty { listOf("none") }
-            Log.i(PROBE_TAG, "DSP CLASS | class=${candidate.name} | constructors=${constructors.joinToString(",")}")
-
-            candidate.declaredFields
-                .sortedBy { it.name }
-                .map { field ->
-                    "${if (Modifier.isStatic(field.modifiers)) "static " else ""}${field.name}:${field.type.name}"
-                }
-                .chunked(12)
-                .forEachIndexed { index, chunk ->
-                    Log.i(PROBE_TAG, "DSP FIELDS | class=${candidate.name} | chunk=${index + 1} | ${chunk.joinToString(",")}")
-                }
-
-            candidate.declaredMethods
-                .sortedWith(compareBy({ it.name }, { it.parameterTypes.size }))
-                .map { method ->
-                    method.name + "(" + method.parameterTypes.joinToString(",") { it.name } + "):" + method.returnType.name
-                }
-                .chunked(12)
-                .forEachIndexed { index, chunk ->
-                    Log.i(PROBE_TAG, "DSP METHODS | class=${candidate.name} | chunk=${index + 1} | ${chunk.joinToString(",")}")
-                }
         }
     }
 
