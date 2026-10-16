@@ -548,10 +548,10 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun showNoLearnedPresetsDialog() {
         AlertDialog.Builder(this)
-            .setTitle("No native preset curves learned yet")
+            .setTitle("No native 10-band presets found")
             .setMessage(
-                "GoneSmart only lists presets whose real GMMP PRE and band values have been captured from a real GMMP preset action. " +
-                    "Open a preset once in GMMP's Equalizer while GoneSmart is running, then return here."
+                "GoneSmart reads complete 10-band preset curves directly from GMMP's own preset storage. " +
+                    "No preset-by-preset setup in GMMP is required. If this list is empty, GMMP's preset storage was not readable or no complete 10-band curves were found."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -589,7 +589,7 @@ class AudioProfilesActivity : AppCompatActivity() {
                     "If Standard is not ready yet, disconnect Bluetooth once, wait a moment, then reconnect. GoneSmart captures the normal GMMP audio settings while Bluetooth is disconnected.\n\n" +
                     "Cards with an Enabled switch keep their dependent controls disabled while the effect is off. " +
                     "Equalizer is one complete override; turning it off disables preset, PRE and all band controls. " +
-                    "The preset list contains only native curves GoneSmart captured from a real GMMP preset action; moving PRE or a band changes the profile to Custom."
+                    "The preset list is read from GMMP's own complete 10-band preset curves; moving PRE or a band changes the profile to Custom."
             )
             .setPositiveButton("OK", null)
             .show()
