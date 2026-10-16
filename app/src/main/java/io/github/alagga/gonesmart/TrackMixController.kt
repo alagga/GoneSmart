@@ -484,12 +484,12 @@ internal class TrackMixController(
     }
 
     /**
-     * Record bounded natural MusicService Int->void calls while Track Mix is
-     * starting. Once CURRENT is independently known, exactly one call whose
-     * natural argument is CURRENT queue_position + 1 may become the request-
-     * local next-source boundary. GMMP 4.2.1 can materialize that next source
-     * before seed isolation/refill has settled, so the same proven boundary
-     * may be replayed only after the final Initial Size queue is verified.
+     * Record bounded natural MusicService Int->void calls while a zero-provider
+     * Track Mix is starting. Once transient CURRENT is independently known,
+     * exactly one call whose natural argument is CURRENT queue_position + 1 may
+     * become the request-local next-source boundary. R50 may repair only that
+     * already-existing queue slot synchronously before GMMP's original call
+     * proceeds and materializes the next AudioSource.
      */
     fun observeNativePositionCommand(
         service: Any?,
@@ -497,10 +497,7 @@ internal class TrackMixController(
         value: Int?
     ) {
         val request = pending ?: return
-        if (request.stage != "WAIT_PLAY" &&
-            request.stage != "ISOLATING" &&
-            request.stage != "FILLING"
-        ) return
+        if (request.stage != "WAIT_PLAY") return
         if (request.prePlayPrepared.trackIds.isNotEmpty()) return
         if (request.prePlayTarget == null || service == null || value == null) return
         if (method.parameterCount != 1 ||
@@ -515,25 +512,17 @@ internal class TrackMixController(
 
         val key = method.declaringClass.name + "." + method.name +
             "(int)@" + System.identityHashCode(service)
-        val observed = ObservedNativePositionCommand(
-            key = key,
-            service = WeakReference(service),
-            method = method.apply { isAccessible = true },
-            value = value,
-            looper = Looper.myLooper(),
-            observedAt = SystemClock.elapsedRealtime()
-        )
-        val existingIndex = request.nativePositionCommands.indexOfFirst {
-            it.key == key
-        }
-        if (existingIndex >= 0) {
-            // A MusicService position method can be called several times while
-            // native Play is settling. Keep its latest natural argument so an
-            // early old-queue value cannot hide the later CURRENT+1 boundary.
-            request.nativePositionCommands[existingIndex] = observed
-        } else {
+        if (request.nativePositionCommands.none { it.key == key }) {
             if (request.nativePositionCommands.size >= 12) return
-            request.nativePositionCommands += observed
+            method.isAccessible = true
+            request.nativePositionCommands += ObservedNativePositionCommand(
+                key = key,
+                service = WeakReference(service),
+                method = method,
+                value = value,
+                looper = Looper.myLooper(),
+                observedAt = SystemClock.elapsedRealtime()
+            )
         }
         tryPromoteNextSourceBoundary(request)
         guardZeroPoolNaturalNextSource(
@@ -1148,8 +1137,6 @@ internal class TrackMixController(
                 fail("Could not verify the isolated Auto-DJ seed.", request.context)
                 return
             }
-            request.provisionalCurrentQueuePosition = seed.currentQueuePosition
-            tryPromoteNextSourceBoundary(request)
 
             val sessionAutoDj = nativeAutoDj?.get()
             if (sessionAutoDj == null ||
@@ -1251,8 +1238,10 @@ internal class TrackMixController(
                     currentQueueEntryIdHint = selectedEntryId
                 )
             }
-            val orderedExact = exactContext?.items?.sortedBy { it.queuePosition }.orEmpty()
-            val orderedPositions = orderedExact.map { it.queuePosition }
+            val orderedPositions = exactContext?.items
+                ?.sortedBy { it.queuePosition }
+                ?.map { it.queuePosition }
+                ?: emptyList()
             if (exactContext?.currentItem?.track?.id != selectedId ||
                 !TrackMixInitialFillPolicy.isExactInitialQueue(
                     initialSize = initial,
@@ -1267,21 +1256,6 @@ internal class TrackMixController(
                         "positions=${orderedPositions.joinToString(",")} | verified=false"
                 )
                 fail("GMMP's Initial Size was not normalized correctly.", request.context)
-                return
-            }
-
-            val verifiedCurrentPosition = exactContext.currentQueuePosition
-                ?: error("Verified Track Mix queue has no Current position")
-            val nextTrackId = orderedExact.firstOrNull {
-                it.queuePosition == verifiedCurrentPosition + 1
-            }?.track?.id
-            if (!refreshVerifiedNextSourceBoundary(
-                    request = request,
-                    currentQueuePosition = verifiedCurrentPosition,
-                    nextTrackId = nextTrackId
-                )
-            ) {
-                fail("Could not synchronize GMMP's next-track playback state.", request.context)
                 return
             }
 
@@ -1576,129 +1550,6 @@ internal class TrackMixController(
         )
     }
 
-    private fun refreshVerifiedNextSourceBoundary(
-        request: Pending,
-        currentQueuePosition: Int,
-        nextTrackId: Long?
-    ): Boolean {
-        if (nextTrackId == null) {
-            Log.i(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | applied=false | reason=no-follower | " +
-                    "current=$currentQueuePosition"
-            )
-            return true
-        }
-
-        tryPromoteNextSourceBoundary(request)
-        if (request.nextSourceBoundaryAmbiguous) {
-            Log.e(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | applied=false | reason=ambiguous-boundary | " +
-                    "current=$currentQueuePosition | next=${currentQueuePosition + 1}"
-            )
-            return false
-        }
-
-        val boundary = request.nextSourceBoundary
-        if (boundary == null) {
-            // No natural CURRENT+1 materialization was observed for this
-            // request, so there is no stale/null preload to overwrite. Never
-            // guess an obfuscated method merely to manufacture a refresh.
-            Log.i(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | applied=false | reason=not-observed | " +
-                    "current=$currentQueuePosition | next=${currentQueuePosition + 1}"
-            )
-            return true
-        }
-
-        val nextPosition = currentQueuePosition + 1
-        if (boundary.value != nextPosition) {
-            Log.e(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | applied=false | reason=argument-mismatch | " +
-                    "observed=${boundary.value} | expected=$nextPosition"
-            )
-            return false
-        }
-        val service = boundary.service.get() ?: run {
-            Log.e(TAG, "MIX NEXT SOURCE REFRESH | applied=false | reason=service-gone")
-            return false
-        }
-        val method = boundary.method
-        val validSignature = method.parameterCount == 1 &&
-            (method.parameterTypes[0] == Integer.TYPE ||
-                method.parameterTypes[0] == Integer::class.java) &&
-            method.returnType == Void.TYPE &&
-            method.declaringClass.isAssignableFrom(service.javaClass)
-        if (!validSignature) {
-            Log.e(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | applied=false | reason=boundary-shape-changed"
-            )
-            return false
-        }
-
-        val replayExecution = when {
-            boundary.looper == null -> "direct-no-looper"
-            boundary.looper === Looper.myLooper() -> "same-looper"
-            else -> "observed-looper"
-        }
-        val applied = runCatching {
-            method.isAccessible = true
-            val observedLooper = boundary.looper
-            if (observedLooper == null || observedLooper === Looper.myLooper()) {
-                // The proven GMMP call in 4.2.1 currently runs on a worker
-                // thread without a Looper. A missing Looper is therefore
-                // native evidence, not an error. Replay the same observed
-                // method synchronously rather than inventing a Handler thread.
-                method.invoke(service, nextPosition)
-            } else {
-                val completion = java.util.concurrent.CountDownLatch(1)
-                val invocationFailure =
-                    java.util.concurrent.atomic.AtomicReference<Throwable?>()
-                check(
-                    Handler(observedLooper).post {
-                        try {
-                            method.invoke(service, nextPosition)
-                        } catch (failure: Throwable) {
-                            invocationFailure.set(failure)
-                        } finally {
-                            completion.countDown()
-                        }
-                    }
-                ) {
-                    "Could not post verified native next-source refresh"
-                }
-                check(
-                    completion.await(
-                        1_500L,
-                        java.util.concurrent.TimeUnit.MILLISECONDS
-                    )
-                ) {
-                    "Verified native next-source refresh timed out"
-                }
-                invocationFailure.get()?.let { throw it }
-            }
-            true
-        }.onFailure {
-            Log.e(
-                TAG,
-                "MIX NEXT SOURCE REFRESH | verified native boundary replay failed",
-                it
-            )
-        }.getOrDefault(false)
-        Log.i(
-            TAG,
-            "MIX NEXT SOURCE REFRESH | applied=$applied | command=" +
-                method.declaringClass.name + "." + method.name + "(int)" +
-                " | current=$currentQueuePosition | next=$nextPosition" +
-                " | nextTrack=$nextTrackId | execution=$replayExecution" +
-                " | evidence=natural-current-plus-one"
-        )
-        return applied
-    }
 
     private fun prepareZeroPoolFromNaturalStateCandidate(
         autoDj: Any,
