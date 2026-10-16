@@ -38,15 +38,17 @@ Bluetooth inheritance and override seeding use `standard.*`, never a temporary B
 
 A route change can leave native values numerically unchanged. Therefore, when the no-Bluetooth route becomes active, the observer performs one delayed bounded snapshot and force-republishes the complete known GMMP audio state with local-route identity. The Equalizer shape is included when the validated live reader/setter state is available.
 
-### Acknowledged companion bridge
+### Companion transport and host-local fallback
 
-The hooked GMMP process cannot write GoneSmart's libxposed RemotePreferences: that object is read-only in the host process. Earlier development builds therefore sent observations only through package-targeted broadcasts. Device evidence on 2026-10-16 proved that this was not a sufficient persistence boundary: the GMMP-side observer captured a complete Standard snapshot (`17` native preference fields plus `11/11` Equalizer shape fields), yet the application module still saw the framework Standard baseline as incomplete after Bluetooth reconnected.
+The hooked GMMP process cannot write GoneSmart's libxposed RemotePreferences: that object is read-only in the host process. Native observations therefore leave the host process rather than editing GoneSmart RemotePreferences directly.
 
-The current development path therefore uses a synchronous GoneSmart-owned `ContentProvider` bridge for route, native-value and native-preset observations. The provider validates the caller UID/package, writes through `GoneSmartAudioProfileRepository`, verifies the local write, and returns an acknowledgement. A fully explicit component broadcast with foreground/stopped-package flags remains a compatibility fallback rather than the primary success signal.
+A synchronous GoneSmart-owned `ContentProvider` bridge exists as the preferred acknowledged transport when Android allows GMMP to resolve the companion provider. Device testing on 2026-10-17 showed that this provider is not visible from the tested GMMP host (`Failed to find provider info`). GoneSmart now probes that route only once per GMMP process and then uses the fully explicit component receiver fallback, avoiding one PackageManager error per mirrored value.
 
-In addition, no-Bluetooth observations are mirrored into the GoneSmart-owned GMMP-private runtime store `gonesmart_audio_runtime_state`. Only observations attributed to the local route may populate `standard.*` there; Bluetooth observations can never seed Standard. The native application module resolves Standard from framework preferences first and then from this host-local mirror. This removes companion wake/service-sync timing from the native apply critical path without weakening the Standard-vs-Bluetooth isolation rule. Learned native preset curves receive the same host-local fallback.
+Standard application does not depend on companion wake timing. No-Bluetooth observations are also mirrored into the GoneSmart-owned GMMP-private runtime store `gonesmart_audio_runtime_state`. Only observations attributed to the local route may populate `standard.*` there; Bluetooth observations can never seed Standard. The native application path resolves Standard from framework preferences first and this host-local mirror second.
 
-The companion repository still mirrors acknowledged observations into its local store immediately and flushes pending keys to writable framework RemotePreferences when the Xposed service is available. The Audio Profiles UI therefore reads the same persisted data that the provider positively acknowledged.
+The 2026-10-17 device round proved that this repaired Standard path is usable: after disconnecting Bluetooth, all `17` managed preference values plus the complete `11/11` Equalizer shape were captured as Standard, Bluetooth overrides could then be enabled, and Effects could be applied live.
+
+The companion repository still persists received observations locally and flushes pending keys to writable framework RemotePreferences when the Xposed service is available. The host-local mirror is an apply-critical fallback, not a second user-editable profile database.
 
 ## Equalizer
 
@@ -57,26 +59,36 @@ The Equalizer profile contains:
 - PRE;
 - 32 Hz, 64 Hz, 128 Hz, 256 Hz, 512 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz and 16 kHz.
 
-`Custom` is a state, not a selectable preset. Manually changing PRE or any band in a Bluetooth profile changes its stored preset state to `Custom`.
+`Custom` is a state, not a selectable preset. Manually changing PRE or any band in a Bluetooth profile atomically stores the changed shape value and changes that route's preset state to `Custom`.
 
 ### Native Equalizer boundary
 
 For GMMP 4.2.1, natural runtime calls prove one PRE setter, one indexed band setter and one enabled setter on the live Equalizer state owner. The observed fast-path names are `r61.r(double)`, `r61.z(int,double)` and `r61.d(boolean)`, but those obfuscated names are evidence only. Runtime resolution validates the structural owner before they are reused, and an unknown/ambiguous mapping fails closed.
 
-The application module captures a real Equalizer owner only from natural GMMP calls. An actual requested known profile may then apply PRE, all ten bands and enabled state through those already-proved live setter roles. GoneSmart does not implement a parallel DSP.
+A 2026-10-17 device log isolated an architectural bug in the first application implementation: the passive observation module saw the real `r61` calls, while a second set of hooks installed by the application module never captured a live owner. Every requested Equalizer profile therefore remained `eq=shape-deferred` and no `EQ SHAPE APPLIED` event occurred.
+
+The current development path has exactly one hook owner for those native methods. The passive observer registers the already-proved setter methods and hands the naturally observed live owner plus its Looper/Handler to a process-local `GmmpEqualizerRuntimeBridge`. The application module consumes that shared target and no longer installs competing hooks on the same GMMP methods merely to capture `thisObject`.
+
+A requested profile applies PRE, all ten bands and enabled state through those already-proved live setter roles. GoneSmart does not implement a parallel DSP. The route profile itself stores a complete explicit shape; choosing a learned named preset copies that exact curve into the route values first, so runtime application never needs a second preset lookup to reconstruct the requested curve.
 
 ### Presets
 
 Writing GMMP's `dspSettings_activePreset` preference alone is **not** the native preset-load action. Device testing changed the stored name without loading the corresponding PRE/band curve, so GoneSmart must not pretend that a name-only write selected a preset.
 
+The 2026-10-17 log also proved that an active preset name observed at process startup is not safe evidence for the next Equalizer setter burst: GMMP started with the stored name `Dance` and then initialized PRE plus all ten bands to zero. The old learner incorrectly saved those zero values as the `Dance` curve. Startup preset labels are now metadata only and never arm preset learning.
+
 A named preset is usable only when GoneSmart has a complete native PRE + ten-band reference shape. Reference curves can come from:
 
 - a complete, unambiguous native GMMP preset file discovered read-only; or
-- passive observation/readback after GMMP itself naturally loads a preset.
+- a real natural preset action in GMMP followed by a complete observed setter shape or validated readback.
+
+Natural preset writes are correlated with the exact GMMP UI call chain. If GMMP writes the preset name after its setter burst, a very recent complete shape can be accepted; if the name is written first, GoneSmart clears the working shape and waits for a fresh complete setter burst. Startup labels and GoneSmart's own metadata writes never qualify.
+
+Learned preset storage is versioned. Schema 2 invalidates curves produced by the unsafe startup-label association. Existing route PRE/band values are preserved, but old named route labels are migrated to `Custom` until a real native preset curve is learned again. Standard's native preset label is retained as observed metadata, but it is no longer promoted into the selectable preset catalog merely because a Standard shape exists.
 
 The PRE reader and ten-band state reader are accepted only after agreement with naturally observed setter calls. Unknown curves remain unavailable until the actual native preset-action boundary is semantically mapped or the preset is naturally observed in GMMP.
 
-The Audio Profiles preset chooser now lists **only presets with a complete captured native curve**. It no longer offers hard-coded names that can only end in a “Preset curve not learned yet” error. If nothing has been learned yet, the UI explains that a preset should be opened once in GMMP while GoneSmart is running.
+The Audio Profiles preset chooser lists **only presets with a complete current-schema captured native curve**. If nothing has been learned yet, the UI explains that a preset should be opened once in GMMP while GoneSmart is running.
 
 ## Effects
 
@@ -91,7 +103,9 @@ Managed native cards are:
 - Virtualizer: enabled + strength;
 - Amplifier: enabled + gain.
 
-The application path writes complete groups through the same native GMMP SharedPreferences keys and native units observed from ordinary GMMP UI changes. Reverse conversions are explicit and host-tested: Balance and Tempo use native fractions, Bass boost and Virtualizer use GMMP's 0..1000 scale, and Amplifier uses hundredths of a dB. Preference commits are read back immediately. Whether those programmatic native preference writes update every live effect immediately remains a device-acceptance item; the latest test could not exercise it because the Standard gate blocked application first.
+The application path writes complete groups through the same native GMMP SharedPreferences keys and native units observed from ordinary GMMP UI changes. Reverse conversions are explicit and host-tested: Balance and Tempo use native fractions, Bass boost and Virtualizer use GMMP's 0..1000 scale, and Amplifier uses hundredths of a dB. Preference commits are read back immediately.
+
+The 2026-10-17 device round moved Effects past the earlier Standard gate. Live changes were confirmed from GoneSmart, with the log directly showing applied native writes for Balance, Limiter, Bass boost and Tempo while the maintainer confirmed the managed Effects were changing playback correctly. Effects preference mutation is therefore device-proven on the current GMMP 4.2.1 feature branch; route-transition restoration still remains part of final feature acceptance.
 
 ## Audio Profiles UI
 
@@ -99,7 +113,7 @@ The screen uses a Material toolbar with standard back navigation and an info act
 
 The output selector shows the device/profile name without a redundant `Bluetooth` prefix. The currently active output is indicated by a small green dot and bold label rather than by the literal word `Active`. The same treatment is used in the chooser.
 
-For an enabled Bluetooth Equalizer override, the `Enabled` switch remains interactive. If `Use the GMMP Equalizer for this output` is off, Preset, PRE and all ten band controls are disabled and visually muted because they cannot affect playback while the Equalizer is disabled. Re-enabling it restores those controls without discarding their stored values.
+Cards with a leading `Enabled` switch and dependent controls use two gates. The Bluetooth `Override` must be enabled first, and the card's own `Enabled` switch must also be on before dependent sliders/fields become interactive. When the effect itself is off, its dependent controls stay visible but are disabled and visually muted. This applies to Equalizer, Balance, Limiter, Bass boost, Tempo, Virtualizer and Amplifier. Standalone switches such as Force mono and Auto pitch correction have no dependent controls and remain directly usable whenever their override is active.
 
 Re-rendering the same output/section after a switch, slider or preset action preserves the current vertical scroll position. Switching output or switching Equalizer/Effects starts the destination section at its own top.
 
@@ -124,9 +138,9 @@ Natural GMMP UI writes prove these semantic preference identities:
 - Virtualizer: `dspSettings_virtualizerEnabled`, `dspSettings_virtualizerStrength`;
 - Amplifier: `dspSettings_loudnessEnabled`, `dspSettings_loudnessGain`.
 
-The 2026-10-16 crash evidence proved that GoneSmart RemotePreferences are read-only from the hooked GMMP process. A later test proved a complete local Standard source snapshot (`17` preference values plus `11/11` Equalizer shape values) while the framework-facing apply module nevertheless remained blocked after reconnect. That isolates the remaining Standard failure to cross-process persistence/visibility rather than GMMP source capture and motivates the acknowledged provider bridge plus host-local Standard fallback described above.
+The 2026-10-16 crash evidence proved that GoneSmart RemotePreferences are read-only from the hooked GMMP process. The next device rounds proved complete local Standard source capture and then the host-local fallback that lets Bluetooth Effects apply even when companion/framework propagation is not yet visible in the GMMP process.
 
-That same run revalidated the live Equalizer owner/setter structure and produced a complete observed current preset shape, but profile application itself never passed the incomplete-Standard guard. Therefore live Equalizer and Effects application are still pending device acceptance; they are not considered fixed merely because the new bridge compiles.
+The 2026-10-17 log proved three additional points: live Effects preference mutation works, the companion provider is not resolvable from this GMMP host and must fall back without repeated probing, and the previous Equalizer apply module never captured the live `r61` owner even though the observation hook did. The same log also invalidated the old startup-name preset-learning rule by falsely pairing `Dance` with GMMP's all-zero initialization curve.
 
 ## Native-first application contract
 
@@ -134,24 +148,25 @@ That same run revalidated the live Equalizer owner/setter structure and produced
 2. Resolve GMMP's native audio preference store semantically from known audio keys.
 3. Reconstruct the destination from Standard plus only that Bluetooth output's enabled complete-group overrides.
 4. Apply Effects only through observed GMMP native preference boundaries and verify persistence.
-5. Apply Equalizer PRE/bands/enabled only through the semantically resolved live GMMP setter roles.
-6. Load a named preset only from an exact learned native shape until the real native preset action is proved.
-7. Keep temporary Bluetooth GMMP edits out of both Standard and saved Bluetooth profiles.
-8. Use acknowledged companion persistence plus the local-route-only host mirror so transport timing cannot silently block or corrupt Standard.
-9. Fail closed on missing values, ambiguous native owners or unproved mutations.
-10. Keep runtime work event-driven; no polling or recurring broad class/preference scans.
+5. Resolve and hook the Equalizer owner once in the passive observer; hand the naturally observed live target to the application path through the process-local runtime bridge.
+6. Apply Equalizer PRE/bands/enabled only through the semantically resolved live GMMP setter roles.
+7. Offer a named preset only from an exact current-schema learned native shape; a startup label or name-only preference write is never curve proof.
+8. Keep temporary Bluetooth GMMP edits out of both Standard and saved Bluetooth profiles.
+9. Use framework persistence plus the local-route-only host mirror so transport timing cannot silently block or corrupt Standard.
+10. Fail closed on missing values, ambiguous native owners or unproved mutations.
+11. Keep runtime work event-driven; no polling or recurring broad class/preference scans.
 
 ## Acceptance requirements
 
 Before Audio Profiles can be considered complete:
 
-1. Standard bootstrap must be acknowledged and visible after disconnect/reconnect, including a process that originally starts on Bluetooth.
-2. The same physical Bluetooth output must keep one route identity in the normal one-device case.
+1. Standard bootstrap must remain correct after disconnect/reconnect and after process restarts that begin on Bluetooth. **Current device evidence: working.**
+2. The same physical Bluetooth output must keep one route identity in the normal one-device case. **Current device evidence: working for the tested SOUNDPEATS route.**
 3. Bluetooth native edits must remain temporary; no Bluetooth observation may redefine Standard.
 4. Equalizer inheritance must come from Standard, not the last Bluetooth live state.
-5. Equalizer PRE/bands/enabled application must be device-verified to change the real live GMMP DSP and restore correctly on output switches.
-6. Each Effects card must be device-verified to affect the same live GMMP behavior as its native UI action.
-7. Only complete observed preset shapes may be offered/applied; unknown built-in names remain fail-closed until the native preset action is mapped.
+5. Equalizer PRE/bands/enabled application through the shared live target must be device-verified to change the real GMMP DSP and restore correctly on output switches. **Pending next device round.**
+6. Effects cards must affect the same live GMMP behavior as their native UI actions. **Current 4.2.1 device round: live application confirmed; route restoration still to verify.**
+7. Only complete naturally observed/imported preset shapes may be offered/applied; schema-1 curves are invalidated and unknown built-in names remain fail-closed until the native preset action is mapped.
 8. `Custom` must remain a GoneSmart profile state, not an invented GMMP preset mutation.
 9. Standard restoration after interrupted Bluetooth state must be device-verified.
 10. Final accepted runtime must retire development-only probes and keep only bounded resolver/postcondition diagnostics.
