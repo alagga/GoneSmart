@@ -6,7 +6,9 @@ This roadmap describes the current direction for upcoming GoneSmart releases. Pl
 
 ### Smarter recommendation blend
 
-Continue strengthening the existing Last.fm and ListenBrainz signals and combine them with local Playlist Affinity: tracks that repeatedly occur together in the user's normal GMMP playlists can reinforce one another even when a new release is not yet represented well by public recommendation graphs. Independent provider agreement receives a bounded ranking boost while every final result still has to resolve to the local GMMP library.
+Continue strengthening Last.fm and ListenBrainz together with local Playlist Affinity: tracks that repeatedly occur together in the user's normal GMMP playlists can reinforce one another even when a new release is not yet represented well by public recommendation graphs. Independent provider agreement receives a bounded ranking boost while every final result still has to resolve to the local GMMP library.
+
+The companion app should keep **Smart** as the recommended automatic provider policy while allowing an optional **Custom** mode for users who want to enable or disable individual sources, tune their ranking weights and choose how strongly very large normal playlists are down-weighted.
 
 SoundCloud remains an interesting later provider to investigate, especially for electronic music, remixes and new releases, but it is not committed until a safe public-client credential model is practical. Spotify, YouTube and YouTube Music remain evaluated examples rather than planned integrations.
 
