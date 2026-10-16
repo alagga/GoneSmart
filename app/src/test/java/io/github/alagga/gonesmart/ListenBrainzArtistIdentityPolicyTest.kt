@@ -74,14 +74,14 @@ class ListenBrainzArtistIdentityPolicyTest {
         searchArtist: String,
         artists: List<String>
     ) = NormalizedTrackMetadata(
-        originalArtist = searchArtist,
-        originalTitle = "Seed",
+        rawArtist = searchArtist,
+        rawTitle = "Seed",
         artists = artists,
         featuredArtists = emptyList(),
         remixArtists = emptyList(),
         baseTitle = "Seed",
-        versionType = null,
         versionLabel = null,
+        versionType = null,
         searchArtist = searchArtist,
         searchTitle = "Seed",
         confidence = MetadataConfidence.HIGH
