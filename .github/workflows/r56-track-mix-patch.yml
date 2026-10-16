@@ -1,0 +1,62 @@
+name: R56 Track Mix Patch
+
+on:
+  push:
+    branches: ['tmp/r56-track-mix-native-refill']
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event.head_commit.message == 'ci add r56 verifier'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply R56 product patch
+        run: python3 scripts/r56_track_mix_patch.py
+      - name: Verify patch whitespace
+        run: git diff --check
+      - name: Verify generated forum copy
+        run: python3 scripts/generate_forum_posts.py --check
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Build release APK (unsigned smoke test)
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Commit verified product patch
+        run: |
+          git config user.name "alagga"
+          git config user.email "69852271+alagga@users.noreply.github.com"
+          git add AGENTS.md docs/GMMP_421_COMPLETION.md \
+            app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt \
+            app/src/main/java/io/github/alagga/gonesmart/GmmpQueueMutationBridge.kt \
+            app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt \
+            app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt \
+            app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt
+          git commit -m "fix(track-mix): anchor zero-pool at native refill"
+          git push origin HEAD:tmp/r56-track-mix-native-refill
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoneSmart-r56-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
