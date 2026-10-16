@@ -226,32 +226,22 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         val standard = AudioProfileRuntimePolicy.isStandardRoute(route.id)
         val overrideCount = repository.overrideCount(route.id)
-        body.addView(infoCard(
-            when {
-                standard -> "Standard GMMP profile"
-                overrideCount == 0 -> "Using Standard"
-                else -> "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}"
-            },
-            when {
-                standard -> "This is the saved normal GMMP state used when no Bluetooth device is active. Changes made in GMMP while Standard is active become the new Standard."
-                overrideCount == 0 -> "This Bluetooth output currently inherits every audio setting from Standard."
-                else -> "Only sections with Override enabled are device-specific. Everything else comes from Standard. Changes made directly in GMMP while Bluetooth is active are temporary and are discarded on the next output switch."
-            }
-        ))
-        body.addView(verticalGap(14))
+        val status = when {
+            standard -> "Standard GMMP profile"
+            overrideCount == 0 -> "Using Standard"
+            else -> "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}"
+        }
+        body.addView(textView(
+            status,
+            12f,
+            if (!standard && overrideCount > 0) COLOR_ACCENT else COLOR_MUTED,
+            true
+        ).apply { setPadding(dp(4), dp(2), dp(4), dp(8)) })
+        body.addView(verticalGap(4))
 
         when (section) {
             AudioProfileSection.EQUALIZER -> {
                 body.addView(groupCard(route.id, GoneSmartAudioProfiles.equalizerGroup))
-                body.addView(verticalGap(10))
-                body.addView(infoCard(
-                    "Preset behavior",
-                    if (standard) {
-                        "GoneSmart observes the native GMMP preset and its PRE/band shape. Bluetooth profiles can reuse a preset only after that native curve has been observed."
-                    } else {
-                        "Choosing an observed native GMMP preset loads its PRE and all ten band values. Moving PRE or any band immediately changes the label to Custom."
-                    }
-                ))
             }
 
             AudioProfileSection.EFFECTS -> {
@@ -559,7 +549,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         standardSetupHintShown = true
         Snackbar.make(
             contentHost,
-            "Disconnect Bluetooth once so GoneSmart can capture your normal GMMP audio settings as Standard.",
+            "Standard is not ready yet. Disconnect Bluetooth once, wait a moment, then reconnect.",
             Snackbar.LENGTH_LONG
         ).show()
     }
@@ -574,7 +564,8 @@ class AudioProfilesActivity : AppCompatActivity() {
             .setMessage(
                 "Standard is your normal GMMP Equalizer and Effects state with no Bluetooth output. " +
                     "Bluetooth profiles override only the sections you enable and inherit Standard everywhere else.\n\n" +
-                    "If Standard is not ready yet, disconnect Bluetooth once and wait a moment. GoneSmart will capture the current normal GMMP audio settings, after which you can reconnect and enable device-specific overrides."
+                    "If Standard is not ready yet, disconnect Bluetooth once, wait a moment, then reconnect. GoneSmart captures the normal GMMP audio settings while Bluetooth is disconnected.\n\n" +
+                    "Equalizer is one complete override. A known native preset restores PRE and all ten bands; moving PRE or a band changes the profile to Custom."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -649,18 +640,6 @@ class AudioProfilesActivity : AppCompatActivity() {
         button.setTextColor(if (selected) COLOR_TEXT else COLOR_TEXT_SECONDARY)
         button.strokeWidth = if (selected) 0 else dp(1)
         button.strokeColor = ColorStateList.valueOf(0xFF4A4751.toInt())
-    }
-
-    private fun infoCard(title: String, body: String): View {
-        val card = card()
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(16))
-        }
-        content.addView(textView(title, 16f, COLOR_TEXT, true))
-        content.addView(textView(body, 13f, COLOR_TEXT_SECONDARY).apply { setPadding(0, dp(5), 0, 0) })
-        card.addView(content)
-        return card
     }
 
     private fun card(): MaterialCardView = MaterialCardView(this).apply {
