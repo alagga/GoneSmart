@@ -275,3 +275,11 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - Seed isolation deletes source history/followers only. Native Auto-DJ must refill contiguously at `CURRENT..CURRENT+InitialSize-1`; the natural source boundary is the unique absolute `CURRENT+1`, not hardcoded position 2. No predecoder queue rebase or playback-state write is allowed.
 - Settled cleanup may normalize the exact proven fallback identities to `1..Initial Size` only after the natural CURRENT+1 guard is verified. If a large source rebuild occurred, the R51 source-batch guard must also have been verified before any destructive cleanup. Missing playback evidence fails closed without pruning/retargeting the live source queue.
 - A zero-provider Queue-context start may have no large Smart-source rebuild. In that case an intact anchored native Initial-Size queue needs only the natural CURRENT+1 playback guard; the late source-batch guard is neither expected nor required. The accepted Levels/non-empty Smart bootstrap remains separate and unchanged.
+
+
+## GMMP 4.2.1 Track Auto-DJ natural-refill invariant (R56)
+- R54 device evidence retires the inferred `dx3.c2(int)` CURRENT boundary as a zero-provider prerequisite: the state call arrived before the selected BUNT. row existed in `queue_table`.
+- Restore the 4.2.0 ownership shape: native Play -> exact selected seed isolation -> native GMMP Auto-DJ fill -> Initial Size verification.
+- The 4.2.1 predecoder port point is the natural `qr.z(count)` refill. Before its original body, isolate the uniquely pre-resolved selected row without changing its absolute playback coordinate. Let GMMP select follower Track IDs, boundedly top up to Initial Size, compact only follower queue positions before `qr.z` returns, then let GMMP's natural CURRENT+1 lookup create the decoder.
+- Queue-context Play may have no early natural refill. Once its exact native Play is accepted, the uniquely pre-resolved clicked row may use the same isolation/native-fill sequence before the later gapless preload. Ambiguous targets fail closed.
+- R50/R51 CURRENT+1/source-batch guards remain downstream protection against the late Smart-source rebuild; they are no longer seed-boundary discovery mechanisms.

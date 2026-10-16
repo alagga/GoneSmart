@@ -135,6 +135,22 @@ internal object TrackMixZeroPoolPolicy {
         return listOf(selectedTrackId) + nativeFallbackTrackIds
     }
 
+    data class NativeRefillBoundaryPlan(
+        val topUpCount: Int
+    )
+
+    fun nativeRefillBoundaryPlan(
+        initialSize: Int,
+        originalRequested: Int
+    ): NativeRefillBoundaryPlan? {
+        if (initialSize <= 1 || originalRequested < 0) return null
+        val requiredFollowers = initialSize - 1
+        if (originalRequested > requiredFollowers) return null
+        return NativeRefillBoundaryPlan(
+            topUpCount = requiredFollowers - originalRequested
+        )
+    }
+
     data class NaturalNextSourceGuardPlan(
         val nextQueuePosition: Int,
         val expectedTrackId: Long

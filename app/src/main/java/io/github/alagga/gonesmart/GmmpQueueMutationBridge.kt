@@ -507,75 +507,119 @@ internal class GmmpQueueMutationBridge(
      * queue-position rewrite is permitted.
      */
     fun isolateTrackMixZeroPoolSeed(selectedTrackId: Long): Boolean {
-        val resolved = resolve(requireDelete = true, requireStatePosition = true)
-        val state = resolved.statePosition
-            ?: error("GMMP current-position reader unavailable")
+        val resolved = resolve(requireDelete = true, requireStatePosition = false)
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
-        } ?: error("Track Mix Current queue entry unavailable")
+        } ?: error("Track Mix pinned seed queue entry unavailable")
         currentQueueEntryIdHint?.let { expected ->
             require(current.queueEntryId == expected) {
-                "Track Mix pinned Current queue entry changed"
+                "Track Mix pinned seed queue entry changed"
             }
         }
-        val entries = resolved.context.items.map { item ->
-            TrackMixPlan.NativeQueueEntry(
-                queueId = item.queueEntryId,
-                trackId = item.track.id,
-                position = item.queuePosition
-            )
+        require(current.track.id == selectedTrackId) {
+            "Track Mix pinned seed Track changed before isolation"
         }
-        val plan = TrackMixZeroPoolPolicy.seedPlan(
-            entries = entries,
-            currentEntryId = current.queueEntryId,
-            selectedTrackId = selectedTrackId
-        )
         val rowsById = resolved.rows.associateBy {
             number(resolved.queueId, it).toLong()
         }
-        val delete = resolved.delete
-            ?: error("Verified GMMP Queue DAO delete unavailable")
-        val modelClass = resolved.rows.first().javaClass
-        val staleIds = plan.pastEntryIds + plan.futureEntryIds
-        if (staleIds.isNotEmpty()) {
-            val staleRows = staleIds.map { id ->
-                rowsById[id] ?: error("Verified Track Mix row disappeared")
+        val staleRows = resolved.context.items
+            .filter { it.queueEntryId != current.queueEntryId }
+            .map { item ->
+                rowsById[item.queueEntryId]
+                    ?: error("Verified Track Mix source row disappeared")
             }
+        if (staleRows.isNotEmpty()) {
+            val delete = resolved.delete
+                ?: error("Verified GMMP Queue DAO delete unavailable")
             delete.invoke(
                 resolved.dao,
-                typedEntityArray(modelClass, staleRows)
+                typedEntityArray(resolved.rows.first().javaClass, staleRows)
             )
-        }
-
-        val readback = state.read()
-        check(readback == plan.currentPosition) {
-            "Natural Current position changed during zero-pool isolation"
         }
         val verified = GmmpQueueReader().read(
             autoDj,
-            readback,
-            plan.currentEntryId
+            currentQueueEntryIdHint = current.queueEntryId
         ) ?: error("Zero-pool seed isolation verification unavailable")
         val only = verified.items.singleOrNull()
             ?: error("Zero-pool seed isolation left extra native rows")
         check(
-            only.queueEntryId == plan.currentEntryId &&
+            only.queueEntryId == current.queueEntryId &&
                 only.track.id == selectedTrackId &&
-                only.queuePosition == plan.currentPosition &&
-                verified.currentQueuePosition == plan.currentPosition &&
-                only.state == QueueItemState.CURRENT
+                only.queuePosition == current.queuePosition
         ) {
-            "Zero-pool seed isolation did not preserve exact anchored Current"
+            "Zero-pool seed isolation did not preserve exact pinned seed"
         }
         Log.i(
             TAG,
             "TRACK MIX ZERO-POOL SEED | verified=true" +
-                " | currentEntry=" + plan.currentEntryId +
-                " | oldPosition=" + plan.currentPosition +
-                " | newPosition=" + plan.currentPosition +
+                " | currentEntry=${current.queueEntryId}" +
+                " | currentPosition=${current.queuePosition}" +
                 " | anchored=true | stateWrite=false" +
-                " | deletedPast=" + plan.pastEntryIds.size +
-                " | deletedSourceUpcoming=" + plan.futureEntryIds.size
+                " | deleted=${staleRows.size}"
+        )
+        return true
+    }
+
+    /** R56: compact only native follower positions before the qr.z caller
+     * resumes and asks for CURRENT+1. The selected absolute playback position
+     * and all Track IDs remain native-owned. */
+    fun compactTrackMixZeroPoolRefillAnchored(
+        selectedTrackId: Long,
+        expectedSize: Int
+    ): Boolean {
+        val resolved = resolve(requireDelete = false, requireStatePosition = false)
+        val current = resolved.context.items.singleOrNull {
+            it.state == QueueItemState.CURRENT
+        } ?: error("Track Mix pinned seed unavailable after native refill")
+        currentQueueEntryIdHint?.let { expected ->
+            require(current.queueEntryId == expected)
+        }
+        require(current.track.id == selectedTrackId)
+        require(resolved.context.items.size == expectedSize) {
+            "Native zero-pool refill size mismatch: ${resolved.context.items.size}/$expectedSize"
+        }
+        require(current.queuePosition > 0 &&
+            current.queuePosition <= Int.MAX_VALUE - (expectedSize - 1))
+
+        val ordered = resolved.context.items.sortedBy { it.queuePosition }
+        val desiredOrder = listOf(current) + ordered.filter {
+            it.queueEntryId != current.queueEntryId
+        }
+        val rowsById = resolved.rows.associateBy {
+            number(resolved.queueId, it).toLong()
+        }
+        val changed = arrayListOf<Any>()
+        desiredOrder.forEachIndexed { index, item ->
+            val desired = current.queuePosition + index
+            val row = rowsById[item.queueEntryId]
+                ?: error("Native refill row disappeared before compaction")
+            if (number(resolved.position, row).toInt() != desired) {
+                setInt(resolved.position, row, desired)
+                changed += row
+            }
+        }
+        if (changed.isNotEmpty()) {
+            resolved.update.invoke(resolved.dao, ArrayList(changed))
+        }
+        val verified = GmmpQueueReader().read(
+            autoDj,
+            currentQueueEntryIdHint = current.queueEntryId
+        ) ?: error("Anchored native refill verification unavailable")
+        val verifyOrdered = verified.items.sortedBy { it.queuePosition }
+        check(
+            verifyOrdered.size == expectedSize &&
+                verifyOrdered.first().queueEntryId == current.queueEntryId &&
+                verifyOrdered.first().track.id == selectedTrackId &&
+                verifyOrdered.map { it.queuePosition } ==
+                    (current.queuePosition until current.queuePosition + expectedSize).toList()
+        ) {
+            "Anchored native refill positions failed verification"
+        }
+        Log.i(
+            TAG,
+            "TRACK MIX ZERO-POOL NATIVE REFILL | verified=true" +
+                " | size=$expectedSize | changed=${changed.size}" +
+                " | currentPosition=${current.queuePosition} | stateWrite=false"
         )
         return true
     }

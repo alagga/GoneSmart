@@ -4890,6 +4890,26 @@ class GoneSmartModule : XposedModule() {
                         instance = trackDaoField.get(autoDjInstance)
                     )
                 }
+                val zeroPoolBoundary =
+                    trackMixController.prepareZeroPoolAtNativeRefill(
+                        autoDj = autoDjInstance,
+                        requestedTracks = requestedTracks
+                    )
+                if (zeroPoolBoundary != null) {
+                    val zeroPoolResult = chain.proceed()
+                    val completed = trackMixController.completeZeroPoolAtNativeRefill(
+                        autoDj = autoDjInstance,
+                        boundary = zeroPoolBoundary
+                    )
+                    if (!completed) {
+                        Log.e(
+                            "GoneSmartTrackMix",
+                            "MIX ZERO-POOL REFILL BOUNDARY | completion failed after native qr.z"
+                        )
+                    }
+                    return@intercept zeroPoolResult
+                }
+
                 val trackMixBootstrap =
                     trackMixController.bootstrapSelectionForNativeRefill(
                         autoDj = autoDjInstance,
