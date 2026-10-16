@@ -1230,6 +1230,67 @@ internal class TrackMixController(
         }
 
         var currentSnapshot = loaded
+        if (
+            TrackMixInitialFillPolicy.requiresPreparedSeedIsolation(
+                source = request.source,
+                legacyQueue = false
+            )
+        ) {
+            request.stage = "ISOLATING_PREPARED"
+            val autoDj = nativeAutoDj?.get() ?: run {
+                fail("Could not access Auto-DJ queue.", request.context)
+                return null
+            }
+            val verifiedWriter = nativePositionWriterProvider(autoDj)
+                ?: nativeTrackMixPositionWriterProvider(autoDj, selectedQueuePosition)
+                ?: run {
+                    Log.e(
+                        TAG,
+                        "MIX PREPLAY PREPARED SEED | verified Current-position writer unavailable"
+                    )
+                    fail("Could not isolate the selected queue song safely.", request.context)
+                    return null
+                }
+            val isolated = runCatching {
+                GmmpQueueMutationBridge(
+                    autoDj = autoDj,
+                    verifiedPositionWriter = verifiedWriter,
+                    currentQueueEntryIdHint = selectedEntryId
+                ).isolateTrackMixSeed(selectedId)
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "MIX PREPLAY PREPARED SEED | queue-context seed isolation failed",
+                    it
+                )
+            }.getOrDefault(false)
+            if (!isolated) {
+                fail("Could not isolate the selected queue song safely.", request.context)
+                return null
+            }
+            currentSnapshot = queueSnapshot(selectedEntryId)?.takeIf {
+                it.currentId == selectedId &&
+                    it.currentEntryId == selectedEntryId &&
+                    it.currentQueuePosition == 1 &&
+                    it.ids.size == 1
+            } ?: run {
+                Log.e(
+                    TAG,
+                    "MIX PREPLAY PREPARED SEED | isolated seed postcondition failed"
+                )
+                fail("Could not verify the isolated queue song.", request.context)
+                return null
+            }
+            request.provisionalCurrentQueuePosition = 1
+            request.stage = "WAIT_PLAY"
+            Log.i(
+                TAG,
+                "MIX PREPLAY PREPARED SEED | isolated=true | source=queue-context | " +
+                    "seed=$selectedId | entry=$selectedEntryId | " +
+                    "oldCurrentPosition=$selectedQueuePosition | currentPosition=1 | " +
+                    "removed=${(loaded.ids.size - 1).coerceAtLeast(0)}"
+            )
+        }
         var availableUpcoming =
             (currentSnapshot.ids.size - currentSnapshot.currentIndex - 1).coerceAtLeast(0)
         if (availableUpcoming < requiredUpcoming) {

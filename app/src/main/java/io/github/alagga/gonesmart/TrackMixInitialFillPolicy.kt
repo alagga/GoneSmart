@@ -34,6 +34,16 @@ internal object TrackMixInitialFillPolicy {
         return !legacyQueue
     }
 
+    fun requiresPreparedSeedIsolation(
+        source: String,
+        legacyQueue: Boolean
+    ): Boolean {
+        // R63: a Queue-context Play moves Current inside the existing queue.
+        // Prepared Smart bootstrap must first restore the 4.2.0 one-seed
+        // position-1 invariant or old followers survive ahead of the new pool.
+        return !legacyQueue && source == "menu_gm_context_queue"
+    }
+
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =
         (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0)).coerceAtLeast(0)
 
