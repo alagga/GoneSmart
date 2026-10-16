@@ -5,58 +5,92 @@ Branch: `feature/auto-dj-providers`
 
 ## Goal
 
-Improve Smart Auto-DJ coverage for very recent releases, electronic music and other tracks that are missing or weakly represented in the current recording-level similarity graphs.
+Improve Smart Auto-DJ coverage for very recent releases, electronic music and other tracks that are missing or weakly represented in public recording-level similarity graphs, while also making better use of the user's own GMMP library structure.
 
-GoneSmart must keep the existing architectural boundary:
+GoneSmart keeps the existing architectural boundary:
 
 - external services only provide recommendation signals;
 - the final playable track must exist in the local GoneMAD Music Player library;
 - provider work must not replace GMMP's native Auto-DJ queue/refill mechanics;
-- network work stays off the UI thread and must fail soft;
-- a weak or unavailable provider must not prevent other providers from contributing.
+- network work stays off the UI thread and fails soft;
+- a weak or unavailable provider must not prevent other providers from contributing;
+- provider priority is expressed through ranking weights rather than artificial request ordering.
 
 ## Current providers
 
+### Local Playlist Affinity
+
+Normal GMMP playlists are a first-class local recommendation source. GoneSmart reads the playlist catalogue and supported M3U/M3U8 membership without modifying GMMP's database or playlist files.
+
+For a seed track, other local-library tracks that occur in the same normal playlists become candidates. Multiple independent shared playlists strengthen the relationship. Playlist membership and the local path index are cached so unchanged playlists do not need to be reparsed on every refill.
+
+Smart Playlists are deliberately excluded today. Rule-based membership can be much broader than a hand-curated normal playlist, so a future opt-in may use them only as a substantially weaker signal.
+
+Playlist-size weighting is configurable:
+
+- **Off** — all normal playlists contribute equally regardless of size;
+- **Balanced** — the default; focused playlists count more while large playlists remain useful;
+- **Strong** — large catch-all playlists are reduced more aggressively.
+
 ### ListenBrainz
 
-Current production source. GoneSmart resolves recording identities and requests similar recordings.
+GoneSmart resolves recording identities and requests similar recordings first. If that recording graph is not productive, it can use the official ListenBrainz Labs `similar-artists` data as a lower-confidence signal and expand those artists only into tracks already present in the local GMMP library.
 
-Additional official ListenBrainz Labs datasets are promising for future fallback layers:
+Sparse/new releases sometimes have no recording match good enough to use as a track identity even though ListenBrainz recording search already returns a trustworthy artist-credit MBID. GoneSmart can now recover that artist identity conservatively and use it only for the artist fallback; the rejected recording row itself never becomes a recommendation.
 
-- `similar-artists`;
-- `mlhd-similar-recordings`;
-- `tag-similarity`;
-- metadata/MBID mappings for Spotify, Apple Music and SoundCloud IDs.
-
-These are preferable to scraping or private APIs because they keep the integration open and service-specific credentials minimal.
+Additional official ListenBrainz Labs datasets remain interesting for future experiments, including `mlhd-similar-recordings`, tag similarity and metadata/MBID mappings.
 
 ### Last.fm
 
-Current production source. Recording-level `track.getSimilar` remains the preferred Last.fm signal.
+Recording-level `track.getSimilar` remains the preferred Last.fm signal. GoneSmart exhausts its bounded artist/title identity variants before allowing the lower-confidence artist fallback:
 
-The first experiment on this branch adds a bounded fallback for seeds where recording-level similarity is unavailable:
+1. `artist.getSimilar` for related artists;
+2. `artist.getTopTracks` for a bounded number of tracks per related artist;
+3. a score penalty and rank decay so direct recording similarity remains stronger;
+4. normal local-library matching, rating, duplicate and quality gates afterwards.
 
-1. `artist.getSimilar` for at most three related artists;
-2. `artist.getTopTracks` for at most eight tracks per related artist;
-3. a score penalty plus rank decay so direct recording-level similarity remains stronger;
-4. local-library matching and all existing GoneSmart ranking still happen afterwards.
+The existing application API key is sufficient; no Last.fm user login is required.
 
-Both Last.fm methods are official read APIs and require the existing application API key, but no Last.fm user login.
+## Provider execution and weighting
 
-### Integration caveat for the first prototype
+GoneSmart keeps one deterministic recommendation-pool fill per queue session, but independent network providers run in parallel inside that fill. ListenBrainz no longer has to finish before Last.fm can start (or vice versa).
 
-`GoneSmartModule.collectLastFmContributions()` deliberately tries multiple artist/title query variants. A fallback must not prematurely terminate that identity-resolution cascade when a later query variant could still resolve the real recording. The initial client-side prototype is therefore not considered final until this interaction has been verified and, if necessary, the fallback trigger is moved to the provider orchestration layer after all recording identities have been exhausted.
+Each contribution carries a provider weight before aggregation. Existing provider+seed deduplication still runs first, and independent providers confirming the same logical track receive only a small bounded corroboration bonus.
+
+The companion app exposes two recommendation modes:
+
+### Smart — default
+
+Smart is the recommended mode and lets GoneSmart own conservative provider defaults. The current policy is:
+
+- Local Playlists: `×1.00`;
+- ListenBrainz: `×1.00`;
+- Last.fm: `×0.95`;
+- playlist-size weighting: **Balanced**;
+- all stable providers enabled.
+
+Because these values belong to the Smart policy rather than user-stored tuning, GoneSmart can refine the defaults in a future update without requiring existing users to retune their settings.
+
+### Custom
+
+Custom mode lets the user:
+
+- enable or disable Local Playlists, ListenBrainz and Last.fm independently;
+- set each enabled provider's ranking weight from `×0.25` to `×1.50`;
+- choose Off, Balanced or Strong playlist-size weighting.
+
+Request order is intentionally not configurable. Network providers run in parallel; weights express preference without adding avoidable latency.
+
+Provider-related setting changes apply live and invalidate the previous recommendation pool so the next refill follows the new policy.
 
 ## Evaluated additional sources
 
 | Source | Recommendation value | Authentication / credentials | Main issue | Recommendation |
 | --- | --- | --- | --- | --- |
-| ListenBrainz artist/tag datasets | High | No user login for Labs datasets | Need an artist-level candidate path and robust score normalization | **High priority** |
-| Last.fm artist fallback | High | Existing API key; no user login | Must run only after track identity attempts are exhausted | **Implement first** |
 | Last.fm user taste | Medium/High personalization | Public username is enough for several read methods | Optional profile setting and taste blending needed | **Good later personalization option** |
 | Spotify official Web API | Potentially high catalogue/taste value | OAuth + developer application | Recommendations/Related Artists are unavailable to new/development use cases; 2026 Development Mode remains constrained | **Do not make a default provider** |
 | Spotify private/WebPlayer APIs | Technically possible | Spotify session/token | Undocumented/private surface, brittle; SpotUI implementation cannot simply be copied into this MIT project | **Do not ship as normal provider** |
-| YouTube Data API | Good catalogue search, poor recommendation primitive | API key/OAuth depending on operation | Official related-video recommendation parameter was removed; search is not a similarity engine | **Not useful as primary recommender** |
+| YouTube Data API | Good catalogue/search and freshness value | API key/OAuth depending on operation | Official related-video recommendation parameter was removed; playlist co-occurrence requires expensive discovery/search quota | **Not a primary recommender** |
 | YouTube Music / InnerTube | Potentially very high | Can work anonymously or with account context depending on method | Undocumented YouTube API; current YouTube developer policy forbids undocumented API use/reverse engineering | **Do not ship as normal provider** |
 | SoundCloud | High for electronic/independent music | OAuth; application credentials | Official related-tracks endpoint exists, but a distributed Android client cannot safely keep an app client secret | **Revisit with a safe credential model** |
 | TasteDive | Medium, artist/entity level | API key | Mostly artist/entity similarity rather than track-level recommendations; request limits | **Possible lightweight artist signal** |
@@ -68,7 +102,7 @@ Both Last.fm methods are official read APIs and require the existing application
 
 SpotUI is useful as an architectural reference, but not as code to copy:
 
-- its current recommender builds a composite candidate set from Spotify data instead of relying on the deprecated Spotify Recommendations endpoint;
+- its recommender builds a composite candidate set from Spotify data instead of relying on the deprecated Spotify Recommendations endpoint;
 - some Spotify access in SpotUI uses WebPlayer/private GraphQL surfaces rather than a stable public recommendation API;
 - SpotUI is GPL-3.0 while GoneSmart is MIT, so GoneSmart should independently implement ideas rather than copying GPL implementation code.
 
@@ -76,52 +110,39 @@ A future Spotify experiment should therefore be explicitly optional and isolated
 
 ## Login strategy
 
-Do **not** add Spotify or YouTube Music login as the first step.
+Do **not** add Spotify or YouTube Music login as a default dependency.
 
-The lowest-friction personalization paths are:
+Lower-friction personalization paths remain:
 
 1. optional Last.fm username, because public read endpoints such as recent/top artists do not require a user session;
-2. optional ListenBrainz username/profile integration if user-specific recommendations are useful;
-3. only later consider OAuth providers where the recommendation quality clearly justifies the token/credential complexity.
+2. optional ListenBrainz username/profile integration if user-specific recommendations prove useful;
+3. only later consider OAuth providers where measured recommendation quality clearly justifies token/credential complexity.
 
-Provider login must always be optional: Smart Auto-DJ must remain functional with the non-personalized providers.
+Provider login must always remain optional: Smart Auto-DJ must work with the non-personalized providers and local signals.
 
-## Proposed implementation order
+## Implemented blend on this branch
 
-### Phase 1 — coverage without new accounts
+The branch now implements the first local/provider quality pass as one coordinated pipeline:
 
-- finish the Last.fm track-to-artist fallback without short-circuiting normal query variants;
-- add diagnostics that distinguish `track` vs `artist-fallback` contributions without noisy per-result logging;
-- add unit tests for fallback score normalization, request budget and deduplication;
-- evaluate ListenBrainz `similar-artists` as the second artist-level signal.
+- Last.fm direct recording evidence before artist fallback;
+- ListenBrainz direct recording evidence before similar-artist fallback, including conservative artist-identity recovery for sparse recording matches;
+- Local Playlist Affinity with cached read-only normal-playlist membership;
+- configurable playlist-size weighting;
+- Smart and Custom provider policies in the companion app;
+- parallel ListenBrainz/Last.fm execution;
+- configurable provider enablement and ranking weights;
+- bounded cross-provider corroboration;
+- the same local matching, preference, rating, duplicate and minimum-quality gates for every source;
+- local-only recommendation preparation while offline;
+- concise provider and latency diagnostics.
 
-### Phase 2 — provider abstraction
+### Deferred sources
 
-Introduce a small provider contract instead of growing provider-specific logic inside `GoneSmartModule`. The contract should expose at least:
-
-- stable provider ID;
-- track-similarity and/or artist-similarity capability;
-- authentication requirement;
-- request budget per seed;
-- normalized confidence/similarity output;
-- provider availability/failure state;
-- optional experimental flag.
-
-The aggregator and local-library matcher should continue to own cross-provider deduplication and ranking.
-
-### Phase 3 — optional personalization
-
-- Last.fm username taste signals;
-- ListenBrainz user recommendation signals;
-- measure whether personalization actually improves local-library hit rate before adding heavier OAuth integrations.
-
-### Phase 4 — optional external providers
-
-Only after the above is measurable, reconsider SoundCloud and Spotify under their then-current API/terms constraints.
+SoundCloud stays on the later-evaluation list because its related-track signal is attractive for electronic/new music, but a public GoneSmart build must not embed a shared confidential client secret. Spotify, YouTube and YouTube Music remain evaluated but unaccepted directions rather than committed providers.
 
 ## Quality metrics
 
-Before merging a new provider into `main`, compare it against the current two-provider baseline using a seed set containing:
+Before this work is merged into `main`, compare the blend against the previous provider baseline with seeds containing:
 
 - newly released tracks;
 - progressive house / festival EDM;
@@ -132,30 +153,11 @@ Before merging a new provider into `main`, compare it against the current two-pr
 
 For each seed record:
 
-- whether the provider resolved the seed;
-- raw recommendation count;
+- whether each enabled provider resolved the seed;
+- raw contribution count;
 - local-library matched count;
 - candidates surviving quality gates;
-- provider latency/failure;
+- provider-round and playlist-affinity latency;
 - final selected track and contributing providers.
 
-The target is not simply more remote recommendations. The target is a higher **usable local candidate hit rate** without lowering recommendation quality or destabilizing native Auto-DJ behavior.
-
-
-## Implemented provider blend on this branch
-
-The branch now implements the first six provider/quality steps as one pipeline rather than isolated experiments:
-
-- Last.fm exhausts recording identity/title variants and direct `track.getSimilar` evidence before its bounded similar-artist/top-track fallback is allowed to contribute.
-- ListenBrainz keeps recording-level similarity first, then uses the official `similar-artists` Labs dataset as a lower-confidence artist signal that is expanded only into tracks already present in the local GMMP library.
-- Normal GMMP playlists contribute through `LOCAL_PLAYLIST`. GoneSmart enumerates the already indexed `playlist_file_table` read-only, parses only supported M3U/M3U8 membership, and never mutates playlist files or database rows for recommendation purposes.
-- Playlist membership is cached by canonical playlist path, modification time, file length and local-library fingerprint. Unchanged playlists are not reparsed on every refill.
-- Playlist affinity uses saturating co-occurrence evidence. Small/focused playlists carry more weight than very large catch-all playlists, and the same pair appearing in multiple independent playlists becomes stronger evidence.
-- Smart Playlists are deliberately excluded from affinity today. A future opt-in may add them only as a substantially weaker signal because rule-based membership can be very broad.
-- The aggregator deduplicates provider+seed evidence as before, then applies a small bounded bonus when independent providers agree on the same logical track. Local Playlist Affinity still passes the same local matching, rating, duplicate and minimum-quality gates as network recommendations.
-- Provider metrics now summarize contribution counts, multi-provider corroboration and playlist cache/membership/seed-hit counts without per-result logging spam.
-- Local Playlist Affinity remains usable without network; network-only providers are skipped while offline before any HTTP request is attempted.
-
-### Deferred sources
-
-SoundCloud stays on the later-evaluation list because its related-track signal is attractive for electronic/new music, but a public GoneSmart build must not embed a shared confidential client secret. Spotify, YouTube and YouTube Music remain evaluated but unaccepted directions rather than committed providers.
+The target is not simply more remote recommendations. The target is a higher **usable local candidate hit rate** with lower latency and without destabilizing native GMMP Auto-DJ behavior.
