@@ -31,7 +31,27 @@ class GoneSmartAudioModule : XposedModule() {
         private const val CONTEXT_RETRY_MS = 250L
         private const val CONTEXT_MAX_ATTEMPTS = 40
         private const val PREF_PROBE_WINDOW_MS = 10 * 60 * 1000L
-        private const val PREF_PROBE_MAX_EVENTS = 400
+        private const val PREF_PROBE_MAX_EVENTS = 200
+
+        private val AUDIO_PREFERENCE_KEYS = setOf(
+            "player_eqEnabled",
+            "dspSettings_activePreset",
+            "dspSettings_balanceEnabled",
+            "dspSettings_balance",
+            "player_forceMono",
+            "dspSettings_limiterEnabled",
+            "dspSettings_attack",
+            "dspSettings_release",
+            "dspSettings_bassBoostEnabled",
+            "dspSettings_bassBoostStrength",
+            "player_tempoEnabled",
+            "player_tempo",
+            "player_autoPitchCorrection",
+            "dspSettings_virtualizerEnabled",
+            "dspSettings_virtualizerStrength",
+            "dspSettings_loudnessEnabled",
+            "dspSettings_loudnessGain"
+        )
     }
 
     private var audioPreferences: SharedPreferences? = null
@@ -65,6 +85,7 @@ class GoneSmartAudioModule : XposedModule() {
 
         if (BuildConfig.DEBUG) {
             logNativeDspInventory(param.classLoader)
+            installEqualizerCallProbe(param.classLoader)
             installPreferenceProbe()
         }
     }
@@ -170,11 +191,50 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     /**
-     * Passive debug probe: records native SharedPreferences writes while the
-     * maintainer changes EQ/effect controls in GMMP. It does not alter args or
-     * results. Primitive values and a short non-framework call chain are
-     * included so one combined device run can map both persistence keys and
-     * the native writer boundary; String payloads remain redacted.
+     * Passive EQ probe. The first device log proved r61 as the object saving
+     * current EQ state, but not the semantic meaning of its compact methods.
+     * Observe only the small set of mutation-shaped methods while the user
+     * changes PRE/bands/presets; never invoke them for discovery.
+     */
+    private fun installEqualizerCallProbe(classLoader: ClassLoader) {
+        val eqClass = runCatching { classLoader.loadClass("r61") }.getOrElse {
+            Log.w(PROBE_TAG, "EQ call probe unavailable", it)
+            return
+        }
+
+        eqClass.declaredMethods
+            .filter { method ->
+                when (method.name) {
+                    "z" -> method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType, Double::class.javaPrimitiveType))
+                    "r" -> method.parameterTypes.contentEquals(arrayOf(Double::class.javaPrimitiveType))
+                    "d" -> method.parameterTypes.contentEquals(arrayOf(Boolean::class.javaPrimitiveType))
+                    "reset", "t" -> method.parameterCount == 0
+                    else -> false
+                }
+            }
+            .forEach { method ->
+                method.isAccessible = true
+                runCatching {
+                    hook(method).intercept { chain ->
+                        val args = method.parameterTypes.indices.joinToString(",") { index ->
+                            runCatching { chain.getArg(index)?.toString() }.getOrNull() ?: "null"
+                        }
+                        Log.i(
+                            PROBE_TAG,
+                            "EQ CALL | method=${method.name}(${method.parameterTypes.joinToString(",") { it.simpleName }})" +
+                                " | args=$args | caller=${preferenceProbeCallSite()}"
+                        )
+                        chain.proceed()
+                    }
+                }.onFailure {
+                    Log.w(PROBE_TAG, "Could not install EQ probe for ${method.name}", it)
+                }
+            }
+    }
+
+    /**
+     * Passive debug probe for already-mapped audio preference identities only.
+     * It no longer records unrelated app/WebView/analytics preferences.
      */
     private fun installPreferenceProbe() {
         val editorClass = runCatching {
@@ -203,7 +263,7 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     private fun maybeLogPreferenceMutation(methodName: String, key: String?, value: Any?) {
-        if (key.isNullOrBlank()) return
+        if (key.isNullOrBlank() || key !in AUDIO_PREFERENCE_KEYS) return
         if (SystemClock.elapsedRealtime() - preferenceProbeStartedAt > PREF_PROBE_WINDOW_MS) return
         if (preferenceProbeEvents.get() >= PREF_PROBE_MAX_EVENTS) return
 
@@ -212,9 +272,6 @@ class GoneSmartAudioModule : XposedModule() {
             is Boolean, is Int, is Long, is Float, is Double -> value.toString()
             else -> "<${value.javaClass.simpleName}>"
         }
-        // Include the value hash only in the in-memory deduplication key. This
-        // lets repeated writes to the same String-backed DSP state appear as
-        // separate probe events without exposing the String itself in Logcat.
         val fingerprint = "$methodName|$key|${value?.javaClass?.name ?: "none"}|${value?.hashCode() ?: 0}"
         if (!preferenceProbeSeen.add(fingerprint)) return
         if (preferenceProbeEvents.incrementAndGet() > PREF_PROBE_MAX_EVENTS) return
