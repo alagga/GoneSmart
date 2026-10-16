@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -16,9 +17,12 @@ import android.widget.Space
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.content.res.AppCompatResources
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.slider.Slider
+import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.switchmaterial.SwitchMaterial
 
 class AudioProfilesActivity : AppCompatActivity() {
@@ -46,6 +50,9 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private var equalizerPresetButton: MaterialButton? = null
     private var routeObserver: AudioRouteObserver? = null
+    private var contentScrollView: ScrollView? = null
+    private var renderedContentKey: String? = null
+    private var standardSetupHintShown = false
     private var selectedRouteId = GoneSmartAudioProfiles.LOCAL_ROUTE_ID
     private var section = AudioProfileSection.EQUALIZER
 
@@ -112,31 +119,33 @@ class AudioProfilesActivity : AppCompatActivity() {
             )
         }
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(22), dp(10))
+        val toolbar = MaterialToolbar(this).apply {
+            setBackgroundColor(COLOR_BG)
+            title = "Audio profiles"
+            setTitleTextColor(COLOR_TEXT)
+            navigationIcon = AppCompatResources.getDrawable(this@AudioProfilesActivity, R.drawable.ic_arrow_back_24)
+            navigationIcon?.setTint(COLOR_TEXT)
+            navigationContentDescription = "Back"
+            setNavigationOnClickListener { finish() }
+            val help = menu.add("Help").apply {
+                icon = AppCompatResources.getDrawable(this@AudioProfilesActivity, R.drawable.ic_info_outline_24)
+                icon?.setTint(COLOR_TEXT)
+                setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            }
+            setOnMenuItemClickListener { item ->
+                if (item === help) {
+                    showHelpDialog()
+                    true
+                } else {
+                    false
+                }
+            }
         }
-        val back = MaterialButton(this).apply {
-            text = "‹"
-            textSize = 34f
-            minWidth = 0
-            minimumWidth = 0
-            insetTop = 0
-            insetBottom = 0
-            backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-            setTextColor(COLOR_TEXT)
-            setOnClickListener { finish() }
-        }
-        header.addView(back, LinearLayout.LayoutParams(dp(54), dp(54)))
-        header.addView(textView("Audio profiles", 28f, COLOR_TEXT, true).apply {
-            setPadding(dp(4), 0, 0, 0)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(header)
+        root.addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)))
 
         val selectorArea = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(6), dp(24), dp(12))
+            setPadding(dp(24), dp(8), dp(24), dp(12))
         }
         selectorArea.addView(textView("OUTPUT", 13f, COLOR_ACCENT, true).apply {
             letterSpacing = 0.08f
@@ -155,11 +164,6 @@ class AudioProfilesActivity : AppCompatActivity() {
             setOnClickListener { showRouteChooser() }
         }
         selectorArea.addView(routeButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)))
-        selectorArea.addView(textView(
-            "Standard is the normal GMMP state with no Bluetooth output. Bluetooth profiles temporarily override complete GMMP sections and fall back to Standard everywhere else.",
-            13f,
-            COLOR_TEXT_SECONDARY
-        ).apply { setPadding(dp(4), dp(10), dp(4), 0) })
         root.addView(selectorArea)
 
         val tabs = LinearLayout(this).apply {
@@ -207,9 +211,12 @@ class AudioProfilesActivity : AppCompatActivity() {
         styleTab(equalizerTab, section == AudioProfileSection.EQUALIZER)
         styleTab(effectsTab, section == AudioProfileSection.EFFECTS)
         renderContent(selected)
+        maybeShowStandardSetupHint(selected)
     }
 
     private fun renderContent(route: AudioRouteProfile) {
+        val contentKey = "${route.id}:${section.name}"
+        val restoreScrollY = if (renderedContentKey == contentKey) contentScrollView?.scrollY ?: 0 else 0
         equalizerPresetButton = null
         contentHost.removeAllViews()
         val body = LinearLayout(this).apply {
@@ -259,17 +266,17 @@ class AudioProfilesActivity : AppCompatActivity() {
             body.addView(verticalGap(18))
             body.addView(resetButton(route))
         }
-        body.addView(verticalGap(12))
-        body.addView(textView(
-            "Bluetooth tuning is temporary GMMP state. On an output change, the final runtime path will rebuild the target from Standard plus that output's saved overrides, so temporary GMMP edits cannot leak into another profile.",
-            12f,
-            COLOR_MUTED
-        ).apply { setPadding(dp(4), 0, dp(4), 0) })
 
-        contentHost.addView(ScrollView(this).apply {
+        val scrollView = ScrollView(this).apply {
             clipToPadding = false
             addView(body)
-        })
+        }
+        contentScrollView = scrollView
+        renderedContentKey = contentKey
+        contentHost.addView(scrollView)
+        if (restoreScrollY > 0) {
+            scrollView.post { scrollView.scrollTo(0, restoreScrollY) }
+        }
     }
 
     private fun groupCard(routeId: String, group: AudioProfileGroup): View {
@@ -511,10 +518,10 @@ class AudioProfilesActivity : AppCompatActivity() {
             .setItems(items) { _, which ->
                 val selected = items[which]
                 if (field.id == "eq.preset") {
-                    if (repository.applyEqualizerPreset(routeId, selected)) {
-                        refreshAll()
-                    } else {
+                    if (!repository.isNativePresetAvailable(selected)) {
                         showPresetNotObservedDialog(selected)
+                    } else if (repository.applyEqualizerPreset(routeId, selected)) {
+                        refreshAll()
                     }
                 } else {
                     repository.setValue(routeId, field.id, selected)
@@ -527,10 +534,10 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun showPresetNotObservedDialog(preset: String) {
         AlertDialog.Builder(this)
-            .setTitle("Preset values not observed yet")
+            .setTitle("Preset curve not learned yet")
             .setMessage(
-                "GoneSmart knows the preset name '$preset', but it has not yet seen GMMP load that preset's PRE and band values. " +
-                    "The current sliders are left unchanged instead of guessing the curve."
+                "GoneSmart knows the preset name '$preset', but it has not yet observed GMMP's native PRE and band values for it. " +
+                    "Open this preset once in GMMP's Equalizer while GoneSmart is running. Nothing is changed here until the real native curve is known."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -540,8 +547,34 @@ class AudioProfilesActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Standard values not ready yet")
             .setMessage(
-                "GoneSmart has not yet observed every Standard GMMP value needed for ${group.title}. " +
-                    "The override was not enabled, so no guessed values can replace your real settings."
+                "GoneSmart has not yet captured every Standard GMMP value needed for ${group.title}. " +
+                    "Disconnect Bluetooth once and wait a moment so the normal GMMP settings can be captured, then reconnect and enable the override again."
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun maybeShowStandardSetupHint(route: AudioRouteProfile) {
+        if (standardSetupHintShown || !route.bluetooth || !route.active || isStandardReady()) return
+        standardSetupHintShown = true
+        Snackbar.make(
+            contentHost,
+            "Disconnect Bluetooth once so GoneSmart can capture your normal GMMP audio settings as Standard.",
+            Snackbar.LENGTH_LONG
+        ).show()
+    }
+
+    private fun isStandardReady(): Boolean = GoneSmartAudioProfiles.allFields.all { field ->
+        repository.standardValue(field.id)?.let(field::normalize) != null
+    }
+
+    private fun showHelpDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Audio profiles")
+            .setMessage(
+                "Standard is your normal GMMP Equalizer and Effects state with no Bluetooth output. " +
+                    "Bluetooth profiles override only the sections you enable and inherit Standard everywhere else.\n\n" +
+                    "If Standard is not ready yet, disconnect Bluetooth once and wait a moment. GoneSmart will capture the current normal GMMP audio settings, after which you can reconnect and enable device-specific overrides."
             )
             .setPositiveButton("OK", null)
             .show()
