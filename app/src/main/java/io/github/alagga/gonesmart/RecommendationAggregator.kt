@@ -139,7 +139,12 @@ class RecommendationAggregator(
                         mappedContributions
                             .sumOf {
                                 it.weightedScore
-                            }
+                            } * RecommendationScoring.corroborationMultiplier(
+                                mappedContributions
+                                    .map { it.provider }
+                                    .distinct()
+                                    .size
+                            )
                 )
             }
             .sortedByDescending {

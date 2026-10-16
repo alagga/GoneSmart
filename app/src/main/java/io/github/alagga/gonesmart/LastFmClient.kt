@@ -28,7 +28,10 @@ private data class LastFmSimilarArtist(
     val match: Double
 )
 
-class LastFmClient(private val apiKey: String) {
+class LastFmClient(private val apiKey: String) : RecommendationProviderSource {
+    override val descriptor =
+        RecommendationProviderRegistry.require(RecommendationProvider.LASTFM)
+
 
     companion object {
         private const val API_URL = "https://ws.audioscrobbler.com/2.0/"
@@ -82,31 +85,34 @@ class LastFmClient(private val apiKey: String) {
         )
     }
 
-    /**
-     * Track-level similarity stays authoritative. Only an empty/missing
-     * recording graph expands through similar artists and their top tracks.
-     */
-    fun getSimilarTracks(
+    /** Track-level similarity only; no artist fallback is triggered here. */
+    fun getSimilarTracksDirect(
         identity: LastFmTrackIdentity,
         limit: Int = 50
     ): List<LastFmSimilarTrack> {
         ensureConfigured()
         val normalizedLimit = limit.coerceAtLeast(1)
-
-        val direct = try {
+        return try {
             readSimilarTracks(
                 if (!identity.mbid.isNullOrBlank()) {
                     buildSimilarTracksUrl(identity.mbid, normalizedLimit)
                 } else {
                     buildSimilarTracksUrl(identity.artistName, identity.trackName, normalizedLimit)
                 }
-            )
+            ).take(normalizedLimit)
         } catch (error: LastFmApiException) {
             if (error.isMissingResource()) emptyList() else throw error
         }
+    }
 
-        return direct.takeIf(List<*>::isNotEmpty)?.take(normalizedLimit)
-            ?: getArtistFallbackTracks(identity.artistName, normalizedLimit)
+    /** Compatibility helper; provider orchestration should prefer direct then fallback. */
+    fun getSimilarTracks(
+        identity: LastFmTrackIdentity,
+        limit: Int = 50
+    ): List<LastFmSimilarTrack> {
+        val direct = getSimilarTracksDirect(identity, limit)
+        return direct.takeIf(List<*>::isNotEmpty)
+            ?: getArtistFallbackTracks(identity.artistName, limit.coerceAtLeast(1))
     }
 
     fun getSimilarTracks(
@@ -199,7 +205,7 @@ class LastFmClient(private val apiKey: String) {
         ) 2 else 0
     }
 
-    private fun getArtistFallbackTracks(
+    fun getArtistFallbackTracks(
         artist: String,
         limit: Int
     ): List<LastFmSimilarTrack> {

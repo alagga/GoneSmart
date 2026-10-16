@@ -140,3 +140,22 @@ For each seed record:
 - final selected track and contributing providers.
 
 The target is not simply more remote recommendations. The target is a higher **usable local candidate hit rate** without lowering recommendation quality or destabilizing native Auto-DJ behavior.
+
+
+## Implemented provider blend on this branch
+
+The branch now implements the first six provider/quality steps as one pipeline rather than isolated experiments:
+
+- Last.fm exhausts recording identity/title variants and direct `track.getSimilar` evidence before its bounded similar-artist/top-track fallback is allowed to contribute.
+- ListenBrainz keeps recording-level similarity first, then uses the official `similar-artists` Labs dataset as a lower-confidence artist signal that is expanded only into tracks already present in the local GMMP library.
+- Normal GMMP playlists contribute through `LOCAL_PLAYLIST`. GoneSmart enumerates the already indexed `playlist_file_table` read-only, parses only supported M3U/M3U8 membership, and never mutates playlist files or database rows for recommendation purposes.
+- Playlist membership is cached by canonical playlist path, modification time, file length and local-library fingerprint. Unchanged playlists are not reparsed on every refill.
+- Playlist affinity uses saturating co-occurrence evidence. Small/focused playlists carry more weight than very large catch-all playlists, and the same pair appearing in multiple independent playlists becomes stronger evidence.
+- Smart Playlists are deliberately excluded from affinity today. A future opt-in may add them only as a substantially weaker signal because rule-based membership can be very broad.
+- The aggregator deduplicates provider+seed evidence as before, then applies a small bounded bonus when independent providers agree on the same logical track. Local Playlist Affinity still passes the same local matching, rating, duplicate and minimum-quality gates as network recommendations.
+- Provider metrics now summarize contribution counts, multi-provider corroboration and playlist cache/membership/seed-hit counts without per-result logging spam.
+- Local Playlist Affinity remains usable without network; network-only providers are skipped while offline before any HTTP request is attempted.
+
+### Deferred sources
+
+SoundCloud stays on the later-evaluation list because its related-track signal is attractive for electronic/new music, but a public GoneSmart build must not embed a shared confidential client secret. Spotify, YouTube and YouTube Music remain evaluated but unaccepted directions rather than committed providers.
