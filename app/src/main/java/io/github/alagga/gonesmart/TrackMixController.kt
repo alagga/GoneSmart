@@ -524,6 +524,70 @@ internal class TrackMixController(
                 observedAt = SystemClock.elapsedRealtime()
             )
         }
+
+        // R64: the first natural MusicService CURRENT+1 command can beat the
+        // worker that normally records provisionalCurrentQueuePosition. Prove
+        // the already-position-1 selected Current synchronously from the
+        // verified writer + exact unique queue row so the existing R62 guard
+        // can still run before chain.proceed(). Never infer/rebase a wider
+        // absolute coordinate here because the R62 fill restores position 1.
+        if (request.provisionalCurrentQueuePosition == null &&
+            request.nextSourceBoundary == null &&
+            !request.nextSourceBoundaryAmbiguous
+        ) {
+            val autoDj = nativeAutoDj?.get()
+            val target = request.prePlayTarget
+            if (autoDj != null && target != null) {
+                val located = runCatching {
+                    queueReader.locateUniqueTrackRow(autoDj, target.id)
+                }.getOrNull()
+                if (located != null) {
+                    val writer = nativePositionWriterProvider(autoDj)
+                        ?: nativeTrackMixPositionWriterProvider(
+                            autoDj,
+                            located.queuePosition
+                        )
+                    val readback = writer?.let {
+                        runCatching { it.read() }.getOrNull()
+                    }
+                    val context = readback?.let { position ->
+                        runCatching {
+                            queueReader.read(
+                                autoDj,
+                                position,
+                                located.queueEntryId
+                            )
+                        }.getOrNull()
+                    }
+                    val current = context?.currentItem
+                    val synchronousPosition =
+                        TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                            selectedTrackId = target.id,
+                            currentTrackId = current?.track?.id,
+                            selectedQueuePosition = located.queuePosition,
+                            currentQueuePosition = context?.currentQueuePosition,
+                            writerReadback = readback,
+                            observedArgument = value
+                        )
+                    if (synchronousPosition != null &&
+                        current?.queueEntryId == located.queueEntryId
+                    ) {
+                        request.verifiedCurrentQueueEntryId = located.queueEntryId
+                        request.provisionalCurrentQueuePosition = synchronousPosition
+                        Log.i(
+                            TAG,
+                            "MIX NEXT SOURCE CURRENT PROOF | verified=true" +
+                                " | seed=${target.id}" +
+                                " | entry=${located.queueEntryId}" +
+                                " | currentPosition=$synchronousPosition" +
+                                " | observedArg=$value" +
+                                " | evidence=writer+exact-row-preworker"
+                        )
+                    }
+                }
+            }
+        }
+
         tryPromoteNextSourceBoundary(request)
         guardZeroPoolNaturalNextSource(
             request = request,

@@ -43,6 +43,51 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `preworker current plus one proof accepts only exact selected position one`() {
+        assertEquals(
+            1,
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 1,
+                observedArgument = 2
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19104L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 1,
+                observedArgument = 2
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 4,
+                currentQueuePosition = 4,
+                writerReadback = 4,
+                observedArgument = 5
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 0,
+                observedArgument = 2
+            )
+        )
+    }
+
+    @Test
     fun `track mix state writer maps zero based argument and signal to queue position`() {
         val mapping = TrackMixZeroPoolPolicy.resolveStateWriterMapping(
             currentQueuePosition = 5,

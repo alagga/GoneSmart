@@ -48,6 +48,28 @@ internal object TrackMixZeroPoolPolicy {
         )
     }
 
+    /**
+     * R64 request-local proof for the race where the natural CURRENT+1
+     * MusicService command arrives before the Track-Mix worker has published
+     * provisionalCurrentQueuePosition. The existing R62 fallback rebases the
+     * seed to position 1, so an early command is safe only when every
+     * independent coordinate already proves logical position 1 and the exact
+     * selected Track is Current. Wider absolute positions stay fail-closed.
+     */
+    fun resolveSynchronousNextSourceCurrentProof(
+        selectedTrackId: Long,
+        currentTrackId: Long?,
+        selectedQueuePosition: Int,
+        currentQueuePosition: Int?,
+        writerReadback: Int?,
+        observedArgument: Int
+    ): Int? {
+        if (selectedTrackId <= 0L || currentTrackId != selectedTrackId) return null
+        if (selectedQueuePosition != 1 || currentQueuePosition != 1) return null
+        if (writerReadback != 1 || observedArgument != 2) return null
+        return 1
+    }
+
     data class StateWriterMapping(
         val argumentOffset: Int,
         val signalOffset: Int
