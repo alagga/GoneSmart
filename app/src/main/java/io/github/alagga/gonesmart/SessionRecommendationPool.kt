@@ -349,19 +349,19 @@ class SessionRecommendationPool {
             lastFillWasScarce
         ) {
             // A partial successful fill means the current provider evidence was
-            // exhausted. Avoid an immediate low-water network retry while useful
-            // tracks are still pending; once they are consumed, a fresh refill is
-            // allowed without an arbitrary timer.
-            return remaining == 0
+            // exhausted. Keep low-water background top-up disabled even after
+            // those tracks are consumed. The next real GMMP refill request can
+            // still start a foreground pool fill through ensureRecommendationPoolReady().
+            return false
         }
 
         val now =
             SystemClock.elapsedRealtime()
 
         // Back off only when the previous provider pass produced nothing.
-        // A successful pool that is being consumed quickly is precisely the
-        // case where we want an early asynchronous top-up rather than making
-        // the next native Auto-DJ request wait for network work.
+        // A successful full pool that is being consumed quickly is precisely
+        // the case where we want an early asynchronous top-up rather than
+        // making the next native Auto-DJ request wait for network work.
         if (
             lastUnproductiveFillElapsedMs !=
             Long.MIN_VALUE &&
