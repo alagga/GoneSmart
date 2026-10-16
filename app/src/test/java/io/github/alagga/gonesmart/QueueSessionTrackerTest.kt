@@ -78,4 +78,36 @@ class QueueSessionTrackerTest {
         assertTrue(after.isNewSession)
         assertEquals(before.sessionId + 1L, after.sessionId)
     }
+
+    @Test
+    fun `explicit Track Auto-DJ boundary drops previous anchors and promotes new Current`() {
+        val tracker = QueueSessionTracker()
+        val first = tracker.observe(
+            QueueContext(
+                currentQueuePosition = 1,
+                items = listOf(
+                    item(100L, 19118L, 1, QueueItemState.CURRENT),
+                    item(101L, 4260L, 2, QueueItemState.UPCOMING)
+                )
+            )
+        )
+        assertTrue(first.userAnchorTracks.any { it.id == 19118L })
+
+        val forced = tracker.forceNewSession(
+            context = QueueContext(
+                currentQueuePosition = 1,
+                items = listOf(
+                    item(900L, 3010L, 1, QueueItemState.CURRENT)
+                )
+            ),
+            reason = "explicit Track Auto-DJ seed"
+        )
+
+        assertTrue(forced.isNewSession)
+        assertEquals(first.sessionId + 1L, forced.sessionId)
+        assertEquals(3010L, forced.currentItem?.track?.id)
+        assertEquals(listOf(3010L), forced.userAnchorTracks.map { it.id })
+        assertTrue(forced.recentGeneratedTracks.isEmpty())
+        assertEquals("explicit Track Auto-DJ seed", forced.reason)
+    }
 }

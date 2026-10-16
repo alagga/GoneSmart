@@ -291,3 +291,12 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - Track Mix must not precompute, inject, retarget, rewrite or prune follower Track IDs. GMMP owns follower row creation/order/decoder materialization. GoneSmart may influence those native choices only through the ordinary global Auto-DJ refill/selection hook that already services `qr.z(count)`.
 - Incidental native refills observed while the selected Play is still settling stay held. After seed isolation the hold is released; native `AUTO_DJ` gets first chance to fill Initial Size. A direct `qr.z(shortage)` is allowed only as a bounded fallback after GMMP's command either produced no refill or materialized fewer rows, and `shortage = initialSize - actualQueueSize` must be computed from the live GMMP setting/state.
 - The R46-R56 Track-Mix-specific preplay recommendation bootstrap, CURRENT+1 repair and source-batch rewrite are not part of the active R57 path. Do not reintroduce them without new device evidence that the native ownership path cannot satisfy a concrete 4.2.1 invariant.
+
+
+## GMMP 4.2.1 Track Auto-DJ seed/session invariant (R58)
+
+- R57 device evidence disproves delete-only Track Mix seed isolation on GMMP 4.2.1. Leaving the selected native row at its absolute source position produced `6/5` and later `7218/5` queue coordinates even though five rows were visible.
+- Track Auto-DJ seed isolation must restore the accepted 4.2.0 semantic postcondition before native Auto-DJ owns the refill: exactly the selected native queue entry remains, its `queue_position` is `1`, and the passively verified native Current-position writer also reads `1`.
+- An explicit Track Auto-DJ invocation is always a fresh GoneSmart recommendation-session boundary. Queue-overlap heuristics must never carry user anchors/generated context from the previous Track Mix into the newly selected Track.
+- Initial Size remains owned by GMMP settings (`autoDj_initialSize`). Success requires both the configured row count and contiguous native positions `1..InitialSize` with the selected seed still Current at position `1`; row count alone is not sufficient verification.
+- R57 device evidence also proves that the second Track Mix can otherwise retain the previous BUNT. anchor (`QUEUE SESSION new=false`) and generate BUNT.-based followers for a newly selected Simple Plan Track. This session leakage is forbidden.

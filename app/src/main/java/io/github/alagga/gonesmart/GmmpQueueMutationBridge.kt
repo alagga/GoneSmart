@@ -512,7 +512,9 @@ internal class GmmpQueueMutationBridge(
         isolateTrackMixZeroPoolSeed(selectedTrackId)
 
     fun isolateTrackMixZeroPoolSeed(selectedTrackId: Long): Boolean {
-        val resolved = resolve(requireDelete = true, requireStatePosition = false)
+        val resolved = resolve(requireDelete = true, requireStatePosition = true)
+        val state = resolved.statePosition
+            ?: error("Verified GMMP current-position writer unavailable")
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
         } ?: error("Track Mix pinned seed queue entry unavailable")
@@ -524,15 +526,24 @@ internal class GmmpQueueMutationBridge(
         require(current.track.id == selectedTrackId) {
             "Track Mix pinned seed Track changed before isolation"
         }
+
         val rowsById = resolved.rows.associateBy {
             number(resolved.queueId, it).toLong()
         }
+        val currentRow = rowsById[current.queueEntryId]
+            ?: error("Verified Track Mix Current entity disappeared")
         val staleRows = resolved.context.items
             .filter { it.queueEntryId != current.queueEntryId }
             .map { item ->
                 rowsById[item.queueEntryId]
                     ?: error("Verified Track Mix source row disappeared")
             }
+        val oldPosition = current.queuePosition
+        val oldState = state.read()
+        require(oldPosition > 0 && oldState == oldPosition) {
+            "Track Mix Current queue/state position mismatch before isolation: row=$oldPosition state=$oldState"
+        }
+
         if (staleRows.isNotEmpty()) {
             val delete = resolved.delete
                 ?: error("Verified GMMP Queue DAO delete unavailable")
@@ -541,25 +552,38 @@ internal class GmmpQueueMutationBridge(
                 typedEntityArray(resolved.rows.first().javaClass, staleRows)
             )
         }
+
+        if (oldPosition != 1) {
+            setInt(resolved.position, currentRow, 1)
+            resolved.update.invoke(resolved.dao, arrayListOf(currentRow))
+        }
+        if (oldState != 1) {
+            state.write(1)
+        }
+
         val verified = GmmpQueueReader().read(
             autoDj,
-            currentQueueEntryIdHint = current.queueEntryId
-        ) ?: error("Zero-pool seed isolation verification unavailable")
+            state.read(),
+            current.queueEntryId
+        ) ?: error("Track Mix seed isolation verification unavailable")
         val only = verified.items.singleOrNull()
-            ?: error("Zero-pool seed isolation left extra native rows")
+            ?: error("Track Mix seed isolation left extra native rows")
         check(
             only.queueEntryId == current.queueEntryId &&
                 only.track.id == selectedTrackId &&
-                only.queuePosition == current.queuePosition
+                only.queuePosition == 1 &&
+                only.state == QueueItemState.CURRENT &&
+                verified.currentQueuePosition == 1 &&
+                state.read() == 1
         ) {
-            "Zero-pool seed isolation did not preserve exact pinned seed"
+            "Track Mix seed isolation did not restore the native position-1 invariant"
         }
         Log.i(
             TAG,
             "TRACK MIX SEED ISOLATION | verified=true" +
                 " | currentEntry=${current.queueEntryId}" +
-                " | currentPosition=${current.queuePosition}" +
-                " | anchored=true | stateWrite=false" +
+                " | oldPosition=$oldPosition | currentPosition=1" +
+                " | stateWrite=${oldState != 1} | rebased=${oldPosition != 1}" +
                 " | deleted=${staleRows.size}"
         )
         return true

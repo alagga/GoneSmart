@@ -507,8 +507,54 @@ class GoneSmartModule : XposedModule() {
         },
         ensureZeroPoolSourceBatchHooks = { autoDj ->
             installZeroPoolSourceBatchHooks(autoDj)
+        },
+        resetRecommendationSession = { autoDj, selectedTrackId, selectedEntryId ->
+            resetTrackMixRecommendationSession(
+                autoDjInstance = autoDj,
+                selectedTrackId = selectedTrackId,
+                selectedEntryId = selectedEntryId
+            )
         }
     )
+
+    private fun resetTrackMixRecommendationSession(
+        autoDjInstance: Any,
+        selectedTrackId: Long,
+        selectedEntryId: Long
+    ): Boolean = runCatching {
+        val context = queueReader.read(
+            autoDjInstance,
+            currentQueueEntryIdHint = selectedEntryId
+        ) ?: error("Track Mix queue context unavailable for session reset")
+        val current = context.currentItem
+            ?: error("Track Mix Current unavailable for session reset")
+        check(
+            context.items.size == 1 &&
+                current.queueEntryId == selectedEntryId &&
+                current.track.id == selectedTrackId &&
+                current.queuePosition == 1 &&
+                context.currentQueuePosition == 1
+        ) {
+            "Track Mix session reset requires one verified position-1 Current seed"
+        }
+
+        val session = queueSessionTracker.forceNewSession(
+            context = context,
+            reason = "explicit Track Auto-DJ seed"
+        )
+        val settings = gmmpAutoDjSettingsReader.read()
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+        resetRecommendationPoolForSession(session, sizing)
+        Log.i(
+            TAG,
+            "TRACK MIX SESSION RESET | session=${session.sessionId} | " +
+                "seed=$selectedTrackId | entry=$selectedEntryId | " +
+                "anchors=${session.userAnchorTracks.map { it.id }} | verified=true"
+        )
+        true
+    }.onFailure {
+        Log.e(TAG, "TRACK MIX SESSION RESET | verified=false", it)
+    }.getOrDefault(false)
 
     private fun installZeroPoolSourceBatchHooks(autoDj: Any): Boolean =
         runCatching {

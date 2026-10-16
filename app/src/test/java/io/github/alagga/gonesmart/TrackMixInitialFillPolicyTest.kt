@@ -67,4 +67,28 @@ class TrackMixInitialFillPolicyTest {
         assertFalse(TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(true))
         assertTrue(TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(false))
     }
+
+    @Test fun exactInitialQueueRequiresPositionOneAndContiguousConfiguredSize() {
+        assertTrue(
+            TrackMixInitialFillPolicy.isExactInitialQueue(
+                initialSize = 5,
+                currentQueuePosition = 1,
+                queuePositions = listOf(1, 2, 3, 4, 5)
+            )
+        )
+        assertFalse(
+            TrackMixInitialFillPolicy.isExactInitialQueue(
+                initialSize = 5,
+                currentQueuePosition = 6,
+                queuePositions = listOf(6, 7215, 7216, 7217, 7218)
+            )
+        )
+        assertFalse(
+            TrackMixInitialFillPolicy.isExactInitialQueue(
+                initialSize = 5,
+                currentQueuePosition = 1,
+                queuePositions = listOf(1, 7215, 7216, 7217, 7218)
+            )
+        )
+    }
 }

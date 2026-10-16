@@ -53,7 +53,9 @@ internal class TrackMixController(
         { _, _ -> null },
     private val preparePrePlaySmartPool: (Any, TrackInfo, Int) -> TrackMixPreparedInitialPool =
         { _, _, _ -> TrackMixPreparedInitialPool.EMPTY },
-    private val ensureZeroPoolSourceBatchHooks: (Any) -> Boolean = { false }
+    private val ensureZeroPoolSourceBatchHooks: (Any) -> Boolean = { false },
+    private val resetRecommendationSession: (Any, Long, Long) -> Boolean =
+        { _, _, _ -> true }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -1103,8 +1105,14 @@ internal class TrackMixController(
                     return
                 }
                 runCatching {
+                    val verifiedWriter = nativePositionWriterProvider(autoDj)
+                        ?: loaded.currentQueuePosition?.let { position ->
+                            nativeTrackMixPositionWriterProvider(autoDj, position)
+                        }
+                        ?: error("Verified GMMP Current-position writer unavailable for seed isolation")
                     GmmpQueueMutationBridge(
                         autoDj = autoDj,
+                        verifiedPositionWriter = verifiedWriter,
                         currentQueueEntryIdHint = selectedEntryId
                     ).isolateTrackMixSeed(selectedId)
                 }.onFailure {
@@ -1126,6 +1134,14 @@ internal class TrackMixController(
                     "MIX SEED VERIFY | selected=$selectedId | current=${seed.currentId} | size=${seed.ids.size}"
                 )
                 fail("Could not verify the isolated Auto-DJ seed.", request.context)
+                return
+            }
+
+            val sessionAutoDj = nativeAutoDj?.get()
+            if (sessionAutoDj == null ||
+                !resetRecommendationSession(sessionAutoDj, selectedId, selectedEntryId)
+            ) {
+                fail("Could not start a fresh recommendation session for this song.", request.context)
                 return
             }
 
@@ -1201,6 +1217,33 @@ internal class TrackMixController(
                         "could not be verified."
                 )
                 toast(request.context, request.confirmation)
+                return
+            }
+
+            val exactContext = nativeAutoDj?.get()?.let { autoDj ->
+                queueReader.read(
+                    autoDj,
+                    currentQueueEntryIdHint = selectedEntryId
+                )
+            }
+            val orderedPositions = exactContext?.items
+                ?.sortedBy { it.queuePosition }
+                ?.map { it.queuePosition }
+                ?: emptyList()
+            if (exactContext?.currentItem?.track?.id != selectedId ||
+                !TrackMixInitialFillPolicy.isExactInitialQueue(
+                    initialSize = initial,
+                    currentQueuePosition = exactContext?.currentQueuePosition,
+                    queuePositions = orderedPositions
+                )
+            ) {
+                Log.e(
+                    TAG,
+                    "MIX VERIFY COORDINATES | initial=$initial | actual=${filled.ids.size} | " +
+                        "currentPosition=${exactContext?.currentQueuePosition} | " +
+                        "positions=${orderedPositions.joinToString(",")} | verified=false"
+                )
+                fail("GMMP's Initial Size was not normalized correctly.", request.context)
                 return
             }
 

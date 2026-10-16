@@ -63,6 +63,41 @@ class QueueSessionTracker {
     private val recentGeneratedTracksById =
         linkedMapOf<Long, TrackInfo>()
 
+    /**
+     * Explicit user Track Auto-DJ is a semantic queue-session boundary even
+     * when GMMP reuses an existing queue entry. This deliberately bypasses
+     * overlap heuristics so anchors/generated context from the previous mix
+     * cannot leak into the newly selected seed.
+     */
+    @Synchronized
+    fun forceNewSession(
+        context: QueueContext,
+        reason: String
+    ): QueueSessionSnapshot {
+        require(context.items.isNotEmpty()) {
+            "Cannot start a queue session from an empty queue"
+        }
+
+        sessionId += 1L
+        sessionMemberEntryIds.clear()
+        originsByEntryId.clear()
+        userAnchorTracksById.clear()
+        recentGeneratedTracksById.clear()
+
+        context.items
+            .sortedBy { it.queuePosition }
+            .forEach(::registerUserQueueItem)
+
+        previousItemsByEntryId = context.items.associateBy { it.queueEntryId }
+        initialized = true
+
+        return buildSnapshot(
+            context = context,
+            isNewSession = true,
+            reason = reason
+        )
+    }
+
     @Synchronized
     fun observe(
         context: QueueContext

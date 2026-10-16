@@ -37,6 +37,17 @@ internal object TrackMixInitialFillPolicy {
             availableUpcoming.coerceAtLeast(0)).coerceAtLeast(0)
     }
 
+    fun isExactInitialQueue(
+        initialSize: Int,
+        currentQueuePosition: Int?,
+        queuePositions: List<Int>
+    ): Boolean {
+        val expectedSize = initialSize.coerceAtLeast(1)
+        if (currentQueuePosition != 1) return false
+        if (queuePositions.size != expectedSize) return false
+        return queuePositions == (1..expectedSize).toList()
+    }
+
     fun shouldWaitForSmartPoolAfterSeedIsolation(
         explicitInitialRefill: Boolean
     ): Boolean = !explicitInitialRefill

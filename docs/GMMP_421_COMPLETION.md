@@ -161,3 +161,10 @@ R54 device evidence showed BUNT. Track 19118 was absent when `dx3.c2(1)` fired, 
 - R57 therefore removes follower ownership from Track Mix. Pre-Play work resolves identity only. After exact native Play, Track Mix isolates only the selected seed, releases the refill barrier, sends native `AUTO_DJ`, and lets the normal global GoneSmart/GMMP refill-selection pipeline create followers.
 - Initial Size remains entirely GMMP-owned through `autoDj_initialSize`; no value of 5 is encoded in Track Mix. A manual native refill is only a dynamic shortfall fallback if the native command does not reach the configured size.
 - Device re-acceptance pending for both a library/Smart-Playlist source and `menu_gm_context_queue`.
+
+
+### R58 Track Auto-DJ position/session repair
+
+R57 device re-test exposed two independent correctness failures. First, delete-only seed isolation preserved the selected row's absolute source position (`6`, then `7218`) while reducing the visible queue to one row; later refills therefore yielded UI coordinates such as `6/5` and `7218/5`. Second, the next explicit Track Auto-DJ reused the preceding recommendation session (`new=false`), retaining BUNT. as an anchor while the user had selected Simple Plan, which caused BUNT.-based followers to be selected.
+
+R58 restores the original 4.2.0 semantic seed postcondition on the structurally verified 4.2.1 writers: after isolation the sole selected row is `queue_position=1` and the verified native Current-position writer is also `1` before `AUTO_DJ` is sent. Every explicit Track Auto-DJ then forces a new `QueueSessionTracker` session and resets `SessionRecommendationPool` around that sole selected Current. Final verification now rejects count-only false positives and requires exactly `1..autoDj_initialSize` positions. Device re-acceptance remains pending.
