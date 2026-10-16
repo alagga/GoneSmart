@@ -515,17 +515,25 @@ internal class TrackMixController(
 
         val key = method.declaringClass.name + "." + method.name +
             "(int)@" + System.identityHashCode(service)
-        if (request.nativePositionCommands.none { it.key == key }) {
+        val observed = ObservedNativePositionCommand(
+            key = key,
+            service = WeakReference(service),
+            method = method.apply { isAccessible = true },
+            value = value,
+            looper = Looper.myLooper(),
+            observedAt = SystemClock.elapsedRealtime()
+        )
+        val existingIndex = request.nativePositionCommands.indexOfFirst {
+            it.key == key
+        }
+        if (existingIndex >= 0) {
+            // A MusicService position method can be called several times while
+            // native Play is settling. Keep its latest natural argument so an
+            // early old-queue value cannot hide the later CURRENT+1 boundary.
+            request.nativePositionCommands[existingIndex] = observed
+        } else {
             if (request.nativePositionCommands.size >= 12) return
-            method.isAccessible = true
-            request.nativePositionCommands += ObservedNativePositionCommand(
-                key = key,
-                service = WeakReference(service),
-                method = method,
-                value = value,
-                looper = Looper.myLooper(),
-                observedAt = SystemClock.elapsedRealtime()
-            )
+            request.nativePositionCommands += observed
         }
         tryPromoteNextSourceBoundary(request)
         guardZeroPoolNaturalNextSource(
@@ -1634,7 +1642,37 @@ internal class TrackMixController(
 
         val applied = runCatching {
             method.isAccessible = true
-            method.invoke(service, nextPosition)
+            val observedLooper = boundary.looper
+                ?: error("Observed native next-source boundary has no Looper")
+            if (observedLooper === Looper.myLooper()) {
+                method.invoke(service, nextPosition)
+            } else {
+                val completion = java.util.concurrent.CountDownLatch(1)
+                val invocationFailure =
+                    java.util.concurrent.atomic.AtomicReference<Throwable?>()
+                check(
+                    Handler(observedLooper).post {
+                        try {
+                            method.invoke(service, nextPosition)
+                        } catch (failure: Throwable) {
+                            invocationFailure.set(failure)
+                        } finally {
+                            completion.countDown()
+                        }
+                    }
+                ) {
+                    "Could not post verified native next-source refresh"
+                }
+                check(
+                    completion.await(
+                        1_500L,
+                        java.util.concurrent.TimeUnit.MILLISECONDS
+                    )
+                ) {
+                    "Verified native next-source refresh timed out"
+                }
+                invocationFailure.get()?.let { throw it }
+            }
             true
         }.onFailure {
             Log.e(
@@ -1648,7 +1686,8 @@ internal class TrackMixController(
             "MIX NEXT SOURCE REFRESH | applied=$applied | command=" +
                 method.declaringClass.name + "." + method.name + "(int)" +
                 " | current=$currentQueuePosition | next=$nextPosition" +
-                " | nextTrack=$nextTrackId | evidence=natural-current-plus-one"
+                " | nextTrack=$nextTrackId | execution=observed-looper" +
+                " | evidence=natural-current-plus-one"
         )
         return applied
     }
