@@ -1,0 +1,75 @@
+name: Auto-DJ provider implementation helper
+
+on:
+  push:
+    branches: ['feature/auto-dj-providers']
+    paths:
+      - '.github/scripts/implement_auto_dj_providers.py'
+      - '.github/workflows/provider-implementation-helper.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact feature head
+        uses: actions/checkout@v4
+        with:
+          ref: feature/auto-dj-providers
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Apply provider implementation
+        run: python3 .github/scripts/implement_auto_dj_providers.py
+
+      - name: Verify generated forum copy
+        run: python3 scripts/generate_forum_posts.py --check
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Remove one-time helper infrastructure
+        run: |
+          rm -f .github/scripts/implement_auto_dj_providers.py
+          rm -f .github/workflows/provider-implementation-helper.yml
+
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No implementation changes to commit"
+            exit 1
+          fi
+          git commit -m "feat(auto-dj): blend local playlist affinity providers"
+          git push origin HEAD:feature/auto-dj-providers
