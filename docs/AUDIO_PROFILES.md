@@ -46,7 +46,7 @@ GoneSmart must not implement a parallel equalizer or write guessed GMMP settings
 
 Until that boundary has been proved for the supported GMMP build, stored overrides fail closed: routes and profile values may be discovered and edited, but GoneSmart does not mutate GMMP audio state.
 
-The development build includes one bounded passive probe to map the GMMP 4.2.1 DSP boundary with a single device-test round. It observes natural SharedPreferences writes while the maintainer changes native EQ/effect controls and inventories the already-observed EQ-state helper family without invoking candidate methods. String payloads are redacted. The probe is debug-only, time/event bounded, and must be removed once the semantic native mapping is accepted.
+The development build includes one bounded passive probe to map the GMMP 4.2.1 DSP boundary with a single device-test round. It observes natural SharedPreferences writes while the maintainer changes native EQ/effect controls, records a short non-framework writer call chain for each distinct mutation, and inventories the already-observed EQ-state helper family without invoking candidate methods. String payloads are redacted while repeated String-backed state changes remain distinguishable internally for probe deduplication. The probe is debug-only, time/event bounded, and must be removed once the semantic native mapping is accepted.
 
 ## Acceptance requirements
 
