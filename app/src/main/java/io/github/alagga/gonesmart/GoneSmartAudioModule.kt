@@ -44,6 +44,7 @@ class GoneSmartAudioModule : XposedModule() {
         private const val PREF_PROBE_MAX_EVENTS = 200
         private const val PRESET_CAPTURE_WINDOW_MS = 15_000L
         private const val PRESET_READBACK_DELAY_MS = 900L
+        private const val PRESET_RECENT_SHAPE_MS = 400L
         private const val STANDARD_SNAPSHOT_DELAY_MS = 350L
         private const val MAX_DYNAMIC_EQ_CLASSES = 12_000
         private const val READER_EPSILON = 0.001
@@ -72,6 +73,9 @@ class GoneSmartAudioModule : XposedModule() {
 
     @Volatile
     private var pendingPresetUntilElapsed: Long = 0L
+
+    @Volatile
+    private var lastCompleteShapeElapsed: Long = 0L
 
     @Volatile
     private var eqStateInstance: Any? = null
@@ -126,6 +130,9 @@ class GoneSmartAudioModule : XposedModule() {
         val application = currentApplication()
         if (application != null) {
             hostApplication = application
+            AudioProfilePresetStorage.ensureCurrent(
+                application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+            )
 
             // Resolve the route first so every startup native observation is
             // explicitly attributed to Standard or the active Bluetooth output.
@@ -322,10 +329,16 @@ class GoneSmartAudioModule : XposedModule() {
             .singleOrNull()
             ?.apply { isAccessible = true }
 
+        GmmpEqualizerRuntimeBridge.registerSetters(
+            mapping.preSetter,
+            mapping.bandSetter,
+            mapping.enabledSetter
+        )
+
         Log.i(
             TAG,
             "EQ OBSERVER RESOLVED | source=${mapping.source} | owner=${mapping.owner.name} | score=${mapping.score}" +
-                " | readback=${eqPreGetter != null && eqBandArrayField != null}"
+                " | readback=${eqPreGetter != null && eqBandArrayField != null} | applyBridge=registered"
         )
 
         val installed = listOf(
@@ -353,6 +366,7 @@ class GoneSmartAudioModule : XposedModule() {
                 if (instance != null) {
                     eqStateInstance = instance
                     if (looper != null) eqObservationHandler = Handler(looper)
+                    GmmpEqualizerRuntimeBridge.observeInstance(instance, looper)
                 }
                 val result = chain.proceed()
 
@@ -361,6 +375,7 @@ class GoneSmartAudioModule : XposedModule() {
                         currentEqPre = raw
                         if (instance != null) verifyPreReader(instance, raw)
                         NativeAudioObservation.equalizerPre(raw)?.let(::publishNativeValue)
+                        updateCompleteShapeTimestamp()
                         maybeCompletePendingPresetFromObservedShape()
                     }
 
@@ -371,6 +386,7 @@ class GoneSmartAudioModule : XposedModule() {
                             currentEqBands[index] = raw
                             if (instance != null) verifyBandReader(instance, index, raw)
                             NativeAudioObservation.equalizerBand(index, raw)?.let(::publishNativeValue)
+                            updateCompleteShapeTimestamp()
                             maybeCompletePendingPresetFromObservedShape()
                         }
                     }
@@ -446,6 +462,12 @@ class GoneSmartAudioModule : XposedModule() {
             NativeAudioObservation.equalizerBand(index, raw)?.let { shape[it.fieldId] = it.value } ?: return null
         }
         return shape
+    }
+
+    private fun updateCompleteShapeTimestamp() {
+        if (shapeFromObservedSetters() != null) {
+            lastCompleteShapeElapsed = SystemClock.elapsedRealtime()
+        }
     }
 
     private fun discoverEqualizerCandidates(
@@ -524,7 +546,9 @@ class GoneSmartAudioModule : XposedModule() {
                     hook(method).intercept { chain ->
                         val key = chain.getArg(0) as? String
                         val value = if (method.name == "remove") null else runCatching { chain.getArg(1) }.getOrNull()
-                        val caller = if (BuildConfig.DEBUG && key in NativeAudioObservation.preferenceKeys) {
+                        val caller = if (key == NativeAudioObservation.PREF_EQ_PRESET ||
+                            (BuildConfig.DEBUG && key in NativeAudioObservation.preferenceKeys)
+                        ) {
                             preferenceProbeCallSite()
                         } else {
                             null
@@ -564,17 +588,29 @@ class GoneSmartAudioModule : XposedModule() {
                 return
             }
 
-            val startupSnapshot = source.startsWith("startup:")
             val naturalGmmpSelection = caller?.let(::isNaturalGmmpPresetWrite) == true
-            if (startupSnapshot) {
-                pendingPresetName = mapped.value
-                pendingPresetUntilElapsed = SystemClock.elapsedRealtime() + PRESET_CAPTURE_WINDOW_MS
-                maybeCompletePendingPresetFromObservedShape()
-            } else if (naturalGmmpSelection) {
+            if (!naturalGmmpSelection) {
+                if (BuildConfig.DEBUG && source.startsWith("startup:")) {
+                    Log.i(PROBE_TAG, "PRESET STARTUP LABEL | preset=${mapped.value} | learning=false")
+                }
+                return
+            }
+
+            val now = SystemClock.elapsedRealtime()
+            val recentShape = shapeFromObservedSetters()?.takeIf {
+                lastCompleteShapeElapsed > 0L && now - lastCompleteShapeElapsed <= PRESET_RECENT_SHAPE_MS
+            }
+            pendingPresetName = mapped.value
+            pendingPresetUntilElapsed = now + PRESET_CAPTURE_WINDOW_MS
+
+            if (recentShape != null) {
+                publishNativePreset(mapped.value, recentShape, "natural-action-recent-setters")
+            } else {
+                // If the preset preference write precedes GMMP's setter burst,
+                // collect a fresh complete shape and never mix with old bands.
                 currentEqPre = null
                 currentEqBands.clear()
-                pendingPresetName = mapped.value
-                pendingPresetUntilElapsed = SystemClock.elapsedRealtime() + PRESET_CAPTURE_WINDOW_MS
+                lastCompleteShapeElapsed = 0L
                 schedulePresetReadback(mapped.value)
             }
         }
@@ -596,6 +632,7 @@ class GoneSmartAudioModule : XposedModule() {
             GoneSmartAudioProfiles.equalizerBandFieldIds.forEachIndexed { index, fieldId ->
                 shape[fieldId]?.toDoubleOrNull()?.let { currentEqBands[index] = it }
             }
+            lastCompleteShapeElapsed = SystemClock.elapsedRealtime()
             shape.forEach { (fieldId, value) ->
                 publishNativeValue(NativeAudioObservation.Value(fieldId, value))
             }
@@ -679,6 +716,7 @@ class GoneSmartAudioModule : XposedModule() {
         val preset = pendingPresetName ?: return
         if (SystemClock.elapsedRealtime() > pendingPresetUntilElapsed) return
         val shape = shapeFromObservedSetters() ?: return
+        lastCompleteShapeElapsed = SystemClock.elapsedRealtime()
         publishNativePreset(preset, shape, "observed-setters")
     }
 
@@ -741,7 +779,9 @@ class GoneSmartAudioModule : XposedModule() {
 
     private fun persistRuntimePreset(preset: String, shape: Map<String, String>) {
         val application = hostApplication ?: currentApplication() ?: return
-        val editor = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE).edit()
+        val prefs = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+        if (!AudioProfilePresetStorage.ensureCurrent(prefs)) return
+        val editor = prefs.edit()
         editor.putString(GoneSmartAudioProfiles.nativePresetNameKey(preset), preset)
         shape.forEach { (fieldId, value) ->
             editor.putString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), value)
