@@ -487,12 +487,14 @@ data class RawRecommendationContribution(
     val mbid: String?,
     val providerSimilarity: Double,
     val seedWeight: Double,
-    val identityConfidence: Double
+    val identityConfidence: Double,
+    val providerWeight: Double = 1.0
 ) {
 
     val weightedScore: Double
         get() =
             providerSimilarity *
                     seedWeight *
-                    identityConfidence
+                    identityConfidence *
+                    providerWeight
 }
