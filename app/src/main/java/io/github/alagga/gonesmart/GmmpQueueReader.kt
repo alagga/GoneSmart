@@ -5,6 +5,11 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
+internal data class GmmpQueueTrackLocation(
+    val queuePosition: Int,
+    val queueEntryId: Long
+)
+
 /**
  * Read-only GMMP queue adapter.
  *
@@ -71,6 +76,55 @@ class GmmpQueueReader {
             currentQueueEntryIdHint,
             currentTrackPathHint
         )
+    }
+
+    internal fun locateUniqueTrackRow(
+        autoDjInstance: Any,
+        trackId: Long
+    ): GmmpQueueTrackLocation? {
+        if (trackId <= 0L) return null
+        return runCatching {
+            val rows = GmmpReadOnlySql.query(
+                autoDjInstance = autoDjInstance,
+                sql = """
+                    SELECT queue_position AS queue_position,
+                           queue_id AS queue_id
+                      FROM queue_table
+                     WHERE queue_track_id = ?
+                     ORDER BY queue_position
+                """.trimIndent(),
+                args = arrayOf<Any?>(trackId)
+            ) { cursor ->
+                val positionColumn = cursor.getColumnIndex("queue_position")
+                val entryColumn = cursor.getColumnIndex("queue_id")
+                require(positionColumn >= 0 && entryColumn >= 0) {
+                    "GMMP queue Track locator columns unavailable"
+                }
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(
+                            GmmpQueueTrackLocation(
+                                queuePosition = cursor.getInt(positionColumn),
+                                queueEntryId = cursor.getLong(entryColumn)
+                            )
+                        )
+                    }
+                }
+            }
+            if (rows.size != 1) {
+                Log.w(
+                    TAG,
+                    "GMMP QUEUE TRACK LOCATION | track=$trackId | " +
+                        "matches=${rows.size} | unique=false"
+                )
+                return@runCatching null
+            }
+            rows.single().takeIf { row ->
+                row.queuePosition > 0 && row.queueEntryId > 0L
+            }
+        }.onFailure {
+            Log.w(TAG, "GMMP queue Track locator unavailable", it)
+        }.getOrNull()
     }
 
     private fun readLegacy(autoDjInstance: Any): QueueContext? =

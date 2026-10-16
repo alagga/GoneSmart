@@ -89,6 +89,46 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `natural current fallback accepts absolute and zero based state coordinates`() {
+        assertEquals(
+            1,
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = 1,
+                selectedQueuePosition = 1
+            )
+        )
+        assertEquals(
+            5,
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = 4,
+                selectedQueuePosition = 5
+            )
+        )
+    }
+
+    @Test
+    fun `natural current fallback rejects wider or invalid coordinate guesses`() {
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = 3,
+                selectedQueuePosition = 5
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = -1,
+                selectedQueuePosition = 1
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = 1,
+                selectedQueuePosition = 0
+            )
+        )
+    }
+
+    @Test
     fun `seed plan drops history and source followers around the exact pinned row`() {
         val entries = (1..8).map { position ->
             TrackMixPlan.NativeQueueEntry(

@@ -70,6 +70,16 @@ internal object TrackMixZeroPoolPolicy {
         )
     }
 
+    fun resolveNaturalCurrentBoundaryPosition(
+        observedArgument: Int,
+        selectedQueuePosition: Int
+    ): Int? {
+        if (observedArgument < 0 || selectedQueuePosition <= 0) return null
+        val offset = selectedQueuePosition - observedArgument
+        if (offset !in 0..1) return null
+        return selectedQueuePosition
+    }
+
     fun seedPlan(
         entries: List<TrackMixPlan.NativeQueueEntry>,
         currentEntryId: Long,

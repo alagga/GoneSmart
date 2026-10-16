@@ -195,6 +195,12 @@ internal class QueueFlipController {
             proceed = proceed
         )
         notifyTrackMixNaturalPosition(autoDj)
+        if (autoDj != null && value != null) {
+            TrackMixController.onNaturalStatePositionCandidate(
+                autoDj = autoDj,
+                observedArgument = value
+            )
+        }
         return result
     }
 

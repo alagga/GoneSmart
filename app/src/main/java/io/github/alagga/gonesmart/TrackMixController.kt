@@ -99,6 +99,17 @@ internal class TrackMixController(
                     currentPosition = currentPosition
                 )
         }
+
+        fun onNaturalStatePositionCandidate(
+            autoDj: Any,
+            observedArgument: Int
+        ) {
+            activePendingController?.get()
+                ?.prepareZeroPoolFromNaturalStateCandidate(
+                    autoDj = autoDj,
+                    observedArgument = observedArgument
+                )
+        }
     }
 
     private data class Snapshot(
@@ -1457,6 +1468,56 @@ internal class TrackMixController(
         )
     }
 
+
+    private fun prepareZeroPoolFromNaturalStateCandidate(
+        autoDj: Any,
+        observedArgument: Int
+    ) {
+        val request = pending ?: return
+        if (
+            request.stage != "WAIT_PLAY" ||
+            request.prePlayTarget == null ||
+            request.prePlayPrepared.trackIds.isNotEmpty() ||
+            request.prePlayInitialSize <= 1 ||
+            request.zeroPoolBoundaryPrepared ||
+            request.zeroPoolBoundaryAttempted ||
+            nativeAutoDj?.get() !== autoDj
+        ) return
+
+        val target = request.prePlayTarget ?: return
+        val located = queueReader.locateUniqueTrackRow(autoDj, target.id) ?: return
+        val currentPosition =
+            TrackMixZeroPoolPolicy.resolveNaturalCurrentBoundaryPosition(
+                observedArgument = observedArgument,
+                selectedQueuePosition = located.queuePosition
+            ) ?: return
+        val writer = nativeTrackMixPositionWriterProvider(
+            autoDj,
+            currentPosition
+        ) ?: return
+        val readback = runCatching { writer.read() }.getOrNull() ?: return
+        if (readback != currentPosition) {
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL CURRENT CANDIDATE | verified=false | " +
+                    "observedArg=$observedArgument | targetPosition=$currentPosition | " +
+                    "readback=$readback"
+            )
+            return
+        }
+
+        Log.i(
+            TAG,
+            "MIX ZERO-POOL CURRENT CANDIDATE | verified=true | " +
+                "observedArg=$observedArgument | targetPosition=$currentPosition | " +
+                "targetEntry=${located.queueEntryId} | readback=$readback | " +
+                "source=natural-state-writer-fallback"
+        )
+        prepareZeroPoolAtNaturalCurrentBoundary(
+            autoDj = autoDj,
+            currentPosition = currentPosition
+        )
+    }
 
     /**
      * GMMP 4.2.1 equivalent of the old 4.2.0 seed-isolation boundary.
