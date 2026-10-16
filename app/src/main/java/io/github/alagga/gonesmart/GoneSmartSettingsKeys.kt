@@ -24,6 +24,7 @@ object GoneSmartSettingsKeys {
     const val KEY_PROVIDER_LASTFM_WEIGHT = "provider_lastfm_weight"
     const val KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT = "provider_local_playlist_weight"
     const val KEY_PLAYLIST_SIZE_WEIGHTING = "playlist_size_weighting"
+    // Custom-mode near-tie rotation; Smart mode deliberately owns its balanced default.
     const val KEY_RECOMMENDATION_VARIETY = "recommendation_variety"
 
     const val KEY_PREFER_HIGHER_RATED = "prefer_higher_rated"
