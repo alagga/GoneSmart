@@ -26,11 +26,23 @@ object AudioProfileCompanionBridge {
     const val METHOD_NATIVE_PRESET = "native_preset_observed"
     const val EXTRA_OK = "ok"
 
-    fun report(context: Context, method: String, extras: Bundle): Boolean =
-        runCatching {
+    @Volatile
+    private var providerAvailable: Boolean? = null
+
+    /**
+     * Package visibility on some GMMP hosts prevents resolving the companion
+     * provider. Probe once per process, then use the explicit receiver without
+     * repeatedly generating PackageManager errors for every mirrored value.
+     */
+    fun report(context: Context, method: String, extras: Bundle): Boolean {
+        if (providerAvailable == false) return false
+        val acknowledged = runCatching {
             context.contentResolver.call(URI, method, null, extras)
                 ?.getBoolean(EXTRA_OK, false) == true
         }.getOrDefault(false)
+        providerAvailable = acknowledged
+        return acknowledged
+    }
 }
 
 class AudioProfileBridgeProvider : ContentProvider() {
