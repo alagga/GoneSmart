@@ -1,7 +1,6 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionRecommendationPoolTest {
@@ -35,7 +34,7 @@ class SessionRecommendationPoolTest {
     }
 
     @Test
-    fun scarceSuccessfulFillCanRefillOnceItsUsefulTracksAreConsumed() {
+    fun scarceSuccessfulFillKeepsBackgroundTopUpSuppressedAfterConsumption() {
         val pool = SessionRecommendationPool()
         pool.reset(newSessionId = 8L, newTargetSize = 20)
 
@@ -48,6 +47,6 @@ class SessionRecommendationPoolTest {
         pool.recordRefillResult(expectedSessionId = 8L, addedCount = added)
         pool.commitSelected(expectedSessionId = 8L, selectedTrackIds = candidates)
 
-        assertTrue(pool.shouldRefill(expectedSessionId = 8L, sizing = sizing))
+        assertFalse(pool.shouldRefill(expectedSessionId = 8L, sizing = sizing))
     }
 }
