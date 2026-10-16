@@ -3,6 +3,7 @@ package io.github.alagga.gonesmart
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
+import kotlin.math.abs
 
 /**
  * Strict parser for GMMP Equalizer preset files. It accepts several text
@@ -72,36 +73,50 @@ object GmmpEqualizerPresetParser {
         }
 
         // Some GMMP preset files are compact numeric lists. Accept this only
-        // when the entire text has exactly 11 numeric tokens and every value is
-        // a valid EQ gain. That keeps unrelated metadata from being guessed as
-        // a curve.
-        val compact = compactNumbers(text)
-        if (compact != null) {
+        // when they resolve to exactly PRE + ten gains. A leading literal 10
+        // is also accepted as an explicit band-count marker because GMMP keeps
+        // presets in band-count-specific families.
+        compactNumbers(text)?.let { compact ->
             return buildPreset(name, compact.first(), compact.drop(1))
         }
 
         val numbers = Regex(numberPattern).findAll(text)
             .mapNotNull { it.value.toNumber() }
             .toList()
-        if (numbers.size == 11 && numbers.all(::plausible)) {
-            return buildPreset(name, numbers.first(), numbers.drop(1))
+        completeCurveNumbers(numbers)?.let { complete ->
+            return buildPreset(name, complete.first(), complete.drop(1))
         }
         return null
     }
 
     private fun compactNumbers(text: String): List<Double>? {
         val trimmed = text.trim()
-        val whitespace = trimmed.split(Regex("[\\s;|]+"))
+            .removePrefix("[")
+            .removeSuffix("]")
+            .trim()
+
+        val whitespaceTokens = trimmed.split(Regex("[\\s;|]+"))
             .filter { it.isNotBlank() }
-        if (whitespace.size == 11) {
-            val parsed = whitespace.map { it.toNumber() ?: return@map Double.NaN }
-            if (parsed.all(::plausible)) return parsed
+        if (whitespaceTokens.size in 11..12) {
+            val whitespace = whitespaceTokens.map { token -> token.toNumber() ?: Double.NaN }
+            completeCurveNumbers(whitespace)?.let { return it }
         }
-        if (trimmed.count { it == ',' } == 10 && '.' !in trimmed) {
-            val parsed = trimmed.split(',').map { it.trim().toDoubleOrNull() ?: Double.NaN }
-            if (parsed.size == 11 && parsed.all(::plausible)) return parsed
+
+        // Decimal-dot CSV is common for simple preset exports. Decimal-comma
+        // values remain supported through semicolon/whitespace-separated text.
+        val csvParts = trimmed.split(',').map { it.trim() }
+        if (csvParts.size in 11..12) {
+            val csv = csvParts.map { token -> token.toDoubleOrNull() ?: Double.NaN }
+            completeCurveNumbers(csv)?.let { return it }
         }
         return null
+    }
+
+    private fun completeCurveNumbers(numbers: List<Double>): List<Double>? = when {
+        numbers.size == 11 && numbers.all(::plausible) -> numbers
+        numbers.size == 12 && abs(numbers.first() - frequencies.size.toDouble()) <= 0.001 &&
+            numbers.drop(1).all(::plausible) -> numbers.drop(1)
+        else -> null
     }
 
     private fun parseIndexedBands(text: String): List<Double>? {

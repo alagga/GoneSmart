@@ -45,6 +45,31 @@ class GmmpEqualizerPresetParserTest {
     }
 
     @Test
+    fun parsesBandCountPrefixedTenBandPreset() {
+        val parsed = GmmpEqualizerPresetParser.parse(
+            "Rock.eq",
+            "10\n0\n1\n2\n3\n4\n5\n4\n3\n2\n1\n0".toByteArray()
+        )!!
+
+        assertEquals("Rock", parsed.name)
+        assertEquals("0", parsed.shape["eq.pre_db"])
+        assertEquals("5", parsed.shape["eq.band_512_db"])
+        assertEquals(11, parsed.shape.size)
+    }
+
+    @Test
+    fun parsesDecimalDotCsvPreset() {
+        val parsed = GmmpEqualizerPresetParser.parse(
+            "Dance.eq",
+            "0.0,-1.5,-1.0,0.0,1.0,2.0,3.0,2.0,1.0,0.0,-1.0".toByteArray()
+        )!!
+
+        assertEquals("Dance", parsed.name)
+        assertEquals("-1.5", parsed.shape["eq.band_32_db"])
+        assertEquals("3", parsed.shape["eq.band_1000_db"])
+    }
+
+    @Test
     fun rejectsIncompleteOrOutOfRangePresetRatherThanGuessing() {
         assertNull(GmmpEqualizerPresetParser.parse("broken", "pre=0 band_32=1".toByteArray()))
         assertNull(

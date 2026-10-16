@@ -48,9 +48,24 @@ object GmmpEqualizerRuntimeBridge {
         val notify = synchronized(lock) {
             val wasReady = currentUnsafe() != null
             val changedInstance = instance !== observedInstance
+            val previousLooper = handler?.looper
             instance = observedInstance
-            if (looper != null) handler = Handler(looper)
-            currentUnsafe() != null && (!wasReady || changedInstance)
+
+            // GMMP's natural Equalizer initialization currently runs on a
+            // worker without a Looper. Requiring that worker to expose a
+            // Handler made an otherwise complete native target permanently
+            // unavailable. The proven setters themselves have no discovered
+            // Looper identity, so use the observed Looper when one exists and
+            // otherwise serialize requested profile application on GMMP's main
+            // Looper. A later natural call on a real Looper upgrades the target.
+            if (looper != null) {
+                if (previousLooper !== looper) handler = Handler(looper)
+            } else if (handler == null) {
+                handler = Handler(Looper.getMainLooper())
+            }
+
+            val changedDispatcher = previousLooper !== handler?.looper
+            currentUnsafe() != null && (!wasReady || changedInstance || changedDispatcher)
         }
         if (notify) notifyReady()
     }

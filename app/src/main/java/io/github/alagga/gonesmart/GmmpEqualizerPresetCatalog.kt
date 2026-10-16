@@ -9,10 +9,9 @@ import java.util.zip.ZipFile
 /**
  * Bounded read-only discovery of GMMP's installed Equalizer preset files.
  *
- * GMMP has historically persisted presets under gmmp/eq_preset and also ships
- * default presets that are installed/restored by the app. We inspect the real
- * GMMP-owned storage (plus matching packaged entries) so users do not need to
- * open every preset once merely for GoneSmart to learn its curve.
+ * GMMP stores preset families by Equalizer band count. GoneSmart currently
+ * manages the ten-band GMMP shape, so discovery reads that subtree directly
+ * instead of requiring every preset to be selected once in GMMP.
  */
 object GmmpEqualizerPresetCatalog {
     private const val MAX_PRESET_BYTES = 128 * 1024L
@@ -20,6 +19,8 @@ object GmmpEqualizerPresetCatalog {
     private const val MAX_DISCOVERED_DIRECTORIES = 32
     private const val MAX_DIRECTORY_SCAN_NODES = 512
     private const val MAX_DIRECTORY_SCAN_DEPTH = 5
+    private const val MAX_PRESET_TREE_NODES = 256
+    private const val MAX_PRESET_TREE_DEPTH = 4
     private const val MAX_APK_CANDIDATES = 128
 
     data class Entry(
@@ -49,13 +50,11 @@ object GmmpEqualizerPresetCatalog {
             if (key.isNotBlank()) accepted.putIfAbsent(key, Entry(parsed, source))
         }
 
+        val expectedBandCount = GoneSmartAudioProfiles.equalizerBandFieldIds.size
         val directories = candidateDirectories(application)
         directories.take(MAX_DISCOVERED_DIRECTORIES).forEach { directory ->
-            directory.listFiles()
-                .orEmpty()
+            presetFilesForDirectory(directory, expectedBandCount)
                 .asSequence()
-                .filter { it.isFile && it.length() in 1..MAX_PRESET_BYTES }
-                .sortedBy { it.name.lowercase(Locale.US) }
                 .take(MAX_FILES_PER_DIRECTORY)
                 .forEach { file ->
                     val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@forEach
@@ -88,23 +87,85 @@ object GmmpEqualizerPresetCatalog {
         )
     }
 
+    /**
+     * Enumerate real preset files below one GMMP preset root. Numeric or
+     * band-labelled child directories are treated as band-count scopes. If a
+     * ten-band scope exists, other explicitly scoped band counts are ignored;
+     * unscoped files remain valid because some GMMP versions store them flat.
+     */
+    internal fun presetFilesForDirectory(directory: File, expectedBandCount: Int): List<File> {
+        if (!directory.isDirectory || !directory.canRead()) return emptyList()
+
+        data class Node(val file: File, val depth: Int, val bandHint: Int?)
+        val queue = ArrayDeque<Node>()
+        val expected = mutableListOf<File>()
+        val unscoped = mutableListOf<File>()
+        queue.add(Node(directory, 0, bandCountHint(directory.name)))
+        var visited = 0
+
+        while (queue.isNotEmpty() && visited < MAX_PRESET_TREE_NODES) {
+            val node = queue.removeFirst()
+            visited += 1
+            node.file.listFiles()
+                .orEmpty()
+                .sortedBy { it.name.lowercase(Locale.US) }
+                .take(128)
+                .forEach { child ->
+                    if (child.isFile) {
+                        if (child.length() !in 1..MAX_PRESET_BYTES) return@forEach
+                        when (node.bandHint) {
+                            expectedBandCount -> expected += child
+                            null -> unscoped += child
+                        }
+                    } else if (child.isDirectory && child.canRead() && node.depth < MAX_PRESET_TREE_DEPTH) {
+                        val childHint = bandCountHint(child.name) ?: node.bandHint
+                        queue.add(Node(child, node.depth + 1, childHint))
+                    }
+                }
+        }
+
+        val selected = if (expected.isNotEmpty()) unscoped + expected else unscoped
+        return selected
+            .distinctBy { runCatching { it.canonicalPath }.getOrDefault(it.absolutePath) }
+            .sortedBy { it.absolutePath.lowercase(Locale.US) }
+    }
+
+    internal fun bandCountHint(name: String): Int? {
+        val match = Regex("(?:^|[^0-9])(10|[2-9])(?:[^0-9]|$)").find(name.lowercase(Locale.US))
+            ?: return null
+        return match.groupValues.getOrNull(1)?.toIntOrNull()
+    }
+
     private fun candidateDirectories(application: Application): List<File> {
         val ordered = linkedSetOf<File>()
 
         @Suppress("DEPRECATION")
         runCatching { Environment.getExternalStorageDirectory() }.getOrNull()?.let { external ->
-            ordered += File(external, "gmmp/eq_preset")
+            listOf(File(external, "gmmp"), File(external, "GMMP"))
+                .distinctBy { it.absolutePath }
+                .forEach { gmmpRoot ->
+                    ordered += File(gmmpRoot, "eq_preset")
+                    ordered += File(gmmpRoot, "eq_presets")
+                    if (gmmpRoot.isDirectory && gmmpRoot.canRead()) {
+                        discoverNamedPresetDirectories(gmmpRoot).forEach(ordered::add)
+                    }
+                }
         }
 
         ordered += File(application.applicationInfo.dataDir, "files/gmmp/eq_preset")
+        ordered += File(application.applicationInfo.dataDir, "files/gmmp/eq_presets")
         ordered += File(application.applicationInfo.dataDir, "files/eq_preset")
+        ordered += File(application.applicationInfo.dataDir, "files/eq_presets")
         ordered += File(application.applicationInfo.dataDir, "eq_preset")
+        ordered += File(application.applicationInfo.dataDir, "eq_presets")
 
         runCatching { application.getExternalFilesDirs(null).filterNotNull() }
             .getOrDefault(emptyList())
             .forEach { externalFiles ->
                 ordered += File(externalFiles, "gmmp/eq_preset")
+                ordered += File(externalFiles, "gmmp/eq_presets")
                 ordered += File(externalFiles, "eq_preset")
+                ordered += File(externalFiles, "eq_presets")
             }
 
         // Current GMMP versions are free to move the files. Search only GMMP's
