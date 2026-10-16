@@ -2,7 +2,7 @@
 
 **Purpose:** Canonical entry point for assistants and contributors. Read this file before changing code, then inspect the relevant source, current branch head, compatibility docs and exact-head CI.
 
-**Last consolidated:** 2026-10-08. **Release line:** 0.4.1. **Accepted GMMP target:** 4.2.1.
+**Last consolidated:** 2026-10-17. **Release line:** 0.4.1. **Accepted GMMP target:** 4.2.1.
 
 ## 1. Collaboration and repository discipline
 
@@ -80,7 +80,11 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Temporary `isShown == false` during a pager transition does not invalidate a verified native anchor; detach/replacement/semantic mismatch does.
 - Cache class-level reflection and drawable/glyph analysis used by persistent badges.
 - Audio-profile inheritance displays passively observed current GMMP state; dormant route values and suggested fallbacks must never be labelled as GMMP defaults.
-- The Equalizer is one output override: named presets restore the observed native PRE/band shape, while manual PRE/band edits mark the profile `Custom`; `Custom` is a state, not a selectable preset.
+- Standard/no-Bluetooth is the baseline, not an override. Only observations made on the local route may redefine Standard; direct GMMP edits while Bluetooth is active remain temporary session state.
+- The Equalizer is one output override: named presets restore an exact learned native PRE/band shape, while manual PRE/band edits atomically mark the route profile `Custom`; `Custom` is a state, not a selectable preset.
+- A stored/startup GMMP preset name is metadata only and is **never** proof of a preset curve. Preset learning must be tied to a real natural GMMP preset action or a complete unambiguous native preset file, and unsafe learned-preset schemas must be invalidated rather than grandfathered in.
+- The semantically resolved Equalizer PRE/band/enabled methods have one GoneSmart hook owner. Other audio subsystems consume the shared live runtime target; do not install competing interceptors solely to capture the same `thisObject`.
+- For cards with an Enabled switch plus dependent values (Equalizer, Balance, Limiter, Bass boost, Tempo, Virtualizer, Amplifier), dependent controls remain disabled/muted unless both the Bluetooth override and the card's Enabled switch are on. Standalone switches remain directly usable when overridden.
 - Missing native audio values fail closed instead of being promoted from UI fallback values into persisted overrides.
 
 ## 7. User-facing notification contract
