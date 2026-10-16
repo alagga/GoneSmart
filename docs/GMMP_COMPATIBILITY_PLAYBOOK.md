@@ -306,3 +306,12 @@ The 2026-10-14 r44 device trace proved that native-fallback preselection plus po
 For a GMMP version update, the previous accepted GoneSmart feature behavior is the specification. Update only hook discovery/binding and shape adapters required to reach the same semantic native boundary. Do not change feature algorithms as a substitute for finding the new hook. If the exact native replacement is not proven, fail closed or use a narrowly scoped compatibility shim that reproduces the old postcondition without guessing mutable obfuscated state, and document why it exists.
 
 For Track Auto-DJ, GMMP 4.2.0 commit `6f7751cb9a5a9c5ebc1d48da23aecbb68ec32c01` is the baseline for queue ownership semantics: one exact native seed, logical position/current/append root at 1, dynamic GMMP Initial Size, GMMP-owned follower materialization, and a fresh GoneSmart recommendation session per explicit invocation.
+
+
+### 2026-10-16 Track Auto-DJ predecoder semantic port
+
+The final post-decode `MusicService(Int)->void` replay experiment was retired. Device evidence showed that the visible five-row queue could be fully correct and the replay could return successfully while playback still froze on/after the second-track transition. Historical R49 evidence had already shown the same boundary is not a player-cache refresh.
+
+GMMP 4.2.0 remains the semantic baseline, but its low-level implementation cannot be copied literally: `ex3.c(...)`, append allocator `ex3.p`, queue DAO mutation and `b2(int)` current-state movement formed one coupled owner. GMMP 4.2.1 splits those responsibilities and can ask for `current+1` during native Play before a later Track-Mix worker can isolate/refill the seed.
+
+For non-Queue song-menu starts, the compatibility port therefore restores the already-proven predecoder ordering rather than repairing playback afterwards. Selected-seed GoneSmart preparation happens before Play. The natural `qr.z(int)` hook is allowed to establish a zero-match native Initial Size synchronously after rebasing the exact selected seed to the accepted position-1 invariant, or to consume the prepared Smart bootstrap. The original GMMP caller then owns its normal next-source/decoder creation. Existing R50/R51 guards may only preserve those already-selected identities across a later source rebuild. Queue-context starts remain on the R59 native-ownership path because that path already produces the correct queue and earlier predecoder state writes were not accepted there.

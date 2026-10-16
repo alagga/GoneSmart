@@ -57,6 +57,27 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
+    @Test fun nonQueue421StartsUseThePredecoderCompatibilityPort() {
+        assertTrue(
+            TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                source = "menu_gm_context_playlist_details",
+                legacyQueue = false
+            )
+        )
+        assertFalse(
+            TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                source = "menu_gm_context_queue",
+                legacyQueue = false
+            )
+        )
+        assertFalse(
+            TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                source = "menu_gm_context_playlist_details",
+                legacyQueue = true
+            )
+        )
+    }
+
     @Test fun slotRefillRequestsOnlyRealShortfall() {
         assertEquals(0, TrackMixInitialFillPolicy.nativeSlotRefillCount(4, 4, false))
         assertEquals(2, TrackMixInitialFillPolicy.nativeSlotRefillCount(4, 2, false))

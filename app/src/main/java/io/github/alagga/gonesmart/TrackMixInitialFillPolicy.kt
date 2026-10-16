@@ -24,6 +24,12 @@ internal object TrackMixInitialFillPolicy {
         return NativeRefillAction.SUPPRESS
     }
 
+    fun usePredecoderCompatibility(
+        source: String,
+        legacyQueue: Boolean
+    ): Boolean =
+        !legacyQueue && source != "menu_gm_context_queue"
+
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =
         (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0)).coerceAtLeast(0)
 

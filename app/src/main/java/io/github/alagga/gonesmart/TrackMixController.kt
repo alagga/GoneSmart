@@ -646,7 +646,89 @@ internal class TrackMixController(
     fun prepareZeroPoolAtNativeRefill(
         autoDj: Any,
         requestedTracks: Int
-    ): ZeroPoolNativeRefillBoundary? = null
+    ): ZeroPoolNativeRefillBoundary? {
+        val request = pending ?: return null
+        if (!TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                source = request.source,
+                legacyQueue = false
+            )
+        ) return null
+        if (
+            request.stage != "WAIT_PLAY" ||
+            request.prePlayTarget == null ||
+            request.prePlayPrepared.trackIds.isNotEmpty() ||
+            request.prePlayInitialSize <= 1 ||
+            request.zeroPoolBoundaryPrepared ||
+            request.zeroPoolBoundaryAttempted ||
+            nativeAutoDj?.get() !== autoDj
+        ) return null
+
+        val plan = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(
+            initialSize = request.prePlayInitialSize,
+            originalRequested = requestedTracks
+        ) ?: return null
+        val target = request.prePlayTarget ?: return null
+        val located = queueReader.locateUniqueTrackRow(autoDj, target.id) ?: return null
+
+        request.zeroPoolBoundaryAttempted = true
+        request.verifiedCurrentQueueEntryId = located.queueEntryId
+        request.provisionalCurrentQueuePosition = located.queuePosition
+        request.stage = "ZERO_POOL_NATIVE_FILL"
+        return try {
+            val verifiedWriter = nativePositionWriterProvider(autoDj)
+                ?: nativeTrackMixPositionWriterProvider(autoDj, located.queuePosition)
+                ?: error("Verified GMMP Current-position writer unavailable at native refill boundary")
+            check(
+                GmmpQueueMutationBridge(
+                    autoDj = autoDj,
+                    verifiedPositionWriter = verifiedWriter,
+                    currentQueueEntryIdHint = located.queueEntryId
+                ).isolateTrackMixSeed(target.id)
+            ) {
+                "Could not isolate selected Track Auto-DJ seed before native refill"
+            }
+            val isolated = queueReader.read(
+                autoDj,
+                verifiedWriter.read(),
+                located.queueEntryId
+            ) ?: error("Predecoder seed verification unavailable")
+            check(
+                isolated.currentQueuePosition == 1 &&
+                    isolated.currentItem?.queueEntryId == located.queueEntryId &&
+                    isolated.currentItem?.track?.id == target.id &&
+                    isolated.items.size == 1
+            ) {
+                "Predecoder seed did not restore the 4.2.0 position-1 invariant"
+            }
+            request.provisionalCurrentQueuePosition = 1
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL REFILL BOUNDARY | isolated=true | beforeOriginal=true" +
+                    " | seed=${target.id} | entry=${located.queueEntryId}" +
+                    " | oldCurrentPosition=${located.queuePosition} | currentPosition=1" +
+                    " | originalRequested=$requestedTracks | topUp=${plan.topUpCount}" +
+                    " | route=predecoder-4.2.0-semantics"
+            )
+            ZeroPoolNativeRefillBoundary(
+                token = request.token,
+                selectedTrackId = target.id,
+                selectedEntryId = located.queueEntryId,
+                currentPosition = 1,
+                initialSize = request.prePlayInitialSize,
+                originalRequested = requestedTracks,
+                topUpCount = plan.topUpCount
+            )
+        } catch (failure: Throwable) {
+            request.stage = "WAIT_PLAY"
+            request.zeroPoolBoundaryAttempted = false
+            Log.e(
+                TAG,
+                "MIX ZERO-POOL REFILL BOUNDARY | seed isolation failed; fail closed",
+                failure
+            )
+            null
+        }
+    }
 
     fun completeZeroPoolAtNativeRefill(
         autoDj: Any,
@@ -994,19 +1076,43 @@ internal class TrackMixController(
                         "evidence=${resolution.evidence} | inspected=${resolution.inspectedObjects}"
                 )
 
-                // R57 restores the accepted 4.2.0 ownership model. Pre-Play
-                // work resolves only the exact clicked Track identity. Track Mix
-                // never prepares or injects follower IDs itself; GMMP's normal
-                // AUTO_DJ refill and GoneSmart's general selection hook own them.
                 val initial = settings.read().initialQueueSize.coerceAtLeast(1)
                 request.prePlayInitialSize = initial
-                request.prePlayPrepared = TrackMixPreparedInitialPool.EMPTY
-                request.stage = "PREPARED"
-                Log.i(
-                    TAG,
-                    "MIX PREPLAY | target=${resolution.track.id} | initial=$initial | " +
-                        "strategy=native-auto-dj"
-                )
+                val usePredecoderCompatibility =
+                    TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                        source = source,
+                        legacyQueue = false
+                    ) && initial > 1
+                if (usePredecoderCompatibility) {
+                    val requiredUpcoming = (initial - 1).coerceAtLeast(0)
+                    request.stage = "PREPLAY_PREPARE"
+                    request.prePlayPrepared = preparePrePlaySmartPool(
+                        autoDj,
+                        resolution.track,
+                        requiredUpcoming
+                    )
+                    Log.i(
+                        TAG,
+                        "MIX PREPLAY SMART POOL | target=${resolution.track.id} | " +
+                            "requested=$requiredUpcoming | prepared=${request.prePlayPrepared.trackIds.size} | " +
+                            "route=predecoder-4.2.0-semantics"
+                    )
+                    if (request.prePlayPrepared.trackIds.isEmpty()) {
+                        Log.i(
+                            TAG,
+                            "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
+                                "awaiting native qr.z predecoder boundary"
+                        )
+                    }
+                } else {
+                    request.prePlayPrepared = TrackMixPreparedInitialPool.EMPTY
+                    request.stage = "PREPARED"
+                    Log.i(
+                        TAG,
+                        "MIX PREPLAY | target=${resolution.track.id} | initial=$initial | " +
+                            "strategy=native-auto-dj | route=r59"
+                    )
+                }
             }
 
             main.post {
@@ -1052,6 +1158,135 @@ internal class TrackMixController(
         }
     }
 
+    private fun preparePredecoderInitialQueue(
+        request: Pending,
+        loaded: Snapshot,
+        selectedId: Long,
+        selectedEntryId: Long,
+        initial: Int,
+        upcoming: Int
+    ): Snapshot? {
+        val selectedQueuePosition = loaded.currentQueuePosition ?: run {
+            Log.e(TAG, "MIX PREDECODER | selected queue_position unavailable")
+            fail("Could not identify the selected queue position safely.", request.context)
+            return null
+        }
+        val requiredUpcoming = (initial - 1).coerceAtLeast(0)
+
+        if (request.prePlayPrepared.trackIds.isEmpty()) {
+            return fillZeroPoolNativeFallback(
+                request = request,
+                selectedId = selectedId,
+                selectedEntryId = selectedEntryId,
+                selectedQueuePosition = selectedQueuePosition,
+                initial = initial,
+                upcomingSetting = upcoming
+            ) ?: run {
+                fail(
+                    "Could not safely materialize the native Auto-DJ queue before playback preload.",
+                    request.context
+                )
+                null
+            }
+        }
+
+        var currentSnapshot = loaded
+        var availableUpcoming =
+            (currentSnapshot.ids.size - currentSnapshot.currentIndex - 1).coerceAtLeast(0)
+        if (availableUpcoming < requiredUpcoming) {
+            val deficit = requiredUpcoming - availableUpcoming
+            if (!requestHeldNativeRefill(deficit)) {
+                fail("Could not prepare Auto-DJ queue slots before playback preload.", request.context)
+                return null
+            }
+            currentSnapshot = awaitQueue(
+                request,
+                8_000L,
+                selectedEntryId
+            ) { snapshot ->
+                snapshot.currentId == selectedId &&
+                    (snapshot.ids.size - snapshot.currentIndex - 1) >= requiredUpcoming
+            } ?: run {
+                fail("Could not prepare Auto-DJ queue slots before playback preload.", request.context)
+                return null
+            }
+            availableUpcoming =
+                (currentSnapshot.ids.size - currentSnapshot.currentIndex - 1).coerceAtLeast(0)
+        }
+
+        val expectedSmart = request.prePlayPrepared.trackIds
+            .take(request.bootstrapAppliedTrackIds.size)
+        if (expectedSmart.isEmpty()) {
+            Log.e(
+                TAG,
+                "MIX PREDECODER VERIFY | prepared Smart pool never reached native materialization"
+            )
+            fail("Could not apply the prepared Track Auto-DJ selection safely.", request.context)
+            return null
+        }
+        expectedSmart.forEachIndexed { index, trackId ->
+            val actual = currentSnapshot.ids.getOrNull(currentSnapshot.currentIndex + 1 + index)
+            if (actual != trackId) {
+                Log.e(
+                    TAG,
+                    "MIX PREDECODER VERIFY | slot=${index + 1} | expected=$trackId | actual=$actual"
+                )
+                fail("Could not verify the prepared Track Auto-DJ selection.", request.context)
+                return null
+            }
+        }
+
+        request.stage = "PRUNE"
+        val autoDj = nativeAutoDj?.get() ?: run {
+            fail("Could not access Auto-DJ queue.", request.context)
+            return null
+        }
+        val pruned = runCatching {
+            GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = nativePositionWriterProvider(autoDj),
+                currentQueueEntryIdHint = selectedEntryId
+            ).retargetTrackMixUpcoming(
+                selectedTrackId = selectedId,
+                smartTrackIds = emptyList(),
+                targetQueueSize = initial
+            )
+        }.onFailure {
+            Log.e(TAG, "MIX PREDECODER PRUNE | native 4.2.1 queue prune failed", it)
+        }.getOrDefault(false)
+        if (!pruned) {
+            fail("Could not finalize the Track Auto-DJ queue.", request.context)
+            return null
+        }
+        val filled = queueSnapshot(selectedEntryId)?.takeIf {
+            it.currentId == selectedId && it.ids.size == initial
+        } ?: run {
+            fail("Could not verify the Track Auto-DJ queue.", request.context)
+            return null
+        }
+
+        Log.i(
+            TAG,
+            "MIX PREDECODER QUEUE | verified=true | initial=$initial | " +
+                "smart=${request.bootstrapAppliedTrackIds.size} | " +
+                "nativeRemainder=${requiredUpcoming - request.bootstrapAppliedTrackIds.size} | " +
+                "current=$selectedId | upcoming=$availableUpcoming"
+        )
+
+        armManagedAutoDjSession()
+        request.stage = "FILLING"
+        request.transitionalRefillSuppressed = false
+        sendCommand(request.context, COMMAND_AUTO_DJ)
+        nativeToastSuppressionUntilMs = SystemClock.elapsedRealtime() + 7_000L
+        awaitAutoDjCommandRefillBoundary(request)
+        Log.i(
+            TAG,
+            "MIX AUTO-DJ | command=sent-after-predecoder-bootstrap | " +
+                "initialSize=$initial | upcoming=$upcoming | seed=$selectedId"
+        )
+        return filled
+    }
+
     private fun runTrackMix(request: Pending) {
         var managedSessionReady = false
         try {
@@ -1092,6 +1327,75 @@ internal class TrackMixController(
                 nativeAutoDj?.get()?.let { autoDj ->
                     field(autoDj, "q")?.javaClass?.name == "ex3"
                 } == true || nativeQueue?.get()?.javaClass?.name == "ex3"
+
+            val usePredecoderCompatibility =
+                TrackMixInitialFillPolicy.usePredecoderCompatibility(
+                    source = request.source,
+                    legacyQueue = legacyQueue
+                ) && initial > 1
+            if (usePredecoderCompatibility) {
+                val filled = preparePredecoderInitialQueue(
+                    request = request,
+                    loaded = loaded,
+                    selectedId = selectedId,
+                    selectedEntryId = selectedEntryId,
+                    initial = initial,
+                    upcoming = upcoming
+                )
+                refillHold.set(false)
+                if (filled == null) return
+
+                val exactContext = nativeAutoDj?.get()?.let { autoDj ->
+                    queueReader.read(
+                        autoDj,
+                        currentQueueEntryIdHint = selectedEntryId
+                    )
+                }
+                val orderedPositions = exactContext?.items
+                    ?.sortedBy { it.queuePosition }
+                    ?.map { it.queuePosition }
+                    ?: emptyList()
+                if (exactContext?.currentItem?.track?.id != selectedId ||
+                    !TrackMixInitialFillPolicy.isExactInitialQueue(
+                        initialSize = initial,
+                        currentQueuePosition = exactContext?.currentQueuePosition,
+                        queuePositions = orderedPositions
+                    )
+                ) {
+                    Log.e(
+                        TAG,
+                        "MIX PREDECODER COORDINATES | initial=$initial | actual=${filled.ids.size} | " +
+                            "currentPosition=${exactContext?.currentQueuePosition} | " +
+                            "positions=${orderedPositions.joinToString(",")} | verified=false"
+                    )
+                    fail("GMMP's predecoder Initial Size was not normalized correctly.", request.context)
+                    return
+                }
+
+                if (managedAutoDj?.get() == null) {
+                    armManagedAutoDjSession()
+                }
+                managedSessionReady = managedAutoDj?.get() === nativeAutoDj?.get()
+                if (!managedSessionReady) {
+                    fail("Could not retain the Track Auto-DJ continuation session.", request.context)
+                    return
+                }
+
+                Log.i(
+                    TAG,
+                    "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +
+                        "currentPreserved=true | tracksAfterSeed=${filled.ids.size - 1} | " +
+                        "owner=predecoder-4.2.0-semantics"
+                )
+                events.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
+                    "${request.menuLabel}: ${filled.ids.size - 1} " +
+                        "tracks queued after the selected song."
+                )
+                toast(request.context, request.confirmation)
+                nativeToastSuppressionUntilMs = SystemClock.elapsedRealtime() + 3_000L
+                return
+            }
 
             // This is the one queue mutation Track Mix owns: reduce the queue to
             // the exact native row GMMP has just started. Followers are NEVER
