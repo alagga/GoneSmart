@@ -28,6 +28,8 @@ A durable resolver combines, as applicable:
 
 Tested obfuscated names may be fast paths. They are never proof by themselves. If ambiguity remains, stop rather than invoking candidates experimentally.
 
+This rule applies to audio internals too. An Equalizer class or method observed as `r61`, `r`, `z`, `d`, etc. on one build may be used only as a fast lookup after its structural role is revalidated. Audio observation/application code must have the same tested-fast-path → structural/semantic fallback → uniqueness → verification lifecycle as queue, playlist and other GMMP-facing features.
+
 ## 3. Workflow for a new GMMP version
 
 ### Detect
@@ -36,7 +38,7 @@ Compare the installed GMMP version with the tested version. Missing/unknown vers
 
 ### Run one bounded read-only self-test
 
-Cover the feature families that depend on internals in one pass. Safe evidence includes class hierarchy/signatures, runtime types, generated Room SQL, RecyclerView adapter/holder ownership, native call-chain existence without destructive invocation, and Cursor/state correlation.
+Cover the feature families that depend on internals in one pass. Safe evidence includes class hierarchy/signatures, runtime types, generated Room SQL, RecyclerView adapter/holder ownership, native call-chain existence without destructive invocation, Cursor/state correlation, and read-only audio-state/preset-storage structure.
 
 ### Graduate each boundary
 
@@ -45,6 +47,8 @@ Cover the feature families that depend on internals in one pass. Safe evidence i
 - validate the real native action once on device;
 - retain a bounded independent postcondition;
 - retire the broad probe.
+
+For passive Equalizer observation specifically, discovery may hook natural GMMP calls only after a unique structural owner is identified; it must not invoke an unknown setter to learn its meaning. Native preset files may be parsed read-only when their complete shape is provable.
 
 ### Retire runtime cost
 
@@ -110,6 +114,20 @@ For a Track-Auto-DJ-owned normalized queue only:
 
 This continuation path is device-accepted for 0.4.0.
 
+### Audio profiles / Equalizer observation
+
+The audio-profile feature is still under development, but its compatibility boundary is explicit:
+
+- Stable semantic preference IDs are observed for Equalizer enabled/active preset and the Effects controls documented in `docs/AUDIO_PROFILES.md`.
+- The accepted 4.2.1 Equalizer state owner was observed as `r61`, with natural PRE/band/enabled calls exposed as `r(double)`, `z(int,double)` and `d(boolean)`. Those names are evidence only.
+- Runtime resolution validates the Equalizer state shape first: a unique PRE-like `void(double)` setter, a unique band-like `void(int,double)` setter, a unique enabled-like `void(boolean)` setter, gain-array state and supporting Equalizer structure.
+- `r61` is therefore only a validated 4.2.1 fast path. If the name changes, a bounded startup-only Dex scan searches GMMP implementation classes for the same structural contract and accepts only one unique highest-confidence owner. Ambiguity disables that observation boundary instead of guessing.
+- Discovery is passive: GoneSmart never invokes an unknown Equalizer setter to determine what it does.
+- Named preset reference curves are imported read-only from GMMP's actual installed preset storage when a complete PRE + ten-band file can be parsed safely. Historical `gmmp/eq_preset`, current GMMP-owned semantic preset directories and matching packaged entries are bounded discovery inputs; manual opening of every preset is not an acceptance requirement.
+- Passive natural setter capture remains a fallback and live-state mirror, not the primary built-in preset-catalog mechanism.
+
+Actual Bluetooth profile mutation remains fail-closed until GMMP's native DSP writer/reload boundary is proved. The Standard/overlay lifecycle is defined in `docs/AUDIO_PROFILES.md` and must survive future compatibility work unchanged.
+
 ### Recommendation-pool latency
 
 - successful fills may top up again as soon as low-water requires it;
@@ -143,6 +161,7 @@ Resolvers prefer semantic adapter/model/writer ownership. Historical class names
 - Queue-writer discovery becomes pass-through after proof.
 - Play-flipped uses one delayed independent postcondition read plus at most one legacy fallback, not a retry loop.
 - Track Auto-DJ pre-action Queue/Room barriers never block GMMP's main thread.
+- Audio's structural Dex fallback is startup-only and runs only when the validated tested fast path is unavailable; it must never become a recurring hot-path scan.
 
 Do not hide `w6` or other native GMMP logging to make logs look clean. Remove GoneSmart-caused unnecessary queries instead.
 
@@ -156,6 +175,8 @@ Do not hide `w6` or other native GMMP logging to make logs look clean. Remove Go
 ## 7. Probe retirement ledger
 
 4.2.1's broad class/recycler/Room probes are retired or gated. Reusable diagnostics remain available for unknown versions, but accepted runtime keeps only concise resolver/result/failure markers.
+
+The audio profile feature may retain bounded development evidence only while its native DSP application boundary is unresolved. Once accepted, broad audio class inventories/preset probes must be removed; the structural fallback and file catalog discovery remain bounded compatibility mechanisms rather than continuous probes.
 
 The dated `GMMP_421_*` files retain the investigation chronology. Do not move that chronology back into hot runtime code or `AGENTS.md`.
 
@@ -171,6 +192,8 @@ The dated `GMMP_421_*` files retain the investigation chronology. Do not move th
 - [ ] Compatibility source-of-truth updated;
 - [ ] `AGENTS.md`, completion matrix, README and this playbook agree;
 - [ ] exact-head CI fully green.
+
+For audio-capable versions, the checklist additionally requires that the Equalizer observation owner is resolved semantically (not by an R8 name alone) and that native preset import either succeeds from a proven complete format or fails closed without requiring guessed curves.
 
 ## 9. 0.4.0 closure
 
