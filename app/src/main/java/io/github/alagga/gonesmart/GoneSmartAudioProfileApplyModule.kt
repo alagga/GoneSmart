@@ -6,11 +6,9 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import dalvik.system.DexFile
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.io.File
-import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -31,7 +29,6 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         private const val CONTEXT_MAX_ATTEMPTS = 40
         private const val APPLY_DEBOUNCE_MS = 80L
         private const val MIN_NATIVE_PREF_MATCHES = 6
-        private const val MAX_DYNAMIC_EQ_CLASSES = 12_000
         private const val RUNTIME_PREFS = "gonesmart_audio_runtime_state"
         private const val KEY_OVERLAY_ACTIVE = "overlay_active"
         private const val KEY_LAST_ROUTE = "last_route"
@@ -43,12 +40,10 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val applyPending = AtomicBoolean(false)
     private val runtimeStandardFallbackLogged = AtomicBoolean(false)
+    private val eqReadyListenerRegistered = AtomicBoolean(false)
 
     @Volatile
     private var pendingReason: String = "startup"
-
-    @Volatile
-    private var hostApplication: Application? = null
 
     @Volatile
     private var profilePreferences: SharedPreferences? = null
@@ -66,21 +61,6 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     private var lastObservedRouteId: String? = null
 
     private var routeObserver: AudioRouteObserver? = null
-
-    @Volatile
-    private var eqInstance: Any? = null
-
-    @Volatile
-    private var eqHandler: Handler? = null
-
-    @Volatile
-    private var eqPreSetter: Method? = null
-
-    @Volatile
-    private var eqBandSetter: Method? = null
-
-    @Volatile
-    private var eqEnabledSetter: Method? = null
 
     @Volatile
     private var lastAppliedEqFingerprint: String? = null
@@ -107,16 +87,22 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             Log.w(TAG, "Audio-profile preferences unavailable; native application disabled", it)
         }.getOrNull()
 
-        resolveApplicationAndStart(param.classLoader, attempt = 0)
+        resolveApplicationAndStart(attempt = 0)
     }
 
-    private fun resolveApplicationAndStart(classLoader: ClassLoader, attempt: Int) {
+    private fun resolveApplicationAndStart(attempt: Int) {
         val application = currentApplication()
         if (application != null) {
-            hostApplication = application
             runtimePreferences = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
             nativePreferences = resolveNativePreferenceStore(application)
-            installEqualizerCapture(classLoader, application)
+
+            if (eqReadyListenerRegistered.compareAndSet(false, true)) {
+                GmmpEqualizerRuntimeBridge.addReadyListener {
+                    lastAppliedEqFingerprint = null
+                    Log.i(TAG, "EQ APPLY TARGET READY | source=shared-observer-bridge")
+                    scheduleApply("shared live Equalizer state ready")
+                }
+            }
 
             if (routeObserver == null) {
                 routeObserver = AudioRouteObserver(application) { route -> onRouteChanged(route) }
@@ -130,7 +116,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             return
         }
         mainHandler.postDelayed(
-            { resolveApplicationAndStart(classLoader, attempt + 1) },
+            { resolveApplicationAndStart(attempt + 1) },
             CONTEXT_RETRY_MS
         )
     }
@@ -299,16 +285,6 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         return resolved
     }
 
-    private fun nativePresetValue(
-        prefs: SharedPreferences,
-        preset: String,
-        fieldId: String
-    ): String? = AudioProfileValueResolver.resolve(
-        fieldId,
-        prefs.getString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), null),
-        runtimePreferences?.getString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), null)
-    )
-
     private fun resolveGroupValues(
         prefs: SharedPreferences,
         routeId: String,
@@ -353,20 +329,32 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         }
 
         val enabled = value("eq.enabled") ?: return null
-        val preset = value("eq.preset") ?: return null
+        val storedPreset = value("eq.preset") ?: return null
+        val preset = if (useRouteOverride &&
+            storedPreset != GoneSmartAudioProfiles.CUSTOM_PRESET &&
+            !AudioProfilePresetStorage.isCurrent(prefs)
+        ) {
+            GoneSmartAudioProfiles.CUSTOM_PRESET
+        } else {
+            storedPreset
+        }
 
-        val shape = when {
-            !useRouteOverride -> readShape { fieldId -> standardValue(prefs, fieldId) }
-            preset == GoneSmartAudioProfiles.CUSTOM_PRESET ->
-                readShape { fieldId -> prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null) }
-            else -> readShape { fieldId -> nativePresetValue(prefs, preset, fieldId) }
+        // A route profile always owns a complete explicit shape. Selecting a
+        // learned native preset copies that exact curve into these route values,
+        // so the runtime never has to rediscover a preset while applying it.
+        val shape = if (useRouteOverride) {
+            readShape { fieldId ->
+                prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null)
+            }
+        } else {
+            readShape { fieldId -> standardValue(prefs, fieldId) }
         }
 
         val source = when {
             !useRouteOverride -> "Standard"
             preset == GoneSmartAudioProfiles.CUSTOM_PRESET -> "Bluetooth Custom"
-            shape != null -> "native preset $preset"
-            else -> "native preset $preset unavailable"
+            shape != null -> "Bluetooth native preset $preset"
+            else -> "Bluetooth Equalizer shape unavailable"
         }
         return EqualizerTarget(enabled, preset, shape, source)
     }
@@ -405,58 +393,9 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         return writes.all { write -> NativeAudioMutation.matches(prefs.all[write.key], write) }
     }
 
-    /** Capture the live Equalizer instance from natural calls only. */
-    private fun installEqualizerCapture(classLoader: ClassLoader, application: Application) {
-        val mapping = GmmpEqualizerObservationResolver.resolveFastPath(classLoader)
-            ?: GmmpEqualizerObservationResolver.resolveDynamic(
-                discoverEqualizerCandidates(classLoader, application)
-            )
-            ?: run {
-                Log.w(TAG, "EQ apply boundary unresolved; custom/native shape application disabled")
-                return
-            }
-
-        eqPreSetter = mapping.preSetter
-        eqBandSetter = mapping.bandSetter
-        eqEnabledSetter = mapping.enabledSetter
-        val methods = listOf(mapping.preSetter, mapping.bandSetter, mapping.enabledSetter)
-        val installed = methods.all { method ->
-            runCatching {
-                method.isAccessible = true
-                hook(method).intercept { chain ->
-                    captureEqualizerState(chain.thisObject)
-                    chain.proceed()
-                }
-                true
-            }.onFailure {
-                Log.w(TAG, "Could not install EQ instance capture", it)
-            }.getOrDefault(false)
-        }
-
-        if (installed) {
-            Log.i(TAG, "EQ APPLY RESOLVED | source=${mapping.source} | owner=${mapping.owner.name} | score=${mapping.score}")
-        }
-    }
-
-    private fun captureEqualizerState(instance: Any?) {
-        if (instance == null) return
-        val looper = Looper.myLooper()
-        val changed = eqInstance !== instance
-        eqInstance = instance
-        if (looper != null) eqHandler = Handler(looper)
-        if (changed) {
-            lastAppliedEqFingerprint = null
-            scheduleApply("live Equalizer state ready")
-        }
-    }
-
     private fun applyEqualizerShape(routeId: String, target: EqualizerTarget): Boolean {
         val shape = target.shape ?: return false
-        val instance = eqInstance ?: return false
-        val handler = eqHandler ?: return false
-        val preSetter = eqPreSetter ?: return false
-        val bandSetter = eqBandSetter ?: return false
-        val enabledSetter = eqEnabledSetter ?: return false
+        val runtimeTarget = GmmpEqualizerRuntimeBridge.current() ?: return false
         val enabled = when (target.enabled) {
             "true" -> true
             "false" -> false
@@ -476,12 +415,15 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             shape[fieldId]?.toDoubleOrNull() ?: return false
         }
 
-        handler.post {
-            if (activeRouteId != routeId || eqInstance !== instance) return@post
+        runtimeTarget.handler.post {
+            val currentTarget = GmmpEqualizerRuntimeBridge.current()
+            if (activeRouteId != routeId || currentTarget?.instance !== runtimeTarget.instance) return@post
             val applied = runCatching {
-                preSetter.invoke(instance, pre)
-                bands.forEachIndexed { index, value -> bandSetter.invoke(instance, index, value) }
-                enabledSetter.invoke(instance, enabled)
+                runtimeTarget.preSetter.invoke(runtimeTarget.instance, pre)
+                bands.forEachIndexed { index, value ->
+                    runtimeTarget.bandSetter.invoke(runtimeTarget.instance, index, value)
+                }
+                runtimeTarget.enabledSetter.invoke(runtimeTarget.instance, enabled)
                 true
             }.onFailure {
                 Log.w(TAG, "Native Equalizer shape application failed", it)
@@ -503,41 +445,4 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         }
         return false
     }
-
-    private fun discoverEqualizerCandidates(
-        classLoader: ClassLoader,
-        application: Application
-    ): Sequence<Class<*>> = sequence {
-        var inspected = 0
-        for (path in applicationApkPaths(application)) {
-            if (inspected >= MAX_DYNAMIC_EQ_CLASSES) break
-            val dex = runCatching { DexFile(path) }.getOrNull() ?: continue
-            try {
-                val entries = dex.entries()
-                while (entries.hasMoreElements() && inspected < MAX_DYNAMIC_EQ_CLASSES) {
-                    val name = entries.nextElement()
-                    if (!looksLikeGmmpImplementationClass(name)) continue
-                    inspected += 1
-                    val clazz = runCatching { Class.forName(name, false, classLoader) }.getOrNull() ?: continue
-                    yield(clazz)
-                }
-            } finally {
-                runCatching { dex.close() }
-            }
-        }
-    }
-
-    private fun looksLikeGmmpImplementationClass(name: String): Boolean {
-        if (name.startsWith("android.") || name.startsWith("androidx.") || name.startsWith("java.") ||
-            name.startsWith("kotlin.") || name.startsWith("com.google.") || name.startsWith("io.github.alagga.")) {
-            return false
-        }
-        if (name.startsWith("gonemad.gmmp.")) return true
-        return '.' !in name && name.length in 2..10 && name.all { it.isLetterOrDigit() || it == '_' || it == '$' }
-    }
-
-    private fun applicationApkPaths(application: Application): List<String> = buildList {
-        add(application.applicationInfo.sourceDir)
-        application.applicationInfo.splitSourceDirs?.let(::addAll)
-    }.distinct()
 }
