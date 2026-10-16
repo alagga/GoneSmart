@@ -412,6 +412,52 @@ class MainActivity : AppCompatActivity() {
             )
         )))
 
+        val recommendationOptions = settingsRepository.read()
+        container.addView(verticalGap(24))
+        container.addView(sectionTitle("RECOMMENDATION SOURCES"))
+        container.addView(recommendationModeCard(recommendationOptions))
+        container.addView(verticalGap(10))
+        if (recommendationOptions.recommendationMode == RecommendationMode.SMART) {
+            container.addView(infoCard(
+                title = "Smart weighting",
+                body = "GoneSmart uses all stable sources automatically: Local Playlists ×1.00, ListenBrainz ×1.00 and Last.fm ×0.95, with balanced down-weighting for very large playlists. Network sources run in parallel; GoneSmart can refine these defaults in future updates."
+            ))
+        } else {
+            container.addView(settingGroup(listOf(
+                SettingSpec(GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED, "P", "Local Playlists", "Use co-occurrence in your normal GMMP playlists as a personal recommendation signal.", COLOR_GREEN),
+                SettingSpec(GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED, "L", "ListenBrainz", "Use recording similarity and a lower-confidence similar-artist fallback.", COLOR_ACCENT),
+                SettingSpec(GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED, "F", "Last.fm", "Use similar-track data and the bounded artist/top-track fallback.", COLOR_AMBER)
+            )))
+            container.addView(verticalGap(10))
+            container.addView(providerWeightCard(
+                title = "Local Playlist weight",
+                subtitle = "How strongly personal playlist co-occurrence influences the final ranking.",
+                key = GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT,
+                value = recommendationOptions.localPlaylistProviderWeight
+            ))
+            container.addView(verticalGap(10))
+            container.addView(providerWeightCard(
+                title = "ListenBrainz weight",
+                subtitle = "How strongly ListenBrainz evidence influences the final ranking.",
+                key = GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_WEIGHT,
+                value = recommendationOptions.listenBrainzProviderWeight
+            ))
+            container.addView(verticalGap(10))
+            container.addView(providerWeightCard(
+                title = "Last.fm weight",
+                subtitle = "How strongly Last.fm evidence influences the final ranking.",
+                key = GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_WEIGHT,
+                value = recommendationOptions.lastFmProviderWeight
+            ))
+            container.addView(verticalGap(10))
+            container.addView(playlistSizeWeightingCard(recommendationOptions))
+            container.addView(verticalGap(10))
+            container.addView(infoCard(
+                title = "Provider priority",
+                body = "Weights control recommendation priority. Request order is intentionally not configurable because ListenBrainz and Last.fm run in parallel, avoiding unnecessary waiting for one service before the other can start."
+            ))
+        }
+
         container.addView(verticalGap(24))
         container.addView(sectionTitle("MATCHING"))
         container.addView(minimumRatingCard())
@@ -436,10 +482,168 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(18))
         container.addView(infoCard(
             title = "Offline behavior",
-            body = "A valid pool from the current queue can continue offline. A new queue never reuses an old pool; if GoneSmart has no usable cached track, GMMP Auto-DJ takes over and the player sparkle turns red."
+            body = "Local Playlist recommendations can be generated without a network connection, and a valid pool from the current queue can also continue offline. Online providers are skipped while offline. A new queue never reuses an old pool; if no enabled local source can supply a suitable track, the configured GMMP Auto-DJ fallback can take over."
         ))
         refreshSettingsSwitches()
         return scrollPage(container)
+    }
+
+    private fun recommendationModeCard(options: GoneSmartOptions): View {
+        val card = card().apply {
+            setContentPadding(dp(20), dp(18), dp(20), dp(18))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showRecommendationModeDialog(options.recommendationMode) }
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(
+            textView("Recommendation mode", 16f, COLOR_TEXT, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        row.addView(textView(
+            if (options.recommendationMode == RecommendationMode.SMART) "Smart" else "Custom",
+            15f,
+            COLOR_ACCENT,
+            bold = true
+        ))
+        content.addView(row)
+        content.addView(textView(
+            if (options.recommendationMode == RecommendationMode.SMART)
+                "Recommended. GoneSmart chooses stable sources and balanced weights automatically. Tap to customize."
+            else
+                "Choose providers, their ranking weights and how strongly very large playlists are down-weighted. Tap to return to Smart.",
+            13f,
+            COLOR_TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        card.addView(content)
+        return card
+    }
+
+    private fun showRecommendationModeDialog(current: RecommendationMode) {
+        val modes = arrayOf("Smart (recommended)", "Custom")
+        val checked = if (current == RecommendationMode.SMART) 0 else 1
+        AlertDialog.Builder(this)
+            .setTitle("Recommendation mode")
+            .setSingleChoiceItems(modes, checked) { dialog, which ->
+                val selected = if (which == 0) RecommendationMode.SMART else RecommendationMode.CUSTOM
+                settingsRepository.setString(
+                    GoneSmartSettingsKeys.KEY_RECOMMENDATION_MODE,
+                    selected.preferenceValue
+                )
+                dialog.dismiss()
+                showTab(Tab.SMART)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun providerWeightCard(
+        title: String,
+        subtitle: String,
+        key: String,
+        value: Double
+    ): View {
+        val card = card().apply { setContentPadding(dp(20), dp(18), dp(20), dp(14)) }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleRow.addView(
+            textView(title, 16f, COLOR_TEXT, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        val valueText = textView(providerWeightLabel(value), 15f, COLOR_ACCENT, bold = true)
+        titleRow.addView(valueText)
+        content.addView(titleRow)
+        content.addView(textView(subtitle, 13f, COLOR_TEXT_SECONDARY).apply {
+            setPadding(0, dp(5), 0, dp(8))
+        })
+
+        val slider = Slider(this).apply {
+            valueFrom = RecommendationProviderPolicy.MIN_PROVIDER_WEIGHT.toFloat()
+            valueTo = RecommendationProviderPolicy.MAX_PROVIDER_WEIGHT.toFloat()
+            stepSize = 0.05f
+            this.value = value.toFloat().coerceIn(valueFrom, valueTo)
+            trackActiveTintList = ColorStateList.valueOf(COLOR_ACCENT)
+            trackInactiveTintList = ColorStateList.valueOf(0xFF494650.toInt())
+            thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
+            haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
+            setLabelFormatter { providerWeightLabel(it.toDouble()) }
+            addOnChangeListener { slider, sliderValue, fromUser ->
+                valueText.text = providerWeightLabel(sliderValue.toDouble())
+                if (fromUser && !slider.isPressed) {
+                    settingsRepository.setFloat(key, sliderValue)
+                }
+            }
+            addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
+                override fun onStartTrackingTouch(slider: Slider) = Unit
+                override fun onStopTrackingTouch(slider: Slider) {
+                    settingsRepository.setFloat(key, slider.value)
+                }
+            })
+        }
+        content.addView(slider)
+        card.addView(content)
+        return card
+    }
+
+    private fun providerWeightLabel(value: Double): String =
+        String.format(java.util.Locale.US, "×%.2f", value)
+
+    private fun playlistSizeWeightingCard(options: GoneSmartOptions): View {
+        val label = when (options.playlistSizeWeighting) {
+            PlaylistSizeWeighting.OFF -> "Off"
+            PlaylistSizeWeighting.BALANCED -> "Balanced"
+            PlaylistSizeWeighting.STRONG -> "Strong"
+        }
+        val card = card().apply {
+            setContentPadding(dp(20), dp(18), dp(20), dp(18))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showPlaylistSizeWeightingDialog(options.playlistSizeWeighting) }
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(
+            textView("Large-playlist weighting", 16f, COLOR_TEXT, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        row.addView(textView(label, 15f, COLOR_ACCENT, bold = true))
+        content.addView(row)
+        content.addView(textView(
+            "Off treats every playlist equally. Balanced favors focused playlists while keeping large lists useful. Strong reduces the influence of very large catch-all playlists further.",
+            13f,
+            COLOR_TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        card.addView(content)
+        return card
+    }
+
+    private fun showPlaylistSizeWeightingDialog(current: PlaylistSizeWeighting) {
+        val values = PlaylistSizeWeighting.entries
+        val labels = arrayOf("Off", "Balanced (recommended)", "Strong")
+        val checked = values.indexOf(current).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Large-playlist weighting")
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                val selected = values[which]
+                settingsRepository.setString(
+                    GoneSmartSettingsKeys.KEY_PLAYLIST_SIZE_WEIGHTING,
+                    selected.preferenceValue
+                )
+                dialog.dismiss()
+                showTab(Tab.SMART)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun companionTrackAutoDjLabel(): String = TrackMixPlan.COMPANION_LABEL
@@ -581,8 +785,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(22))
         container.addView(sectionTitle("RECOMMENDATION SOURCES"))
         container.addView(infoCard(
-            title = "ListenBrainz + Last.fm",
-            body = "ListenBrainz provides MusicBrainz-backed recording lookup and similar-recording data. Last.fm contributes similar-track data. GoneSmart sends only the seed metadata needed for those recommendation lookups; your full GMMP library stays local and is matched on-device. GoneSmart does not stream music from either service."
+            title = "Local Playlists + ListenBrainz + Last.fm",
+            body = "Smart mode combines personal co-occurrence from your normal local playlists with ListenBrainz and Last.fm. ListenBrainz and Last.fm run in parallel when online; your full GMMP library stays local and is matched on-device. Custom mode lets you disable sources or change their ranking weights. GoneSmart does not stream music from any provider."
         ))
         container.addView(verticalGap(12))
         container.addView(outlineButton("Open ListenBrainz") {
@@ -809,6 +1013,9 @@ class MainActivity : AppCompatActivity() {
         refreshSmartPlaylistFolderAvailability(options)
         setSwitch(GoneSmartSettingsKeys.KEY_FLIP_QUEUE, options.flipQueueEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_TRACK_MIX, options.trackMixEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED, options.listenBrainzProviderEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED, options.lastFmProviderEnabled)
+        setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED, options.localPlaylistProviderEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(

@@ -78,6 +78,7 @@ internal class LocalPlaylistAffinityProvider(
         autoDjInstance: Any,
         seeds: List<RecommendationSeed>,
         library: List<GmmpLibraryTrack>,
+        playlistSizeWeighting: PlaylistSizeWeighting = PlaylistSizeWeighting.BALANCED,
         maxResultsPerSeed: Int = DEFAULT_MAX_RESULTS_PER_SEED
     ): PlaylistAffinityBatch {
         val startedNs = System.nanoTime()
@@ -174,7 +175,7 @@ internal class LocalPlaylistAffinityProvider(
             candidateEvidence
                 .mapNotNull { (trackId, sizes) ->
                     val track = byId[trackId] ?: return@mapNotNull null
-                    val score = PlaylistAffinityScoring.score(sizes)
+                    val score = PlaylistAffinityScoring.score(sizes, playlistSizeWeighting)
                     if (score <= 0.0) return@mapNotNull null
                     PlaylistAffinitySignal(
                         seed = seed,
@@ -211,7 +212,7 @@ internal class LocalPlaylistAffinityProvider(
                 "cacheHits=${metrics.cacheHits} | cacheMisses=${metrics.cacheMisses} | " +
                 "libraryIndex=${if (metrics.libraryIndexCacheHit) "hit" else "rebuilt"} | " +
                 "seedHits=${metrics.seedsMatched}/${seeds.size} | signals=${metrics.signals} | " +
-                "elapsedMs=${metrics.elapsedMs}"
+                "sizeWeighting=$playlistSizeWeighting | elapsedMs=${metrics.elapsedMs}"
         )
 
         return PlaylistAffinityBatch(signals, metrics)
