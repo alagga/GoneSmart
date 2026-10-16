@@ -450,6 +450,16 @@ class MainActivity : AppCompatActivity() {
     private fun buildUiPage(): View {
         val container = pageContainer()
         container.addView(pageTitle("UI"))
+        container.addView(sectionTitle("AUDIO"))
+        container.addView(infoCard(
+            title = "Audio profiles",
+            body = "Use different GMMP Equalizer and Effects overrides for each Bluetooth output or when no Bluetooth device is connected. Settings left on GMMP default continue to follow GMMP."
+        ))
+        container.addView(verticalGap(10))
+        container.addView(actionButton("Configure audio profiles") {
+            startActivity(Intent(this, AudioProfilesActivity::class.java))
+        })
+        container.addView(verticalGap(24))
         container.addView(sectionTitle("PLAYLISTS"))
         container.addView(settingGroup(listOf(
             SettingSpec(
