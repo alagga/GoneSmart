@@ -3,7 +3,6 @@ package io.github.alagga.gonesmart
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -45,6 +44,7 @@ class AudioProfilesActivity : AppCompatActivity() {
     private lateinit var equalizerTab: MaterialButton
     private lateinit var effectsTab: MaterialButton
 
+    private var routeObserver: AudioRouteObserver? = null
     private var selectedRouteId = GoneSmartAudioProfiles.LOCAL_ROUTE_ID
     private var section = AudioProfileSection.EQUALIZER
 
@@ -64,6 +64,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         setContentView(buildRoot())
         refreshAll()
+        startCompanionRouteObserver()
     }
 
     override fun onResume() {
@@ -75,10 +76,29 @@ class AudioProfilesActivity : AppCompatActivity() {
         refreshAll()
     }
 
+    override fun onDestroy() {
+        routeObserver?.stop()
+        routeObserver = null
+        super.onDestroy()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_ROUTE, selectedRouteId)
         outState.putString(STATE_SECTION, section.name)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun startCompanionRouteObserver() {
+        if (routeObserver != null) return
+        routeObserver = AudioRouteObserver(this) { observed ->
+            repository.recordObservedRoute(observed)
+            selectedRouteId = if (observed.bluetooth) {
+                GoneSmartAudioProfiles.bluetoothRouteId(0, null, observed.label)
+            } else {
+                GoneSmartAudioProfiles.LOCAL_ROUTE_ID
+            }
+            runOnUiThread { refreshAll() }
+        }.also { it.start() }
     }
 
     private fun buildRoot(): View {
@@ -135,7 +155,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         }
         selectorArea.addView(routeButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)))
         selectorArea.addView(textView(
-            "Only the settings you override below are device-specific. Everything else keeps using GMMP's normal value.",
+            "Equalizer is overridden as one complete profile. Effects are overridden per native GMMP card, so an on/off switch and its slider(s) stay together.",
             13f,
             COLOR_TEXT_SECONDARY
         ).apply { setPadding(dp(4), dp(10), dp(4), 0) })
@@ -196,29 +216,38 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         val overrideCount = repository.overrideCount(route.id)
         body.addView(infoCard(
-            if (overrideCount == 0) "Using GMMP defaults" else "$overrideCount custom ${if (overrideCount == 1) "setting" else "settings"}",
+            if (overrideCount == 0) "Using GMMP defaults" else "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}",
             if (overrideCount == 0) {
-                "This output currently inherits every GMMP audio setting. Turn on Override only where you want a device-specific value."
+                "This output currently inherits every GMMP audio setting. Enable Override only for a complete Equalizer profile or an Effects card you want to replace."
             } else {
-                "Inherited rows continue to follow GMMP. Custom rows apply only to this output profile."
+                "Everything without an active Override continues to follow GMMP's normal settings."
             }
         ))
         body.addView(verticalGap(14))
 
-        val settings = when (section) {
-            AudioProfileSection.EQUALIZER -> GoneSmartAudioProfiles.equalizerSettings
-            AudioProfileSection.EFFECTS -> GoneSmartAudioProfiles.effectSettings
-        }
-        settings.forEachIndexed { index, setting ->
-            body.addView(settingCard(route.id, setting))
-            if (index != settings.lastIndex) body.addView(verticalGap(10))
+        when (section) {
+            AudioProfileSection.EQUALIZER -> {
+                body.addView(groupCard(route.id, GoneSmartAudioProfiles.equalizerGroup))
+                body.addView(verticalGap(10))
+                body.addView(infoCard(
+                    "Preset behavior",
+                    "Choose a GMMP preset as the base. Moving PRE or any band turns the stored Equalizer profile into Custom; the whole Equalizer still remains one device override."
+                ))
+            }
+
+            AudioProfileSection.EFFECTS -> {
+                GoneSmartAudioProfiles.effectGroups.forEachIndexed { index, group ->
+                    body.addView(groupCard(route.id, group))
+                    if (index != GoneSmartAudioProfiles.effectGroups.lastIndex) body.addView(verticalGap(10))
+                }
+            }
         }
 
         body.addView(verticalGap(18))
         body.addView(resetButton(route))
         body.addView(verticalGap(12))
         body.addView(textView(
-            "Bluetooth outputs appear here after GMMP has seen them while GoneSmart is active. The no-Bluetooth profile is always available.",
+            "The currently connected Bluetooth output is detected both inside GMMP and directly from the GoneSmart profile screen. Previously seen outputs remain selectable when disconnected.",
             12f,
             COLOR_MUTED
         ).apply { setPadding(dp(4), 0, dp(4), 0) })
@@ -229,23 +258,21 @@ class AudioProfilesActivity : AppCompatActivity() {
         })
     }
 
-    private fun settingCard(routeId: String, setting: AudioProfileSetting): View {
-        val stored = repository.overrideValue(routeId, setting.id)
-        val inherited = repository.nativeValue(setting.id)
-        val initial = stored ?: inherited ?: setting.suggestedDefault
-
+    private fun groupCard(routeId: String, group: AudioProfileGroup): View {
+        val overridden = repository.isGroupOverridden(routeId, group.id)
         val card = card()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
         }
+
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        labels.addView(textView(setting.title, 16f, COLOR_TEXT, true))
-        labels.addView(textView(setting.subtitle, 12.5f, COLOR_TEXT_SECONDARY).apply {
+        labels.addView(textView(group.title, 17f, COLOR_TEXT, true))
+        labels.addView(textView(group.subtitle, 12.5f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(3), dp(8), 0)
         })
         titleRow.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -253,157 +280,221 @@ class AudioProfilesActivity : AppCompatActivity() {
             text = "Override"
             textSize = 12f
             setTextColor(COLOR_TEXT_SECONDARY)
-            isChecked = stored != null
+            isChecked = overridden
             trackTintList = switchTrackTint()
             thumbTintList = switchThumbTint()
+            setOnCheckedChangeListener { _, enabled ->
+                repository.setGroupOverride(routeId, group.id, enabled)
+                refreshAll()
+            }
         }
         titleRow.addView(overrideSwitch)
         content.addView(titleRow)
 
-        val stateText = textView("", 12f, COLOR_MUTED).apply { setPadding(0, dp(10), 0, dp(4)) }
-        content.addView(stateText)
+        content.addView(textView(
+            if (overridden) "Custom for this output" else "GMMP default • inherited",
+            12f,
+            if (overridden) COLOR_ACCENT else COLOR_MUTED
+        ).apply { setPadding(0, dp(10), 0, dp(8)) })
 
-        when (setting.valueType) {
-            AudioProfileValueType.BOOLEAN -> {
-                val valueSwitch = SwitchMaterial(this).apply {
-                    textSize = 14f
-                    setTextColor(COLOR_TEXT)
-                    trackTintList = switchTrackTint()
-                    thumbTintList = switchThumbTint()
-                    isChecked = initial == "true"
-                    text = if (isChecked) "On" else "Off"
-                    isEnabled = stored != null
-                    alpha = if (isEnabled) 1f else 0.45f
-                    setOnCheckedChangeListener { _, checked ->
-                        text = if (checked) "On" else "Off"
-                        if (overrideSwitch.isChecked) {
-                            repository.setOverride(routeId, setting.id, checked.toString())
-                            updateStateLabel(stateText, setting, checked.toString(), true, inherited)
-                        }
-                    }
-                }
-                content.addView(valueSwitch)
-                overrideSwitch.setOnCheckedChangeListener { _, enabled ->
-                    valueSwitch.isEnabled = enabled
-                    valueSwitch.alpha = if (enabled) 1f else 0.45f
-                    if (enabled) {
-                        val seed = inherited ?: setting.suggestedDefault
-                        val checked = seed == "true"
-                        valueSwitch.isChecked = checked
-                        repository.setOverride(routeId, setting.id, checked.toString())
-                    } else {
-                        repository.setOverride(routeId, setting.id, null)
-                    }
-                    updateStateLabel(stateText, setting, if (enabled) valueSwitch.isChecked.toString() else null, enabled, inherited)
-                }
-                updateStateLabel(stateText, setting, stored, stored != null, inherited)
-            }
-
-            AudioProfileValueType.NUMBER -> {
-                val minimum = setting.minimum
-                val maximum = setting.maximum
-                if (minimum != null && maximum != null) {
-                    val slider = Slider(this).apply {
-                        valueFrom = minimum.toFloat()
-                        valueTo = maximum.toFloat()
-                        setting.step?.takeIf { it > 0.0 }?.let { stepSize = it.toFloat() }
-                        value = initial.toFloatOrNull()?.coerceIn(valueFrom, valueTo)
-                            ?: setting.suggestedDefault.toFloatOrNull()?.coerceIn(valueFrom, valueTo)
-                            ?: valueFrom
-                        isEnabled = stored != null
-                        alpha = if (isEnabled) 1f else 0.45f
-                        trackActiveTintList = ColorStateList.valueOf(COLOR_ACCENT)
-                        trackInactiveTintList = ColorStateList.valueOf(0xFF494650.toInt())
-                        thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
-                        haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
-                        addOnChangeListener { _, sliderValue, fromUser ->
-                            if (!fromUser || !overrideSwitch.isChecked) return@addOnChangeListener
-                            val normalized = setting.normalize(sliderValue.toString()) ?: return@addOnChangeListener
-                            repository.setOverride(routeId, setting.id, normalized)
-                            updateStateLabel(stateText, setting, normalized, true, inherited)
-                        }
-                    }
-                    content.addView(slider)
-                    overrideSwitch.setOnCheckedChangeListener { _, enabled ->
-                        slider.isEnabled = enabled
-                        slider.alpha = if (enabled) 1f else 0.45f
-                        if (enabled) {
-                            val seed = setting.normalize(inherited ?: setting.suggestedDefault) ?: setting.suggestedDefault
-                            val seedFloat = seed.toFloatOrNull()?.coerceIn(slider.valueFrom, slider.valueTo) ?: slider.value
-                            slider.value = seedFloat
-                            repository.setOverride(routeId, setting.id, seed)
-                            updateStateLabel(stateText, setting, seed, true, inherited)
-                        } else {
-                            repository.setOverride(routeId, setting.id, null)
-                            updateStateLabel(stateText, setting, null, false, inherited)
-                        }
-                    }
-                    updateStateLabel(stateText, setting, stored, stored != null, inherited)
-                } else {
-                    val input = EditText(this).apply {
-                        setText(initial)
-                        setTextColor(COLOR_TEXT)
-                        setHintTextColor(COLOR_MUTED)
-                        textSize = 15f
-                        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
-                        backgroundTintList = ColorStateList.valueOf(COLOR_ACCENT)
-                        isEnabled = stored != null
-                        alpha = if (isEnabled) 1f else 0.45f
-                        setPadding(dp(4), dp(4), dp(4), dp(4))
-                        setOnFocusChangeListener { _, hasFocus ->
-                            if (!hasFocus && overrideSwitch.isChecked) {
-                                val normalized = setting.normalize(text.toString())
-                                if (normalized != null) {
-                                    setText(normalized)
-                                    repository.setOverride(routeId, setting.id, normalized)
-                                    updateStateLabel(stateText, setting, normalized, true, inherited)
-                                }
-                            }
-                        }
-                    }
-                    content.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
-                    overrideSwitch.setOnCheckedChangeListener { _, enabled ->
-                        input.isEnabled = enabled
-                        input.alpha = if (enabled) 1f else 0.45f
-                        if (enabled) {
-                            val seed = setting.normalize(inherited ?: setting.suggestedDefault) ?: setting.suggestedDefault
-                            input.setText(seed)
-                            repository.setOverride(routeId, setting.id, seed)
-                            updateStateLabel(stateText, setting, seed, true, inherited)
-                        } else {
-                            repository.setOverride(routeId, setting.id, null)
-                            updateStateLabel(stateText, setting, null, false, inherited)
-                        }
-                    }
-                    updateStateLabel(stateText, setting, stored, stored != null, inherited)
-                }
-            }
+        group.fields.forEachIndexed { index, field ->
+            if (index > 0) content.addView(divider())
+            content.addView(fieldControl(routeId, group, field, overridden))
         }
 
         card.addView(content)
         return card
     }
 
-    private fun updateStateLabel(
-        label: TextView,
-        setting: AudioProfileSetting,
-        overrideValue: String?,
-        overridden: Boolean,
-        inherited: String?
-    ) {
-        label.text = if (overridden && overrideValue != null) {
-            "Custom • ${displayValue(setting, overrideValue)}"
-        } else if (inherited != null) {
-            "GMMP default • ${displayValue(setting, inherited)}"
-        } else {
-            "GMMP default • inherited"
+    private fun fieldControl(
+        routeId: String,
+        group: AudioProfileGroup,
+        field: AudioProfileField,
+        enabled: Boolean
+    ): View {
+        val initial = repository.value(routeId, field.id)
+            ?: repository.nativeValue(field.id)
+            ?: field.suggestedDefault
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            alpha = if (enabled) 1f else 0.45f
+            setPadding(0, dp(10), 0, dp(10))
+
+            when (field.valueType) {
+                AudioProfileValueType.BOOLEAN -> {
+                    val row = LinearLayout(this@AudioProfilesActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val text = LinearLayout(this@AudioProfilesActivity).apply { orientation = LinearLayout.VERTICAL }
+                    text.addView(textView(field.title, 15f, COLOR_TEXT, true))
+                    text.addView(textView(field.subtitle, 12f, COLOR_TEXT_SECONDARY).apply {
+                        setPadding(0, dp(2), dp(8), 0)
+                    })
+                    row.addView(text, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    row.addView(SwitchMaterial(this@AudioProfilesActivity).apply {
+                        isChecked = initial == "true"
+                        isEnabled = enabled
+                        trackTintList = switchTrackTint()
+                        thumbTintList = switchThumbTint()
+                        setOnCheckedChangeListener { _, checked ->
+                            if (isEnabled) repository.setValue(routeId, field.id, checked.toString())
+                        }
+                    })
+                    addView(row)
+                }
+
+                AudioProfileValueType.NUMBER -> {
+                    val valueText = textView(displayValue(field, initial), 13f, COLOR_ACCENT, true)
+                    val heading = LinearLayout(this@AudioProfilesActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val left = LinearLayout(this@AudioProfilesActivity).apply { orientation = LinearLayout.VERTICAL }
+                    left.addView(textView(field.title, 15f, COLOR_TEXT, true))
+                    left.addView(textView(field.subtitle, 12f, COLOR_TEXT_SECONDARY).apply {
+                        setPadding(0, dp(2), dp(8), 0)
+                    })
+                    heading.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    heading.addView(valueText)
+                    addView(heading)
+
+                    val minimum = field.minimum
+                    val maximum = field.maximum
+                    if (minimum != null && maximum != null) {
+                        addView(Slider(this@AudioProfilesActivity).apply {
+                            valueFrom = minimum.toFloat()
+                            valueTo = maximum.toFloat()
+                            field.step?.takeIf { it > 0.0 }?.let { stepSize = it.toFloat() }
+                            value = initial.toFloatOrNull()?.coerceIn(valueFrom, valueTo)
+                                ?: field.suggestedDefault.toFloatOrNull()?.coerceIn(valueFrom, valueTo)
+                                ?: valueFrom
+                            isEnabled = enabled
+                            trackActiveTintList = ColorStateList.valueOf(COLOR_ACCENT)
+                            trackInactiveTintList = ColorStateList.valueOf(0xFF494650.toInt())
+                            thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
+                            haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
+                            addOnChangeListener { _, sliderValue, fromUser ->
+                                if (!fromUser || !isEnabled) return@addOnChangeListener
+                                val normalized = field.normalize(sliderValue.toString()) ?: return@addOnChangeListener
+                                repository.setValue(routeId, field.id, normalized)
+                                if (group.id == GoneSmartAudioProfiles.equalizerGroup.id && field.id != "eq.enabled") {
+                                    repository.setValue(routeId, "eq.preset", "Custom")
+                                }
+                                valueText.text = displayValue(field, normalized)
+                            }
+                        })
+                    } else {
+                        addView(EditText(this@AudioProfilesActivity).apply {
+                            setText(initial)
+                            setTextColor(COLOR_TEXT)
+                            setHintTextColor(COLOR_MUTED)
+                            textSize = 15f
+                            inputType = InputType.TYPE_CLASS_NUMBER or
+                                InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                                InputType.TYPE_NUMBER_FLAG_SIGNED
+                            backgroundTintList = ColorStateList.valueOf(COLOR_ACCENT)
+                            isEnabled = enabled
+                            setPadding(dp(4), dp(4), dp(4), dp(4))
+                            setOnFocusChangeListener { _, hasFocus ->
+                                if (!hasFocus && isEnabled) {
+                                    val normalized = field.normalize(text.toString())
+                                    if (normalized != null) {
+                                        setText(normalized)
+                                        repository.setValue(routeId, field.id, normalized)
+                                        valueText.text = displayValue(field, normalized)
+                                    }
+                                }
+                            }
+                        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
+                    }
+                }
+
+                AudioProfileValueType.CHOICE -> {
+                    addView(textView(field.title, 15f, COLOR_TEXT, true))
+                    addView(textView(field.subtitle, 12f, COLOR_TEXT_SECONDARY).apply {
+                        setPadding(0, dp(2), 0, dp(8))
+                    })
+                    addView(MaterialButton(
+                        this@AudioProfilesActivity,
+                        null,
+                        com.google.android.material.R.attr.materialButtonOutlinedStyle
+                    ).apply {
+                        text = "$initial  ▾"
+                        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                        setTextColor(COLOR_TEXT)
+                        backgroundTintList = ColorStateList.valueOf(COLOR_SURFACE_2)
+                        strokeColor = ColorStateList.valueOf(0xFF5A5662.toInt())
+                        strokeWidth = dp(1)
+                        cornerRadius = dp(16)
+                        insetTop = 0
+                        insetBottom = 0
+                        isEnabled = enabled
+                        setOnClickListener {
+                            showChoiceDialog(routeId, field, initial)
+                        }
+                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
+                }
+            }
         }
-        label.setTextColor(if (overridden) COLOR_ACCENT else COLOR_MUTED)
     }
 
-    private fun displayValue(setting: AudioProfileSetting, raw: String): String = when (setting.valueType) {
+    private fun showChoiceDialog(routeId: String, field: AudioProfileField, current: String) {
+        val customLabel = "Custom preset name…"
+        val items = (field.choices + current)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .plus(customLabel)
+            .toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(field.title)
+            .setItems(items) { _, which ->
+                val selected = items[which]
+                if (selected == customLabel) {
+                    showCustomChoiceDialog(routeId, field, current)
+                } else {
+                    repository.setValue(routeId, field.id, selected)
+                    refreshAll()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCustomChoiceDialog(routeId: String, field: AudioProfileField, current: String) {
+        val input = EditText(this).apply {
+            setText(if (current == "Custom") "" else current)
+            setSelectAllOnFocus(true)
+            setTextColor(COLOR_TEXT)
+            setHintTextColor(COLOR_MUTED)
+            hint = "Preset name"
+        }
+        val wrapper = FrameLayout(this).apply {
+            setPadding(dp(24), dp(4), dp(24), 0)
+            addView(input, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Custom GMMP preset")
+            .setView(wrapper)
+            .setPositiveButton("Use") { _, _ ->
+                field.normalize(input.text.toString())?.let {
+                    repository.setValue(routeId, field.id, it)
+                    refreshAll()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun displayValue(field: AudioProfileField, raw: String): String = when (field.valueType) {
         AudioProfileValueType.BOOLEAN -> if (raw == "true") "On" else "Off"
-        AudioProfileValueType.NUMBER -> raw + (setting.unit?.let { " $it" } ?: "")
+        AudioProfileValueType.NUMBER -> raw + (field.unit?.let { " $it" } ?: "")
+        AudioProfileValueType.CHOICE -> raw
     }
 
     private fun showRouteChooser() {
@@ -489,6 +580,14 @@ class AudioProfilesActivity : AppCompatActivity() {
         strokeWidth = 0
         setCardBackgroundColor(COLOR_SURFACE)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(0xFF34313A.toInt())
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+            topMargin = dp(4)
+            bottomMargin = dp(4)
+        }
     }
 
     private fun textView(text: String, sizeSp: Float, color: Int, bold: Boolean = false): TextView =
