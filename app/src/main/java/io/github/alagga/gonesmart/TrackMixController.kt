@@ -167,6 +167,9 @@ internal class TrackMixController(
         @Volatile var nativeSource = ""
         @Volatile var prePlayTarget: TrackInfo? = null
         @Volatile var prePlayPrepared: TrackMixPreparedInitialPool = TrackMixPreparedInitialPool.EMPTY
+        @Volatile var prePlayPreparationComplete = false
+        @Volatile var deferredNoMatchNotice = false
+        @Volatile var noMatchNoticeShown = false
         @Volatile var prePlayInitialSize = 0
         @Volatile var verifiedCurrentQueueEntryId: Long? = null
         @Volatile var bootstrapAppliedTrackIds: List<Long> = emptyList()
@@ -1216,6 +1219,12 @@ internal class TrackMixController(
                             "strategy=native-auto-dj | route=r59"
                     )
                 }
+            }
+
+            request.prePlayPreparationComplete = true
+            if (request.deferredNoMatchNotice) {
+                request.deferredNoMatchNotice = false
+                showOwnedStatusNotice("no-matches-native-fallback")
             }
 
             main.post {
@@ -2936,12 +2945,38 @@ internal class TrackMixController(
      */
     fun showOwnedStatusNotice(noticeKey: String): Boolean {
         if (noticeKey != "no-matches-native-fallback") return false
-        val request = pending ?: return false
-        if (request.prePlayTarget == null || request.stage == "DONE") return false
-
+        val request = pending
+        val action = TrackMixInitialFillPolicy.noMatchNoticeAction(
+            hasPendingRequest = request != null,
+            stageDone = request?.stage == "DONE",
+            preparationComplete = request?.prePlayPreparationComplete == true,
+            targetResolved = request?.prePlayTarget != null,
+            preparedTrackCount = request?.prePlayPrepared?.trackIds?.size ?: 0
+        )
+        when (action) {
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.PASS_THROUGH -> return false
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.DEFER -> {
+                request?.deferredNoMatchNotice = true
+                Log.i(TAG, "MIX NOTICE | key=$noticeKey | route=deferred-preplay")
+                return true
+            }
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.SUPPRESS_PREPARED -> {
+                request?.deferredNoMatchNotice = false
+                Log.i(
+                    TAG,
+                    "MIX NOTICE | key=$noticeKey | route=suppressed-prepared" +
+                        " | prepared=${request?.prePlayPrepared?.trackIds?.size ?: 0}"
+                )
+                return true
+            }
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.SHOW_OWNED -> Unit
+        }
+        request ?: return false
+        if (request.noMatchNoticeShown) return true
+        request.noMatchNoticeShown = true
         Log.i(
             TAG,
-            "MIX NOTICE | key=$noticeKey | route=owned-toast"
+            "MIX NOTICE | key=$noticeKey | route=owned-toast | prepared=0"
         )
         toast(
             request.context,

@@ -2,6 +2,7 @@ package io.github.alagga.gonesmart
 
 internal object TrackMixInitialFillPolicy {
     enum class NativeRefillAction { NORMAL, PASS_NATIVE, SUPPRESS }
+    enum class NoMatchNoticeAction { PASS_THROUGH, DEFER, SUPPRESS_PREPARED, SHOW_OWNED }
 
     private const val LEGACY_COMMAND_REFILL_WAIT_MS = 1_800L
     private const val GMMP_421_COMMAND_PREPARE_WAIT_MS = 800L
@@ -42,6 +43,20 @@ internal object TrackMixInitialFillPolicy {
         // Prepared Smart bootstrap must first restore the 4.2.0 one-seed
         // position-1 invariant or old followers survive ahead of the new pool.
         return !legacyQueue && source == "menu_gm_context_queue"
+    }
+
+    fun noMatchNoticeAction(
+        hasPendingRequest: Boolean,
+        stageDone: Boolean,
+        preparationComplete: Boolean,
+        targetResolved: Boolean,
+        preparedTrackCount: Int
+    ): NoMatchNoticeAction {
+        if (!hasPendingRequest || stageDone) return NoMatchNoticeAction.PASS_THROUGH
+        if (!preparationComplete) return NoMatchNoticeAction.DEFER
+        if (!targetResolved) return NoMatchNoticeAction.PASS_THROUGH
+        if (preparedTrackCount > 0) return NoMatchNoticeAction.SUPPRESS_PREPARED
+        return NoMatchNoticeAction.SHOW_OWNED
     }
 
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =

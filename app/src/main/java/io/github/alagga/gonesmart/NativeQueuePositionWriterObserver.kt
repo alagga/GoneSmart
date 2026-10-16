@@ -11,6 +11,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal interface NativeQueuePositionWriter {
     val description: String
@@ -52,7 +54,8 @@ internal class NativeQueuePositionWriterObserver(
 ) {
     companion object {
         private const val TAG = "GoneSmartFlip"
-        private const val WRITE_TIMEOUT_MS = 1500L
+        private const val WRITE_DISPATCH_TIMEOUT_MS = 4_000L
+        private const val WRITE_READBACK_TIMEOUT_MS = 1_500L
         private val DELAYED_SIGNAL_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
 
@@ -227,7 +230,7 @@ internal class NativeQueuePositionWriterObserver(
                 )
                 if (!invoked) return false
 
-                val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
+                val deadline = SystemClock.elapsedRealtime() + WRITE_READBACK_TIMEOUT_MS
                 do {
                     val nativePosition = read()
                     if (nativePosition == position &&
@@ -330,7 +333,7 @@ internal class NativeQueuePositionWriterObserver(
                     )
                 ) return false
 
-                val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
+                val deadline = SystemClock.elapsedRealtime() + WRITE_READBACK_TIMEOUT_MS
                 do {
                     val mappedPosition = read()
                     if (mappedPosition == position &&
@@ -429,20 +432,80 @@ internal class NativeQueuePositionWriterObserver(
         if (proof.looper != null) {
             if (Looper.myLooper() == proof.looper) return invoke()
             val done = CountDownLatch(1)
+            val started = AtomicBoolean(false)
             var ok = false
-            Handler(proof.looper).post {
-                ok = invoke()
-                done.countDown()
+            val handler = Handler(proof.looper)
+            val task = Runnable {
+                started.set(true)
+                try {
+                    ok = invoke()
+                } finally {
+                    done.countDown()
+                }
             }
-            return done.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok
+            if (!handler.post(task)) return false
+            if (done.await(WRITE_DISPATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                return ok
+            }
+            if (!started.get()) {
+                handler.removeCallbacks(task)
+                Log.w(
+                    TAG,
+                    "QUEUE POSITION DISPATCH TIMEOUT | writer=" +
+                        proof.method.declaringClass.name + "." + proof.method.name +
+                        " | route=looper | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                        " | started=false | cancelled=true"
+                )
+                return false
+            }
+            val finishedInGrace =
+                done.await(WRITE_READBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            Log.w(
+                TAG,
+                "QUEUE POSITION DISPATCH DELAY | writer=" +
+                    proof.method.declaringClass.name + "." + proof.method.name +
+                    " | route=looper | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                    " | started=true | finishedInGrace=$finishedInGrace"
+            )
+            return finishedInGrace && ok
         }
 
         val executor = nativeExecutor(autoDj)
         if (executor != null) {
-            return runCatching {
-                executor.submit<Boolean> { invoke() }
-                    .get(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            }.getOrDefault(false)
+            val started = AtomicBoolean(false)
+            val future = executor.submit<Boolean> {
+                started.set(true)
+                invoke()
+            }
+            return try {
+                future.get(WRITE_DISPATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                if (!started.get()) {
+                    val cancelled = future.cancel(false)
+                    Log.w(
+                        TAG,
+                        "QUEUE POSITION DISPATCH TIMEOUT | writer=" +
+                            proof.method.declaringClass.name + "." + proof.method.name +
+                            " | route=executor | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                            " | started=false | cancelled=$cancelled"
+                    )
+                    false
+                } else {
+                    val finished = runCatching {
+                        future.get(WRITE_READBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    }.getOrNull()
+                    Log.w(
+                        TAG,
+                        "QUEUE POSITION DISPATCH DELAY | writer=" +
+                            proof.method.declaringClass.name + "." + proof.method.name +
+                            " | route=executor | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                            " | started=true | finishedInGrace=${finished != null}"
+                    )
+                    finished ?: false
+                }
+            } catch (_: Throwable) {
+                false
+            }
         }
         return invoke()
     }

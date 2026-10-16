@@ -99,6 +99,49 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
+    @Test fun noMatchNoticeWaitsForActualPreplayResult() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.DEFER,
+            TrackMixInitialFillPolicy.noMatchNoticeAction(
+                hasPendingRequest = true,
+                stageDone = false,
+                preparationComplete = false,
+                targetResolved = true,
+                preparedTrackCount = 0
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.SUPPRESS_PREPARED,
+            TrackMixInitialFillPolicy.noMatchNoticeAction(
+                hasPendingRequest = true,
+                stageDone = false,
+                preparationComplete = true,
+                targetResolved = true,
+                preparedTrackCount = 4
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.SHOW_OWNED,
+            TrackMixInitialFillPolicy.noMatchNoticeAction(
+                hasPendingRequest = true,
+                stageDone = false,
+                preparationComplete = true,
+                targetResolved = true,
+                preparedTrackCount = 0
+            )
+        )
+        assertEquals(
+            TrackMixInitialFillPolicy.NoMatchNoticeAction.PASS_THROUGH,
+            TrackMixInitialFillPolicy.noMatchNoticeAction(
+                hasPendingRequest = false,
+                stageDone = false,
+                preparationComplete = false,
+                targetResolved = false,
+                preparedTrackCount = 0
+            )
+        )
+    }
+
     @Test fun slotRefillRequestsOnlyRealShortfall() {
         assertEquals(0, TrackMixInitialFillPolicy.nativeSlotRefillCount(4, 4, false))
         assertEquals(2, TrackMixInitialFillPolicy.nativeSlotRefillCount(4, 2, false))
