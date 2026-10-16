@@ -16,7 +16,13 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply R66 patch
-        run: python3 scripts/tmp_r66_patch.py
+        run: |
+          python3 scripts/tmp_r66_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md')
+          p.write_text(p.read_text().rstrip() + '\n')
+          PY
       - name: Verify R66 scope
         run: |
           git diff --check
