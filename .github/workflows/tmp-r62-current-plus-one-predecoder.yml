@@ -1,0 +1,226 @@
+name: tmp-r62-current-plus-one-predecoder
+
+on:
+  push:
+    branches: [fix/playlist-link-gmmp-4.2.1]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'ci: validate r62 current-plus-one predecoder fallback'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Apply bounded R62 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one anchor, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          controller = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt'
+          test = 'app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt'
+
+          replace_once(
+              controller,
+              '''                        Log.i(
+                            TAG,
+                            "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
+                                "awaiting native qr.z predecoder boundary"
+                        )''',
+              '''                        Log.i(
+                            TAG,
+                            "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
+                                "awaiting native qr.z or current+1 predecoder boundary"
+                        )'''
+          )
+
+          replace_once(
+              controller,
+              '''        if (request.zeroPoolNextSourceGuardAttempted) return
+        if (!request.zeroPoolBoundaryPrepared) return
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return
+        if (request.stage != "WAIT_PLAY") return
+        if (request.prePlayTarget == null) return
+        val boundary = request.nextSourceBoundary ?: return
+        if (request.nextSourceBoundaryAmbiguous || boundary.key != key) return
+        if (boundary.service.get() !== service || boundary.method != method) return
+        val autoDj = nativeAutoDj?.get() ?: return
+        val currentPosition = request.provisionalCurrentQueuePosition ?: return''',
+              '''        if (request.zeroPoolNextSourceGuardAttempted) return
+        if (request.prePlayPrepared.trackIds.isNotEmpty()) return
+        if (request.stage != "WAIT_PLAY") return
+        if (request.prePlayTarget == null) return
+        val boundary = request.nextSourceBoundary ?: return
+        if (request.nextSourceBoundaryAmbiguous || boundary.key != key) return
+        if (boundary.service.get() !== service || boundary.method != method) return
+        val autoDj = nativeAutoDj?.get() ?: return
+
+        // R62: GMMP does not deterministically issue a natural qr.z refill
+        // before its first current+1 lookup. If that unique, already-proven
+        // predecoder lookup arrives first, reuse the exact R60 seed-isolation
+        // and native-fill sequence with a zero original refill count. This is
+        // still before the original MusicService lookup/decoder creation; no
+        // playback method is replayed after materialization.
+        if (!request.zeroPoolBoundaryPrepared) {
+            val fallbackBoundary = prepareZeroPoolAtNativeRefill(
+                autoDj = autoDj,
+                requestedTracks = 0
+            ) ?: run {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL NEXT SOURCE PREPARE | " +
+                        "predecoder Initial Size boundary unavailable; fail closed"
+                )
+                return
+            }
+            if (!completeZeroPoolAtNativeRefill(autoDj, fallbackBoundary)) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL NEXT SOURCE PREPARE | " +
+                        "native Initial Size preparation failed; fail closed"
+                )
+                return
+            }
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL NEXT SOURCE PREPARE | verified=true | " +
+                    "beforeOriginal=true | source=natural-current-plus-one | " +
+                    "originalRequested=0 | nativeRequested=${fallbackBoundary.topUpCount}"
+            )
+        }
+
+        val currentPosition = request.provisionalCurrentQueuePosition ?: return'''
+          )
+
+          replace_once(
+              controller,
+              '''            Log.i(
+                TAG,
+                "MIX ZERO-POOL BOUNDARY | verified=true | beforeDecoder=true" +
+                    " | source=natural-native-refill | seed=${boundary.selectedTrackId}" +''',
+              '''            val boundarySource = if (boundary.originalRequested == 0) {
+                "natural-current-plus-one-fallback"
+            } else {
+                "natural-native-refill"
+            }
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL BOUNDARY | verified=true | beforeDecoder=true" +
+                    " | source=$boundarySource | seed=${boundary.selectedTrackId}" +'''
+          )
+
+          replace_once(
+              test,
+              '''    @Test
+    fun `native refill boundary tops device observed three followers to initial five`() {''',
+              '''    @Test
+    fun `natural current plus one can bootstrap initial size when natural refill was absent`() {
+        val boundary = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
+            currentQueuePosition = 1,
+            candidates = listOf(
+                TrackMixZeroPoolPolicy.PositionCommandCandidate("next", 2, 100)
+            )
+        )
+        assertEquals("next", boundary.key)
+        assertEquals(1, boundary.matchCount)
+
+        val refill = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 0)
+        assertNotNull(refill)
+        assertEquals(4, refill?.topUpCount)
+    }
+
+    @Test
+    fun `native refill boundary tops device observed three followers to initial five`() {'''
+          )
+
+          replace_once(
+              'AGENTS.md',
+              '''- For every GMMP 4.2.1 song-menu Track Auto-DJ start, including `menu_gm_context_queue`, restore the proven predecoder compatibility path: prepare the selected-seed GoneSmart pool before Play; when the pool is empty, acquire the natural `qr.z(int)` boundary, isolate/rebase only the exact selected seed through verified writers, let GMMP choose native fallback identities, and compact the resulting Initial Size before the original caller can materialize `current+1`. A non-empty prepared pool continues through the existing bootstrap selection window. R50/R51 guards remain downstream identity protection if GMMP later rebuilds the original Smart source.
+- R61 device evidence retires the R59 Queue-context exception. The Queue start independently verified the exact selected seed, the accepted Current writer, seed isolation from absolute position 5 to logical position 1, and deletion of the four old rows; the failure was timing only: GMMP queried position 2 and cached `next audio source is null` before the four native fallback followers existed. Queue-context therefore uses the same natural `qr.z(int)` predecoder ordering as the successful R60 song-menu path. Do not repair this later through a playback replay.
+- Never reintroduce a post-decode `MusicService(Int)->void` replay as a next-source refresh. R49 and the 2026-10-16 trace both disprove that model.''',
+              '''- For every GMMP 4.2.1 song-menu Track Auto-DJ start, including `menu_gm_context_queue`, restore the proven predecoder compatibility path: prepare the selected-seed GoneSmart pool before Play; when the pool is empty, prefer the natural `qr.z(int)` boundary, isolate/rebase only the exact selected seed through verified writers, let GMMP choose native fallback identities, and compact the resulting Initial Size before the original caller can materialize `current+1`. A non-empty prepared pool continues through the existing bootstrap selection window. R50/R51 guards remain downstream identity protection if GMMP later rebuilds the original Smart source.
+- R61 device evidence retires the R59 Queue-context exception. The Queue start independently verified the exact selected seed, the accepted Current writer, seed isolation from absolute position 5 to logical position 1, and deletion of the four old rows; the failure was timing only: GMMP queried position 2 and cached `next audio source is null` before the four native fallback followers existed. Queue-context therefore uses the same predecoder ordering as the R60 song-menu path. Do not repair this later through a playback replay.
+- R62 device evidence proves the natural `qr.z(int)` refill is not guaranteed to occur before GMMP's first `current+1` lookup. A BUNT. run reached the unique natural `MusicService(Int)->void` current+1 boundary with the selected seed already Current at position 1, but no earlier `qr.z` had fired; GMMP therefore materialized the stale Smart-Playlist follower and the later Track Mix worker failed closed. When this exact one-shot current+1 boundary arrives first, synchronously reuse the same R60 seed-isolation/native-fill sequence with `originalRequested=0` before the original MusicService call proceeds. The nested fill still goes through the verified native `qr.z` path and must produce/verify the full dynamic Initial Size before decoder creation. Ambiguous boundary, target, Current writer or fill state fails closed.
+- Never reintroduce a post-decode `MusicService(Int)->void` replay as a next-source refresh. R49 and the 2026-10-16 traces disprove that model.'''
+          )
+
+          replace_once(
+              'docs/GMMP_COMPATIBILITY_PLAYBOOK.md',
+              '''For all GMMP 4.2.1 song-menu starts, including Queue-context starts, the compatibility port therefore restores the already-proven predecoder ordering rather than repairing playback afterwards. Selected-seed GoneSmart preparation happens before Play. The natural `qr.z(int)` hook is allowed to establish a zero-match native Initial Size synchronously after rebasing the exact selected seed to the accepted position-1 invariant, or to consume the prepared Smart bootstrap. The original GMMP caller then owns its normal next-source/decoder creation. Existing R50/R51 guards may only preserve those already-selected identities across a later source rebuild. The 2026-10-16 R61 device trace retires the R59 Queue-context exception. That run independently verified the selected queue target, Current writer, seed isolation/rebase and final five-row native fallback queue, but GMMP reached `onTransitionComplete`, queried queue position 2 and cached `next audio source is null` before those four followers had been materialized. The later visible queue was correct but arrived after the next-source boundary. Queue-context Track Auto-DJ therefore now uses the same natural `qr.z(int)` predecoder ordering as the R60 path; the mutation semantics are unchanged, only their placement before decoder materialization changes. One Queue-context device re-acceptance remains required.''',
+              '''For all GMMP 4.2.1 song-menu starts, including Queue-context starts, the compatibility port therefore restores the already-proven predecoder ordering rather than repairing playback afterwards. Selected-seed GoneSmart preparation happens before Play. A natural `qr.z(int)` hook may establish a zero-match native Initial Size synchronously after rebasing the exact selected seed to the accepted position-1 invariant, or consume the prepared Smart bootstrap. The original GMMP caller then owns its normal next-source/decoder creation. Existing R50/R51 guards may only preserve those already-selected identities across a later source rebuild. The 2026-10-16 R61 device trace retires the R59 Queue-context exception: its mutation was correct but happened after GMMP had already cached a missing position 2. The following R62 BUNT. trace proves the natural `qr.z(int)` itself is also optional: the selected BUNT. seed became Current at position 1 and the unique natural `MusicService.I2(2)` current+1 boundary fired, but no preceding `qr.z` occurred, so GMMP materialized the stale Smart-Playlist `In My Dreams` follower and the later worker correctly failed closed. R62 therefore treats that already-proven one-shot current+1 call as a fallback predecoder trigger only when the R60 boundary is still unprepared. It synchronously reuses the same seed-isolation/native-fill sequence with `originalRequested=0`, which requests the full dynamic follower count through verified `qr.z`, verifies Initial Size, and only then returns to the original MusicService lookup. No playback/decoder method is replayed after materialization. Queue-context and zero-provider song-menu re-acceptance remain required.'''
+          )
+          PY
+
+      - name: Check patch scope and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' \
+            AGENTS.md \
+            app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt \
+            app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt \
+            docs/GMMP_COMPATIBILITY_PLAYBOOK.md | sort)"
+          test "$changed" = "$expected"
+          grep -q 'MIX ZERO-POOL NEXT SOURCE PREPARE' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q 'requestedTracks = 0' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q 'natural-current-plus-one-fallback' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q 'natural current plus one can bootstrap initial size' app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Debug build
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Commit validated patch and remove temporary infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/tmp-r62-current-plus-one-predecoder.yml
+          git add AGENTS.md \
+            app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt \
+            app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt \
+            docs/GMMP_COMPATIBILITY_PLAYBOOK.md \
+            .github/workflows/tmp-r62-current-plus-one-predecoder.yml
+          git diff --cached --check
+          git commit -m 'fix(track-mix): fill before first next-source read'
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
