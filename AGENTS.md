@@ -104,11 +104,13 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 ## 9. Smart Auto-DJ performance invariants
 
 - Normal GMMP playlists are a first-class local recommendation signal: use read-only indexed playlist identities, cache membership by file fingerprint, weight focused playlists more strongly than huge catch-all lists, and reward independent playlist co-occurrence. Smart Playlists are not part of this signal unless a future explicitly weaker opt-in policy is implemented.
+- Smart recommendation mode is the default and owns conservative stable-provider enablement/weights. Custom mode may expose provider enablement, bounded ranking weights and playlist-size weighting, but provider request order is not a user preference.
+- Independent network providers should run in parallel inside one deterministic pool-fill pipeline when this reduces latency. Weight/ranking priority must not be implemented by serially delaying one enabled provider behind another.
 - Provider corroboration is evidence: after provider/seed deduplication, independent providers confirming the same logical track may receive a bounded bonus. A local playlist signal must never bypass the normal local-library quality/rating/duplicate gates.
 - Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
-- Latency diagnostics distinguish queue-read-before, pool hit/fill, native refill, queue-read-after and total time.
+- Latency diagnostics distinguish queue-read-before, pool hit/fill, provider rounds/playlist affinity, native refill, queue-read-after and total time.
 - Reuse the already passively proved current-position hint for queue snapshots; do not restart broad getter discovery on transient CURRENT ambiguity.
 - Pre-action Queue/Room race barriers run off GMMP's main thread.
 
