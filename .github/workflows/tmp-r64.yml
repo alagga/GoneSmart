@@ -1,0 +1,246 @@
+name: R64 Patch
+
+on:
+  push:
+    branches:
+      - fix/playlist-link-gmmp-4.2.1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/playlist-link-gmmp-4.2.1
+          fetch-depth: 0
+
+      - name: Apply R64 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              assert count == 1, f"{label}: anchor count={count}"
+              p.write_text(text.replace(old, new, 1))
+
+          controller = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt'
+          old = '''        }
+        tryPromoteNextSourceBoundary(request)
+        guardZeroPoolNaturalNextSource(
+'''
+          new = '''        }
+
+        // R64: the first natural MusicService CURRENT+1 command can beat the
+        // worker that normally records provisionalCurrentQueuePosition. Prove
+        // the already-position-1 selected Current synchronously from the
+        // verified writer + exact unique queue row so the existing R62 guard
+        // can still run before chain.proceed(). Never infer/rebase a wider
+        // absolute coordinate here because the R62 fill restores position 1.
+        if (request.provisionalCurrentQueuePosition == null &&
+            request.nextSourceBoundary == null &&
+            !request.nextSourceBoundaryAmbiguous
+        ) {
+            val autoDj = nativeAutoDj?.get()
+            val target = request.prePlayTarget
+            if (autoDj != null && target != null) {
+                val located = runCatching {
+                    queueReader.locateUniqueTrackRow(autoDj, target.id)
+                }.getOrNull()
+                if (located != null) {
+                    val writer = nativePositionWriterProvider(autoDj)
+                        ?: nativeTrackMixPositionWriterProvider(
+                            autoDj,
+                            located.queuePosition
+                        )
+                    val readback = writer?.let {
+                        runCatching { it.read() }.getOrNull()
+                    }
+                    val context = readback?.let { position ->
+                        runCatching {
+                            queueReader.read(
+                                autoDj,
+                                position,
+                                located.queueEntryId
+                            )
+                        }.getOrNull()
+                    }
+                    val current = context?.currentItem
+                    val synchronousPosition =
+                        TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                            selectedTrackId = target.id,
+                            currentTrackId = current?.track?.id,
+                            selectedQueuePosition = located.queuePosition,
+                            currentQueuePosition = context?.currentQueuePosition,
+                            writerReadback = readback,
+                            observedArgument = value
+                        )
+                    if (synchronousPosition != null &&
+                        current?.queueEntryId == located.queueEntryId
+                    ) {
+                        request.verifiedCurrentQueueEntryId = located.queueEntryId
+                        request.provisionalCurrentQueuePosition = synchronousPosition
+                        Log.i(
+                            TAG,
+                            "MIX NEXT SOURCE CURRENT PROOF | verified=true" +
+                                " | seed=${target.id}" +
+                                " | entry=${located.queueEntryId}" +
+                                " | currentPosition=$synchronousPosition" +
+                                " | observedArg=$value" +
+                                " | evidence=writer+exact-row-preworker"
+                        )
+                    }
+                }
+            }
+        }
+
+        tryPromoteNextSourceBoundary(request)
+        guardZeroPoolNaturalNextSource(
+'''
+          replace_once(controller, old, new, 'controller synchronous proof')
+
+          policy = 'app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt'
+          old = '''    data class StateWriterMapping(
+        val argumentOffset: Int,
+        val signalOffset: Int
+    )
+'''
+          new = '''    /**
+     * R64 request-local proof for the race where the natural CURRENT+1
+     * MusicService command arrives before the Track-Mix worker has published
+     * provisionalCurrentQueuePosition. The existing R62 fallback rebases the
+     * seed to position 1, so an early command is safe only when every
+     * independent coordinate already proves logical position 1 and the exact
+     * selected Track is Current. Wider absolute positions stay fail-closed.
+     */
+    fun resolveSynchronousNextSourceCurrentProof(
+        selectedTrackId: Long,
+        currentTrackId: Long?,
+        selectedQueuePosition: Int,
+        currentQueuePosition: Int?,
+        writerReadback: Int?,
+        observedArgument: Int
+    ): Int? {
+        if (selectedTrackId <= 0L || currentTrackId != selectedTrackId) return null
+        if (selectedQueuePosition != 1 || currentQueuePosition != 1) return null
+        if (writerReadback != 1 || observedArgument != 2) return null
+        return 1
+    }
+
+    data class StateWriterMapping(
+        val argumentOffset: Int,
+        val signalOffset: Int
+    )
+'''
+          replace_once(policy, old, new, 'policy synchronous proof')
+
+          test = 'app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt'
+          old = '''    @Test
+    fun `track mix state writer maps zero based argument and signal to queue position`() {
+'''
+          new = '''    @Test
+    fun `preworker current plus one proof accepts only exact selected position one`() {
+        assertEquals(
+            1,
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 1,
+                observedArgument = 2
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19104L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 1,
+                observedArgument = 2
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 4,
+                currentQueuePosition = 4,
+                writerReadback = 4,
+                observedArgument = 5
+            )
+        )
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
+                selectedTrackId = 19118L,
+                currentTrackId = 19118L,
+                selectedQueuePosition = 1,
+                currentQueuePosition = 1,
+                writerReadback = 0,
+                observedArgument = 2
+            )
+        )
+    }
+
+    @Test
+    fun `track mix state writer maps zero based argument and signal to queue position`() {
+'''
+          replace_once(test, old, new, 'policy regression test')
+
+          agents = 'AGENTS.md'
+          old = '''- R63 device evidence closes the prepared-pool Queue-context gap. When native Queue Play selected Green Day from an existing five-row queue, the target was independently verified as Current at absolute position 4, but the prepared Smart path kept the old row at position 5 and requested only the three missing followers; the three prepared tracks were therefore appended while the stale follower survived, and verification failed (`expected=1470`, `actual=12819`). For `menu_gm_context_queue` with a non-empty prepared pool, first isolate/rebase the exact verified selected queue entry to the one-row position-1 invariant through the already-proven native queue/current writers, then request the full dynamic `Initial Size - 1` through the ordinary `qr.z` bootstrap. Keep non-Queue prepared starts unchanged.
+'''
+          new = old + '''- R64 device evidence closes a remaining R62 scheduling race in zero-provider startup. A failing BUNT. run naturally called `MusicService.I2(2)` before the Track-Mix worker had published `provisionalCurrentQueuePosition`; the hook therefore recorded the command but could not yet prove it was CURRENT+1, allowed the original call through, and only promoted the boundary after GMMP had already read the stale position-2 follower. While a zero-provider request is pending, that first natural command may now synchronously prime Current=1 only when the selected Track is uniquely present at queue position 1, the independently verified Current writer reads 1, the queue reader resolves that exact row as Current, and the natural argument is exactly 2. Then the existing R62 seed-isolation/native-fill guard runs before the original MusicService call. Wider coordinates, identity/readback disagreement or ambiguity remain fail-closed; never replay the playback call later.
+'''
+          replace_once(agents, old, new, 'agents r64 evidence')
+
+          playbook = Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md')
+          text = playbook.read_text().rstrip() + '''\n\n### 2026-10-17 R64 preworker current+1 race\n\nA post-R63 BUNT. trace exposed a scheduling race inside the accepted R62 fallback rather than a new queue semantic failure. `MusicService.I2(2)` was naturally intercepted before GMMP read position 2, but the Track-Mix worker had not yet published `provisionalCurrentQueuePosition`; the command could only be promoted to CURRENT+1 after the original call had already returned a stale Smart-Playlist follower. The fix keeps the same predecoder boundary and adds no replay: on that first natural Int command, zero-provider Track Mix may synchronously prime Current=1 from the exact unique selected row plus the independently verified Current-position writer/readback. This early proof is intentionally restricted to an already-position-1 selected Current with natural argument 2, because the existing R62 isolation restores the position-1 invariant before returning to the original caller. Any wider coordinate or identity/readback disagreement stays fail-closed.\n'''
+          playbook.write_text(text)
+          PY
+
+      - name: Verify R64 scope
+        run: |
+          git diff --check
+          test "$(git diff --name-only | sort)" = "$(printf '%s\n' AGENTS.md app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md | sort)"
+          grep -q 'MIX NEXT SOURCE CURRENT PROOF | verified=true' app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt
+          grep -q 'resolveSynchronousNextSourceCurrentProof' app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt
+          grep -q 'R64 device evidence' AGENTS.md
+          grep -q 'R64 preworker current+1 race' docs/GMMP_COMPATIBILITY_PLAYBOOK.md
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Unit tests and debug build
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Commit validated R64 patch
+        run: |
+          rm .github/workflows/tmp-r64.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(track-mix): close preworker next-source race"
+          git push origin HEAD:fix/playlist-link-gmmp-4.2.1
