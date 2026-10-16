@@ -11,6 +11,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
         private const val LOCAL_PREFS = "gonesmart_audio_profiles_local_v2"
         private const val KEY_PENDING = "local.pending_keys"
         private const val STANDARD_PREFIX = "standard."
+        private const val NATIVE_PRESET_PREFIX = "native_preset."
     }
 
     private val appContext = context.applicationContext
@@ -176,6 +177,10 @@ class GoneSmartAudioProfileRepository(context: Context) {
     fun standardValue(fieldId: String): String? =
         local.getString(standardValueKey(fieldId), null)
 
+    fun isStandardReady(): Boolean = GoneSmartAudioProfiles.allFields.all { field ->
+        standardValue(field.id)?.let(field::normalize) != null
+    }
+
     fun inheritedValue(routeId: String, fieldId: String): String? = standardValue(fieldId)
 
     fun inheritedObservedCount(routeId: String, group: AudioProfileGroup): Int =
@@ -253,18 +258,12 @@ class GoneSmartAudioProfileRepository(context: Context) {
         synchronizeWithFramework()
     }
 
-    /**
-     * Selecting a named GMMP preset does not require GoneSmart to know its
-     * curve up front. The name is persisted immediately so the hooked GMMP
-     * process can ask GMMP's native preset loader for it. If the curve is
-     * already known it is copied immediately; otherwise the passive native
-     * setter observation backfills PRE/bands as soon as GMMP loads the preset.
-     */
+    /** Select only a named preset whose exact native PRE/band shape is known. */
     fun applyEqualizerPreset(routeId: String, presetName: String): Boolean {
         if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
         if (presetName.isBlank() || presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return false
         val normalizedPreset = GoneSmartAudioProfiles.field("eq.preset")?.normalize(presetName) ?: return false
-        val shape = nativePresetShape(normalizedPreset)
+        val shape = nativePresetShape(normalizedPreset) ?: return false
         val keys = mutableSetOf<String>()
         val editor = local.edit()
 
@@ -272,7 +271,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
         editor.putString(presetKey, normalizedPreset)
         keys += presetKey
 
-        shape?.forEach { (fieldId, value) ->
+        shape.forEach { (fieldId, value) ->
             val key = GoneSmartAudioProfiles.valueKey(routeId, fieldId)
             editor.putString(key, value)
             keys += key
@@ -285,6 +284,28 @@ class GoneSmartAudioProfileRepository(context: Context) {
     }
 
     fun isNativePresetAvailable(presetName: String): Boolean = nativePresetShape(presetName) != null
+
+    fun availableNativePresets(): List<String> {
+        val learnedNames = local.all
+            .asSequence()
+            .filter { (key, value) ->
+                key.startsWith(NATIVE_PRESET_PREFIX) && key.endsWith(".name") && value is String
+            }
+            .mapNotNull { (_, value) -> (value as? String)?.takeIf { it.isNotBlank() } }
+            .toSet()
+        val ordered = linkedSetOf<String>()
+        GoneSmartAudioProfiles.presetSuggestions
+            .filter(::isNativePresetAvailable)
+            .forEach(ordered::add)
+        learnedNames
+            .filter(::isNativePresetAvailable)
+            .sortedBy { it.lowercase() }
+            .forEach(ordered::add)
+        standardValue("eq.preset")
+            ?.takeIf(::isNativePresetAvailable)
+            ?.let(ordered::add)
+        return ordered.toList()
+    }
 
     fun clearRouteOverrides(routeId: String) {
         val overridePrefix = GoneSmartAudioProfiles.overrideKey(routeId, "")

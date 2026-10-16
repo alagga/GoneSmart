@@ -1,9 +1,11 @@
 package io.github.alagga.gonesmart
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -45,6 +47,8 @@ class GoneSmartAudioModule : XposedModule() {
         private const val STANDARD_SNAPSHOT_DELAY_MS = 350L
         private const val MAX_DYNAMIC_EQ_CLASSES = 12_000
         private const val READER_EPSILON = 0.001
+        private const val RUNTIME_PREFS = "gonesmart_audio_runtime_state"
+        private const val STANDARD_PREFIX = "standard."
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -92,6 +96,8 @@ class GoneSmartAudioModule : XposedModule() {
     private val preferenceProbeEvents = AtomicInteger(0)
     private val preferenceProbeSeen = ConcurrentHashMap.newKeySet<String>()
     private val presetCatalogStarted = AtomicBoolean(false)
+    private val bridgeProviderVerified = AtomicBoolean(false)
+    private val bridgeFallbackLogged = AtomicBoolean(false)
 
     private val audioPreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
@@ -159,14 +165,23 @@ class GoneSmartAudioModule : XposedModule() {
 
     private fun onRouteChanged(application: Application, route: AudioRouteProfile) {
         activeRouteId = route.id
-        val intent = Intent(AudioProfileEventReceiver.ACTION_ROUTE_OBSERVED)
-            .setPackage(COMPANION_PACKAGE)
-            .putExtra(AudioProfileEventReceiver.EXTRA_ROUTE_ID, route.id)
-            .putExtra(AudioProfileEventReceiver.EXTRA_ROUTE_LABEL, route.label)
-            .putExtra(AudioProfileEventReceiver.EXTRA_ROUTE_BLUETOOTH, route.bluetooth)
-            .putExtra(AudioProfileEventReceiver.EXTRA_LAST_SEEN, route.lastSeenEpochMs)
-        runCatching { application.sendBroadcast(intent) }
-            .onFailure { Log.w(TAG, "Could not report active audio route to companion", it) }
+        val extras = Bundle().apply {
+            putString(AudioProfileEventReceiver.EXTRA_ROUTE_ID, route.id)
+            putString(AudioProfileEventReceiver.EXTRA_ROUTE_LABEL, route.label)
+            putBoolean(AudioProfileEventReceiver.EXTRA_ROUTE_BLUETOOTH, route.bluetooth)
+            putLong(AudioProfileEventReceiver.EXTRA_LAST_SEEN, route.lastSeenEpochMs)
+        }
+        val bridged = AudioProfileCompanionBridge.report(
+            application,
+            AudioProfileCompanionBridge.METHOD_ROUTE,
+            extras
+        )
+        if (bridged) {
+            logBridgeProviderVerified()
+        } else {
+            val intent = Intent(AudioProfileEventReceiver.ACTION_ROUTE_OBSERVED).apply { putExtras(extras) }
+            sendFallbackBroadcast(application, intent, "route")
+        }
         logActiveOverrideState("route changed")
 
         if (AudioProfileRuntimePolicy.isStandardRoute(route.id)) {
@@ -612,7 +627,8 @@ class GoneSmartAudioModule : XposedModule() {
             else -> null
         } ?: return
         publishedNativeValues.remove(mappedField)
-        sendNativeValueBroadcast(mappedField, value = null, clear = true)
+        persistStandardRuntimeValue(mappedField, null)
+        sendNativeValueToCompanion(mappedField, value = null, clear = true)
         if (mappedField == "eq.preset") {
             currentNativePreset = null
             pendingPresetName = null
@@ -623,8 +639,9 @@ class GoneSmartAudioModule : XposedModule() {
     private fun publishNativeValue(value: NativeAudioObservation.Value, force: Boolean = false) {
         val field = GoneSmartAudioProfiles.field(value.fieldId) ?: return
         val normalized = field.normalize(value.value) ?: return
+        persistStandardRuntimeValue(value.fieldId, normalized)
         if (!force && publishedNativeValues[value.fieldId] == normalized) return
-        if (sendNativeValueBroadcast(value.fieldId, normalized, clear = false)) {
+        if (sendNativeValueToCompanion(value.fieldId, normalized, clear = false)) {
             publishedNativeValues[value.fieldId] = normalized
             if (BuildConfig.DEBUG) {
                 Log.i(
@@ -636,20 +653,26 @@ class GoneSmartAudioModule : XposedModule() {
         }
     }
 
-    private fun sendNativeValueBroadcast(fieldId: String, value: String?, clear: Boolean): Boolean {
+    private fun sendNativeValueToCompanion(fieldId: String, value: String?, clear: Boolean): Boolean {
         val application = hostApplication ?: currentApplication() ?: return false
-        val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_VALUE_OBSERVED)
-            .setPackage(COMPANION_PACKAGE)
-            .putExtra(AudioProfileEventReceiver.EXTRA_ROUTE_ID, activeRouteId)
-            .putExtra(AudioProfileEventReceiver.EXTRA_SETTING_ID, fieldId)
-            .putExtra(AudioProfileEventReceiver.EXTRA_SETTING_CLEAR, clear)
-        if (value != null) intent.putExtra(AudioProfileEventReceiver.EXTRA_SETTING_VALUE, value)
-        return runCatching {
-            application.sendBroadcast(intent)
-            true
-        }.onFailure {
-            Log.w(TAG, "Could not mirror native GMMP value '$fieldId' to companion", it)
-        }.getOrDefault(false)
+        val extras = Bundle().apply {
+            putString(AudioProfileEventReceiver.EXTRA_ROUTE_ID, activeRouteId)
+            putString(AudioProfileEventReceiver.EXTRA_SETTING_ID, fieldId)
+            putBoolean(AudioProfileEventReceiver.EXTRA_SETTING_CLEAR, clear)
+            if (value != null) putString(AudioProfileEventReceiver.EXTRA_SETTING_VALUE, value)
+        }
+        if (AudioProfileCompanionBridge.report(
+                application,
+                AudioProfileCompanionBridge.METHOD_NATIVE_VALUE,
+                extras
+            )
+        ) {
+            logBridgeProviderVerified()
+            return true
+        }
+
+        val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_VALUE_OBSERVED).apply { putExtras(extras) }
+        return sendFallbackBroadcast(application, intent, "native value $fieldId")
     }
 
     private fun maybeCompletePendingPresetFromObservedShape() {
@@ -675,20 +698,28 @@ class GoneSmartAudioModule : XposedModule() {
             return
         }
 
+        persistRuntimePreset(preset, normalized)
+
         val application = hostApplication ?: currentApplication() ?: return
         val ids = ArrayList(GoneSmartAudioProfiles.equalizerShapeFieldIds)
         val values = ArrayList(ids.map { normalized[it] ?: return })
-        val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_PRESET_OBSERVED)
-            .setPackage(COMPANION_PACKAGE)
-            .putExtra(AudioProfileEventReceiver.EXTRA_PRESET_NAME, preset)
-            .putStringArrayListExtra(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_IDS, ids)
-            .putStringArrayListExtra(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_VALUES, values)
-        val sent = runCatching {
-            application.sendBroadcast(intent)
+        val extras = Bundle().apply {
+            putString(AudioProfileEventReceiver.EXTRA_PRESET_NAME, preset)
+            putStringArrayList(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_IDS, ids)
+            putStringArrayList(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_VALUES, values)
+        }
+        val bridged = AudioProfileCompanionBridge.report(
+            application,
+            AudioProfileCompanionBridge.METHOD_NATIVE_PRESET,
+            extras
+        )
+        val sent = if (bridged) {
+            logBridgeProviderVerified()
             true
-        }.onFailure {
-            Log.w(TAG, "Could not mirror native GMMP preset '$preset' to companion", it)
-        }.getOrDefault(false)
+        } else {
+            val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_PRESET_OBSERVED).apply { putExtras(extras) }
+            sendFallbackBroadcast(application, intent, "native preset $preset")
+        }
         if (!sent) return
 
         publishedPresetFingerprints[preset] = fingerprint
@@ -696,6 +727,47 @@ class GoneSmartAudioModule : XposedModule() {
         pendingPresetUntilElapsed = 0L
         if (BuildConfig.DEBUG) {
             Log.i(PROBE_TAG, "PRESET SNAPSHOT | preset=$preset | source=$source | fields=${normalized.size}")
+        }
+    }
+
+    private fun persistStandardRuntimeValue(fieldId: String, value: String?) {
+        if (!AudioProfileRuntimePolicy.isStandardRoute(activeRouteId)) return
+        val application = hostApplication ?: currentApplication() ?: return
+        val editor = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE).edit()
+        val key = "$STANDARD_PREFIX$fieldId"
+        if (value == null) editor.remove(key) else editor.putString(key, value)
+        editor.apply()
+    }
+
+    private fun persistRuntimePreset(preset: String, shape: Map<String, String>) {
+        val application = hostApplication ?: currentApplication() ?: return
+        val editor = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE).edit()
+        editor.putString(GoneSmartAudioProfiles.nativePresetNameKey(preset), preset)
+        shape.forEach { (fieldId, value) ->
+            editor.putString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), value)
+        }
+        editor.apply()
+    }
+
+    private fun sendFallbackBroadcast(application: Application, intent: Intent, kind: String): Boolean =
+        runCatching {
+            intent.component = ComponentName(
+                COMPANION_PACKAGE,
+                "$COMPANION_PACKAGE.AudioProfileEventReceiver"
+            )
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND)
+            application.sendBroadcast(intent)
+            if (bridgeFallbackLogged.compareAndSet(false, true)) {
+                Log.w(TAG, "COMPANION BRIDGE FALLBACK | provider unavailable | explicit receiver enabled")
+            }
+            true
+        }.onFailure {
+            Log.w(TAG, "Could not mirror $kind to companion", it)
+        }.getOrDefault(false)
+
+    private fun logBridgeProviderVerified() {
+        if (bridgeProviderVerified.compareAndSet(false, true)) {
+            Log.i(TAG, "COMPANION BRIDGE VERIFIED | transport=content-provider")
         }
     }
 

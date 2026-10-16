@@ -5,6 +5,10 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.MenuItem
 import android.view.View
@@ -39,6 +43,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         private const val COLOR_MUTED = 0xFF77737E.toInt()
         private const val COLOR_ACCENT = 0xFFA39AFF.toInt()
         private const val COLOR_ACCENT_DARK = 0xFF34305F.toInt()
+        private const val COLOR_ACTIVE = 0xFF55D187.toInt()
         private const val COLOR_RED = 0xFFFF5C68.toInt()
     }
 
@@ -202,12 +207,7 @@ class AudioProfilesActivity : AppCompatActivity() {
             ?: routes.first()
         selectedRouteId = selected.id
 
-        routeButton.text = buildString {
-            if (selected.bluetooth) append("Bluetooth • ")
-            append(selected.label)
-            if (selected.active) append("  •  Active")
-            append("  ▾")
-        }
+        routeButton.text = routeLabel(selected, includeCustomCount = false, includeChevron = true)
         styleTab(equalizerTab, section == AudioProfileSection.EQUALIZER)
         styleTab(effectsTab, section == AudioProfileSection.EFFECTS)
         renderContent(selected)
@@ -273,6 +273,16 @@ class AudioProfilesActivity : AppCompatActivity() {
         val standard = AudioProfileRuntimePolicy.isStandardRoute(routeId)
         val overridden = !standard && repository.isGroupOverridden(routeId, group.id)
         val observedCount = repository.inheritedObservedCount(routeId, group)
+        val equalizerEnabled = if (group.id == GoneSmartAudioProfiles.equalizerGroup.id) {
+            val raw = if (overridden) {
+                repository.value(routeId, "eq.enabled")
+            } else {
+                repository.inheritedValue(routeId, "eq.enabled")
+            }
+            raw == "true"
+        } else {
+            true
+        }
         val card = card()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -329,7 +339,12 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         group.fields.forEachIndexed { index, field ->
             if (index > 0) content.addView(divider())
-            content.addView(fieldControl(routeId, group, field, overridden))
+            val controlEnabled = when {
+                !overridden -> false
+                group.id == GoneSmartAudioProfiles.equalizerGroup.id && field.id != "eq.enabled" -> equalizerEnabled
+                else -> true
+            }
+            content.addView(fieldControl(routeId, group, field, controlEnabled))
         }
 
         card.addView(content)
@@ -343,13 +358,14 @@ class AudioProfilesActivity : AppCompatActivity() {
         enabled: Boolean
     ): View {
         val inherited = repository.inheritedValue(routeId, field.id)
-        val custom = if (enabled) repository.value(routeId, field.id) else null
+        val groupOverridden = repository.isGroupOverridden(routeId, group.id)
+        val custom = if (groupOverridden) repository.value(routeId, field.id) else null
         val initial = custom ?: inherited ?: field.suggestedDefault
-        val previewOnly = !enabled && inherited == null
+        val previewOnly = !groupOverridden && inherited == null
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            alpha = if (enabled) 1f else 0.62f
+            alpha = if (enabled) 1f else 0.50f
             setPadding(0, dp(10), 0, dp(10))
 
             when (field.valueType) {
@@ -370,7 +386,9 @@ class AudioProfilesActivity : AppCompatActivity() {
                         trackTintList = switchTrackTint()
                         thumbTintList = switchThumbTint()
                         setOnCheckedChangeListener { _, checked ->
-                            if (isEnabled) repository.setValue(routeId, field.id, checked.toString())
+                            if (!isEnabled) return@setOnCheckedChangeListener
+                            repository.setValue(routeId, field.id, checked.toString())
+                            if (field.id == "eq.enabled") refreshAll()
                         }
                     })
                     addView(row)
@@ -495,24 +513,29 @@ class AudioProfilesActivity : AppCompatActivity() {
     }
 
     private fun showChoiceDialog(routeId: String, field: AudioProfileField) {
-        val current = repository.value(routeId, field.id)
-            ?: repository.inheritedValue(routeId, field.id)
-            ?: field.suggestedDefault
-        val items = (field.choices + listOf(current))
-            .filter { it.isNotBlank() && it != GoneSmartAudioProfiles.CUSTOM_PRESET }
-            .distinct()
-            .toTypedArray()
+        val items = if (field.id == "eq.preset") {
+            repository.availableNativePresets().toTypedArray()
+        } else {
+            val current = repository.value(routeId, field.id)
+                ?: repository.inheritedValue(routeId, field.id)
+                ?: field.suggestedDefault
+            (field.choices + listOf(current))
+                .filter { it.isNotBlank() && it != GoneSmartAudioProfiles.CUSTOM_PRESET }
+                .distinct()
+                .toTypedArray()
+        }
+
+        if (items.isEmpty()) {
+            showNoLearnedPresetsDialog()
+            return
+        }
 
         AlertDialog.Builder(this)
             .setTitle(field.title)
             .setItems(items) { _, which ->
                 val selected = items[which]
                 if (field.id == "eq.preset") {
-                    if (!repository.isNativePresetAvailable(selected)) {
-                        showPresetNotObservedDialog(selected)
-                    } else if (repository.applyEqualizerPreset(routeId, selected)) {
-                        refreshAll()
-                    }
+                    if (repository.applyEqualizerPreset(routeId, selected)) refreshAll()
                 } else {
                     repository.setValue(routeId, field.id, selected)
                     refreshAll()
@@ -522,12 +545,12 @@ class AudioProfilesActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showPresetNotObservedDialog(preset: String) {
+    private fun showNoLearnedPresetsDialog() {
         AlertDialog.Builder(this)
-            .setTitle("Preset curve not learned yet")
+            .setTitle("No native preset curves learned yet")
             .setMessage(
-                "GoneSmart knows the preset name '$preset', but it has not yet observed GMMP's native PRE and band values for it. " +
-                    "Open this preset once in GMMP's Equalizer while GoneSmart is running. Nothing is changed here until the real native curve is known."
+                "GoneSmart only lists presets whose real GMMP PRE and band values have been captured. " +
+                    "Open a preset once in GMMP's Equalizer while GoneSmart is running, then return here."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -554,9 +577,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         ).show()
     }
 
-    private fun isStandardReady(): Boolean = GoneSmartAudioProfiles.allFields.all { field ->
-        repository.standardValue(field.id)?.let(field::normalize) != null
-    }
+    private fun isStandardReady(): Boolean = repository.isStandardReady()
 
     private fun showHelpDialog() {
         AlertDialog.Builder(this)
@@ -565,7 +586,8 @@ class AudioProfilesActivity : AppCompatActivity() {
                 "Standard is your normal GMMP Equalizer and Effects state with no Bluetooth output. " +
                     "Bluetooth profiles override only the sections you enable and inherit Standard everywhere else.\n\n" +
                     "If Standard is not ready yet, disconnect Bluetooth once, wait a moment, then reconnect. GoneSmart captures the normal GMMP audio settings while Bluetooth is disconnected.\n\n" +
-                    "Equalizer is one complete override. A known native preset restores PRE and all ten bands; moving PRE or a band changes the profile to Custom."
+                    "Equalizer is one complete override. Turning it off disables its preset, PRE and band controls. " +
+                    "The preset list contains only native curves GoneSmart has actually captured; moving PRE or a band changes the profile to Custom."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -581,13 +603,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         repository.synchronizeWithFramework()
         val routes = repository.routes()
         val labels = routes.map { route ->
-            buildString {
-                if (route.bluetooth) append("Bluetooth • ")
-                append(route.label)
-                if (route.active) append("  •  Active")
-                val count = repository.overrideCount(route.id)
-                if (count > 0) append("  •  $count custom")
-            }
+            routeLabel(route, includeCustomCount = true, includeChevron = false)
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Audio output")
@@ -597,6 +613,41 @@ class AudioProfilesActivity : AppCompatActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun routeLabel(
+        route: AudioRouteProfile,
+        includeCustomCount: Boolean,
+        includeChevron: Boolean
+    ): CharSequence {
+        val text = SpannableStringBuilder()
+        if (route.active) {
+            val dotStart = text.length
+            text.append("●")
+            text.setSpan(
+                ForegroundColorSpan(COLOR_ACTIVE),
+                dotStart,
+                text.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            text.append("  ")
+        }
+        val labelStart = text.length
+        text.append(route.label)
+        if (route.active) {
+            text.setSpan(
+                StyleSpan(Typeface.BOLD),
+                labelStart,
+                text.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        if (includeCustomCount) {
+            val count = repository.overrideCount(route.id)
+            if (count > 0) text.append("  •  $count custom")
+        }
+        if (includeChevron) text.append("  ▾")
+        return text
     }
 
     private fun resetButton(route: AudioRouteProfile): MaterialButton =

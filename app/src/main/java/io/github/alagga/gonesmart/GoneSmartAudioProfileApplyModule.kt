@@ -42,6 +42,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val applyPending = AtomicBoolean(false)
+    private val runtimeStandardFallbackLogged = AtomicBoolean(false)
 
     @Volatile
     private var pendingReason: String = "startup"
@@ -213,7 +214,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
         // A Bluetooth overlay is meaningful only relative to a complete normal
         // GMMP baseline. Never mutate GMMP while that baseline is incomplete;
-        // the observation module will capture it once Standard becomes active.
+        // the observation module captures it only while Standard is active.
         if (!hasCompleteStandard(profiles)) {
             Log.w(
                 TAG,
@@ -284,9 +285,29 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     }
 
     private fun hasCompleteStandard(prefs: SharedPreferences): Boolean =
-        GoneSmartAudioProfiles.allFields.all { field ->
-            prefs.getString("$STANDARD_PREFIX${field.id}", null)?.let(field::normalize) != null
+        GoneSmartAudioProfiles.allFields.all { field -> standardValue(prefs, field.id) != null }
+
+    private fun standardValue(prefs: SharedPreferences, fieldId: String): String? {
+        val frameworkValue = prefs.getString("$STANDARD_PREFIX$fieldId", null)
+        val runtimeValue = runtimePreferences?.getString("$STANDARD_PREFIX$fieldId", null)
+        val resolved = AudioProfileValueResolver.resolve(fieldId, frameworkValue, runtimeValue)
+        if (resolved != null && frameworkValue == null && runtimeValue != null &&
+            runtimeStandardFallbackLogged.compareAndSet(false, true)
+        ) {
+            Log.i(TAG, "STANDARD RUNTIME FALLBACK ACTIVE | local GMMP baseline used")
         }
+        return resolved
+    }
+
+    private fun nativePresetValue(
+        prefs: SharedPreferences,
+        preset: String,
+        fieldId: String
+    ): String? = AudioProfileValueResolver.resolve(
+        fieldId,
+        prefs.getString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), null),
+        runtimePreferences?.getString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), null)
+    )
 
     private fun resolveGroupValues(
         prefs: SharedPreferences,
@@ -298,13 +319,12 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
         val values = linkedMapOf<String, String>()
         group.fields.forEach { field ->
-            val key = if (useRouteOverride) {
-                GoneSmartAudioProfiles.valueKey(routeId, field.id)
+            val normalized = if (useRouteOverride) {
+                prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, field.id), null)
+                    ?.let(field::normalize)
             } else {
-                "$STANDARD_PREFIX${field.id}"
-            }
-            val raw = prefs.getString(key, null) ?: return null
-            val normalized = field.normalize(raw) ?: return null
+                standardValue(prefs, field.id)
+            } ?: return null
             values[field.id] = normalized
         }
         return values
@@ -324,24 +344,22 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
         fun value(fieldId: String): String? {
             val field = GoneSmartAudioProfiles.field(fieldId) ?: return null
-            val key = if (useRouteOverride) {
-                GoneSmartAudioProfiles.valueKey(routeId, fieldId)
+            return if (useRouteOverride) {
+                prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null)
+                    ?.let(field::normalize)
             } else {
-                "$STANDARD_PREFIX$fieldId"
+                standardValue(prefs, fieldId)
             }
-            return prefs.getString(key, null)?.let(field::normalize)
         }
 
         val enabled = value("eq.enabled") ?: return null
         val preset = value("eq.preset") ?: return null
 
         val shape = when {
-            !useRouteOverride -> readShape { fieldId -> prefs.getString("$STANDARD_PREFIX$fieldId", null) }
+            !useRouteOverride -> readShape { fieldId -> standardValue(prefs, fieldId) }
             preset == GoneSmartAudioProfiles.CUSTOM_PRESET ->
                 readShape { fieldId -> prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null) }
-            else -> readShape { fieldId ->
-                prefs.getString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), null)
-            }
+            else -> readShape { fieldId -> nativePresetValue(prefs, preset, fieldId) }
         }
 
         val source = when {
