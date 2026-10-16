@@ -2,12 +2,17 @@ name: Apply Auto DJ Rescue Patch
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feature/auto-dj-providers']
+    paths:
+      - '.github/workflows/apply-auto-dj-rescue-patch.yml'
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'chore: trigger auto-dj rescue patch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
