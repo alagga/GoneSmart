@@ -652,6 +652,20 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
+     * R65 prepared Queue-context bootstrap uses the same predecoder-safe,
+     * position-only compaction as R56. The historical zero-pool helper already
+     * preserves queue IDs, Track IDs and Current state and only rewrites the
+     * verified native queue_position fields relative to the pinned Current.
+     */
+    fun compactTrackMixPreparedRefillAnchored(
+        selectedTrackId: Long,
+        expectedSize: Int
+    ): Boolean = compactTrackMixZeroPoolRefillAnchored(
+        selectedTrackId = selectedTrackId,
+        expectedSize = expectedSize
+    )
+
+    /**
      * Settled zero-pool cleanup only. Native qr.z owns the fallback Track IDs;
      * after playback/source materialization is already proven, compact their
      * queue_position values to 1..N and move the native state pointer with a

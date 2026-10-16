@@ -1294,12 +1294,12 @@ internal class TrackMixController(
         }
 
         var currentSnapshot = loaded
-        if (
+        val preparedSeedIsolationRequired =
             TrackMixInitialFillPolicy.requiresPreparedSeedIsolation(
                 source = request.source,
                 legacyQueue = false
             )
-        ) {
+        if (preparedSeedIsolationRequired) {
             request.stage = "ISOLATING_PREPARED"
             val autoDj = nativeAutoDj?.get() ?: run {
                 fail("Could not access Auto-DJ queue.", request.context)
@@ -1400,15 +1400,68 @@ internal class TrackMixController(
             }
         }
 
-        request.stage = "PRUNE"
         val autoDj = nativeAutoDj?.get() ?: run {
             fail("Could not access Auto-DJ queue.", request.context)
             return null
         }
+        val verifiedPositionWriter = nativePositionWriterProvider(autoDj)
+            ?: if (preparedSeedIsolationRequired) {
+                nativeTrackMixPositionWriterProvider(autoDj, 1)
+            } else {
+                null
+            }
+
+        // R65: R63 correctly isolates/rebases a Queue-context prepared seed to
+        // position 1, but GMMP's hidden append allocator may still materialize
+        // the four prepared followers at old high coordinates (for example
+        // 7216..7219). The Track IDs/order are already correct at this point.
+        // Compact only queue_position through the accepted native O0 writer,
+        // preserve queue IDs/Track IDs/Current state, verify 1..Initial Size,
+        // and only then run the unchanged prune/final verification.
+        if (preparedSeedIsolationRequired) {
+            request.stage = "NORMALIZE_PREPARED"
+            val normalized = runCatching {
+                GmmpQueueMutationBridge(
+                    autoDj = autoDj,
+                    verifiedPositionWriter = verifiedPositionWriter,
+                    currentQueueEntryIdHint = selectedEntryId
+                ).compactTrackMixPreparedRefillAnchored(
+                    selectedTrackId = selectedId,
+                    expectedSize = initial
+                )
+            }.onFailure {
+                Log.e(
+                    TAG,
+                    "MIX PREPLAY PREPARED POSITIONS | native coordinate normalization failed",
+                    it
+                )
+            }.getOrDefault(false)
+            if (!normalized) {
+                fail("Could not normalize the prepared Track Auto-DJ queue.", request.context)
+                return null
+            }
+            currentSnapshot = queueSnapshot(selectedEntryId)?.takeIf {
+                it.currentId == selectedId &&
+                    it.currentEntryId == selectedEntryId &&
+                    it.currentQueuePosition == 1 &&
+                    it.ids.size == initial
+            } ?: run {
+                fail("Could not verify the normalized Track Auto-DJ queue.", request.context)
+                return null
+            }
+            Log.i(
+                TAG,
+                "MIX PREPLAY PREPARED POSITIONS | verified=true | " +
+                    "seed=$selectedId | entry=$selectedEntryId | " +
+                    "initial=$initial | currentPosition=1 | positions=1..$initial"
+            )
+        }
+
+        request.stage = "PRUNE"
         val pruned = runCatching {
             GmmpQueueMutationBridge(
                 autoDj = autoDj,
-                verifiedPositionWriter = nativePositionWriterProvider(autoDj),
+                verifiedPositionWriter = verifiedPositionWriter,
                 currentQueueEntryIdHint = selectedEntryId
             ).retargetTrackMixUpcoming(
                 selectedTrackId = selectedId,

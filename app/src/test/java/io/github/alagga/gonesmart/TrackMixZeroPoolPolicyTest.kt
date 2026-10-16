@@ -205,6 +205,40 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `prepared queue append gaps compact before native retarget prune`() {
+        val gapped = listOf(
+            TrackMixPlan.NativeQueueEntry(50, 6354, 1),
+            TrackMixPlan.NativeQueueEntry(51, 7022, 7216),
+            TrackMixPlan.NativeQueueEntry(52, 14339, 7217),
+            TrackMixPlan.NativeQueueEntry(53, 6270, 7218),
+            TrackMixPlan.NativeQueueEntry(54, 14338, 7219)
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixPlan.planNativeRetarget(
+                entries = gapped,
+                currentPosition = 1,
+                selectedTrackId = 6354,
+                targetQueueSize = 5,
+                smartTrackIds = emptyList()
+            )
+        }
+
+        val rebase = TrackMixZeroPoolPolicy.rebasePlan(gapped, 50, 5)
+        val compact = gapped.map { entry ->
+            entry.copy(position = rebase.positionsByEntryId.getValue(entry.queueId))
+        }
+        val plan = TrackMixPlan.planNativeRetarget(
+            entries = compact,
+            currentPosition = 1,
+            selectedTrackId = 6354,
+            targetQueueSize = 5,
+            smartTrackIds = emptyList()
+        )
+        assertEquals(listOf(6354L, 7022L, 14339L, 6270L, 14338L), plan.expectedTrackIds)
+        assertEquals(emptyList<Long>(), plan.removeEntryIds)
+    }
+
+    @Test
     fun `late source rebuild restores exactly the predecode native fallback identities`() {
         assertEquals(
             listOf(19118L, 12703L, 1987L, 17034L, 6272L),
