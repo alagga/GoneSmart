@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import android.util.Log
 import java.text.Normalizer
 import java.util.Locale
 
@@ -9,8 +10,41 @@ internal data class ExpandedArtistSignal(
     val remoteArtist: String
 )
 
+internal data class LocalArtistExpansionMetrics(
+    val indexCacheHit: Boolean,
+    val libraryTracks: Int,
+    val indexedKeys: Int,
+    val artists: Int,
+    val signals: Int,
+    val indexMs: Long,
+    val expansionMs: Long,
+    val totalMs: Long
+)
+
 /** Expand an artist-level provider signal only into already-local GMMP tracks. */
 internal class LocalArtistSignalExpander {
+    companion object {
+        private const val TAG = "GoneSmart"
+    }
+
+    private data class ArtistIndexCache(
+        val library: List<GmmpLibraryTrack>,
+        val index: Map<String, List<GmmpLibraryTrack>>
+    )
+
+    /*
+     * GmmpLibraryReader deliberately reuses the same immutable-ish snapshot
+     * while its revision cache is valid and returns a new List instance after
+     * a real refresh. Reference identity therefore gives us a zero-scan cache
+     * key without hashing all tracks again on every artist fallback.
+     */
+    @Volatile
+    private var artistIndexCache: ArtistIndexCache? = null
+
+    @Volatile
+    internal var lastMetrics: LocalArtistExpansionMetrics? = null
+        private set
+
     fun expand(
         artists: List<ListenBrainzSimilarArtist>,
         library: List<GmmpLibraryTrack>,
@@ -20,20 +54,12 @@ internal class LocalArtistSignalExpander {
     ): List<ExpandedArtistSignal> {
         if (artists.isEmpty() || library.isEmpty()) return emptyList()
 
-        val index = linkedMapOf<String, MutableList<GmmpLibraryTrack>>()
-        for (track in library) {
-            artistKeys(track.track.artist).forEach { key ->
-                index.getOrPut(key) { mutableListOf() }.add(track)
-            }
-        }
-        index.values.forEach { tracks ->
-            tracks.sortWith(
-                compareByDescending<GmmpLibraryTrack> { it.ratingRaw }
-                    .thenByDescending { it.playCount }
-                    .thenBy { it.track.id }
-            )
-        }
+        val totalStarted = System.nanoTime()
+        val indexStarted = System.nanoTime()
+        val (index, indexCacheHit) = indexFor(library)
+        val indexMs = elapsedMs(indexStarted)
 
+        val expansionStarted = System.nanoTime()
         val bestByTrack = linkedMapOf<Long, ExpandedArtistSignal>()
         for (signal in artists.take(maxArtists)) {
             val found = linkedMapOf<Long, GmmpLibraryTrack>()
@@ -51,8 +77,71 @@ internal class LocalArtistSignalExpander {
                 }
             }
         }
-        return bestByTrack.values.sortedByDescending { it.providerScore }
+        val result = bestByTrack.values.sortedByDescending { it.providerScore }
+        val expansionMs = elapsedMs(expansionStarted)
+        val metrics = LocalArtistExpansionMetrics(
+            indexCacheHit = indexCacheHit,
+            libraryTracks = library.size,
+            indexedKeys = index.size,
+            artists = artists.take(maxArtists).size,
+            signals = result.size,
+            indexMs = indexMs,
+            expansionMs = expansionMs,
+            totalMs = elapsedMs(totalStarted)
+        )
+        lastMetrics = metrics
+
+        // android.util.Log is unavailable in plain JVM tests; runtime logging
+        // must never make the pure expansion helper fail there.
+        runCatching {
+            Log.i(
+                TAG,
+                "LOCAL ARTIST EXPANSION | library=${metrics.libraryTracks} | " +
+                    "artistIndex=${if (metrics.indexCacheHit) "hit" else "rebuilt"} | " +
+                    "keys=${metrics.indexedKeys} | artists=${metrics.artists} | " +
+                    "signals=${metrics.signals} | indexMs=${metrics.indexMs} | " +
+                    "expansionMs=${metrics.expansionMs} | totalMs=${metrics.totalMs}"
+            )
+        }
+
+        return result
     }
+
+    private fun indexFor(
+        library: List<GmmpLibraryTrack>
+    ): Pair<Map<String, List<GmmpLibraryTrack>>, Boolean> {
+        artistIndexCache?.let { cache ->
+            if (cache.library === library) return cache.index to true
+        }
+
+        synchronized(this) {
+            artistIndexCache?.let { cache ->
+                if (cache.library === library) return cache.index to true
+            }
+
+            val mutableIndex = linkedMapOf<String, MutableList<GmmpLibraryTrack>>()
+            for (track in library) {
+                artistKeys(track.track.artist).forEach { key ->
+                    mutableIndex.getOrPut(key) { mutableListOf() }.add(track)
+                }
+            }
+            mutableIndex.values.forEach { tracks ->
+                tracks.sortWith(
+                    compareByDescending<GmmpLibraryTrack> { it.ratingRaw }
+                        .thenByDescending { it.playCount }
+                        .thenBy { it.track.id }
+                )
+            }
+            val built = mutableIndex.mapValuesTo(linkedMapOf()) { (_, tracks) ->
+                tracks.toList()
+            }
+            artistIndexCache = ArtistIndexCache(library = library, index = built)
+            return built to false
+        }
+    }
+
+    private fun elapsedMs(startedNs: Long): Long =
+        (System.nanoTime() - startedNs).coerceAtLeast(0L) / 1_000_000L
 
     private fun artistKeys(rawArtist: String?): Set<String> {
         val raw = rawArtist?.trim().orEmpty()
