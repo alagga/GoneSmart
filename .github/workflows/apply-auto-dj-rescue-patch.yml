@@ -23,6 +23,8 @@ jobs:
         run: |
           sed -i 's/if count != 3:/if count != 2:/' scripts/apply_auto_dj_rescue_patch.py
           sed -i 's/expected 3 requestedTracks readiness checks/expected 2 requestedTracks readiness checks/' scripts/apply_auto_dj_rescue_patch.py
+          sed -i 's/text.count(broad_call) != 2/text.count(broad_call) != 1/' scripts/apply_auto_dj_rescue_patch.py
+          sed -i 's/expected 2 broad provider calls/expected 1 broad provider call/' scripts/apply_auto_dj_rescue_patch.py
           python3 scripts/apply_auto_dj_rescue_patch.py
           git diff --check
 
