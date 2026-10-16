@@ -1,0 +1,157 @@
+name: Assistant Auto-DJ follow-up
+
+on:
+  push:
+    branches: ['feature/auto-dj-providers']
+    paths: ['.github/workflows/assistant-auto-dj-followup.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/auto-dj-providers
+          fetch-depth: 0
+
+      - name: Apply scoped follow-up changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          # Companion UI wording: describe the behavior directly, like the other settings.
+          replace_once(
+              'app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt',
+              'Also block a remix when another version of the same song family is already in the current/recent queue. Off by default.',
+              'Block a remix when another version of the same song family is already in the current or recent queue.'
+          )
+
+          # Keep a larger first-pass reserve so a successful session is less likely to need
+          # another provider round shortly afterwards.
+          replace_once(
+              'app/src/main/java/io/github/alagga/gonesmart/GmmpAutoDjSettingsReader.kt',
+              '''        val rescueCandidateTarget =\n            (visibleDemand * 2)\n                .coerceIn(\n                    4,\n                    target\n                )''',
+              '''        val rescueCandidateTarget =\n            max(\n                visibleDemand * 2,\n                ceil(target * 0.60).toInt()\n            )\n                .coerceIn(\n                    4,\n                    target\n                )'''
+          )
+
+          p = Path('app/src/main/java/io/github/alagga/gonesmart/GmmpAutoDjSettingsReader.kt')
+          text = p.read_text()
+          text = text.replace(
+              '''         * Keep roughly two turns of useful local choices before paying for\n         * broader artist calls, bounded by the internal pool target.''',
+              '''         * Keep roughly two visible turns of useful local choices, but never\n         * less than 60% of the internal pool target, before skipping broader\n         * artist calls. The larger reserve costs more up front only when direct\n         * coverage is sparse and reduces repeated provider rounds later.'''
+          )
+          p.write_text(text)
+
+          # A partial-but-useful fill is a scarcity signal. Do not immediately pay for a
+          # second online top-up just because the pool sits below low-water; consume the
+          # useful tracks first, then allow a fresh refill when the partial pool is empty.
+          path = Path('app/src/main/java/io/github/alagga/gonesmart/SessionRecommendationPool.kt')
+          text = path.read_text()
+          old = '''    private var lastUnproductiveFillElapsedMs =\n        Long.MIN_VALUE\n'''
+          new = '''    private var lastUnproductiveFillElapsedMs =\n        Long.MIN_VALUE\n\n    private var lastFillWasScarce =\n        false\n'''
+          if text.count(old) != 1:
+              raise SystemExit('SessionRecommendationPool field anchor mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''        lastUnproductiveFillElapsedMs =\n            Long.MIN_VALUE\n'''
+          new = '''        lastUnproductiveFillElapsedMs =\n            Long.MIN_VALUE\n\n        lastFillWasScarce =\n            false\n'''
+          if text.count(old) != 1:
+              raise SystemExit('SessionRecommendationPool reset anchor mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''        if (\n            !enoughConsumed\n        ) {\n\n            return false\n        }\n\n        val now =\n            SystemClock.elapsedRealtime()\n'''
+          new = '''        if (\n            !enoughConsumed\n        ) {\n\n            return false\n        }\n\n        if (\n            lastFillWasScarce\n        ) {\n            // A partial successful fill means the current provider evidence was\n            // exhausted. Avoid an immediate low-water network retry while useful\n            // tracks are still pending; once they are consumed, a fresh refill is\n            // allowed without an arbitrary timer.\n            return remaining == 0\n        }\n\n        val now =\n            SystemClock.elapsedRealtime()\n'''
+          if text.count(old) != 1:
+              raise SystemExit('SessionRecommendationPool shouldRefill anchor mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''        lastUnproductiveFillElapsedMs =\n            if (addedCount > 0) {\n                Long.MIN_VALUE\n            } else {\n                SystemClock.elapsedRealtime()\n            }\n'''
+          new = '''        if (\n            addedCount > 0\n        ) {\n            lastUnproductiveFillElapsedMs =\n                Long.MIN_VALUE\n\n            lastFillWasScarce =\n                pendingTrackIds.size <\n                    targetSize\n\n        } else {\n            lastUnproductiveFillElapsedMs =\n                SystemClock.elapsedRealtime()\n\n            lastFillWasScarce =\n                pendingTrackIds.isNotEmpty()\n        }\n'''
+          if text.count(old) != 1:
+              raise SystemExit('SessionRecommendationPool refill-result anchor mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''        return "pending=${pendingTrackIds.size} | " +\n            "used=${usedTrackIds.size} | " +\n            "target=$targetSize | " +\n            "consumedSinceFill=$consumedSinceLastSuccessfulFill"\n'''
+          new = '''        return "pending=${pendingTrackIds.size} | " +\n            "used=${usedTrackIds.size} | " +\n            "target=$targetSize | " +\n            "consumedSinceFill=$consumedSinceLastSuccessfulFill | " +\n            "scarcityLimited=$lastFillWasScarce"\n'''
+          if text.count(old) != 1:
+              raise SystemExit('SessionRecommendationPool describe anchor mismatch')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          # Show one concise status message for a visible multi-track underfill. Single-track
+          # routine refills remain silent, so this does not turn background scarcity into spam.
+          path = Path('app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt')
+          text = path.read_text()
+          anchor = '''                Log.i(\n                    TAG,\n                    "SMART DJ PARTIAL | " +\n                        "requested=$desiredCount | " +\n                        "applied=${appliedRows.size} | " +\n                        "deferred=${desiredCount - appliedRows.size} | " +\n                        "nativePadding=false"\n                )'''
+          count = text.count(anchor)
+          if count < 1:
+              raise SystemExit('GoneSmartModule partial-fill anchor missing')
+          replacement = anchor + '''\n\n                if (\n                    options.showStatusMessages &&\n                    desiredCount > 1 &&\n                    appliedRows.isNotEmpty()\n                ) {\n                    statusNotifier.show(\n                        "Only ${appliedRows.size} of $desiredCount suitable tracks found"\n                    )\n                }'''
+          text = text.replace(anchor, replacement)
+          path.write_text(text)
+
+          # Sizing tests now encode the larger reserve.
+          path = Path('app/src/test/java/io/github/alagga/gonesmart/GmmpAutoDjSettingsReaderSizingTest.kt')
+          text = path.read_text()
+          text = text.replace(
+              'fun currentFiveTrackInitialSizeUsesEightCandidateRescueGate()',
+              'fun currentFiveTrackInitialSizeKeepsTwelveCandidateRescueReserve()'
+          )
+          text = text.replace('assertEquals(8, sizing.rescueCandidateTarget)', 'assertEquals(12, sizing.rescueCandidateTarget)')
+          path.write_text(text)
+
+          Path('app/src/test/java/io/github/alagga/gonesmart/SessionRecommendationPoolTest.kt').write_text('''package io.github.alagga.gonesmart\n\nimport org.junit.Assert.assertFalse\nimport org.junit.Assert.assertTrue\nimport org.junit.Test\n\nclass SessionRecommendationPoolTest {\n\n    private val sizing =\n        SmartPoolSizing(\n            targetSize = 20,\n            lowWaterMark = 6,\n            minimumConsumedBeforeRefill = 2,\n            rescueCandidateTarget = 12\n        )\n\n    @Test\n    fun scarceSuccessfulFillDoesNotImmediatelyTriggerAnotherTopUp() {\n        val pool = SessionRecommendationPool()\n        pool.reset(newSessionId = 7L, newTargetSize = 20)\n\n        val added = pool.mergeCandidates(\n            expectedSessionId = 7L,\n            candidateTrackIds = listOf(1L, 2L, 3L, 4L, 5L, 6L),\n            newTargetSize = 20\n        )\n        pool.recordRefillResult(expectedSessionId = 7L, addedCount = added)\n\n        pool.commitSelected(\n            expectedSessionId = 7L,\n            selectedTrackIds = listOf(1L, 2L, 3L, 4L)\n        )\n\n        assertFalse(pool.shouldRefill(expectedSessionId = 7L, sizing = sizing))\n    }\n\n    @Test\n    fun scarceSuccessfulFillCanRefillOnceItsUsefulTracksAreConsumed() {\n        val pool = SessionRecommendationPool()\n        pool.reset(newSessionId = 8L, newTargetSize = 20)\n\n        val candidates = listOf(11L, 12L, 13L, 14L, 15L, 16L)\n        val added = pool.mergeCandidates(\n            expectedSessionId = 8L,\n            candidateTrackIds = candidates,\n            newTargetSize = 20\n        )\n        pool.recordRefillResult(expectedSessionId = 8L, addedCount = added)\n        pool.commitSelected(expectedSessionId = 8L, selectedTrackIds = candidates)\n\n        assertTrue(pool.shouldRefill(expectedSessionId = 8L, sizing = sizing))\n    }\n}\n''')
+
+          # Persist the policy in developer docs.
+          replace_once(
+              'docs/AUTO_DJ_PROVIDERS.md',
+              "Artist fallback is requested only when the number of unique local direct candidates is below a threshold derived from GMMP's configured Auto-DJ demand: roughly two times the larger of `Initial Size - 1` and `Upcoming Tracks`, capped by the internal recommendation-pool target.",
+              "Artist fallback is requested only when the number of unique local direct candidates is below a reserve derived from GMMP's configured Auto-DJ demand: the larger of roughly two times the visible demand and 60% of the internal recommendation-pool target, capped by that pool target. This deliberately favors one somewhat richer first pass over several closely spaced provider rounds."
+          )
+          replace_once(
+              'docs/AUTO_DJ_PROVIDERS.md',
+              "If fewer suitable GoneSmart tracks exist than GMMP requests in a refill, GoneSmart returns only those suitable tracks. It does not preserve untouched native/random rows to pad the request. GMMP can ask for another refill when the shorter queue approaches its end. The configured native fallback remains relevant when there are zero suitable GoneSmart tracks.",
+              "If fewer suitable GoneSmart tracks exist than GMMP requests in a refill, GoneSmart returns only those suitable tracks. It does not preserve untouched native/random rows to pad the request. A partial successful fill is treated as temporary scarcity: while useful tracks remain in that partial pool, low-water background top-up does not immediately call the online providers again. Once those tracks are consumed, a fresh refill is allowed. Visible multi-track underfills may show one concise status message when status messages are enabled. The configured native fallback remains relevant when there are zero suitable GoneSmart tracks."
+          )
+
+          replace_once(
+              'AGENTS.md',
+              "- Provider artist fallbacks are a rescue stage, not a default per-provider tax: first evaluate Playlist Affinity plus direct track/recording recommendations locally, then run artist-level provider expansion only when unique local coverage is below a target scaled from GMMP Initial Size / Upcoming Tracks.",
+              "- Provider artist fallbacks are a rescue stage, not a default per-provider tax: first evaluate Playlist Affinity plus direct track/recording recommendations locally, then run artist-level provider expansion only when unique local coverage is below a reserve scaled from GMMP Initial Size / Upcoming Tracks and a bounded fraction of the internal pool target. Prefer one sufficiently rich first pass over repeated closely spaced provider rounds."
+          )
+          replace_once(
+              'AGENTS.md',
+              "- A partially populated GoneSmart pool is valid. If GMMP requests more tracks than GoneSmart currently has suitable candidates, return only the suitable GoneSmart rows and never pad the remainder with untouched/native random rows; GMMP can request again as the shorter queue approaches its end. Native fallback for recommendation scarcity is reserved for the zero-suitable-track case according to the fallback policy.",
+              "- A partially populated GoneSmart pool is valid. If GMMP requests more tracks than GoneSmart currently has suitable candidates, return only the suitable GoneSmart rows and never pad the remainder with untouched/native random rows. Treat a partial successful fill as scarcity: suppress low-water background provider top-up while useful partial-pool tracks remain, then allow a fresh refill after they are consumed. Native fallback for recommendation scarcity is reserved for the zero-suitable-track case according to the fallback policy."
+          )
+          PY
+
+      - name: Remove one-off helper and commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/assistant-auto-dj-followup.yml
+          git add app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt \
+                  app/src/main/java/io/github/alagga/gonesmart/GmmpAutoDjSettingsReader.kt \
+                  app/src/main/java/io/github/alagga/gonesmart/SessionRecommendationPool.kt \
+                  app/src/main/java/io/github/alagga/gonesmart/GoneSmartModule.kt \
+                  app/src/test/java/io/github/alagga/gonesmart/GmmpAutoDjSettingsReaderSizingTest.kt \
+                  app/src/test/java/io/github/alagga/gonesmart/SessionRecommendationPoolTest.kt \
+                  docs/AUTO_DJ_PROVIDERS.md \
+                  AGENTS.md
+          git commit -m "fix(auto-dj): avoid repeated scarce provider refills"
+          git push origin HEAD:feature/auto-dj-providers
