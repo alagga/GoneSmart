@@ -215,7 +215,8 @@ class GoneSmartAudioProfileRepository(context: Context) {
     /**
      * Persist a complete passively observed GMMP preset curve. This data is
      * reference data, not a route-specific override and therefore survives
-     * output switches.
+     * output switches. Any Bluetooth profile already pointing at this named
+     * preset is backfilled with the newly learned native curve.
      */
     fun setNativePresetShape(presetName: String, rawShape: Map<String, String>) {
         if (presetName.isBlank() || presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return
@@ -234,23 +235,44 @@ class GoneSmartAudioProfileRepository(context: Context) {
             editor.putString(key, value)
             keys += key
         }
+
+        routes()
+            .asSequence()
+            .filterNot { AudioProfileRuntimePolicy.isStandardRoute(it.id) }
+            .filter { route -> value(route.id, "eq.preset") == presetName }
+            .forEach { route ->
+                normalized.forEach { (fieldId, value) ->
+                    val key = GoneSmartAudioProfiles.valueKey(route.id, fieldId)
+                    editor.putString(key, value)
+                    keys += key
+                }
+            }
+
         editor.apply()
         markPending(keys)
         synchronizeWithFramework()
     }
 
+    /**
+     * Selecting a named GMMP preset does not require GoneSmart to know its
+     * curve up front. The name is persisted immediately so the hooked GMMP
+     * process can ask GMMP's native preset loader for it. If the curve is
+     * already known it is copied immediately; otherwise the passive native
+     * setter observation backfills PRE/bands as soon as GMMP loads the preset.
+     */
     fun applyEqualizerPreset(routeId: String, presetName: String): Boolean {
         if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
-        if (presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return false
-        val shape = nativePresetShape(presetName) ?: return false
+        if (presetName.isBlank() || presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return false
+        val normalizedPreset = GoneSmartAudioProfiles.field("eq.preset")?.normalize(presetName) ?: return false
+        val shape = nativePresetShape(normalizedPreset)
         val keys = mutableSetOf<String>()
         val editor = local.edit()
 
         val presetKey = GoneSmartAudioProfiles.valueKey(routeId, "eq.preset")
-        editor.putString(presetKey, presetName)
+        editor.putString(presetKey, normalizedPreset)
         keys += presetKey
 
-        shape.forEach { (fieldId, value) ->
+        shape?.forEach { (fieldId, value) ->
             val key = GoneSmartAudioProfiles.valueKey(routeId, fieldId)
             editor.putString(key, value)
             keys += key
