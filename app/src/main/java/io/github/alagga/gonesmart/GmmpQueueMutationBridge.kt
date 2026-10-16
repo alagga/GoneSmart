@@ -506,6 +506,11 @@ internal class GmmpQueueMutationBridge(
      * only source history/followers around it. No predecoder state write or
      * queue-position rewrite is permitted.
      */
+    /** R57 generic Track Mix seed isolation. This is the only queue
+     * mutation owned by Track Mix before GMMP's native AUTO_DJ takes over. */
+    fun isolateTrackMixSeed(selectedTrackId: Long): Boolean =
+        isolateTrackMixZeroPoolSeed(selectedTrackId)
+
     fun isolateTrackMixZeroPoolSeed(selectedTrackId: Long): Boolean {
         val resolved = resolve(requireDelete = true, requireStatePosition = false)
         val current = resolved.context.items.singleOrNull {
@@ -551,7 +556,7 @@ internal class GmmpQueueMutationBridge(
         }
         Log.i(
             TAG,
-            "TRACK MIX ZERO-POOL SEED | verified=true" +
+            "TRACK MIX SEED ISOLATION | verified=true" +
                 " | currentEntry=${current.queueEntryId}" +
                 " | currentPosition=${current.queuePosition}" +
                 " | anchored=true | stateWrite=false" +

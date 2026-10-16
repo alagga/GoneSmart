@@ -6,8 +6,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackMixInitialFillPolicyTest {
-    @Test fun requestsInitialSizeMinusNativeSeedExactlyOnce() {
+    @Test fun initialSizeAlwaysDrivesDynamicFollowerCount() {
+        assertEquals(0, TrackMixInitialFillPolicy.nativeInitialRefillCount(1, 1))
         assertEquals(4, TrackMixInitialFillPolicy.nativeInitialRefillCount(5, 1))
+        assertEquals(7, TrackMixInitialFillPolicy.nativeInitialRefillCount(8, 1))
+    }
+
+    @Test fun fallbackRequestsOnlyTheActualDynamicShortfall() {
+        assertEquals(0, TrackMixInitialFillPolicy.nativeInitialRefillCount(5, 5))
+        assertEquals(1, TrackMixInitialFillPolicy.nativeInitialRefillCount(5, 4))
+        assertEquals(3, TrackMixInitialFillPolicy.nativeInitialRefillCount(8, 5))
     }
 
     @Test fun commandBoundaryRemainsBounded() {
@@ -15,17 +23,20 @@ class TrackMixInitialFillPolicyTest {
         assertEquals(800L, TrackMixInitialFillPolicy.autoDjCommandBoundaryWaitMs(false))
     }
 
-    @Test fun gmmp421WaitPlayPassesButRetargetWindowHolds() {
-        assertEquals(
-            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
-            TrackMixInitialFillPolicy.nativeRefillAction(true, false, "WAIT_PLAY", false)
-        )
-        listOf("PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "ZERO_POOL_RESTORE", "FILLING").forEach { stage ->
+    @Test fun allIncidentalRefillsAreHeldUntilSeedIsolationFinishes() {
+        listOf("WAIT_PLAY", "PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "ZERO_POOL_RESTORE", "FILLING").forEach { stage ->
             assertEquals(
                 TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS,
                 TrackMixInitialFillPolicy.nativeRefillAction(true, false, stage, false)
             )
         }
+    }
+
+    @Test fun nativeRefillRunsNormallyAsSoonAsTrackMixReleasesTheHold() {
+        assertEquals(
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
+            TrackMixInitialFillPolicy.nativeRefillAction(false, false, "FILLING", false)
+        )
     }
 
     @Test fun explicitZeroPoolInitialFillCrossesTheHoldNatively() {
@@ -35,9 +46,9 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
-    @Test fun onlyOwnedSlotShortfallCrossesPrimeStage() {
+    @Test fun explicitFallbackAllowanceBypassesTheHold() {
         assertEquals(
-            TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE,
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL,
             TrackMixInitialFillPolicy.nativeRefillAction(true, true, "PRIME_NATIVE", false)
         )
         assertEquals(

@@ -16,17 +16,12 @@ internal object TrackMixInitialFillPolicy {
         stage: String?,
         legacyQueue: Boolean
     ): NativeRefillAction {
-        if (!legacyQueue && stage == "PRIME_NATIVE" && explicitAllowance) {
-            return NativeRefillAction.PASS_NATIVE
-        }
+        // R57 restores the 4.2.0 barrier semantics for both GMMP versions:
+        // while Track Mix is still establishing its exact one-row seed, every
+        // incidental refill is held. After isolation TrackMix releases the hold
+        // BEFORE sending native AUTO_DJ, so normal GMMP refill hooks run.
         if (!holdActive || explicitAllowance) return NativeRefillAction.NORMAL
-        if (legacyQueue) return NativeRefillAction.SUPPRESS
-        return when (stage) {
-            "WAIT_PLAY" -> NativeRefillAction.PASS_NATIVE
-            "PREWARM", "PRIME_NATIVE", "RETARGETING", "ZERO_POOL_BOUNDARY", "ZERO_POOL_RESTORE", "FILLING" ->
-                NativeRefillAction.SUPPRESS
-            else -> NativeRefillAction.NORMAL
-        }
+        return NativeRefillAction.SUPPRESS
     }
 
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =

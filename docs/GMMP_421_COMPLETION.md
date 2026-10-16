@@ -153,3 +153,11 @@ R54 also moves playback-proof checks ahead of destructive settled repair. If a l
 
 ### R56 Track Auto-DJ native-refill architecture correction
 R54 device evidence showed BUNT. Track 19118 was absent when `dx3.c2(1)` fired, then present when GMMP naturally called `qr.z(3)`, and only afterwards did `MusicService.I2(2)` materialize the wrong Smart-Playlist follower. R56 therefore returns to the 4.2.0 seed-first model but uses the natural 4.2.1 refill as the predecoder boundary. GoneSmart isolates the exact selected row before the original refill, lets GMMP choose all follower identities, tops up to Initial Size, and compacts only follower positions before the refill caller resumes. Queue-context Play uses the same sequence from the exact accepted clicked row when no natural refill arrives first. Device re-acceptance is pending.
+
+
+### R57 Track Auto-DJ: restore native GMMP ownership
+- R56 device re-test accepted the BUNT. zero-provider case: native seed isolation/refill produced Initial Size 5 and the correct current+1 decoder.
+- The same run device-disproved the remaining Track-Mix-specific Smart bootstrap on Queue source. Native Queue Play correctly pinned Daft Punk `Oh Yeah` (`trackId=4329`, `queueEntryId=5834479`, position 4), but the bootstrap then offered/applied three prepared IDs and failed verification when GMMP materialized a different first follower (`expected=4326`, `actual=3609`).
+- R57 therefore removes follower ownership from Track Mix. Pre-Play work resolves identity only. After exact native Play, Track Mix isolates only the selected seed, releases the refill barrier, sends native `AUTO_DJ`, and lets the normal global GoneSmart/GMMP refill-selection pipeline create followers.
+- Initial Size remains entirely GMMP-owned through `autoDj_initialSize`; no value of 5 is encoded in Track Mix. A manual native refill is only a dynamic shortfall fallback if the native command does not reach the configured size.
+- Device re-acceptance pending for both a library/Smart-Playlist source and `menu_gm_context_queue`.
