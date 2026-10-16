@@ -74,7 +74,7 @@ class AudioRouteObserver(
         val route = if (selected == null) {
             AudioRouteProfile(
                 id = GoneSmartAudioProfiles.LOCAL_ROUTE_ID,
-                label = GoneSmartAudioProfiles.LOCAL_ROUTE_LABEL,
+                label = AudioProfileRuntimePolicy.STANDARD_LABEL,
                 bluetooth = false,
                 lastSeenEpochMs = System.currentTimeMillis(),
                 active = true

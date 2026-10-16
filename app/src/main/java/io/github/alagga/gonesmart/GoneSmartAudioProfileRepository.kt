@@ -10,6 +10,7 @@ class GoneSmartAudioProfileRepository(context: Context) {
         private const val TAG = "GoneSmartAudioProfiles"
         private const val LOCAL_PREFS = "gonesmart_audio_profiles_local_v2"
         private const val KEY_PENDING = "local.pending_keys"
+        private const val STANDARD_PREFIX = "standard."
     }
 
     private val appContext = context.applicationContext
@@ -49,11 +50,11 @@ class GoneSmartAudioProfileRepository(context: Context) {
 
         val ids = GoneSmartAudioProfiles.routeIdsFromKeys(all.keys) + GoneSmartAudioProfiles.LOCAL_ROUTE_ID
         return ids.map { id ->
-            val isLocal = id == GoneSmartAudioProfiles.LOCAL_ROUTE_ID
+            val isLocal = AudioProfileRuntimePolicy.isStandardRoute(id)
             AudioRouteProfile(
                 id = id,
                 label = if (isLocal) {
-                    GoneSmartAudioProfiles.LOCAL_ROUTE_LABEL
+                    AudioProfileRuntimePolicy.STANDARD_LABEL
                 } else {
                     local.getString(GoneSmartAudioProfiles.routeLabelKey(id), null)
                         ?.takeIf { it.isNotBlank() }
@@ -92,37 +93,35 @@ class GoneSmartAudioProfileRepository(context: Context) {
             .putString(GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE, id)
             .putInt(GoneSmartAudioProfiles.KEY_SCHEMA_VERSION, GoneSmartAudioProfiles.SCHEMA_VERSION)
 
-        if (id == GoneSmartAudioProfiles.LOCAL_ROUTE_ID) {
-            editor
-                .putString(GoneSmartAudioProfiles.routeLabelKey(id), GoneSmartAudioProfiles.LOCAL_ROUTE_LABEL)
-                .putBoolean(GoneSmartAudioProfiles.routeBluetoothKey(id), false)
-                .putLong(GoneSmartAudioProfiles.routeLastSeenKey(id), route.lastSeenEpochMs)
-            keys += GoneSmartAudioProfiles.routeLabelKey(id)
-            keys += GoneSmartAudioProfiles.routeBluetoothKey(id)
-            keys += GoneSmartAudioProfiles.routeLastSeenKey(id)
+        val label = if (AudioProfileRuntimePolicy.isStandardRoute(id)) {
+            AudioProfileRuntimePolicy.STANDARD_LABEL
         } else {
-            editor
-                .putString(GoneSmartAudioProfiles.routeLabelKey(id), route.label.ifBlank { "Bluetooth device" })
-                .putBoolean(GoneSmartAudioProfiles.routeBluetoothKey(id), true)
-                .putLong(GoneSmartAudioProfiles.routeLastSeenKey(id), route.lastSeenEpochMs)
-            keys += GoneSmartAudioProfiles.routeLabelKey(id)
-            keys += GoneSmartAudioProfiles.routeBluetoothKey(id)
-            keys += GoneSmartAudioProfiles.routeLastSeenKey(id)
+            route.label.ifBlank { "Bluetooth device" }
         }
+        editor
+            .putString(GoneSmartAudioProfiles.routeLabelKey(id), label)
+            .putBoolean(GoneSmartAudioProfiles.routeBluetoothKey(id), !AudioProfileRuntimePolicy.isStandardRoute(id))
+            .putLong(GoneSmartAudioProfiles.routeLastSeenKey(id), route.lastSeenEpochMs)
+        keys += GoneSmartAudioProfiles.routeLabelKey(id)
+        keys += GoneSmartAudioProfiles.routeBluetoothKey(id)
+        keys += GoneSmartAudioProfiles.routeLastSeenKey(id)
+
         editor.apply()
         markPending(keys)
         synchronizeWithFramework()
     }
 
-    fun isGroupOverridden(routeId: String, groupId: String): Boolean =
-        local.getBoolean(GoneSmartAudioProfiles.overrideKey(routeId, groupId), false)
+    fun isGroupOverridden(routeId: String, groupId: String): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
+        return local.getBoolean(GoneSmartAudioProfiles.overrideKey(routeId, groupId), false)
+    }
 
     /**
-     * Enables a group only when every not-yet-stored field has a real native
-     * GMMP value available. This prevents a suggested UI fallback from being
-     * silently promoted into an actual device override.
+     * Bluetooth profiles are overlays on Standard. Standard itself never has
+     * an override marker: it is the saved native baseline.
      */
     fun setGroupOverride(routeId: String, groupId: String, enabled: Boolean): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
         val group = GoneSmartAudioProfiles.group(groupId) ?: return false
         val overrideKey = GoneSmartAudioProfiles.overrideKey(routeId, groupId)
         val keys = mutableSetOf(overrideKey)
@@ -131,10 +130,10 @@ class GoneSmartAudioProfileRepository(context: Context) {
         if (enabled) {
             val missing = group.fields.filter { field ->
                 val valueKey = GoneSmartAudioProfiles.valueKey(routeId, field.id)
-                !local.contains(valueKey) && nativeValue(field.id) == null
+                !local.contains(valueKey) && inheritedValue(routeId, field.id) == null
             }
             if (missing.isNotEmpty()) {
-                Log.w(TAG, "Override deferred; native GMMP values missing for ${missing.joinToString { it.id }}")
+                Log.w(TAG, "Override deferred; Standard values missing for ${missing.joinToString { it.id }}")
                 return false
             }
 
@@ -142,14 +141,14 @@ class GoneSmartAudioProfileRepository(context: Context) {
             group.fields.forEach { field ->
                 val valueKey = GoneSmartAudioProfiles.valueKey(routeId, field.id)
                 if (!local.contains(valueKey)) {
-                    val seed = nativeValue(field.id) ?: return false
+                    val seed = inheritedValue(routeId, field.id) ?: return false
                     editor.putString(valueKey, seed)
                     keys += valueKey
                 }
             }
         } else {
-            // Keep dormant field values so temporarily returning to GMMP's
-            // current settings does not destroy the user's custom profile.
+            // Keep dormant values so temporarily returning this card to
+            // Standard does not destroy the user's saved Bluetooth tuning.
             editor.remove(overrideKey)
         }
 
@@ -163,31 +162,85 @@ class GoneSmartAudioProfileRepository(context: Context) {
         local.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null)
 
     fun setValue(routeId: String, fieldId: String, rawValue: String) {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return
         val field = GoneSmartAudioProfiles.field(fieldId) ?: return
         val normalized = field.normalize(rawValue) ?: return
         writeString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), normalized)
     }
 
+    /** Last passively observed live GMMP state, which may be temporary on Bluetooth. */
     fun nativeValue(fieldId: String): String? =
         local.getString(GoneSmartAudioProfiles.nativeValueKey(fieldId), null)
 
-    fun hasNativeValue(fieldId: String): Boolean = nativeValue(fieldId) != null
+    /** Saved normal GMMP state used as the base for every Bluetooth profile. */
+    fun standardValue(fieldId: String): String? =
+        local.getString(standardValueKey(fieldId), null)
 
-    fun nativeObservedCount(group: AudioProfileGroup): Int =
-        group.fields.count { hasNativeValue(it.id) }
+    fun inheritedValue(routeId: String, fieldId: String): String? = standardValue(fieldId)
 
-    fun setNativeValue(fieldId: String, rawValue: String) {
+    fun inheritedObservedCount(routeId: String, group: AudioProfileGroup): Int =
+        group.fields.count { inheritedValue(routeId, it.id) != null }
+
+    /**
+     * Every observation updates the live mirror. Only observations made while
+     * no Bluetooth route is active are allowed to redefine Standard.
+     */
+    fun setNativeValue(fieldId: String, rawValue: String, observedRouteId: String = activeRouteId()) {
         val field = GoneSmartAudioProfiles.field(fieldId) ?: return
         val normalized = field.normalize(rawValue) ?: return
-        writeString(GoneSmartAudioProfiles.nativeValueKey(fieldId), normalized)
+        val keys = mutableSetOf(GoneSmartAudioProfiles.nativeValueKey(fieldId))
+        val editor = local.edit().putString(GoneSmartAudioProfiles.nativeValueKey(fieldId), normalized)
+        if (AudioProfileRuntimePolicy.shouldUpdateStandardFromNativeObservation(observedRouteId)) {
+            editor.putString(standardValueKey(fieldId), normalized)
+            keys += standardValueKey(fieldId)
+        }
+        editor.apply()
+        markPending(keys)
+        synchronizeWithFramework()
+    }
+
+    fun clearNativeValue(fieldId: String, observedRouteId: String = activeRouteId()) {
+        GoneSmartAudioProfiles.field(fieldId) ?: return
+        val keys = mutableSetOf(GoneSmartAudioProfiles.nativeValueKey(fieldId))
+        val editor = local.edit().remove(GoneSmartAudioProfiles.nativeValueKey(fieldId))
+        if (AudioProfileRuntimePolicy.shouldUpdateStandardFromNativeObservation(observedRouteId)) {
+            editor.remove(standardValueKey(fieldId))
+            keys += standardValueKey(fieldId)
+        }
+        editor.apply()
+        markPending(keys)
+        synchronizeWithFramework()
     }
 
     /**
-     * Resolves a named preset to a complete native PRE + 10-band snapshot.
-     * The active native preset can use the live GMMP values immediately;
-     * other names use snapshots learned passively when GMMP selected them.
+     * Persist a complete passively observed GMMP preset curve. This data is
+     * reference data, not a route-specific override and therefore survives
+     * output switches.
      */
+    fun setNativePresetShape(presetName: String, rawShape: Map<String, String>) {
+        if (presetName.isBlank() || presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return
+        if (rawShape.keys.toSet() != GoneSmartAudioProfiles.equalizerShapeFieldIds.toSet()) return
+        val normalized = GoneSmartAudioProfiles.equalizerShapeFieldIds.associateWith { fieldId ->
+            val field = GoneSmartAudioProfiles.field(fieldId) ?: return
+            field.normalize(rawShape[fieldId] ?: return) ?: return
+        }
+        val keys = mutableSetOf<String>()
+        val editor = local.edit()
+        val nameKey = GoneSmartAudioProfiles.nativePresetNameKey(presetName)
+        editor.putString(nameKey, presetName)
+        keys += nameKey
+        normalized.forEach { (fieldId, value) ->
+            val key = GoneSmartAudioProfiles.nativePresetValueKey(presetName, fieldId)
+            editor.putString(key, value)
+            keys += key
+        }
+        editor.apply()
+        markPending(keys)
+        synchronizeWithFramework()
+    }
+
     fun applyEqualizerPreset(routeId: String, presetName: String): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
         if (presetName == GoneSmartAudioProfiles.CUSTOM_PRESET) return false
         val shape = nativePresetShape(presetName) ?: return false
         val keys = mutableSetOf<String>()
@@ -226,37 +279,48 @@ class GoneSmartAudioProfileRepository(context: Context) {
     }
 
     fun overrideCount(routeId: String): Int {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return 0
         val prefix = GoneSmartAudioProfiles.overrideKey(routeId, "")
         return local.all.count { (key, value) -> key.startsWith(prefix) && value == true }
     }
 
     private fun nativePresetShape(presetName: String): Map<String, String>? {
-        val currentName = nativeValue("eq.preset")
-        if (presetName == currentName) {
-            val current = GoneSmartAudioProfiles.equalizerShapeFieldIds.mapNotNull { fieldId ->
-                nativeValue(fieldId)?.let { fieldId to it }
-            }.toMap()
-            if (current.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) return current
-        }
-
         val stored = GoneSmartAudioProfiles.equalizerShapeFieldIds.mapNotNull { fieldId ->
             local.getString(GoneSmartAudioProfiles.nativePresetValueKey(presetName, fieldId), null)
                 ?.let { fieldId to it }
         }.toMap()
-        return stored.takeIf { it.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size }
+        if (stored.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) return stored
+
+        // If Standard currently has this named preset, its complete saved shape
+        // is also a valid native reference without relying on a Bluetooth live state.
+        if (standardValue("eq.preset") == presetName) {
+            val standard = GoneSmartAudioProfiles.equalizerShapeFieldIds.mapNotNull { fieldId ->
+                standardValue(fieldId)?.let { fieldId to it }
+            }.toMap()
+            if (standard.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size) return standard
+        }
+        return null
     }
 
     private fun ensureLocalRoute() {
         val labelKey = GoneSmartAudioProfiles.routeLabelKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID)
-        if (local.contains(labelKey)) return
         local.edit()
-            .putString(labelKey, GoneSmartAudioProfiles.LOCAL_ROUTE_LABEL)
+            .putString(labelKey, AudioProfileRuntimePolicy.STANDARD_LABEL)
             .putBoolean(GoneSmartAudioProfiles.routeBluetoothKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID), false)
-            .putLong(GoneSmartAudioProfiles.routeLastSeenKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID), 0L)
-            .putString(GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE, GoneSmartAudioProfiles.LOCAL_ROUTE_ID)
-            .putInt(GoneSmartAudioProfiles.KEY_SCHEMA_VERSION, GoneSmartAudioProfiles.SCHEMA_VERSION)
+            .putLong(
+                GoneSmartAudioProfiles.routeLastSeenKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID),
+                local.getLong(GoneSmartAudioProfiles.routeLastSeenKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID), 0L)
+            )
             .apply()
+        if (!local.contains(GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE)) {
+            local.edit()
+                .putString(GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE, GoneSmartAudioProfiles.LOCAL_ROUTE_ID)
+                .putInt(GoneSmartAudioProfiles.KEY_SCHEMA_VERSION, GoneSmartAudioProfiles.SCHEMA_VERSION)
+                .apply()
+        }
     }
+
+    private fun standardValueKey(fieldId: String): String = "$STANDARD_PREFIX$fieldId"
 
     private fun writeString(key: String, value: String) {
         local.edit().putString(key, value).apply()

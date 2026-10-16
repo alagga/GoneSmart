@@ -19,11 +19,11 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Independent feature family for output-specific GMMP audio profiles.
  *
- * Route and native-value discovery is read-only with respect to GMMP. Values
- * learned from GMMP are mirrored into GoneSmart's own RemotePreferences so the
- * companion UI can show the real inherited state instead of guessed defaults.
- * Actual profile application remains deferred until the native mutation
- * boundary is proven.
+ * GMMP's native state is observed read-only. The GMMP-side libxposed
+ * RemotePreferences implementation is intentionally treated as read-only too:
+ * observations are sent to the GoneSmart companion process, which owns the
+ * writable settings mirror. Actual profile application remains deferred until
+ * GMMP's native mutation/reload boundary is proven.
  */
 class GoneSmartAudioModule : XposedModule() {
 
@@ -44,6 +44,9 @@ class GoneSmartAudioModule : XposedModule() {
     private var activeRouteId: String = GoneSmartAudioProfiles.LOCAL_ROUTE_ID
     private var routeObserver: AudioRouteObserver? = null
     private var nativePreferenceSnapshotDone = false
+
+    @Volatile
+    private var hostApplication: Application? = null
 
     @Volatile
     private var eqStateInstance: Any? = null
@@ -67,6 +70,8 @@ class GoneSmartAudioModule : XposedModule() {
     private var verifiedBandGainGetterName: String? = null
 
     private val currentEqBands = ConcurrentHashMap<Int, Double>()
+    private val publishedNativeValues = ConcurrentHashMap<String, String>()
+    private val publishedPresetFingerprints = ConcurrentHashMap<String, String>()
     private val preferenceProbeStartedAt = SystemClock.elapsedRealtime()
     private val preferenceProbeEvents = AtomicInteger(0)
     private val preferenceProbeSeen = ConcurrentHashMap.newKeySet<String>()
@@ -91,8 +96,8 @@ class GoneSmartAudioModule : XposedModule() {
 
         Log.i(TAG, "Bluetooth audio-profile feature loaded")
 
-        // These two observers only mirror naturally occurring GMMP state. They
-        // never change arguments/results and never write into GMMP preferences.
+        // Both observers are transparent: they never change GMMP arguments or
+        // return values and never write into GMMP/libxposed preferences.
         installEqualizerObserver(param.classLoader)
         installNativePreferenceObserver()
         resolveApplicationAndStart(attempt = 0)
@@ -105,13 +110,21 @@ class GoneSmartAudioModule : XposedModule() {
     private fun resolveApplicationAndStart(attempt: Int) {
         val application = currentApplication()
         if (application != null) {
+            hostApplication = application
+
+            // Resolve the route first so every startup native observation is
+            // explicitly attributed to Standard or the active Bluetooth output.
+            if (routeObserver == null) {
+                routeObserver = AudioRouteObserver(application) { route -> onRouteChanged(application, route) }
+                routeObserver?.start()
+            }
+
             if (!nativePreferenceSnapshotDone) {
                 nativePreferenceSnapshotDone = true
                 snapshotNativePreferences(application)
             }
-            if (routeObserver == null) {
-                routeObserver = AudioRouteObserver(application) { route -> onRouteChanged(application, route) }
-                routeObserver?.start()
+            if (eqStateInstance != null) {
+                scheduleEqualizerSnapshot("application-ready")
             }
             return
         }
@@ -146,11 +159,16 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     private fun logActiveOverrideState(reason: String) {
+        if (AudioProfileRuntimePolicy.isStandardRoute(activeRouteId)) {
+            Log.i(TAG, "PROFILE STANDARD | route=$activeRouteId | reason=$reason | native GMMP baseline active")
+            return
+        }
+
         val prefs = audioPreferences ?: return
         val prefix = GoneSmartAudioProfiles.overrideKey(activeRouteId, "")
         val overrides = prefs.all.keys.filter { it.startsWith(prefix) && prefs.getBoolean(it, false) }
         if (overrides.isEmpty()) {
-            Log.i(TAG, "PROFILE INHERIT | route=$activeRouteId | reason=$reason | GMMP state unchanged")
+            Log.i(TAG, "PROFILE INHERIT | route=$activeRouteId | reason=$reason | Standard baseline")
         } else {
             Log.w(
                 TAG,
@@ -209,7 +227,7 @@ class GoneSmartAudioModule : XposedModule() {
     /**
      * Passive runtime observation of the proven GMMP 4.2.1 EQ state object.
      * r(double) is PRE, z(index,double) is band gain, and d(boolean) is the
-     * enabled state as established by the device log. The hook is transparent.
+     * enabled state as established by device evidence. The hook is transparent.
      */
     private fun installEqualizerObserver(classLoader: ClassLoader) {
         val eqClass = runCatching { classLoader.loadClass("r61") }.getOrElse {
@@ -280,7 +298,7 @@ class GoneSmartAudioModule : XposedModule() {
 
     /**
      * Observe only already-mapped GMMP preference keys. This hook never changes
-     * GMMP's editor call; it mirrors the value into GoneSmart after the native
+     * GMMP's editor call; it mirrors the value to the companion after the native
      * call has proceeded.
      */
     private fun installNativePreferenceObserver() {
@@ -333,14 +351,18 @@ class GoneSmartAudioModule : XposedModule() {
                 pendingPresetName = null
                 pendingPresetUntilElapsed = 0L
             } else {
-                // A preset switch can replace the complete EQ shape without
-                // routing every band through z(). Drop the old shape so a
-                // partially observed transition can never be cached as the
-                // new preset. The bounded getter snapshot below repopulates it.
-                currentEqPre = null
-                currentEqBands.clear()
+                // Startup may race with the natural r()/z() initialization. Keep
+                // any already observed shape so it can prove the initial preset.
+                // A real runtime preset change, however, must discard the old
+                // shape before learning the new one.
+                val startupSnapshot = source.startsWith("startup:")
+                if (!startupSnapshot) {
+                    currentEqPre = null
+                    currentEqBands.clear()
+                }
                 pendingPresetName = mapped.value
                 pendingPresetUntilElapsed = SystemClock.elapsedRealtime() + PRESET_CAPTURE_WINDOW_MS
+                if (startupSnapshot) maybeCompletePendingPresetFromObservedShape()
                 scheduleEqualizerSnapshot("preset:${mapped.value}:$source")
             }
         }
@@ -367,8 +389,8 @@ class GoneSmartAudioModule : XposedModule() {
             "dspSettings_loudnessGain" -> "amplifier.gain_db"
             else -> null
         } ?: return
-        val prefs = audioPreferences ?: return
-        prefs.edit().remove(GoneSmartAudioProfiles.nativeValueKey(mappedField)).apply()
+        publishedNativeValues.remove(mappedField)
+        sendNativeValueBroadcast(mappedField, value = null, clear = true)
         if (mappedField == "eq.preset") {
             currentNativePreset = null
             pendingPresetName = null
@@ -379,13 +401,32 @@ class GoneSmartAudioModule : XposedModule() {
     private fun publishNativeValue(value: NativeAudioObservation.Value) {
         val field = GoneSmartAudioProfiles.field(value.fieldId) ?: return
         val normalized = field.normalize(value.value) ?: return
-        val prefs = audioPreferences ?: return
-        val key = GoneSmartAudioProfiles.nativeValueKey(value.fieldId)
-        if (prefs.getString(key, null) == normalized) return
-        prefs.edit().putString(key, normalized).apply()
-        if (BuildConfig.DEBUG) {
-            Log.i(PROBE_TAG, "NATIVE MIRROR | field=${value.fieldId} | value=$normalized")
+        if (publishedNativeValues[value.fieldId] == normalized) return
+        if (sendNativeValueBroadcast(value.fieldId, normalized, clear = false)) {
+            publishedNativeValues[value.fieldId] = normalized
+            if (BuildConfig.DEBUG) {
+                Log.i(
+                    PROBE_TAG,
+                    "NATIVE MIRROR | field=${value.fieldId} | value=$normalized | route=$activeRouteId"
+                )
+            }
         }
+    }
+
+    private fun sendNativeValueBroadcast(fieldId: String, value: String?, clear: Boolean): Boolean {
+        val application = hostApplication ?: currentApplication() ?: return false
+        val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_VALUE_OBSERVED)
+            .setPackage(COMPANION_PACKAGE)
+            .putExtra(AudioProfileEventReceiver.EXTRA_ROUTE_ID, activeRouteId)
+            .putExtra(AudioProfileEventReceiver.EXTRA_SETTING_ID, fieldId)
+            .putExtra(AudioProfileEventReceiver.EXTRA_SETTING_CLEAR, clear)
+        if (value != null) intent.putExtra(AudioProfileEventReceiver.EXTRA_SETTING_VALUE, value)
+        return runCatching {
+            application.sendBroadcast(intent)
+            true
+        }.onFailure {
+            Log.w(TAG, "Could not mirror native GMMP value '$fieldId' to companion", it)
+        }.getOrDefault(false)
     }
 
     private fun maybeCompletePendingPresetFromObservedShape() {
@@ -401,6 +442,9 @@ class GoneSmartAudioModule : XposedModule() {
             NativeAudioObservation.equalizerBand(index, raw)?.let { shape[it.fieldId] = it.value } ?: return
         }
         publishNativePreset(preset, shape, "observed setters")
+        // The proven setter shape is also the evidence needed to graduate the
+        // compact read-only getters used for later preset-only transitions.
+        scheduleEqualizerSnapshot("observed-shape:$preset")
     }
 
     private fun scheduleEqualizerSnapshot(reason: String) {
@@ -522,17 +566,40 @@ class GoneSmartAudioModule : XposedModule() {
     private fun publishNativePreset(preset: String, shape: Map<String, String>, source: String) {
         if (preset.isBlank() || preset == GoneSmartAudioProfiles.CUSTOM_PRESET) return
         if (shape.keys.toSet() != GoneSmartAudioProfiles.equalizerShapeFieldIds.toSet()) return
-        val prefs = audioPreferences ?: return
-        val editor = prefs.edit()
-            .putString(GoneSmartAudioProfiles.nativePresetNameKey(preset), preset)
-        shape.forEach { (fieldId, value) ->
-            editor.putString(GoneSmartAudioProfiles.nativePresetValueKey(preset, fieldId), value)
+
+        val normalized = GoneSmartAudioProfiles.equalizerShapeFieldIds.associateWith { fieldId ->
+            val field = GoneSmartAudioProfiles.field(fieldId) ?: return
+            field.normalize(shape[fieldId] ?: return) ?: return
         }
-        editor.apply()
+        val fingerprint = GoneSmartAudioProfiles.equalizerShapeFieldIds
+            .joinToString("|") { fieldId -> "$fieldId=${normalized[fieldId]}" }
+        if (publishedPresetFingerprints[preset] == fingerprint) {
+            pendingPresetName = null
+            pendingPresetUntilElapsed = 0L
+            return
+        }
+
+        val application = hostApplication ?: currentApplication() ?: return
+        val ids = ArrayList(GoneSmartAudioProfiles.equalizerShapeFieldIds)
+        val values = ArrayList(ids.map { normalized[it] ?: return })
+        val intent = Intent(AudioProfileEventReceiver.ACTION_NATIVE_PRESET_OBSERVED)
+            .setPackage(COMPANION_PACKAGE)
+            .putExtra(AudioProfileEventReceiver.EXTRA_PRESET_NAME, preset)
+            .putStringArrayListExtra(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_IDS, ids)
+            .putStringArrayListExtra(AudioProfileEventReceiver.EXTRA_PRESET_FIELD_VALUES, values)
+        val sent = runCatching {
+            application.sendBroadcast(intent)
+            true
+        }.onFailure {
+            Log.w(TAG, "Could not mirror native GMMP preset '$preset' to companion", it)
+        }.getOrDefault(false)
+        if (!sent) return
+
+        publishedPresetFingerprints[preset] = fingerprint
         pendingPresetName = null
         pendingPresetUntilElapsed = 0L
         if (BuildConfig.DEBUG) {
-            Log.i(PROBE_TAG, "PRESET SNAPSHOT | preset=$preset | source=$source | fields=${shape.size}")
+            Log.i(PROBE_TAG, "PRESET SNAPSHOT | preset=$preset | source=$source | fields=${normalized.size}")
         }
     }
 

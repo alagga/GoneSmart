@@ -156,7 +156,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         }
         selectorArea.addView(routeButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)))
         selectorArea.addView(textView(
-            "Equalizer is overridden as one complete profile. Effects are overridden per native GMMP card, so an on/off switch and its slider(s) stay together.",
+            "Standard is the normal GMMP state with no Bluetooth output. Bluetooth profiles temporarily override complete GMMP sections and fall back to Standard everywhere else.",
             13f,
             COLOR_TEXT_SECONDARY
         ).apply { setPadding(dp(4), dp(10), dp(4), 0) })
@@ -199,7 +199,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         selectedRouteId = selected.id
 
         routeButton.text = buildString {
-            append(if (selected.bluetooth) "Bluetooth • " else "Device • ")
+            if (selected.bluetooth) append("Bluetooth • ")
             append(selected.label)
             if (selected.active) append("  •  Active")
             append("  ▾")
@@ -217,13 +217,18 @@ class AudioProfilesActivity : AppCompatActivity() {
             setPadding(dp(24), dp(2), dp(24), dp(36))
         }
 
+        val standard = AudioProfileRuntimePolicy.isStandardRoute(route.id)
         val overrideCount = repository.overrideCount(route.id)
         body.addView(infoCard(
-            if (overrideCount == 0) "Using current GMMP settings" else "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}",
-            if (overrideCount == 0) {
-                "Inherited controls show the GMMP values GoneSmart has actually observed. Stored device-specific values stay hidden while their Override is off."
-            } else {
-                "Everything without an active Override follows GMMP's current settings. Dormant custom values never replace the inherited preview."
+            when {
+                standard -> "Standard GMMP profile"
+                overrideCount == 0 -> "Using Standard"
+                else -> "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}"
+            },
+            when {
+                standard -> "This is the saved normal GMMP state used when no Bluetooth device is active. Changes made in GMMP while Standard is active become the new Standard."
+                overrideCount == 0 -> "This Bluetooth output currently inherits every audio setting from Standard."
+                else -> "Only sections with Override enabled are device-specific. Everything else comes from Standard. Changes made directly in GMMP while Bluetooth is active are temporary and are discarded on the next output switch."
             }
         ))
         body.addView(verticalGap(14))
@@ -234,7 +239,11 @@ class AudioProfilesActivity : AppCompatActivity() {
                 body.addView(verticalGap(10))
                 body.addView(infoCard(
                     "Preset behavior",
-                    "Choosing a native GMMP preset loads its observed PRE and all ten band values. Moving PRE or any band immediately changes the label to Custom."
+                    if (standard) {
+                        "GoneSmart observes the native GMMP preset and its PRE/band shape. Bluetooth profiles can reuse a preset only after that native curve has been observed."
+                    } else {
+                        "Choosing an observed native GMMP preset loads its PRE and all ten band values. Moving PRE or any band immediately changes the label to Custom."
+                    }
                 ))
             }
 
@@ -246,11 +255,13 @@ class AudioProfilesActivity : AppCompatActivity() {
             }
         }
 
-        body.addView(verticalGap(18))
-        body.addView(resetButton(route))
+        if (!standard) {
+            body.addView(verticalGap(18))
+            body.addView(resetButton(route))
+        }
         body.addView(verticalGap(12))
         body.addView(textView(
-            "The connected Bluetooth output is detected both inside GMMP and directly from this screen. Previously seen outputs remain selectable when disconnected.",
+            "Bluetooth tuning is temporary GMMP state. On an output change, the final runtime path will rebuild the target from Standard plus that output's saved overrides, so temporary GMMP edits cannot leak into another profile.",
             12f,
             COLOR_MUTED
         ).apply { setPadding(dp(4), 0, dp(4), 0) })
@@ -262,8 +273,9 @@ class AudioProfilesActivity : AppCompatActivity() {
     }
 
     private fun groupCard(routeId: String, group: AudioProfileGroup): View {
-        val overridden = repository.isGroupOverridden(routeId, group.id)
-        val observedCount = repository.nativeObservedCount(group)
+        val standard = AudioProfileRuntimePolicy.isStandardRoute(routeId)
+        val overridden = !standard && repository.isGroupOverridden(routeId, group.id)
+        val observedCount = repository.inheritedObservedCount(routeId, group)
         val card = card()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -280,32 +292,37 @@ class AudioProfilesActivity : AppCompatActivity() {
             setPadding(0, dp(3), dp(8), 0)
         })
         titleRow.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val overrideSwitch = SwitchMaterial(this).apply {
-            text = "Override"
-            textSize = 12f
-            setTextColor(COLOR_TEXT_SECONDARY)
-            isChecked = overridden
-            trackTintList = switchTrackTint()
-            thumbTintList = switchThumbTint()
-            setOnCheckedChangeListener { button, enabled ->
-                val saved = repository.setGroupOverride(routeId, group.id, enabled)
-                if (!saved && enabled) {
-                    button.setOnCheckedChangeListener(null)
-                    button.isChecked = false
-                    refreshAll()
-                    showNativeValuesMissingDialog(group)
-                } else {
-                    refreshAll()
+        if (standard) {
+            titleRow.addView(textView("STANDARD", 11f, COLOR_ACCENT, true))
+        } else {
+            val overrideSwitch = SwitchMaterial(this).apply {
+                text = "Override"
+                textSize = 12f
+                setTextColor(COLOR_TEXT_SECONDARY)
+                isChecked = overridden
+                trackTintList = switchTrackTint()
+                thumbTintList = switchThumbTint()
+                setOnCheckedChangeListener { button, enabled ->
+                    val saved = repository.setGroupOverride(routeId, group.id, enabled)
+                    if (!saved && enabled) {
+                        button.setOnCheckedChangeListener(null)
+                        button.isChecked = false
+                        refreshAll()
+                        showNativeValuesMissingDialog(group)
+                    } else {
+                        refreshAll()
+                    }
                 }
             }
+            titleRow.addView(overrideSwitch)
         }
-        titleRow.addView(overrideSwitch)
         content.addView(titleRow)
 
-        val inheritedStatus = if (observedCount == group.fields.size) {
-            "GMMP current • inherited"
-        } else {
-            "GMMP current • $observedCount/${group.fields.size} values observed"
+        val inheritedStatus = when {
+            observedCount == group.fields.size && standard -> "Saved GMMP baseline"
+            observedCount == group.fields.size -> "Standard • inherited"
+            standard -> "Standard • $observedCount/${group.fields.size} values observed"
+            else -> "Standard • $observedCount/${group.fields.size} values observed"
         }
         content.addView(textView(
             if (overridden) "Custom for this output" else inheritedStatus,
@@ -328,10 +345,10 @@ class AudioProfilesActivity : AppCompatActivity() {
         field: AudioProfileField,
         enabled: Boolean
     ): View {
-        val native = repository.nativeValue(field.id)
+        val inherited = repository.inheritedValue(routeId, field.id)
         val custom = if (enabled) repository.value(routeId, field.id) else null
-        val initial = custom ?: native ?: field.suggestedDefault
-        val previewOnly = !enabled && native == null
+        val initial = custom ?: inherited ?: field.suggestedDefault
+        val previewOnly = !enabled && inherited == null
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -464,7 +481,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
             if (previewOnly) {
                 addView(textView(
-                    "GMMP value not observed yet • preview only",
+                    "Standard value not observed yet • preview only",
                     11.5f,
                     COLOR_MUTED
                 ).apply { setPadding(0, dp(4), 0, 0) })
@@ -482,7 +499,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun showChoiceDialog(routeId: String, field: AudioProfileField) {
         val current = repository.value(routeId, field.id)
-            ?: repository.nativeValue(field.id)
+            ?: repository.inheritedValue(routeId, field.id)
             ?: field.suggestedDefault
         val items = (field.choices + listOf(current))
             .filter { it.isNotBlank() && it != GoneSmartAudioProfiles.CUSTOM_PRESET }
@@ -521,10 +538,10 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun showNativeValuesMissingDialog(group: AudioProfileGroup) {
         AlertDialog.Builder(this)
-            .setTitle("GMMP values not ready yet")
+            .setTitle("Standard values not ready yet")
             .setMessage(
-                "GoneSmart has not yet observed every current GMMP value needed for ${group.title}. " +
-                    "The override was not enabled, so no guessed defaults can replace your real GMMP settings."
+                "GoneSmart has not yet observed every Standard GMMP value needed for ${group.title}. " +
+                    "The override was not enabled, so no guessed values can replace your real settings."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -541,7 +558,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         val routes = repository.routes()
         val labels = routes.map { route ->
             buildString {
-                append(if (route.bluetooth) "Bluetooth • " else "Device • ")
+                if (route.bluetooth) append("Bluetooth • ")
                 append(route.label)
                 if (route.active) append("  •  Active")
                 val count = repository.overrideCount(route.id)
@@ -560,7 +577,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun resetButton(route: AudioRouteProfile): MaterialButton =
         MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-            text = "Reset this profile to current GMMP settings"
+            text = "Reset this profile to Standard"
             textSize = 14f
             setTextColor(COLOR_RED)
             strokeColor = ColorStateList.valueOf(withAlpha(COLOR_RED, 0.65f))
@@ -574,7 +591,7 @@ class AudioProfilesActivity : AppCompatActivity() {
             setOnClickListener {
                 AlertDialog.Builder(this@AudioProfilesActivity)
                     .setTitle("Reset ${route.label}?")
-                    .setMessage("All device-specific audio overrides for this output will be removed. GMMP's own settings are not changed.")
+                    .setMessage("All saved Bluetooth overrides for this output will be removed. Standard is not changed.")
                     .setPositiveButton("Reset") { _, _ ->
                         repository.clearRouteOverrides(route.id)
                         refreshAll()

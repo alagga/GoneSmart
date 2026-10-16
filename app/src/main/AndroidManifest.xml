@@ -42,6 +42,7 @@
             <intent-filter>
                 <action android:name="io.github.alagga.gonesmart.action.AUDIO_ROUTE_OBSERVED" />
                 <action android:name="io.github.alagga.gonesmart.action.AUDIO_NATIVE_VALUE_OBSERVED" />
+                <action android:name="io.github.alagga.gonesmart.action.AUDIO_NATIVE_PRESET_OBSERVED" />
             </intent-filter>
         </receiver>
 
