@@ -27,8 +27,12 @@ internal object TrackMixInitialFillPolicy {
     fun usePredecoderCompatibility(
         source: String,
         legacyQueue: Boolean
-    ): Boolean =
-        !legacyQueue && source != "menu_gm_context_queue"
+    ): Boolean {
+        // R61 device evidence proved Queue-context has the same 4.2.1
+        // predecoder timing requirement as the other song-menu starts. Keep
+        // source in the policy API for diagnostics/future source-specific gates.
+        return !legacyQueue
+    }
 
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =
         (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0)).coerceAtLeast(0)

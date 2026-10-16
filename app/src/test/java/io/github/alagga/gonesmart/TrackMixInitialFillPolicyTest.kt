@@ -57,14 +57,14 @@ class TrackMixInitialFillPolicyTest {
         )
     }
 
-    @Test fun nonQueue421StartsUseThePredecoderCompatibilityPort() {
+    @Test fun all421SongMenuStartsUseThePredecoderCompatibilityPort() {
         assertTrue(
             TrackMixInitialFillPolicy.usePredecoderCompatibility(
                 source = "menu_gm_context_playlist_details",
                 legacyQueue = false
             )
         )
-        assertFalse(
+        assertTrue(
             TrackMixInitialFillPolicy.usePredecoderCompatibility(
                 source = "menu_gm_context_queue",
                 legacyQueue = false
