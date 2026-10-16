@@ -21,8 +21,7 @@ jobs:
 
       - name: Apply bounded patch
         run: |
-          gzip -dc scripts/apply_auto_dj_rescue_patch.py.gz > /tmp/apply_auto_dj_rescue_patch.py
-          python3 /tmp/apply_auto_dj_rescue_patch.py
+          python3 scripts/apply_auto_dj_rescue_patch.py
           git diff --check
 
       - name: Verify generated forum copy
@@ -61,7 +60,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          rm -f scripts/apply_auto_dj_rescue_patch.py.gz .github/workflows/apply-auto-dj-rescue-patch.yml
+          rm -f scripts/apply_auto_dj_rescue_patch.py scripts/apply_auto_dj_rescue_patch.py.gz .github/workflows/apply-auto-dj-rescue-patch.yml
           git add -A
           git commit -m "fix(auto-dj): stage artist rescue and prevent version duplicates"
           git push origin HEAD:feature/auto-dj-providers
