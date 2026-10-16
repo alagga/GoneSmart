@@ -7,7 +7,7 @@ class GmmpAutoDjSettingsReaderSizingTest {
     private val reader = GmmpAutoDjSettingsReader()
 
     @Test
-    fun currentFiveTrackInitialSizeUsesEightCandidateRescueGate() {
+    fun currentFiveTrackInitialSizeKeepsTwelveCandidateRescueReserve() {
         val sizing = reader.calculatePoolSizing(
             GmmpAutoDjSettings(
                 initialQueueSize = 5,
@@ -17,7 +17,7 @@ class GmmpAutoDjSettingsReaderSizingTest {
         )
 
         assertEquals(20, sizing.targetSize)
-        assertEquals(8, sizing.rescueCandidateTarget)
+        assertEquals(12, sizing.rescueCandidateTarget)
     }
 
     @Test

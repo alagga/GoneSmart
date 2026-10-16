@@ -480,7 +480,7 @@ class MainActivity : AppCompatActivity() {
             SettingSpec(GoneSmartSettingsKeys.KEY_MATCH_QUEUE_ERA, "Y", "Match current music era", "Give a small bonus to tracks from a similar release period.", COLOR_GREEN),
             SettingSpec(GoneSmartSettingsKeys.KEY_FAVOR_RECENTLY_ADDED, "+", "Favor recently added tracks", "Favor recently added songs when you're listening to newer additions.", COLOR_GREEN),
             SettingSpec(GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES, "≠", "Prevent version duplicates", "Block Original, Radio, Extended and Club Mix variants of the same song family. Remixes stay independent.", COLOR_ACCENT),
-            SettingSpec(GoneSmartSettingsKeys.KEY_PREVENT_REMIX_DUPLICATES, "R", "Prevent remix duplicates", "Also block a remix when another version of the same song family is already in the current/recent queue. Off by default.", COLOR_AMBER)
+            SettingSpec(GoneSmartSettingsKeys.KEY_PREVENT_REMIX_DUPLICATES, "R", "Prevent remix duplicates", "Block a remix when another version of the same song family is already in the current or recent queue.", COLOR_AMBER)
         )))
 
         container.addView(verticalGap(24))

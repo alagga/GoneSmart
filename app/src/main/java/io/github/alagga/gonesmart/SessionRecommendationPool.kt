@@ -34,6 +34,9 @@ class SessionRecommendationPool {
     private var lastUnproductiveFillElapsedMs =
         Long.MIN_VALUE
 
+    private var lastFillWasScarce =
+        false
+
     @Synchronized
     fun reset(
         newSessionId: Long,
@@ -57,6 +60,9 @@ class SessionRecommendationPool {
 
         lastUnproductiveFillElapsedMs =
             Long.MIN_VALUE
+
+        lastFillWasScarce =
+            false
     }
 
     @Synchronized
@@ -339,6 +345,16 @@ class SessionRecommendationPool {
             return false
         }
 
+        if (
+            lastFillWasScarce
+        ) {
+            // A partial successful fill means the current provider evidence was
+            // exhausted. Avoid an immediate low-water network retry while useful
+            // tracks are still pending; once they are consumed, a fresh refill is
+            // allowed without an arbitrary timer.
+            return remaining == 0
+        }
+
         val now =
             SystemClock.elapsedRealtime()
 
@@ -374,12 +390,23 @@ class SessionRecommendationPool {
             return
         }
 
-        lastUnproductiveFillElapsedMs =
-            if (addedCount > 0) {
+        if (
+            addedCount > 0
+        ) {
+            lastUnproductiveFillElapsedMs =
                 Long.MIN_VALUE
-            } else {
+
+            lastFillWasScarce =
+                pendingTrackIds.size <
+                    targetSize
+
+        } else {
+            lastUnproductiveFillElapsedMs =
                 SystemClock.elapsedRealtime()
-            }
+
+            lastFillWasScarce =
+                pendingTrackIds.isNotEmpty()
+        }
     }
 
     @Synchronized
@@ -398,7 +425,8 @@ class SessionRecommendationPool {
         return "pending=${pendingTrackIds.size} | " +
             "used=${usedTrackIds.size} | " +
             "target=$targetSize | " +
-            "consumedSinceFill=$consumedSinceLastSuccessfulFill"
+            "consumedSinceFill=$consumedSinceLastSuccessfulFill | " +
+            "scarcityLimited=$lastFillWasScarce"
     }
 
     private fun pruneExcluded(

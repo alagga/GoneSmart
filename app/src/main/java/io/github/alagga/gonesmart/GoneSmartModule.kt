@@ -5342,6 +5342,16 @@ class GoneSmartModule : XposedModule() {
                         "deferred=${desiredCount - appliedRows.size} | " +
                         "nativePadding=false"
                 )
+
+                if (
+                    options.showStatusMessages &&
+                    desiredCount > 1 &&
+                    appliedRows.isNotEmpty()
+                ) {
+                    statusNotifier.show(
+                        "Only ${appliedRows.size} of $desiredCount suitable tracks found"
+                    )
+                }
             }
 
             Log.i(

@@ -194,8 +194,10 @@ class GmmpAutoDjSettingsReader {
          * Artist-level provider expansion is a rescue stage, not a default
          * tax on every seed. Scale its local-candidate gate from GMMP's
          * visible Auto-DJ demand. Initial Size includes the current seed.
-         * Keep roughly two turns of useful local choices before paying for
-         * broader artist calls, bounded by the internal pool target.
+         * Keep roughly two visible turns of useful local choices, but never
+         * less than 60% of the internal pool target, before skipping broader
+         * artist calls. The larger reserve costs more up front only when direct
+         * coverage is sparse and reduces repeated provider rounds later.
          */
         val visibleDemand =
             max(
@@ -205,7 +207,10 @@ class GmmpAutoDjSettingsReader {
             )
 
         val rescueCandidateTarget =
-            (visibleDemand * 2)
+            max(
+                visibleDemand * 2,
+                ceil(target * 0.60).toInt()
+            )
                 .coerceIn(
                     4,
                     target
