@@ -161,3 +161,10 @@ For each seed record:
 - final selected track and contributing providers.
 
 The target is not simply more remote recommendations. The target is a higher **usable local candidate hit rate** with lower latency and without destabilizing native GMMP Auto-DJ behavior.
+
+### Controlled variety and cache/runtime follow-up
+
+- Final local matches keep their real ranking scores. GoneSmart only randomizes order inside bounded near-equal score buckets, so obvious score gaps stay deterministic. Smart uses Balanced; Custom exposes Off, Balanced and High.
+- In Custom mode a disabled provider also disables and visually mutes its ranking-weight slider because that weight is inactive.
+- ListenBrainz recording search currently does not return artist-credit MBIDs. The artist fallback therefore resolves the MBID lazily from the selected recording through the official recording-MBID lookup endpoint; direct recording similarity does not pay this extra request.
+- The GMMP library cache is cheaply revalidated before a repeated full-library read, with a bounded hard refresh retained as a safety net.

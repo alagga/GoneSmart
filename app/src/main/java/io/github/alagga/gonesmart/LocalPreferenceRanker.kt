@@ -382,10 +382,37 @@ class LocalPreferenceRanker(
                 "remaining=${result.size}"
         )
 
-        return result
-            .take(
-                MAX_RESULTS
+        val limited =
+            result
+                .take(
+                    MAX_RESULTS
+                )
+
+        val variety =
+            if (options.recommendationMode == RecommendationMode.SMART) {
+                RecommendationVariety.BALANCED
+            } else {
+                options.recommendationVariety
+            }
+
+        val varietyResult =
+            ControlledVarietyPolicy.reorder(
+                items = limited,
+                mode = variety,
+                scoreOf = { it.rankingScore }
             )
+
+        Log.i(
+            TAG,
+            "CONTROLLED VARIETY | " +
+                "mode=$variety | " +
+                "candidates=${limited.size} | " +
+                "buckets=${varietyResult.bucketCount} | " +
+                "shuffledBuckets=${varietyResult.shuffledBuckets} | " +
+                "largestBucket=${varietyResult.largestBucket}"
+        )
+
+        return varietyResult.items
     }
 
     fun ratingThresholdProfile(

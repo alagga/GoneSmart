@@ -22,6 +22,7 @@ data class GoneSmartOptions(
     val lastFmProviderWeight: Double = RecommendationProviderPolicy.SMART_LASTFM_WEIGHT,
     val localPlaylistProviderWeight: Double = RecommendationProviderPolicy.SMART_LOCAL_PLAYLIST_WEIGHT,
     val playlistSizeWeighting: PlaylistSizeWeighting = PlaylistSizeWeighting.BALANCED,
+    val recommendationVariety: RecommendationVariety = RecommendationVariety.BALANCED,
     val preferHigherRatedMatches: Boolean = true,
     val minimumRatingStars: Double = 0.0,
     val smartRatingEnabled: Boolean = false,
@@ -129,6 +130,12 @@ data class GoneSmartOptions(
                     preferences.getString(
                         GoneSmartSettingsKeys.KEY_PLAYLIST_SIZE_WEIGHTING,
                         PlaylistSizeWeighting.BALANCED.preferenceValue
+                    )
+                ),
+                recommendationVariety = RecommendationVariety.fromPreference(
+                    preferences.getString(
+                        GoneSmartSettingsKeys.KEY_RECOMMENDATION_VARIETY,
+                        RecommendationVariety.BALANCED.preferenceValue
                     )
                 ),
                 preferHigherRatedMatches = preferences.getBoolean(

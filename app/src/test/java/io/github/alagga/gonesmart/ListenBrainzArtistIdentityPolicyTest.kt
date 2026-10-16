@@ -53,6 +53,38 @@ class ListenBrainzArtistIdentityPolicyTest {
     }
 
     @Test
+    fun missingSearchArtistMbidCanBeResolvedLazilyFromRecording() {
+        val requested = mutableListOf<String>()
+        val identity = ListenBrainzArtistIdentityPolicy.select(
+            metadata = metadata(searchArtist = "BUNT. & Røam", artists = listOf("BUNT.", "Røam")),
+            matches = listOf(
+                ListenBrainzRecordingMatch(
+                    recordingMbid = "good-recording",
+                    recordingName = "Different title",
+                    artistName = "BUNT. & Røam",
+                    releaseName = null,
+                    artistMbids = emptyList()
+                ),
+                ListenBrainzRecordingMatch(
+                    recordingMbid = "wrong-recording",
+                    recordingName = "Different title",
+                    artistName = "Other Artist",
+                    releaseName = null,
+                    artistMbids = emptyList()
+                )
+            ),
+            comparisonKey = key,
+            artistMbidsForRecording = { match ->
+                requested += match.recordingMbid
+                if (match.recordingMbid == "good-recording") listOf("resolved-bunt-mbid") else emptyList()
+            }
+        )
+
+        assertEquals("resolved-bunt-mbid", identity?.artistMbid)
+        assertEquals(listOf("good-recording"), requested)
+    }
+
+    @Test
     fun unrelatedArtistIsRejected() {
         val identity = ListenBrainzArtistIdentityPolicy.select(
             metadata = metadata(searchArtist = "Axwell", artists = listOf("Axwell")),

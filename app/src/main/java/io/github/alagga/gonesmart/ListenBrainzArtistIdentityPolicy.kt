@@ -20,7 +20,8 @@ internal object ListenBrainzArtistIdentityPolicy {
     fun select(
         metadata: NormalizedTrackMetadata,
         matches: List<ListenBrainzRecordingMatch>,
-        comparisonKey: (String) -> String
+        comparisonKey: (String) -> String,
+        artistMbidsForRecording: (ListenBrainzRecordingMatch) -> List<String> = { it.artistMbids }
     ): ListenBrainzArtistIdentity? {
         val fullArtistKey = comparisonKey(metadata.searchArtist)
         val primaryArtistKey = metadata.artists
@@ -28,11 +29,8 @@ internal object ListenBrainzArtistIdentityPolicy {
             ?.let(comparisonKey)
             .orEmpty()
 
-        return matches
+        val candidates = matches
             .mapNotNull { match ->
-                val mbid = match.artistMbids.firstOrNull()?.trim().orEmpty()
-                if (mbid.isBlank()) return@mapNotNull null
-
                 val matchArtistKey = comparisonKey(match.artistName)
                 val confidence = when {
                     fullArtistKey.isNotBlank() && matchArtistKey == fullArtistKey -> 0.90
@@ -42,14 +40,23 @@ internal object ListenBrainzArtistIdentityPolicy {
                             primaryArtistKey.contains(matchArtistKey)) -> 0.82
                     else -> 0.0
                 }
-                if (confidence <= 0.0) return@mapNotNull null
-
-                ListenBrainzArtistIdentity(
-                    artistMbid = mbid,
-                    artistName = match.artistName,
-                    confidence = confidence
-                )
+                if (confidence <= 0.0) null else match to confidence
             }
-            .maxByOrNull { it.confidence }
+            .sortedByDescending { it.second }
+            .take(3)
+
+        for ((match, confidence) in candidates) {
+            val mbid = artistMbidsForRecording(match)
+                .firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (mbid.isBlank()) continue
+            return ListenBrainzArtistIdentity(
+                artistMbid = mbid,
+                artistName = match.artistName,
+                confidence = confidence
+            )
+        }
+        return null
     }
 }

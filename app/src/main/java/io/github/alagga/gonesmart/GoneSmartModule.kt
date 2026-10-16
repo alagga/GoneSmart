@@ -6694,7 +6694,26 @@ class GoneSmartModule : XposedModule() {
                     ListenBrainzArtistIdentityPolicy.select(
                         metadata = metadata,
                         matches = matches,
-                        comparisonKey = metadataNormalizer::comparisonKey
+                        comparisonKey = metadataNormalizer::comparisonKey,
+                        artistMbidsForRecording = { match ->
+                            if (match.artistMbids.isNotEmpty()) {
+                                match.artistMbids
+                            } else {
+                                try {
+                                    listenBrainzClient.getArtistMbidsForRecording(
+                                        match.recordingMbid
+                                    )
+                                } catch (t: Throwable) {
+                                    Log.w(
+                                        TAG,
+                                        "LB ARTIST ID LOOKUP FAILED seed=$seedNumber | " +
+                                            "recording=${match.recordingMbid} | " +
+                                            "${t.javaClass.simpleName}: ${t.message}"
+                                    )
+                                    emptyList()
+                                }
+                            }
+                        }
                     )
                 } else {
                     null
@@ -6711,6 +6730,12 @@ class GoneSmartModule : XposedModule() {
                     "LB ARTIST IDENTITY FALLBACK seed=$seedNumber | " +
                         "artist=${recoveredArtistIdentity.artistName} | " +
                         "confidence=${formatScore(recoveredArtistIdentity.confidence)}"
+                )
+            } else if (acceptedArtistMbid.isNullOrBlank()) {
+                Log.i(
+                    TAG,
+                    "LB ARTIST FALLBACK UNAVAILABLE seed=$seedNumber | " +
+                        "recordingMatches=${matches.size}"
                 )
             }
 

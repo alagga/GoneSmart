@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -41,8 +42,11 @@ class ListenBrainzClient : RecommendationProviderSource {
         RecommendationProviderRegistry.require(RecommendationProvider.LISTENBRAINZ)
 
     companion object {
+        private const val TAG = "GoneSmart"
         private const val RECORDING_SEARCH_URL =
             "https://labs.api.listenbrainz.org/recording-search/json"
+        private const val RECORDING_LOOKUP_URL =
+            "https://labs.api.listenbrainz.org/recording-mbid-lookup/json"
         private const val SIMILAR_RECORDINGS_URL =
             "https://labs.api.listenbrainz.org/similar-recordings/json"
         private const val SIMILAR_ARTISTS_URL =
@@ -69,7 +73,28 @@ class ListenBrainzClient : RecommendationProviderSource {
         )
         val response = postJson(RECORDING_SEARCH_URL, request)
         requireSuccess("Recording search", response)
-        return parseRecordingSearch(response.body)
+        return parseRecordingSearch(response.body).also { matches ->
+            if (matches.isEmpty()) Log.i(TAG, "LB EMPTY | stage=recording-search")
+        }
+    }
+
+    fun getArtistMbidsForRecording(recordingMbid: String): List<String> {
+        if (recordingMbid.isBlank()) return emptyList()
+        val request = JSONArray().put(
+            JSONObject().put("recording_mbid", recordingMbid)
+        )
+        val response = postJson(RECORDING_LOOKUP_URL, request)
+        if (response.statusCode == 404) return emptyList()
+        requireSuccess("Recording MBID lookup", response)
+        val json = JSONArray(response.body)
+        val mbids = buildList {
+            for (index in 0 until json.length()) {
+                val item = json.optJSONObject(index) ?: continue
+                addAll(parseStringList(item.opt("artist_credit_mbids")))
+            }
+        }.distinct()
+        if (mbids.isEmpty()) Log.i(TAG, "LB EMPTY | stage=recording-artist-lookup")
+        return mbids
     }
 
     fun getSimilarRecordings(recordingMbid: String): List<ListenBrainzSimilarTrack> {
@@ -80,7 +105,9 @@ class ListenBrainzClient : RecommendationProviderSource {
         )
         val response = postJson(SIMILAR_RECORDINGS_URL, request)
         requireSuccess("Similar-recordings request", response)
-        return parseSimilarRecordings(response.body, recordingMbid)
+        return parseSimilarRecordings(response.body, recordingMbid).also { tracks ->
+            if (tracks.isEmpty()) Log.i(TAG, "LB EMPTY | stage=similar-recordings")
+        }
     }
 
     fun getSimilarArtists(
@@ -100,6 +127,9 @@ class ListenBrainzClient : RecommendationProviderSource {
         return parsed.map { it.copy(score = (it.score / highest).coerceIn(0.0, 1.0)) }
             .sortedByDescending { it.score }
             .take(limit.coerceAtLeast(1))
+            .also { artists ->
+                if (artists.isEmpty()) Log.i(TAG, "LB EMPTY | stage=similar-artists")
+            }
     }
 
     private fun parseRecordingSearch(body: String): List<ListenBrainzRecordingMatch> {
@@ -118,7 +148,10 @@ class ListenBrainzClient : RecommendationProviderSource {
                         artistName = artistName,
                         releaseName = item.optString("release_name").trim()
                             .takeIf(String::isNotBlank),
-                        artistMbids = parseStringList(item.opt("artist_credit_mbids"))
+                        // recording-search currently does not expose artist MBIDs.
+                        // Resolve them lazily through recording-mbid-lookup only if
+                        // the recording-similarity path cannot produce results.
+                        artistMbids = emptyList()
                     )
                 )
             }
@@ -220,6 +253,10 @@ class ListenBrainzClient : RecommendationProviderSource {
                 BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use(BufferedReader::readText)
             } else ""
             return ListenBrainzHttpResponse(status, responseBody)
+        } catch (t: Throwable) {
+            val endpoint = url.substringAfter("listenbrainz.org/").substringBefore('/').ifBlank { "labs" }
+            Log.w(TAG, "LB HTTP FAILURE | endpoint=$endpoint | ${t.javaClass.simpleName}: ${t.message}")
+            throw t
         } finally {
             connection.disconnect()
         }

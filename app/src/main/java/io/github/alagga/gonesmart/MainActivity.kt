@@ -88,6 +88,8 @@ class MainActivity : AppCompatActivity() {
 
     private val switches = linkedMapOf<String, SwitchMaterial>()
     private val settingRows = linkedMapOf<String, View>()
+    private val providerWeightCards = linkedMapOf<String, View>()
+    private val providerWeightSliders = linkedMapOf<String, Slider>()
     private val tabButtons = linkedMapOf<Tab, LinearLayout>()
     private val tabIconBackgrounds = linkedMapOf<Tab, FrameLayout>()
     private val tabLabels = linkedMapOf<Tab, TextView>()
@@ -266,6 +268,8 @@ class MainActivity : AppCompatActivity() {
         activeTab = tab
         switches.clear()
         settingRows.clear()
+        providerWeightCards.clear()
+        providerWeightSliders.clear()
         minimumRatingSlider = null
         minimumRatingValueText = null
         contentHost.removeAllViews()
@@ -420,7 +424,7 @@ class MainActivity : AppCompatActivity() {
         if (recommendationOptions.recommendationMode == RecommendationMode.SMART) {
             container.addView(infoCard(
                 title = "Smart weighting",
-                body = "GoneSmart uses all stable sources automatically: Local Playlists ×1.00, ListenBrainz ×1.00 and Last.fm ×0.95, with balanced down-weighting for very large playlists. Network sources run in parallel; GoneSmart can refine these defaults in future updates."
+                body = "GoneSmart uses all stable sources automatically: Local Playlists ×1.00, ListenBrainz ×1.00 and Last.fm ×0.95, with balanced down-weighting for very large playlists and balanced controlled variety among near-equal final matches. Network sources run in parallel; GoneSmart can refine these defaults in future updates."
             ))
         } else {
             container.addView(settingGroup(listOf(
@@ -433,24 +437,29 @@ class MainActivity : AppCompatActivity() {
                 title = "Local Playlist weight",
                 subtitle = "How strongly personal playlist co-occurrence influences the final ranking.",
                 key = GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT,
-                value = recommendationOptions.localPlaylistProviderWeight
+                value = recommendationOptions.localPlaylistProviderWeight,
+                enabled = recommendationOptions.localPlaylistProviderEnabled
             ))
             container.addView(verticalGap(10))
             container.addView(providerWeightCard(
                 title = "ListenBrainz weight",
                 subtitle = "How strongly ListenBrainz evidence influences the final ranking.",
                 key = GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_WEIGHT,
-                value = recommendationOptions.listenBrainzProviderWeight
+                value = recommendationOptions.listenBrainzProviderWeight,
+                enabled = recommendationOptions.listenBrainzProviderEnabled
             ))
             container.addView(verticalGap(10))
             container.addView(providerWeightCard(
                 title = "Last.fm weight",
                 subtitle = "How strongly Last.fm evidence influences the final ranking.",
                 key = GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_WEIGHT,
-                value = recommendationOptions.lastFmProviderWeight
+                value = recommendationOptions.lastFmProviderWeight,
+                enabled = recommendationOptions.lastFmProviderEnabled
             ))
             container.addView(verticalGap(10))
             container.addView(playlistSizeWeightingCard(recommendationOptions))
+            container.addView(verticalGap(10))
+            container.addView(recommendationVarietyCard(recommendationOptions))
             container.addView(verticalGap(10))
             container.addView(infoCard(
                 title = "Provider priority",
@@ -545,9 +554,13 @@ class MainActivity : AppCompatActivity() {
         title: String,
         subtitle: String,
         key: String,
-        value: Double
+        value: Double,
+        enabled: Boolean
     ): View {
-        val card = card().apply { setContentPadding(dp(20), dp(18), dp(20), dp(14)) }
+        val card = card().apply {
+            setContentPadding(dp(20), dp(18), dp(20), dp(14))
+            alpha = if (enabled) 1f else 0.45f
+        }
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -574,6 +587,7 @@ class MainActivity : AppCompatActivity() {
             thumbTintList = ColorStateList.valueOf(COLOR_ACCENT)
             haloTintList = ColorStateList.valueOf(withAlpha(COLOR_ACCENT, 0.20f))
             setLabelFormatter { providerWeightLabel(it.toDouble()) }
+            isEnabled = enabled
             addOnChangeListener { slider, sliderValue, fromUser ->
                 valueText.text = providerWeightLabel(sliderValue.toDouble())
                 if (fromUser && !slider.isPressed) {
@@ -587,6 +601,8 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
+        providerWeightCards[key] = card
+        providerWeightSliders[key] = slider
         content.addView(slider)
         card.addView(content)
         return card
@@ -594,6 +610,58 @@ class MainActivity : AppCompatActivity() {
 
     private fun providerWeightLabel(value: Double): String =
         String.format(java.util.Locale.US, "×%.2f", value)
+
+
+    private fun recommendationVarietyCard(options: GoneSmartOptions): View {
+        val label = when (options.recommendationVariety) {
+            RecommendationVariety.OFF -> "Off"
+            RecommendationVariety.BALANCED -> "Balanced"
+            RecommendationVariety.HIGH -> "High"
+        }
+        val card = card().apply {
+            setContentPadding(dp(20), dp(18), dp(20), dp(18))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showRecommendationVarietyDialog(options.recommendationVariety) }
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(
+            textView("Recommendation variety", 16f, COLOR_TEXT, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        row.addView(textView(label, 15f, COLOR_ACCENT, bold = true))
+        content.addView(row)
+        content.addView(textView(
+            "Rotates only among near-equal final matches. Clear score gaps remain deterministic; High uses a wider near-tie window.",
+            13f,
+            COLOR_TEXT_SECONDARY
+        ).apply { setPadding(0, dp(5), 0, 0) })
+        card.addView(content)
+        return card
+    }
+
+    private fun showRecommendationVarietyDialog(current: RecommendationVariety) {
+        val values = RecommendationVariety.entries
+        val labels = arrayOf("Off", "Balanced (recommended)", "High")
+        val checked = values.indexOf(current).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Recommendation variety")
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                val selected = values[which]
+                settingsRepository.setString(
+                    GoneSmartSettingsKeys.KEY_RECOMMENDATION_VARIETY,
+                    selected.preferenceValue
+                )
+                dialog.dismiss()
+                showTab(Tab.SMART)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     private fun playlistSizeWeightingCard(options: GoneSmartOptions): View {
         val label = when (options.playlistSizeWeighting) {
@@ -1016,6 +1084,7 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED, options.listenBrainzProviderEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED, options.lastFmProviderEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED, options.localPlaylistProviderEnabled)
+        refreshProviderWeightAvailability(options)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
@@ -1035,6 +1104,19 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES, options.fallbackToNativeAutoDjWhenNoSuitableTracks)
         setSwitch(GoneSmartSettingsKeys.KEY_SHOW_STATUS_MESSAGES, options.showStatusMessages)
         refreshRatingFallbackAvailability(options)
+    }
+
+
+    private fun refreshProviderWeightAvailability(options: GoneSmartOptions = settingsRepository.read()) {
+        val availability = mapOf(
+            GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT to options.localPlaylistProviderEnabled,
+            GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_WEIGHT to options.listenBrainzProviderEnabled,
+            GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_WEIGHT to options.lastFmProviderEnabled
+        )
+        availability.forEach { (key, enabled) ->
+            providerWeightSliders[key]?.isEnabled = enabled
+            providerWeightCards[key]?.alpha = if (enabled) 1f else 0.45f
+        }
     }
 
     private fun refreshPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {
@@ -1074,6 +1156,11 @@ class MainActivity : AppCompatActivity() {
         settingsRepository.setBoolean(key, checked)
         if (key == GoneSmartSettingsKeys.KEY_PLAYLIST_FOLDERS) refreshPlaylistFolderAvailability()
         if (key == GoneSmartSettingsKeys.KEY_SMART_PLAYLIST_FOLDERS) refreshSmartPlaylistFolderAvailability()
+        if (
+            key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ||
+            key == GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ||
+            key == GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED
+        ) refreshProviderWeightAvailability()
         if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) refreshRatingFallbackAvailability()
     }
 

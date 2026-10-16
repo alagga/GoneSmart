@@ -26,11 +26,23 @@ enum class PlaylistSizeWeighting(val preferenceValue: String) {
     }
 }
 
+enum class RecommendationVariety(val preferenceValue: String) {
+    OFF("off"),
+    BALANCED("balanced"),
+    HIGH("high");
+
+    companion object {
+        fun fromPreference(value: String?): RecommendationVariety =
+            entries.firstOrNull { it.preferenceValue == value } ?: BALANCED
+    }
+}
+
 data class RecommendationProviderPolicy(
     val mode: RecommendationMode,
     val enabledProviders: Set<RecommendationProvider>,
     val providerWeights: Map<RecommendationProvider, Double>,
-    val playlistSizeWeighting: PlaylistSizeWeighting
+    val playlistSizeWeighting: PlaylistSizeWeighting,
+    val variety: RecommendationVariety
 ) {
     fun isEnabled(provider: RecommendationProvider): Boolean =
         provider in enabledProviders
@@ -58,7 +70,8 @@ data class RecommendationProviderPolicy(
                         RecommendationProvider.LASTFM to SMART_LASTFM_WEIGHT,
                         RecommendationProvider.LOCAL_PLAYLIST to SMART_LOCAL_PLAYLIST_WEIGHT
                     ),
-                    playlistSizeWeighting = PlaylistSizeWeighting.BALANCED
+                    playlistSizeWeighting = PlaylistSizeWeighting.BALANCED,
+                    variety = RecommendationVariety.BALANCED
                 )
             }
 
@@ -76,7 +89,8 @@ data class RecommendationProviderPolicy(
                     RecommendationProvider.LASTFM to options.lastFmProviderWeight,
                     RecommendationProvider.LOCAL_PLAYLIST to options.localPlaylistProviderWeight
                 ),
-                playlistSizeWeighting = options.playlistSizeWeighting
+                playlistSizeWeighting = options.playlistSizeWeighting,
+                variety = options.recommendationVariety
             )
         }
     }
