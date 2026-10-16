@@ -168,3 +168,11 @@ The target is not simply more remote recommendations. The target is a higher **u
 - In Custom mode a disabled provider also disables and visually mutes its ranking-weight slider because that weight is inactive.
 - ListenBrainz recording search currently does not return artist-credit MBIDs. The artist fallback therefore resolves the MBID lazily from the selected recording through the official recording-MBID lookup endpoint; direct recording similarity does not pay this extra request.
 - The GMMP library cache is cheaply revalidated before a repeated full-library read, with a bounded hard refresh retained as a safety net.
+
+## Staged artist rescue and partial fills
+
+GoneSmart treats artist-level provider expansion as a rescue stage. Playlist Affinity and direct track/recording recommendations are collected and matched against the local GMMP library first. Artist fallback is requested only when the number of unique local direct candidates is below a threshold derived from GMMP's configured Auto-DJ demand: roughly two times the larger of `Initial Size - 1` and `Upcoming Tracks`, capped by the internal recommendation-pool target.
+
+If fewer suitable GoneSmart tracks exist than GMMP requests in a refill, GoneSmart returns only those suitable tracks. It does not preserve untouched native/random rows to pad the request. GMMP can ask for another refill when the shorter queue approaches its end. The configured native fallback remains relevant when there are zero suitable GoneSmart tracks.
+
+`Prevent Version Duplicates` groups versions by normalized artist plus base title, so Original, Radio, Extended, Remix, Edit, Bootleg, Acoustic and Live variants cannot bypass duplicate prevention merely because their version labels differ.

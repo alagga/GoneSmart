@@ -172,3 +172,7 @@ A release candidate is complete only when:
 12. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
 
 After 0.4.0, new features should start on a normal named feature branch from the chosen clean `main` integration point.
+
+- Provider artist fallbacks are a rescue stage, not a default per-provider tax: first evaluate Playlist Affinity plus direct track/recording recommendations locally, then run artist-level provider expansion only when unique local coverage is below a target scaled from GMMP Initial Size / Upcoming Tracks.
+- A partially populated GoneSmart pool is valid. If GMMP requests more tracks than GoneSmart currently has suitable candidates, return only the suitable GoneSmart rows and never pad the remainder with untouched/native random rows; GMMP can request again as the shorter queue approaches its end. Native fallback for recommendation scarcity is reserved for the zero-suitable-track case according to the fallback policy.
+- `Prevent Version Duplicates` treats Original/Radio/Extended/Remix/Edit/Bootleg/Acoustic/Live variants of the same normalized artist + base title as one duplicate family. Version metadata still influences matching/ranking, but never creates a duplicate-prevention loophole.

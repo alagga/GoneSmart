@@ -4769,7 +4769,8 @@ class GoneSmartModule : XposedModule() {
                     "upcoming=${gmmpSettings.upcomingTrackCount} | " +
                     "source=${gmmpSettings.source} | " +
                     "poolTarget=${poolSizing.targetSize} | " +
-                    "lowWater=${poolSizing.lowWaterMark}"
+                    "lowWater=${poolSizing.lowWaterMark} | " +
+                    "rescueTarget=${poolSizing.rescueCandidateTarget}"
             )
 
             val queueTrackIds =
@@ -4793,7 +4794,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -5244,15 +5245,13 @@ class GoneSmartModule : XposedModule() {
                     )
 
             if (
-                smartTrackIds.size <
-                desiredCount
+                smartTrackIds.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
                     "SMART DJ SUPPRESSED | " +
-                        "needed=$desiredCount | " +
-                        "poolAvailable=${smartTrackIds.size}"
+                        "needed=$desiredCount | poolAvailable=0"
                 )
 
                 playerBadgeController
@@ -5263,16 +5262,17 @@ class GoneSmartModule : XposedModule() {
                 return@intercept ArrayList<Any>()
             }
 
-            var appliedCount =
-                0
+            val appliedRows =
+                ArrayList<Any>()
+
+            val appliedTrackIds =
+                mutableListOf<Long>()
 
             smartTrackIds
                 .forEachIndexed { index, trackId ->
 
                     val row =
-                        rows[
-                            index
-                        ]
+                        rows.getOrNull(index)
                             ?: return@forEachIndexed
 
                     try {
@@ -5282,8 +5282,11 @@ class GoneSmartModule : XposedModule() {
                             trackId = trackId
                         )
 
-                        appliedCount +=
-                            1
+                        appliedRows +=
+                            row
+
+                        appliedTrackIds +=
+                            trackId
 
                         Log.i(
                             TAG,
@@ -5304,15 +5307,12 @@ class GoneSmartModule : XposedModule() {
                 }
 
             if (
-                appliedCount !=
-                desiredCount
+                appliedRows.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
-                    "SMART DJ SUPPRESSED | " +
-                        "replacement incomplete " +
-                        "($appliedCount/$desiredCount)"
+                    "SMART DJ SUPPRESSED | no native row could be replaced"
                 )
 
                 playerBadgeController
@@ -5326,13 +5326,28 @@ class GoneSmartModule : XposedModule() {
             recommendationPool
                 .commitSelected(
                     expectedSessionId = selectionContext.sessionId,
-                    selectedTrackIds = smartTrackIds
+                    selectedTrackIds = appliedTrackIds
                 )
+
+            if (
+                appliedRows.size <
+                desiredCount
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ PARTIAL | " +
+                        "requested=$desiredCount | " +
+                        "applied=${appliedRows.size} | " +
+                        "deferred=${desiredCount - appliedRows.size} | " +
+                        "nativePadding=false"
+                )
+            }
 
             Log.i(
                 TAG,
                 "SMART DJ APPLIED | " +
-                    "$appliedCount/$desiredCount track(s) replaced | " +
+                    "${appliedRows.size}/$desiredCount track(s) replaced | " +
                     recommendationPool.describe(
                         selectionContext.sessionId
                     )
@@ -5345,11 +5360,11 @@ class GoneSmartModule : XposedModule() {
 
             runtimeReporter.report(
                 mode = GoneSmartRuntimeContract.MODE_SMART,
-                message = "GoneSmart selected $appliedCount track(s) from the current session pool.",
+                message = "GoneSmart selected ${appliedRows.size} track(s) from the current session pool.",
                 appendEvent = true
             )
 
-            nativeResult
+            appliedRows
         }
 
         Log.i(
@@ -5514,7 +5529,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -5664,7 +5679,9 @@ class GoneSmartModule : XposedModule() {
                                 queueContext = queueContext,
                                 session = session,
                                 generation = generation,
-                                targetPoolSize = sizing.targetSize
+                                targetPoolSize = sizing.targetSize,
+                                rescueCandidateTarget =
+                                    sizing.rescueCandidateTarget
                             )
 
                         if (
@@ -5723,7 +5740,8 @@ class GoneSmartModule : XposedModule() {
         queueContext: QueueContext,
         session: QueueSessionSnapshot,
         generation: Long,
-        targetPoolSize: Int
+        targetPoolSize: Int,
+        rescueCandidateTarget: Int
     ): List<Long> {
 
         return try {
@@ -6019,6 +6037,91 @@ class GoneSmartModule : XposedModule() {
                         library = library,
                         excludedTrackIds = excludedTrackIds
                     )
+
+            var directLocalTrackCount =
+                directLocalMatches
+                    .map { it.track.id }
+                    .distinct()
+                    .size
+
+            val shouldRunArtistRescue =
+                !broadSearchPerformed &&
+                    networkStateReader.getState() ==
+                        GoneSmartNetworkState.ONLINE &&
+                    directLocalTrackCount <
+                        rescueCandidateTarget
+
+            Log.i(
+                TAG,
+                "SMART DJ ARTIST RESCUE GATE | " +
+                    "localDirect=$directLocalTrackCount | " +
+                    "target=$rescueCandidateTarget | " +
+                    "action=${if (shouldRunArtistRescue) "run" else "skip"}"
+            )
+
+            if (
+                shouldRunArtistRescue
+            ) {
+
+                val rescueContributions =
+                    collectArtistRescueContributions(
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
+                    )
+
+                if (
+                    generation !=
+                    pipelineGeneration.get()
+                ) {
+
+                    return emptyList()
+                }
+
+                if (
+                    rescueContributions.isNotEmpty()
+                ) {
+
+                    rawContributions +=
+                        rescueContributions
+
+                    val rescueMerged =
+                        recommendationAggregator
+                            .aggregate(
+                                rawContributions
+                            )
+
+                    if (
+                        rescueMerged.isNotEmpty()
+                    ) {
+
+                        activeRecommendations =
+                            rescueMerged
+
+                        directLocalMatches =
+                            localLibraryMatcher
+                                .match(
+                                    recommendations = activeRecommendations,
+                                    library = library,
+                                    excludedTrackIds = excludedTrackIds
+                                )
+
+                        directLocalTrackCount =
+                            directLocalMatches
+                                .map { it.track.id }
+                                .distinct()
+                                .size
+                    }
+                }
+
+                Log.i(
+                    TAG,
+                    "SMART DJ ARTIST RESCUE END | " +
+                        "contributions=${rescueContributions.size} | " +
+                        "localDirect=$directLocalTrackCount | " +
+                        "target=$rescueCandidateTarget"
+                )
+            }
 
             /*
              * External services recommend tracks globally, but the user can
@@ -6464,7 +6567,9 @@ class GoneSmartModule : XposedModule() {
         metadata: NormalizedTrackMetadata,
         library: List<GmmpLibraryTrack>,
         providerPolicy: RecommendationProviderPolicy,
-        broadSearch: Boolean = false
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
         if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
             return emptyList()
@@ -6481,7 +6586,9 @@ class GoneSmartModule : XposedModule() {
                         seed = seed,
                         metadata = metadata,
                         library = library,
-                        broadSearch = broadSearch
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
                     )
                 }
         }
@@ -6492,7 +6599,9 @@ class GoneSmartModule : XposedModule() {
                         seedNumber = seedNumber,
                         seed = seed,
                         metadata = metadata,
-                        broadSearch = broadSearch
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
                     )
                 }
         }
@@ -6518,10 +6627,85 @@ class GoneSmartModule : XposedModule() {
 
         Log.i(
             TAG,
-            "SMART DJ PROVIDER ROUND | seed=$seedNumber | broad=$broadSearch | " +
+            "SMART DJ PROVIDER ROUND | seed=$seedNumber | " +
+                "stage=${when {
+                    artistFallbackOnly -> "artist-rescue"
+                    broadSearch -> "broad"
+                    else -> "direct"
+                }} | " +
                 "enabled=${tasks.map { it.first }} | contributions=${result.size} | " +
                 "elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000L}"
         )
+        return result
+    }
+
+    private fun collectArtistRescueContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy
+    ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
+
+        val result =
+            mutableListOf<RawRecommendationContribution>()
+
+        seeds.forEachIndexed { seedIndex, seed ->
+            val seedNumber = seedIndex + 1
+            val resolvedInput = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolvedInput.track)
+            if (metadata.searchArtist.isBlank() || metadata.searchTitle.isBlank()) {
+                return@forEachIndexed
+            }
+
+            var contributions =
+                collectSeedContributions(
+                    seedNumber = seedNumber,
+                    seed = seed,
+                    metadata = metadata,
+                    library = library,
+                    providerPolicy = providerPolicy,
+                    allowArtistFallback = true,
+                    artistFallbackOnly = true
+                )
+
+            if (
+                contributions.isEmpty() &&
+                resolvedInput.source != TrackInputSource.TAGS
+            ) {
+                val fallbackTrack =
+                    buildProviderFallbackTrack(
+                        resolvedInput.track
+                    )
+                if (fallbackTrack != null) {
+                    val fallbackMetadata =
+                        metadataNormalizer
+                            .normalize(
+                                fallbackTrack
+                            )
+                    if (
+                        fallbackMetadata.searchArtist.isNotBlank() &&
+                        fallbackMetadata.searchTitle.isNotBlank()
+                    ) {
+                        contributions =
+                            collectSeedContributions(
+                                seedNumber = seedNumber,
+                                seed = seed,
+                                metadata = fallbackMetadata,
+                                library = library,
+                                providerPolicy = providerPolicy,
+                                allowArtistFallback = true,
+                                artistFallbackOnly = true
+                            )
+                    }
+                }
+            }
+
+            result +=
+                contributions
+        }
+
         return result
     }
 
@@ -6549,7 +6733,8 @@ class GoneSmartModule : XposedModule() {
                 metadata = metadata,
                 library = library,
                 providerPolicy = providerPolicy,
-                broadSearch = true
+                broadSearch = true,
+                allowArtistFallback = true
             )
 
             if (contributions.isEmpty() && resolvedInput.source != TrackInputSource.TAGS) {
@@ -6618,7 +6803,9 @@ class GoneSmartModule : XposedModule() {
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
         library: List<GmmpLibraryTrack>,
-        broadSearch: Boolean = false
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
         val broadContributions = mutableListOf<RawRecommendationContribution>()
         var identitiesUsed = 0
@@ -6635,8 +6822,9 @@ class GoneSmartModule : XposedModule() {
                     else MAX_RECORDING_MATCHES_TO_TRY
                 )
 
-            for (evaluation in evaluations) {
-                val similar = try {
+            if (!artistFallbackOnly) {
+                for (evaluation in evaluations) {
+                    val similar = try {
                     listenBrainzClient.getSimilarRecordings(evaluation.match.recordingMbid)
                 } catch (_: Throwable) {
                     emptyList()
@@ -6668,13 +6856,18 @@ class GoneSmartModule : XposedModule() {
                 if (!broadSearch) return mapped
                 broadContributions += mapped
                 identitiesUsed++
-                if (identitiesUsed >= BROAD_LISTENBRAINZ_IDENTITIES_TO_USE) break
+                    if (identitiesUsed >= BROAD_LISTENBRAINZ_IDENTITIES_TO_USE) break
+                }
+
+                if (broadContributions.isNotEmpty()) {
+                    return broadContributions.distinctBy {
+                        Triple(it.artist, it.title, it.mbid)
+                    }
+                }
             }
 
-            if (broadContributions.isNotEmpty()) {
-                return broadContributions.distinctBy {
-                    Triple(it.artist, it.title, it.mbid)
-                }
+            if (!allowArtistFallback) {
+                return emptyList()
             }
 
             // Recording graph exhausted: use ListenBrainz's official
@@ -6790,7 +6983,9 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
         if (!lastFmClient.isConfigured()) return emptyList()
 
@@ -6815,6 +7010,10 @@ class GoneSmartModule : XposedModule() {
                 fallbackConfidence = identityConfidence
             }
 
+            if (artistFallbackOnly) {
+                continue
+            }
+
             val similar = try {
                 lastFmClient.getSimilarTracksDirect(
                     identity = identity,
@@ -6833,6 +7032,10 @@ class GoneSmartModule : XposedModule() {
                     "source=${candidate.artist} - ${candidate.title}"
             )
             return mapLastFmContributions(similar, seed, identityConfidence)
+        }
+
+        if (!allowArtistFallback) {
+            return emptyList()
         }
 
         val identity = fallbackIdentity ?: return emptyList()

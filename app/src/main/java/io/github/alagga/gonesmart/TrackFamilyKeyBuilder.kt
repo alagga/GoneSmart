@@ -104,6 +104,10 @@ class TrackFamilyKeyBuilder(
         rawTitle: String?
     ): Set<String> {
 
+        @Suppress("UNUSED_VARIABLE")
+        val duplicateRawTitle =
+            rawTitle
+
         val titleKey =
             metadataNormalizer
                 .comparisonKey(
@@ -117,12 +121,12 @@ class TrackFamilyKeyBuilder(
             return emptySet()
         }
 
-        val versionFamily =
-            versionFamilyKey(
-                metadata = metadata,
-                rawTitle = rawTitle
-            )
-
+        /*
+         * "Prevent Version Duplicates" means one normalized song family,
+         * regardless of Original/Radio/Extended/Remix/Edit/Bootleg/Live.
+         * Version information still matters for matching/ranking elsewhere;
+         * it must not create a loophole in duplicate prevention.
+         */
         val artistKeys =
             metadata
                 .artists
@@ -134,10 +138,8 @@ class TrackFamilyKeyBuilder(
                 }
                 .filter {
                     it.isNotBlank() &&
-                            it !=
-                            "unknown" &&
-                            it !=
-                            "unknownartist"
+                        it != "unknown" &&
+                        it != "unknownartist"
                 }
                 .toSet()
 
@@ -146,107 +148,15 @@ class TrackFamilyKeyBuilder(
         ) {
 
             return setOf(
-                "*|$titleKey|$versionFamily"
+                "*|$titleKey"
             )
         }
 
         return artistKeys
             .map { artistKey ->
-                "$artistKey|$titleKey|$versionFamily"
+                "$artistKey|$titleKey"
             }
             .toSet()
     }
 
-    private fun versionFamilyKey(
-        metadata: NormalizedTrackMetadata,
-        rawTitle: String?
-    ): String {
-
-        if (
-            isLiveTitle(
-                rawTitle
-            )
-        ) {
-
-            return "LIVE"
-        }
-
-        return when (
-            metadata.versionType
-        ) {
-
-            null,
-            TrackVersionType.ORIGINAL_MIX,
-            TrackVersionType.RADIO_EDIT,
-            TrackVersionType.EXTENDED_MIX,
-            TrackVersionType.CLUB_MIX -> {
-
-                "BASE"
-            }
-
-            TrackVersionType.REMIX -> {
-
-                "REMIX:" +
-                        versionLabelKey(
-                            metadata
-                        )
-            }
-
-            TrackVersionType.EDIT -> {
-
-                "EDIT:" +
-                        versionLabelKey(
-                            metadata
-                        )
-            }
-
-            TrackVersionType.BOOTLEG -> {
-
-                "BOOTLEG:" +
-                        versionLabelKey(
-                            metadata
-                        )
-            }
-
-            TrackVersionType.MASHUP -> {
-
-                "MASHUP:" +
-                        versionLabelKey(
-                            metadata
-                        )
-            }
-
-            TrackVersionType.ACOUSTIC_VERSION -> {
-
-                "ACOUSTIC:" +
-                        versionLabelKey(
-                            metadata
-                        )
-            }
-        }
-    }
-
-    private fun versionLabelKey(
-        metadata: NormalizedTrackMetadata
-    ): String {
-
-        val labelKey =
-            metadataNormalizer
-                .comparisonKey(
-                    metadata
-                        .versionLabel
-                        .orEmpty()
-                )
-
-        return if (
-            labelKey.isBlank()
-        ) {
-
-            "UNKNOWN"
-
-        } else {
-
-            labelKey
-        }
-    }
 }
