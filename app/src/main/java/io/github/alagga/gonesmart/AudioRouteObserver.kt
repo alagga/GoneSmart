@@ -53,6 +53,13 @@ class AudioRouteObserver(
         refresh(force = true)
     }
 
+    fun stop() {
+        if (!started) return
+        started = false
+        runCatching { audioManager.unregisterAudioDeviceCallback(callback) }
+            .onFailure { Log.w(TAG, "Could not unregister audio-device callback", it) }
+    }
+
     private fun refresh(force: Boolean = false) {
         val bluetoothOutputs = runCatching {
             audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -73,9 +80,18 @@ class AudioRouteObserver(
                 active = true
             )
         } else {
+            val label = selected.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Bluetooth device"
             AudioRouteProfile(
-                id = routeId(selected),
-                label = selected.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Bluetooth device",
+                id = GoneSmartAudioProfiles.bluetoothRouteId(
+                    type = selected.type,
+                    address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        runCatching { selected.address }.getOrNull()
+                    } else {
+                        null
+                    },
+                    label = label
+                ),
+                label = label,
                 bluetooth = true,
                 lastSeenEpochMs = System.currentTimeMillis(),
                 active = true
