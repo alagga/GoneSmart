@@ -17,6 +17,25 @@ jobs:
           ref: feature/auto-dj-providers
           fetch-depth: 0
 
+      - name: Drop stale comment-only replacement
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('scripts/one_shot_auto_dj_variety.py')
+          text = path.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r'(lb_policy = "app/src/main/java/io/github/alagga/gonesmart/ListenBrainzArtistIdentityPolicy\.kt"\n)'
+              r'replace_once\(\n    lb_policy,\n    \'\'\'     \* accepted\..*?\n\)\n'
+              r'(?=replace_once\(\n    lb_policy,)',
+              re.DOTALL,
+          )
+          text, count = pattern.subn(r'\1', text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one stale comment replacement, found {count}')
+          path.write_text(text, encoding='utf-8')
+          PY
+
       - name: Apply bundled implementation
         run: python3 scripts/one_shot_auto_dj_variety.py
 
