@@ -79,6 +79,9 @@ The 4.2.1 flow is accepted from normal playlists and large Smart Playlists.
 - Full decor/view-tree scans are bounded recovery paths, not normal layout work.
 - Temporary `isShown == false` during a pager transition does not invalidate a verified native anchor; detach/replacement/semantic mismatch does.
 - Cache class-level reflection and drawable/glyph analysis used by persistent badges.
+- Audio-profile inheritance displays passively observed current GMMP state; dormant route values and suggested fallbacks must never be labelled as GMMP defaults.
+- The Equalizer is one output override: named presets restore the observed native PRE/band shape, while manual PRE/band edits mark the profile `Custom`; `Custom` is a state, not a selectable preset.
+- Missing native audio values fail closed instead of being promoted from UI fallback values into persisted overrides.
 
 ## 7. User-facing notification contract
 
