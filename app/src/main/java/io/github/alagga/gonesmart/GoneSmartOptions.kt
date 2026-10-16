@@ -32,6 +32,7 @@ data class GoneSmartOptions(
     val matchQueueEra: Boolean = true,
     val favorRecentlyAddedTracks: Boolean = true,
     val preventBaseVersionDuplicates: Boolean = true,
+    val preventRemixDuplicates: Boolean = false,
     val fallbackToNativeAutoDjWhenNoSuitableTracks: Boolean = true,
     val showStatusMessages: Boolean = true
 ) {
@@ -178,6 +179,10 @@ data class GoneSmartOptions(
                 preventBaseVersionDuplicates = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES,
                     true
+                ),
+                preventRemixDuplicates = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PREVENT_REMIX_DUPLICATES,
+                    false
                 ),
                 fallbackToNativeAutoDjWhenNoSuitableTracks = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES,

@@ -118,24 +118,29 @@ class LocalPreferenceRanker(
                         )
                 }
 
-        val duplicateContextFamilyKeys =
-            if (
-                options.preventBaseVersionDuplicates
-            ) {
+        val duplicatePolicyEnabled =
+            options.preventBaseVersionDuplicates ||
+                options.preventRemixDuplicates
 
-                duplicateContextTracks
-                    .flatMap {
-                        trackFamilyKeyBuilder
-                            .familyKeys(
-                                it
-                            )
-                    }
-                    .toSet()
+        val duplicateContextState =
+            DuplicateFamilyState()
 
-            } else {
+        if (
+            duplicatePolicyEnabled
+        ) {
 
-                emptySet()
-            }
+            duplicateContextTracks
+                .forEach { track ->
+                    DuplicateFamilyPolicy.add(
+                        identity =
+                            trackFamilyKeyBuilder
+                                .duplicateIdentity(
+                                    track
+                                ),
+                        state = duplicateContextState
+                    )
+                }
+        }
 
         Log.i(
             TAG,
@@ -192,19 +197,27 @@ class LocalPreferenceRanker(
                     }
 
                     if (
-                        options.preventBaseVersionDuplicates
+                        duplicatePolicyEnabled
                     ) {
 
-                        val candidateFamilyKeys =
+                        val candidateIdentity =
                             trackFamilyKeyBuilder
-                                .familyKeys(
+                                .duplicateIdentity(
                                     match.track
                                 )
 
+                        val duplicateReason =
+                            DuplicateFamilyPolicy.conflictReason(
+                                candidate = candidateIdentity,
+                                state = duplicateContextState,
+                                preventBaseVersionDuplicates =
+                                    options.preventBaseVersionDuplicates,
+                                preventRemixDuplicates =
+                                    options.preventRemixDuplicates
+                            )
+
                         if (
-                            candidateFamilyKeys.any {
-                                it in duplicateContextFamilyKeys
-                            }
+                            duplicateReason != null
                         ) {
 
                             queueDuplicatesRejected +=
@@ -213,6 +226,7 @@ class LocalPreferenceRanker(
                             Log.i(
                                 TAG,
                                 "DUPLICATE FAMILY REJECT | " +
+                                    "reason=$duplicateReason | " +
                                     "trackId=${match.track.id} | " +
                                     "artist=${match.track.artist} | " +
                                     "title=${match.track.title}"
@@ -304,8 +318,8 @@ class LocalPreferenceRanker(
         val occupiedTrackIds =
             mutableSetOf<Long>()
 
-        val occupiedFamilyKeys =
-            mutableSetOf<String>()
+        val batchDuplicateState =
+            DuplicateFamilyState()
 
         var batchFamilyDuplicatesCollapsed =
             0
@@ -331,26 +345,42 @@ class LocalPreferenceRanker(
                 continue
             }
 
-            val familyKeys =
+            val duplicateIdentity =
                 if (
-                    options.preventBaseVersionDuplicates
+                    duplicatePolicyEnabled
                 ) {
 
                     trackFamilyKeyBuilder
-                        .familyKeys(
+                        .duplicateIdentity(
                             match.track
                         )
 
                 } else {
 
-                    emptySet()
+                    TrackDuplicateIdentity.EMPTY
+                }
+
+            val duplicateReason =
+                if (
+                    duplicatePolicyEnabled
+                ) {
+
+                    DuplicateFamilyPolicy.conflictReason(
+                        candidate = duplicateIdentity,
+                        state = batchDuplicateState,
+                        preventBaseVersionDuplicates =
+                            options.preventBaseVersionDuplicates,
+                        preventRemixDuplicates =
+                            options.preventRemixDuplicates
+                    )
+
+                } else {
+
+                    null
                 }
 
             if (
-                familyKeys.isNotEmpty() &&
-                familyKeys.any {
-                    it in occupiedFamilyKeys
-                }
+                duplicateReason != null
             ) {
 
                 batchFamilyDuplicatesCollapsed +=
@@ -365,8 +395,15 @@ class LocalPreferenceRanker(
             occupiedTrackIds +=
                 match.track.id
 
-            occupiedFamilyKeys +=
-                familyKeys
+            if (
+                duplicatePolicyEnabled
+            ) {
+
+                DuplicateFamilyPolicy.add(
+                    identity = duplicateIdentity,
+                    state = batchDuplicateState
+                )
+            }
         }
 
         Log.i(

@@ -37,6 +37,7 @@ object GoneSmartSettingsKeys {
     const val KEY_MATCH_QUEUE_ERA = "match_queue_era"
     const val KEY_FAVOR_RECENTLY_ADDED = "favor_recently_added"
     const val KEY_PREVENT_BASE_VERSION_DUPLICATES = "prevent_base_version_duplicates"
+    const val KEY_PREVENT_REMIX_DUPLICATES = "prevent_remix_duplicates"
     const val KEY_FALLBACK_WHEN_NO_MATCHES = "fallback_when_no_matches"
     const val KEY_SHOW_STATUS_MESSAGES = "show_status_messages"
 }
