@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply patch
-        run: python3 scripts/tmp_r62_patch.py
+        run: |
+          python3 scripts/tmp_r62_patch.py
+          python3 -c "from pathlib import Path; p=Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md'); p.write_text(p.read_text().rstrip() + '\n')"
 
       - name: Verify scope
         run: |
