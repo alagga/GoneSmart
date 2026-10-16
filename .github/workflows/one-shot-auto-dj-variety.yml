@@ -1,0 +1,34 @@
+name: One-shot Auto-DJ provider improvements
+
+on:
+  push:
+    branches: ['feature/auto-dj-providers']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: feature/auto-dj-providers
+          fetch-depth: 0
+
+      - name: Apply bundled implementation
+        run: python3 scripts/one_shot_auto_dj_variety.py
+
+      - name: Run unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Commit implementation and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(auto-dj): add controlled variety and provider refinements"
+          git push origin HEAD:feature/auto-dj-providers
