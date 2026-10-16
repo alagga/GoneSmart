@@ -88,20 +88,25 @@ class GmmpQueueReader {
                 autoDjInstance = autoDjInstance,
                 sql = """
                     SELECT queue_position AS queue_position,
-                           queue_id AS queue_id
+                           queue_id AS queue_id,
+                           queue_track_id AS queue_track_id
                       FROM queue_table
-                     WHERE queue_track_id = ?
                      ORDER BY queue_position
-                """.trimIndent(),
-                args = arrayOf<Any?>(trackId)
+                """.trimIndent()
             ) { cursor ->
                 val positionColumn = cursor.getColumnIndex("queue_position")
                 val entryColumn = cursor.getColumnIndex("queue_id")
-                require(positionColumn >= 0 && entryColumn >= 0) {
+                val trackColumn = cursor.getColumnIndex("queue_track_id")
+                require(
+                    positionColumn >= 0 &&
+                        entryColumn >= 0 &&
+                        trackColumn >= 0
+                ) {
                     "GMMP queue Track locator columns unavailable"
                 }
                 buildList {
                     while (cursor.moveToNext()) {
+                        if (cursor.getLong(trackColumn) != trackId) continue
                         add(
                             GmmpQueueTrackLocation(
                                 queuePosition = cursor.getInt(positionColumn),

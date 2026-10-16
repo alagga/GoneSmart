@@ -500,16 +500,16 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
-     * r36 zero-provider path. The selected row has already been proven by
-     * queue_id (including any r35 exact-path rebind). Remove source history,
-     * move that exact row to position 1 through a passively observed native
-     * position writer, then remove every source follower. No Track ID is
-     * rewritten and CLEAR_QUEUE remains forbidden.
+     * R54 zero-provider predecoder isolation. The naturally selected CURRENT
+     * row is already proven by queue_id and the request-local natural state
+     * writer. Preserve its absolute queue_position and playback state; remove
+     * only source history/followers around it. No predecoder state write or
+     * queue-position rewrite is permitted.
      */
     fun isolateTrackMixZeroPoolSeed(selectedTrackId: Long): Boolean {
         val resolved = resolve(requireDelete = true, requireStatePosition = true)
         val state = resolved.statePosition
-            ?: error("GMMP current-position writer unavailable")
+            ?: error("GMMP current-position reader unavailable")
         val current = resolved.context.items.singleOrNull {
             it.state == QueueItemState.CURRENT
         } ?: error("Track Mix Current queue entry unavailable")
@@ -533,72 +533,27 @@ internal class GmmpQueueMutationBridge(
         val rowsById = resolved.rows.associateBy {
             number(resolved.queueId, it).toLong()
         }
-        val currentRow = rowsById[plan.currentEntryId]
-            ?: error("Pinned Track Mix row disappeared")
         val delete = resolved.delete
             ?: error("Verified GMMP Queue DAO delete unavailable")
         val modelClass = resolved.rows.first().javaClass
-
-        fun deleteEntries(ids: List<Long>) {
-            if (ids.isEmpty()) return
-            val rows = ids.map { id ->
+        val staleIds = plan.pastEntryIds + plan.futureEntryIds
+        if (staleIds.isNotEmpty()) {
+            val staleRows = staleIds.map { id ->
                 rowsById[id] ?: error("Verified Track Mix row disappeared")
             }
             delete.invoke(
                 resolved.dao,
-                typedEntityArray(modelClass, rows)
+                typedEntityArray(modelClass, staleRows)
             )
         }
 
-        // Free position 1 while CURRENT still points at its original row.
-        deleteEntries(plan.pastEntryIds)
-        val originalPosition = plan.currentPosition
-        try {
-            if (originalPosition != 1) {
-                setInt(resolved.position, currentRow, 1)
-                resolved.update.invoke(
-                    resolved.dao,
-                    arrayListOf(currentRow)
-                )
-                state.write(1)
-            }
-
-            val moved = GmmpQueueReader().read(
-                autoDj,
-                state.read(),
-                plan.currentEntryId
-            ) ?: error("Zero-pool seed move verification unavailable")
-            val movedCurrent = moved.items.singleOrNull {
-                it.state == QueueItemState.CURRENT
-            } ?: error("Zero-pool Current disappeared after rebase")
-            check(
-                movedCurrent.queueEntryId == plan.currentEntryId &&
-                    movedCurrent.track.id == selectedTrackId &&
-                    movedCurrent.queuePosition == 1 &&
-                    moved.currentQueuePosition == 1
-            ) {
-                "Zero-pool Current rebase failed verification"
-            }
-        } catch (failure: Throwable) {
-            runCatching {
-                if (originalPosition != 1) {
-                    setInt(resolved.position, currentRow, originalPosition)
-                    resolved.update.invoke(
-                        resolved.dao,
-                        arrayListOf(currentRow)
-                    )
-                    state.write(originalPosition)
-                }
-            }.onFailure { rollback ->
-                failure.addSuppressed(rollback)
-            }
-            throw failure
+        val readback = state.read()
+        check(readback == plan.currentPosition) {
+            "Natural Current position changed during zero-pool isolation"
         }
-
-        deleteEntries(plan.futureEntryIds)
         val verified = GmmpQueueReader().read(
             autoDj,
-            state.read(),
+            readback,
             plan.currentEntryId
         ) ?: error("Zero-pool seed isolation verification unavailable")
         val only = verified.items.singleOrNull()
@@ -606,18 +561,19 @@ internal class GmmpQueueMutationBridge(
         check(
             only.queueEntryId == plan.currentEntryId &&
                 only.track.id == selectedTrackId &&
-                only.queuePosition == 1 &&
-                verified.currentQueuePosition == 1 &&
+                only.queuePosition == plan.currentPosition &&
+                verified.currentQueuePosition == plan.currentPosition &&
                 only.state == QueueItemState.CURRENT
         ) {
-            "Zero-pool seed isolation did not preserve exact Current"
+            "Zero-pool seed isolation did not preserve exact anchored Current"
         }
         Log.i(
             TAG,
             "TRACK MIX ZERO-POOL SEED | verified=true" +
                 " | currentEntry=" + plan.currentEntryId +
-                " | oldPosition=" + originalPosition +
-                " | newPosition=1" +
+                " | oldPosition=" + plan.currentPosition +
+                " | newPosition=" + plan.currentPosition +
+                " | anchored=true | stateWrite=false" +
                 " | deletedPast=" + plan.pastEntryIds.size +
                 " | deletedSourceUpcoming=" + plan.futureEntryIds.size
         )
@@ -625,9 +581,10 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
-     * Native qr.z owns the replacement Track IDs. Before refreshing GMMP's
-     * next AudioSource, compact only their queue_position values to 1..N and
-     * independently verify the exact pinned Current remains position 1.
+     * Settled zero-pool cleanup only. Native qr.z owns the fallback Track IDs;
+     * after playback/source materialization is already proven, compact their
+     * queue_position values to 1..N and move the native state pointer with a
+     * verified writer. This method must never run on the predecoder boundary.
      */
     fun rebaseTrackMixZeroPoolInitialQueue(
         selectedTrackId: Long,

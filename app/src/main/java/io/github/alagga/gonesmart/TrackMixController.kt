@@ -1589,41 +1589,17 @@ internal class TrackMixController(
 
             val initial = request.prePlayInitialSize.coerceAtLeast(1)
             val refillCount = (initial - 1).coerceAtLeast(0)
+            check(position <= Int.MAX_VALUE - refillCount) {
+                "Zero-pool Current anchor cannot fit Initial Size"
+            }
 
-            // Reuse the already-established explicit Initial Size fill. The
-            // native hook therefore bypasses GoneSmart provider waiting and
-            // lets GMMP choose the fallback tracks, matching the working 4.2.0
-            // zero-provider contract.
+            // Preserve GMMP's natural absolute Current coordinate. Native
+            // Auto-DJ owns the replacement identities and must append them as
+            // CURRENT+1..CURRENT+N before the caller can materialize next.
             request.stage = "FILLING"
             request.transitionalRefillSuppressed = false
             check(requestHeldNativeRefill(refillCount)) {
                 "GMMP rejected zero-pool native Initial Size refill"
-            }
-
-            val afterRefill = queueReader.read(
-                autoDj,
-                currentWriter.read(),
-                current.queueEntryId
-            )
-            check(
-                afterRefill != null &&
-                    afterRefill.currentItem?.queueEntryId == current.queueEntryId &&
-                    afterRefill.currentItem?.track?.id == target.id &&
-                    afterRefill.items.size == initial
-            ) {
-                "Native zero-pool refill did not preserve the selected seed and Initial Size"
-            }
-
-            val compact = GmmpQueueMutationBridge(
-                autoDj = autoDj,
-                verifiedPositionWriter = currentWriter,
-                currentQueueEntryIdHint = current.queueEntryId
-            ).rebaseTrackMixZeroPoolInitialQueue(
-                selectedTrackId = target.id,
-                expectedSize = initial
-            )
-            check(compact) {
-                "Could not compact native zero-pool Initial Size before decode"
             }
 
             val verified = queueReader.read(
@@ -1631,25 +1607,24 @@ internal class TrackMixController(
                 currentWriter.read(),
                 current.queueEntryId
             )
+            val orderedVerified = verified?.items?.sortedBy { it.queuePosition }.orEmpty()
+            val expectedPositions = (position until (position + initial)).toList()
             check(
                 verified != null &&
-                    verified.currentQueuePosition == 1 &&
+                    verified.currentQueuePosition == position &&
                     verified.currentItem?.queueEntryId == current.queueEntryId &&
                     verified.currentItem?.track?.id == target.id &&
                     verified.items.size == initial &&
-                    verified.items.map { it.queuePosition }.sorted() ==
-                        (1..initial).toList()
+                    orderedVerified.map { it.queuePosition } == expectedPositions &&
+                    orderedVerified.firstOrNull()?.queueEntryId == current.queueEntryId
             ) {
-                "Zero-pool queue was not compact and decoder-ready"
+                "Native zero-pool refill did not preserve the anchored Current and contiguous Initial Size"
             }
 
-            // Persist the exact native fallback identities that GMMP itself
-            // selected before current+1 is materialized. R50 uses the first
-            // identity to protect the natural CURRENT+1 source boundary before
-            // GMMP decodes it; R48's later queue repair may restore only these
-            // same IDs after the full Smart-source rebuild finishes.
-            val verifiedQueue = checkNotNull(verified)
-            val orderedVerified = verifiedQueue.items.sortedBy { it.queuePosition }
+            // Persist exactly the identities GMMP chose at the natural anchor.
+            // No predecoder rebase/state write occurs. R50 protects the first
+            // follower at anchor+1; R51 may carry all followers through a late
+            // source rebuild. Settled cleanup may rebase to 1..N afterwards.
             val nativeFallbackTrackIds = orderedVerified.drop(1).map { it.track.id }
             val expectedTrackIds = TrackMixZeroPoolPolicy.expectedRestoredTrackIds(
                 selectedTrackId = target.id,
@@ -1664,7 +1639,7 @@ internal class TrackMixController(
                 "Verified native Queue DAO source-batch hooks are unavailable"
             }
 
-            request.provisionalCurrentQueuePosition = 1
+            request.provisionalCurrentQueuePosition = position
             request.zeroPoolBoundaryPrepared = true
             request.stage = "WAIT_PLAY"
             if (activePendingController?.get() === this) {
@@ -1674,7 +1649,8 @@ internal class TrackMixController(
                 TAG,
                 "MIX ZERO-POOL BOUNDARY | verified=true | beforeDecoder=true | " +
                     "seed=${target.id} | initial=$initial | nativeGenerated=$refillCount | " +
-                    "oldCurrentPosition=$position | currentPosition=1"
+                    "oldCurrentPosition=$position | currentPosition=$position | " +
+                    "anchored=true | stateWrite=false"
             )
         } catch (failure: Throwable) {
             request.stage = "WAIT_PLAY"
@@ -1761,22 +1737,51 @@ internal class TrackMixController(
             Log.e(TAG, "MIX ZERO-POOL | pre-decoder native fallback identity unavailable", it)
         }.getOrNull() ?: return null
 
-        fun verifiedSnapshot(entryId: Long): Snapshot? =
+        fun exactSnapshot(entryId: Long): Snapshot? =
             queueSnapshot(entryId)?.takeIf { snapshot ->
                 snapshot.currentId == selectedId &&
                     snapshot.currentIndex == 0 &&
-                    snapshot.currentQueuePosition == 1 &&
                     snapshot.ids == expectedTrackIds
             }
 
-        var filled = verifiedSnapshot(selectedEntryId)
+        fun finalSnapshot(entryId: Long): Snapshot? =
+            exactSnapshot(entryId)?.takeIf { snapshot ->
+                snapshot.currentQueuePosition == 1
+            }
+
+        val observed = queueSnapshot(selectedEntryId)
+        var filled = finalSnapshot(selectedEntryId)
         if (filled == null) {
-            // GMMP 4.2.1 may finish the original Smart-Playlist source Play
-            // after R46 already built the native five-row fallback queue. R50
-            // protects CURRENT+1 at the natural MusicService boundary before
-            // decoder materialization. Once the full source rebuild settles,
-            // restore the visible/database queue to those same predecode IDs.
-            if (selectedQueuePosition <= 0) {
+            val intactAnchoredFallback = observed?.takeIf { snapshot ->
+                snapshot.currentId == selectedId &&
+                    snapshot.currentIndex == 0 &&
+                    snapshot.ids == expectedTrackIds &&
+                    snapshot.currentQueuePosition != null &&
+                    snapshot.currentQueuePosition > 0
+            }
+            val sourceRebuild = intactAnchoredFallback == null
+
+            // Playback evidence must be complete before any settled database
+            // cleanup. A missing guard is a fail-closed no-op, not permission
+            // to prune/rewrite the currently playing native source queue.
+            if (!request.zeroPoolNextSourceGuardApplied) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | natural CURRENT+1 guard was not verified before decoder materialization"
+                )
+                return null
+            }
+            if (sourceRebuild && !request.zeroPoolSourceBatchGuardApplied) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL RESTORE | rebuilt native source batch was not guarded before materialization"
+                )
+                return null
+            }
+
+            val cleanupPosition = intactAnchoredFallback?.currentQueuePosition
+                ?: selectedQueuePosition
+            if (cleanupPosition == null || cleanupPosition <= 0) {
                 Log.e(TAG, "MIX ZERO-POOL RESTORE | rebuilt Current position unavailable")
                 return null
             }
@@ -1786,12 +1791,12 @@ internal class TrackMixController(
             }
             val currentWriter = nativeTrackMixPositionWriterProvider(
                 autoDj,
-                selectedQueuePosition
+                cleanupPosition
             ) ?: run {
                 Log.e(
                     TAG,
                     "MIX ZERO-POOL RESTORE | verified rebuilt Current writer unavailable | " +
-                        "currentPosition=$selectedQueuePosition"
+                        "currentPosition=$cleanupPosition"
                 )
                 return null
             }
@@ -1803,14 +1808,16 @@ internal class TrackMixController(
                     verifiedPositionWriter = currentWriter,
                     currentQueueEntryIdHint = selectedEntryId
                 )
-                check(
-                    bridge.retargetTrackMixUpcoming(
-                        selectedTrackId = selectedId,
-                        smartTrackIds = request.zeroPoolNativeFallbackTrackIds,
-                        targetQueueSize = initial
-                    )
-                ) {
-                    "Could not restore the pre-decoder native fallback IDs"
+                if (sourceRebuild) {
+                    check(
+                        bridge.retargetTrackMixUpcoming(
+                            selectedTrackId = selectedId,
+                            smartTrackIds = request.zeroPoolNativeFallbackTrackIds,
+                            targetQueueSize = initial
+                        )
+                    ) {
+                        "Could not restore the pre-decoder native fallback IDs"
+                    }
                 }
                 check(
                     bridge.rebaseTrackMixZeroPoolInitialQueue(
@@ -1818,13 +1825,13 @@ internal class TrackMixController(
                         expectedSize = initial
                     )
                 ) {
-                    "Could not compact the restored native fallback queue"
+                    "Could not compact the settled native fallback queue"
                 }
                 true
             }.onFailure {
                 Log.e(
                     TAG,
-                    "MIX ZERO-POOL RESTORE | identity-preserving source rebuild repair failed",
+                    "MIX ZERO-POOL RESTORE | identity-preserving settled cleanup failed",
                     it
                 )
             }.getOrDefault(false)
@@ -1832,7 +1839,7 @@ internal class TrackMixController(
 
             request.verifiedCurrentQueueEntryId = selectedEntryId
             request.provisionalCurrentQueuePosition = 1
-            filled = verifiedSnapshot(selectedEntryId)
+            filled = finalSnapshot(selectedEntryId)
             if (filled == null) {
                 Log.e(
                     TAG,
@@ -1842,37 +1849,23 @@ internal class TrackMixController(
             }
             Log.i(
                 TAG,
-                "MIX ZERO-POOL RESTORE | verified=true | sourceRebuild=true | " +
-                    "queueIdentityRestored=true | oldCurrentPosition=$selectedQueuePosition | " +
+                "MIX ZERO-POOL RESTORE | verified=true | sourceRebuild=$sourceRebuild | " +
+                    "queueIdentityRestored=true | oldCurrentPosition=$cleanupPosition | " +
                     "currentPosition=1 | nativeFallback=" +
                     request.zeroPoolNativeFallbackTrackIds.joinToString(",")
             )
-
-            if (!request.zeroPoolNextSourceGuardApplied) {
-                Log.e(
-                    TAG,
-                    "MIX ZERO-POOL RESTORE | natural CURRENT+1 guard was not verified before decoder materialization"
-                )
-                return null
-            }
-            if (!request.zeroPoolSourceBatchGuardApplied) {
-                Log.e(
-                    TAG,
-                    "MIX ZERO-POOL RESTORE | rebuilt native source batch was not guarded before materialization"
-                )
-                return null
-            }
             Log.i(
                 TAG,
                 "MIX ZERO-POOL RESTORE PLAYBACK | preSourceGuard=true | " +
-                    "sourceBatchGuard=true | position=2 | track=${expectedTrackIds[1]}"
+                    "sourceBatchGuard=" + request.zeroPoolSourceBatchGuardApplied +
+                    " | position=2 | track=${expectedTrackIds[1]}"
             )
         }
 
-        // Initial fallback tracks already came from GMMP's own qr.z at the
-        // natural CURRENT boundary. R50 protects the same Track 2 at GMMP's
-        // naturally observed CURRENT+1 call before the original method queries
-        // and decodes it. The later queue restore changes no playback identity.
+        // Initial fallback tracks came from GMMP's own native Auto-DJ fill at
+        // the natural Current anchor. Settled cleanup above changes no Track
+        // identity; it only normalizes the visible/database queue after the
+        // decoder/source guards have already been proven.
         armManagedAutoDjSession()
         request.stage = "FILLING"
         request.transitionalRefillSuppressed = false

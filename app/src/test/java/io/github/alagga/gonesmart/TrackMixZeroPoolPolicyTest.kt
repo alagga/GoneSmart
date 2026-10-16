@@ -183,7 +183,18 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `natural source guard refuses anything except rebased current plus one`() {
+    fun `natural source guard accepts anchored absolute current plus one`() {
+        val plan = TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
+            currentQueuePosition = 6,
+            observedArgument = 7,
+            nativeFallbackTrackIds = listOf(10106L, 653L)
+        )
+        assertEquals(7, plan.nextQueuePosition)
+        assertEquals(10106L, plan.expectedTrackId)
+    }
+
+    @Test
+    fun `natural source guard refuses non current plus one or invalid current`() {
         assertThrows(IllegalArgumentException::class.java) {
             TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
                 currentQueuePosition = 1,
@@ -193,8 +204,8 @@ class TrackMixZeroPoolPolicyTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
-                currentQueuePosition = 6,
-                observedArgument = 7,
+                currentQueuePosition = 0,
+                observedArgument = 1,
                 nativeFallbackTrackIds = listOf(10106L)
             )
         }

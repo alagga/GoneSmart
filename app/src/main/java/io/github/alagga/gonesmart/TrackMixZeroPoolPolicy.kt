@@ -150,8 +150,8 @@ internal object TrackMixZeroPoolPolicy {
         observedArgument: Int,
         nativeFallbackTrackIds: List<Long>
     ): NaturalNextSourceGuardPlan {
-        require(currentQueuePosition == 1) {
-            "Zero-pool Current must be rebased to queue position 1"
+        require(currentQueuePosition > 0 && currentQueuePosition < Int.MAX_VALUE) {
+            "Zero-pool Current queue position must be positive and incrementable"
         }
         require(observedArgument == currentQueuePosition + 1) {
             "Observed source command is not CURRENT+1"
