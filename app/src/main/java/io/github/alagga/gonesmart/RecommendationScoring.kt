@@ -2,6 +2,7 @@ package io.github.alagga.gonesmart
 
 import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 internal object RecommendationScoring {
@@ -18,19 +19,34 @@ internal object RecommendationScoring {
 
 internal object PlaylistAffinityScoring {
     private const val REFERENCE_PLAYLIST_SIZE = 25.0
-    private const val MIN_PLAYLIST_WEIGHT = 0.08
+    private const val BALANCED_MIN_PLAYLIST_WEIGHT = 0.08
+    private const val STRONG_MIN_PLAYLIST_WEIGHT = 0.03
     private const val MAX_SCORE = 0.95
 
-    fun playlistWeight(playlistSize: Int): Double {
+    fun playlistWeight(
+        playlistSize: Int,
+        weighting: PlaylistSizeWeighting = PlaylistSizeWeighting.BALANCED
+    ): Double {
         if (playlistSize <= 1) return 0.0
+        if (weighting == PlaylistSizeWeighting.OFF) return 1.0
+
         val denominator = max(REFERENCE_PLAYLIST_SIZE, playlistSize.toDouble())
-        return sqrt(REFERENCE_PLAYLIST_SIZE / denominator)
-            .coerceAtLeast(MIN_PLAYLIST_WEIGHT)
+        val ratio = REFERENCE_PLAYLIST_SIZE / denominator
+        return when (weighting) {
+            PlaylistSizeWeighting.OFF -> 1.0
+            PlaylistSizeWeighting.BALANCED ->
+                sqrt(ratio).coerceAtLeast(BALANCED_MIN_PLAYLIST_WEIGHT)
+            PlaylistSizeWeighting.STRONG ->
+                ratio.pow(0.75).coerceAtLeast(STRONG_MIN_PLAYLIST_WEIGHT)
+        }
     }
 
-    fun score(sharedPlaylistSizes: Collection<Int>): Double {
+    fun score(
+        sharedPlaylistSizes: Collection<Int>,
+        weighting: PlaylistSizeWeighting = PlaylistSizeWeighting.BALANCED
+    ): Double {
         if (sharedPlaylistSizes.isEmpty()) return 0.0
-        val evidence = sharedPlaylistSizes.sumOf(::playlistWeight)
+        val evidence = sharedPlaylistSizes.sumOf { playlistWeight(it, weighting) }
         if (evidence <= 0.0) return 0.0
 
         // Saturating evidence: one focused playlist is useful, multiple
