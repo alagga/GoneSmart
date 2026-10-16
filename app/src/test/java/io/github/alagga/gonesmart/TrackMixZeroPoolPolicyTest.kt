@@ -305,4 +305,24 @@ class TrackMixZeroPoolPolicyTest {
             TrackMixZeroPoolPolicy.rebasePlan(entries, 21, 2)
         }
     }
+
+    @Test
+    fun `native refill boundary tops device observed three followers to initial five`() {
+        val plan = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 3)
+        assertNotNull(plan)
+        assertEquals(1, plan?.topUpCount)
+    }
+
+    @Test
+    fun `queue boundary requests all followers when no natural refill happened`() {
+        val plan = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 0)
+        assertNotNull(plan)
+        assertEquals(4, plan?.topUpCount)
+    }
+
+    @Test
+    fun `native refill boundary rejects overfill`() {
+        assertNull(TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 5))
+    }
+
 }
