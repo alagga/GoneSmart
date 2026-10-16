@@ -17,6 +17,19 @@ Changes made directly in GMMP while **Standard** is active become the new Standa
 
 Disabling a Bluetooth override returns that section to Standard without deleting the dormant custom values. Resetting a Bluetooth profile removes its dormant values as well.
 
+### Route-transition lifecycle
+
+The intended runtime lifecycle is deliberately deterministic:
+
+1. With no Bluetooth output, GMMP's current managed Equalizer/Effects state is **Standard**. A native GMMP edit in this state updates Standard.
+2. When Bluetooth output A becomes active, GoneSmart restores Standard first and then applies only A's enabled overrides.
+3. A direct GMMP edit while A is active is allowed to affect the current session and GMMP may display that temporary value, but it does not modify Standard or A's stored profile.
+4. When output B becomes active, GoneSmart restores Standard first and then applies only B's enabled overrides. A's temporary session edits are therefore gone.
+5. When Bluetooth is disconnected, GoneSmart restores the complete Standard state.
+6. Reconnecting A later restores Standard plus A's saved overrides, not whatever temporary values happened to be visible during the previous A session.
+
+This means the values visible in GMMP while a Bluetooth overlay is active describe the **current live DSP state**; they are not automatically the new default.
+
 ## Native inherited state
 
 GoneSmart distinguishes two kinds of observed native state:
@@ -37,9 +50,15 @@ GoneSmart mirrors the current GMMP Equalizer model as one device-specific profil
 - `PRE`.
 - 32 Hz, 64 Hz, 128 Hz, 256 Hz, 512 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz and 16 kHz.
 
-`Custom` is a state, not a selectable preset. Selecting a named preset loads the native PRE and all ten band values that GoneSmart has passively observed for that GMMP preset. Manually moving PRE or any band changes the Bluetooth profile's preset label to `Custom`.
+`Custom` is a state, not a selectable preset. Selecting a named preset loads that preset's complete native PRE and ten-band shape. Manually moving PRE or any band changes the Bluetooth profile's preset label to `Custom`.
 
-A named preset whose curve has not yet been observed is never guessed. Preset snapshots are learned passively when GMMP itself loads a preset. Startup preset observation must preserve any already observed native PRE/band setter shape; only a real runtime preset change invalidates the previous shape before learning the new one.
+### Native preset catalog
+
+Named presets must not require the user to open every preset manually just so GoneSmart can learn it. GMMP has a native preset storage/restore system, so GoneSmart performs a bounded, read-only startup import of actual GMMP preset files. Historical GMMP versions stored saved presets under `gmmp/eq_preset`; the runtime also searches GMMP-owned current/private locations with semantic `eq_preset` / `equalizer_preset` names and matching packaged entries so a storage move does not become another hard-coded version dependency.
+
+A preset file is accepted only when it yields a complete ten-band shape plus PRE and every value is inside the supported native gain range. Text key/value, frequency/index keyed and strict compact 11-value layouts are supported, with a narrowly validated raw float/double fallback. Incomplete or ambiguous files fail closed. GoneSmart never generates a curve merely from a preset name.
+
+Imported preset curves are route-independent reference data (`native_preset.*`) and become immediately usable by Bluetooth profiles. Passive observation of GMMP's natural Equalizer setter calls remains a fallback for a preset format that cannot be parsed safely and for current live-state mirroring, but manual per-preset opening is not the primary discovery mechanism.
 
 ## Effects
 
@@ -66,9 +85,19 @@ Audio-profile preferences live in the dedicated `audio_profiles_v2` RemotePrefer
 - `value.<route-id>.<field-id>`: stored Bluetooth custom value.
 - `standard.<field-id>`: saved no-Bluetooth GMMP baseline.
 - `native.<field-id>`: last live passively observed GMMP value.
-- `native_preset.<preset-id>.<field-id>`: passively learned native PRE/band snapshot for one preset.
+- `native_preset.<preset-id>.<field-id>`: native PRE/band reference shape imported from GMMP or learned passively.
 
 The local route may contain stale v2 development keys from older builds, but runtime policy ignores local override markers; Standard itself is never an overlay.
+
+## GMMP hook compatibility contract
+
+Audio hooks follow the same compatibility rules as the rest of GoneSmart: **obfuscated R8 names are evidence, not semantic identity**.
+
+For GMMP 4.2.1, the previously observed Equalizer owner name and methods remain useful only as a tested fast path. Before that path is accepted at runtime, GoneSmart validates the semantic class shape: one PRE-like `void(double)` natural setter, one band-like `void(int,double)` setter, one enabled-like `void(boolean)` setter, the native gain-array state, and supporting Equalizer-state structure. If the tested class name changes, a bounded startup-only Dex scan searches GMMP implementation classes for the same structural contract and accepts only one unique highest-confidence candidate. Ambiguity fails closed.
+
+GoneSmart never invokes a candidate mutation merely to discover what it does. The resolved Equalizer methods are hooked passively and only natural GMMP calls are observed. The previous hard-coded read-only getter-name probe is not needed for normal preset discovery now that native preset files are imported directly. Accepted-version hot paths therefore avoid continuous reflection/scanning; structural fallback runs only when the validated fast path is unavailable.
+
+The native preference observer is keyed by stable semantic preference IDs rather than obfuscated implementation class names. Any future GMMP version that changes those IDs or the Equalizer state contract remains untested until the normal bounded compatibility workflow has re-established the mapping.
 
 ## GMMP 4.2.1 evidence
 
@@ -85,15 +114,17 @@ Device testing proves these native preference identities without GoneSmart mutat
 - Virtualizer: `dspSettings_virtualizerEnabled`, `dspSettings_virtualizerStrength`.
 - Amplifier: `dspSettings_loudnessEnabled`, `dspSettings_loudnessGain`.
 
-The proven runtime Equalizer observations for GMMP 4.2.1 are:
+The proven passive runtime Equalizer observations for GMMP 4.2.1 are:
 
-- `r61.r(double)` receives PRE.
-- `r61.z(int,double)` receives the ten band gains by index.
-- `r61.d(boolean)` receives the Equalizer enabled state.
+- a `void(double)` call on the resolved Equalizer state owner receives PRE;
+- a `void(int,double)` call receives the ten band gains by index;
+- a `void(boolean)` call receives the Equalizer enabled state.
 
-The same runtime class exposes `D()`, `F()`, `K(int)` and `N(int)`. They remain bounded read-only development candidates for completing a preset snapshot and are accepted only after semantic agreement with the proven setter observations/ranges.
+The accepted 4.2.1 build exposed these roles as `r61.r(double)`, `r61.z(int,double)` and `r61.d(boolean)`, but those names are retained as compatibility evidence only. Runtime hook ownership is resolved and validated structurally as described above.
 
 The 2026-10-16 crash log additionally proved that `getRemotePreferences(audio_profiles_v2)` is read-only inside the hooked GMMP process: calling `edit()` from native-value mirroring throws `UnsupportedOperationException: Read only implementation`. Native observation persistence therefore belongs exclusively to the companion process.
+
+The later 2026-10-16 device log proved a complete natural ten-band `Flat` initialization through the resolved PRE/band setter roles. That confirms passive shape capture works, but it also demonstrated why observation-only preset discovery is insufficient: without a native catalog import only the naturally loaded preset is immediately available.
 
 ## Native-first application contract
 
@@ -119,11 +150,13 @@ Before this feature can be considered complete:
 3. Standard must reflect native GMMP edits made while no Bluetooth output is active.
 4. Native edits made while Bluetooth is active must remain temporary and must not rewrite Standard or the saved Bluetooth profile.
 5. Equalizer inheritance must use Standard rather than a temporary live Bluetooth value.
-6. `Custom` must appear only after manual PRE/band editing; selecting a named preset must restore that preset label and its complete observed native PRE/band shape.
-7. Equalizer override must apply the complete profile through a proved native GMMP boundary, including preset/PRE/bands.
-8. Each Effects override must apply its complete native card as one unit.
-9. Switching outputs must restore Standard first and then apply only the destination's saved overrides.
-10. Missing native/Standard values must fail closed rather than becoming persisted suggested defaults.
-11. The GMMP process must never write GoneSmart RemotePreferences; cross-process observations are persisted by the companion only.
-12. The final accepted path must not retain broad preference probes, class inventories or polling.
-13. The normal Build workflow must pass on the exact feature-branch head before merge.
+6. Native preset files must be imported read-only when a complete curve can be proven; users must not be required to open every built-in preset manually.
+7. `Custom` must appear only after manual PRE/band editing; selecting a named preset must restore that preset label and its complete native PRE/band shape.
+8. Equalizer observation/apply boundaries must resolve semantically; tested obfuscated names may only be validated fast paths and ambiguous future mappings fail closed.
+9. Equalizer override must apply the complete profile through a proved native GMMP boundary, including preset/PRE/bands.
+10. Each Effects override must apply its complete native card as one unit.
+11. Switching outputs must restore Standard first and then apply only the destination's saved overrides.
+12. Missing native/Standard values must fail closed rather than becoming persisted suggested defaults.
+13. The GMMP process must never write GoneSmart RemotePreferences; cross-process observations are persisted by the companion only.
+14. The final accepted path must not retain broad preference probes, class inventories or polling.
+15. The normal Build workflow must pass on the exact feature-branch head before merge.
