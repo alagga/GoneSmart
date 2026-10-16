@@ -1640,11 +1640,19 @@ internal class TrackMixController(
             return false
         }
 
+        val replayExecution = when {
+            boundary.looper == null -> "direct-no-looper"
+            boundary.looper === Looper.myLooper() -> "same-looper"
+            else -> "observed-looper"
+        }
         val applied = runCatching {
             method.isAccessible = true
             val observedLooper = boundary.looper
-                ?: error("Observed native next-source boundary has no Looper")
-            if (observedLooper === Looper.myLooper()) {
+            if (observedLooper == null || observedLooper === Looper.myLooper()) {
+                // The proven GMMP call in 4.2.1 currently runs on a worker
+                // thread without a Looper. A missing Looper is therefore
+                // native evidence, not an error. Replay the same observed
+                // method synchronously rather than inventing a Handler thread.
                 method.invoke(service, nextPosition)
             } else {
                 val completion = java.util.concurrent.CountDownLatch(1)
@@ -1686,7 +1694,7 @@ internal class TrackMixController(
             "MIX NEXT SOURCE REFRESH | applied=$applied | command=" +
                 method.declaringClass.name + "." + method.name + "(int)" +
                 " | current=$currentQueuePosition | next=$nextPosition" +
-                " | nextTrack=$nextTrackId | execution=observed-looper" +
+                " | nextTrack=$nextTrackId | execution=$replayExecution" +
                 " | evidence=natural-current-plus-one"
         )
         return applied
