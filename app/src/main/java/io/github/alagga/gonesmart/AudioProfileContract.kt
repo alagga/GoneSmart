@@ -26,29 +26,31 @@ data class AudioProfileField(
     val suggestedDefault: String,
     val choices: List<String> = emptyList()
 ) {
-    fun normalize(raw: String): String? = when (valueType) {
-        AudioProfileValueType.BOOLEAN -> when (raw.trim().lowercase(Locale.US)) {
-            "true", "1", "on" -> "true"
-            "false", "0", "off" -> "false"
-            else -> null
-        }
+    fun normalize(raw: String): String? {
+        return when (valueType) {
+            AudioProfileValueType.BOOLEAN -> when (raw.trim().lowercase(Locale.US)) {
+                "true", "1", "on" -> "true"
+                "false", "0", "off" -> "false"
+                else -> null
+            }
 
-        AudioProfileValueType.NUMBER -> {
-            val parsed = raw.trim().replace(',', '.').toDoubleOrNull() ?: return null
-            val bounded = parsed
-                .let { value -> minimum?.let { value.coerceAtLeast(it) } ?: value }
-                .let { value -> maximum?.let { value.coerceAtMost(it) } ?: value }
-            val stepped = step
-                ?.takeIf { it > 0.0 }
-                ?.let { increment ->
-                    val origin = minimum ?: 0.0
-                    kotlin.math.round((bounded - origin) / increment) * increment + origin
-                }
-                ?: bounded
-            formatNumber(stepped)
-        }
+            AudioProfileValueType.NUMBER -> {
+                val parsed = raw.trim().replace(',', '.').toDoubleOrNull() ?: return null
+                val bounded = parsed
+                    .let { value -> minimum?.let { value.coerceAtLeast(it) } ?: value }
+                    .let { value -> maximum?.let { value.coerceAtMost(it) } ?: value }
+                val stepped = step
+                    ?.takeIf { it > 0.0 }
+                    ?.let { increment ->
+                        val origin = minimum ?: 0.0
+                        kotlin.math.round((bounded - origin) / increment) * increment + origin
+                    }
+                    ?: bounded
+                formatNumber(stepped)
+            }
 
-        AudioProfileValueType.CHOICE -> raw.trim().takeIf { it.isNotEmpty() }
+            AudioProfileValueType.CHOICE -> raw.trim().takeIf { it.isNotEmpty() }
+        }
     }
 
     companion object {
@@ -86,6 +88,7 @@ object GoneSmartAudioProfiles {
     const val GROUP = "audio_profiles_v2"
     const val LOCAL_ROUTE_ID = "local"
     const val LOCAL_ROUTE_LABEL = "No Bluetooth device"
+    const val CUSTOM_PRESET = "Custom"
 
     const val KEY_ACTIVE_ROUTE = "route.active"
     const val KEY_SCHEMA_VERSION = "schema.version"
@@ -95,13 +98,9 @@ object GoneSmartAudioProfiles {
     private const val OVERRIDE_PREFIX = "override."
     private const val VALUE_PREFIX = "value."
     private const val NATIVE_PREFIX = "native."
+    private const val NATIVE_PRESET_PREFIX = "native_preset."
 
-    /**
-     * GMMP historically ships genre/shape presets and also exposes Flat as the
-     * neutral selection. Custom user presets are supported by the UI as free
-     * names; this list is only a convenient suggestion list until native preset
-     * enumeration is wired to the proven GMMP boundary.
-     */
+    /** Built-in names exposed by GMMP. Custom is intentionally not a preset. */
     val presetSuggestions: List<String> = listOf(
         "Flat",
         "Rock",
@@ -121,6 +120,21 @@ object GoneSmartAudioProfiles {
         "Rap",
         "Metal"
     )
+
+    val equalizerBandFieldIds: List<String> = listOf(
+        "eq.band_32_db",
+        "eq.band_64_db",
+        "eq.band_128_db",
+        "eq.band_256_db",
+        "eq.band_512_db",
+        "eq.band_1000_db",
+        "eq.band_2000_db",
+        "eq.band_4000_db",
+        "eq.band_8000_db",
+        "eq.band_16000_db"
+    )
+
+    val equalizerShapeFieldIds: List<String> = listOf("eq.pre_db") + equalizerBandFieldIds
 
     private fun eqBand(frequency: Int, label: String) = AudioProfileField(
         id = "eq.band_${frequency}_db",
@@ -145,12 +159,12 @@ object GoneSmartAudioProfiles {
                 title = "Enabled",
                 subtitle = "Use the GMMP equalizer for this output.",
                 valueType = AudioProfileValueType.BOOLEAN,
-                suggestedDefault = "true"
+                suggestedDefault = "false"
             ),
             AudioProfileField(
                 id = "eq.preset",
                 title = "Preset",
-                subtitle = "Choose a GMMP preset or enter the name of a custom preset.",
+                subtitle = "Choose a native GMMP preset. Changing PRE or a band turns the profile into Custom.",
                 valueType = AudioProfileValueType.CHOICE,
                 suggestedDefault = "Flat",
                 choices = presetSuggestions
@@ -381,6 +395,8 @@ object GoneSmartAudioProfiles {
     fun group(id: String): AudioProfileGroup? = allGroups.firstOrNull { it.id == id }
     fun field(id: String): AudioProfileField? = allFields.firstOrNull { it.id == id }
 
+    fun isEqualizerShapeField(fieldId: String): Boolean = fieldId in equalizerShapeFieldIds
+
     fun overrideKey(routeId: String, groupId: String): String =
         "$OVERRIDE_PREFIX$routeId.$groupId"
 
@@ -388,6 +404,12 @@ object GoneSmartAudioProfiles {
         "$VALUE_PREFIX$routeId.$fieldId"
 
     fun nativeValueKey(fieldId: String): String = "$NATIVE_PREFIX$fieldId"
+
+    fun nativePresetValueKey(presetName: String, fieldId: String): String =
+        "$NATIVE_PRESET_PREFIX${presetStorageId(presetName)}.$fieldId"
+
+    fun nativePresetNameKey(presetName: String): String =
+        "$NATIVE_PRESET_PREFIX${presetStorageId(presetName)}.name"
 
     fun routeLabelKey(routeId: String): String = "$ROUTE_PREFIX$routeId.label"
     fun routeBluetoothKey(routeId: String): String = "$ROUTE_PREFIX$routeId.bluetooth"
@@ -414,7 +436,14 @@ object GoneSmartAudioProfiles {
         // user-visible product name is stable in the observed GMMP route flow,
         // so prefer it to keep one profile per physical output.
         val identity = normalizedLabel.ifBlank { "type=$type|address=$normalizedAddress" }
-        val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
-        return "bt_" + digest.take(10).joinToString("") { byte -> "%02x".format(byte) }
+        return "bt_" + sha256Token(identity)
+    }
+
+    private fun presetStorageId(presetName: String): String =
+        sha256Token(presetName.trim().lowercase(Locale.US))
+
+    private fun sha256Token(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.take(10).joinToString("") { byte -> "%02x".format(byte) }
     }
 }

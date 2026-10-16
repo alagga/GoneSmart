@@ -45,12 +45,27 @@ class AudioProfileContractTest {
     }
 
     @Test
-    fun presetFieldAcceptsBuiltInAndCustomNames() {
+    fun customIsAStateNotASelectablePreset() {
         val preset = GoneSmartAudioProfiles.field("eq.preset")!!
         assertTrue("Club" in preset.choices)
         assertTrue("Soft" in preset.choices)
         assertTrue("Live" in preset.choices)
-        assertEquals("My Car EQ", preset.normalize("  My Car EQ  "))
+        assertFalse(GoneSmartAudioProfiles.CUSTOM_PRESET in preset.choices)
+        assertTrue(GoneSmartAudioProfiles.isEqualizerShapeField("eq.pre_db"))
+        assertTrue(GoneSmartAudioProfiles.isEqualizerShapeField("eq.band_16000_db"))
+        assertFalse(GoneSmartAudioProfiles.isEqualizerShapeField("eq.enabled"))
+    }
+
+    @Test
+    fun nativePresetSnapshotKeysAreStableAndSeparated() {
+        val clubPre = GoneSmartAudioProfiles.nativePresetValueKey("Club", "eq.pre_db")
+        val clubBand = GoneSmartAudioProfiles.nativePresetValueKey("Club", "eq.band_32_db")
+        val softPre = GoneSmartAudioProfiles.nativePresetValueKey("Soft", "eq.pre_db")
+
+        assertEquals(clubPre, GoneSmartAudioProfiles.nativePresetValueKey(" club ", "eq.pre_db"))
+        assertNotEquals(clubPre, clubBand)
+        assertNotEquals(clubPre, softPre)
+        assertTrue(clubPre.startsWith("native_preset."))
     }
 
     @Test

@@ -44,6 +44,7 @@ class AudioProfilesActivity : AppCompatActivity() {
     private lateinit var equalizerTab: MaterialButton
     private lateinit var effectsTab: MaterialButton
 
+    private var equalizerPresetButton: MaterialButton? = null
     private var routeObserver: AudioRouteObserver? = null
     private var selectedRouteId = GoneSmartAudioProfiles.LOCAL_ROUTE_ID
     private var section = AudioProfileSection.EQUALIZER
@@ -190,6 +191,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun refreshAll() {
         if (!::contentHost.isInitialized) return
+        repository.synchronizeWithFramework()
         val routes = repository.routes()
         val selected = routes.firstOrNull { it.id == selectedRouteId }
             ?: routes.firstOrNull { it.active }
@@ -208,6 +210,7 @@ class AudioProfilesActivity : AppCompatActivity() {
     }
 
     private fun renderContent(route: AudioRouteProfile) {
+        equalizerPresetButton = null
         contentHost.removeAllViews()
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -216,11 +219,11 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         val overrideCount = repository.overrideCount(route.id)
         body.addView(infoCard(
-            if (overrideCount == 0) "Using GMMP defaults" else "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}",
+            if (overrideCount == 0) "Using current GMMP settings" else "$overrideCount custom ${if (overrideCount == 1) "section" else "sections"}",
             if (overrideCount == 0) {
-                "This output currently inherits every GMMP audio setting. Enable Override only for a complete Equalizer profile or an Effects card you want to replace."
+                "Inherited controls show the GMMP values GoneSmart has actually observed. Stored device-specific values stay hidden while their Override is off."
             } else {
-                "Everything without an active Override continues to follow GMMP's normal settings."
+                "Everything without an active Override follows GMMP's current settings. Dormant custom values never replace the inherited preview."
             }
         ))
         body.addView(verticalGap(14))
@@ -231,7 +234,7 @@ class AudioProfilesActivity : AppCompatActivity() {
                 body.addView(verticalGap(10))
                 body.addView(infoCard(
                     "Preset behavior",
-                    "Choose a GMMP preset as the base. Moving PRE or any band turns the stored Equalizer profile into Custom; the whole Equalizer still remains one device override."
+                    "Choosing a native GMMP preset loads its observed PRE and all ten band values. Moving PRE or any band immediately changes the label to Custom."
                 ))
             }
 
@@ -247,7 +250,7 @@ class AudioProfilesActivity : AppCompatActivity() {
         body.addView(resetButton(route))
         body.addView(verticalGap(12))
         body.addView(textView(
-            "The currently connected Bluetooth output is detected both inside GMMP and directly from the GoneSmart profile screen. Previously seen outputs remain selectable when disconnected.",
+            "The connected Bluetooth output is detected both inside GMMP and directly from this screen. Previously seen outputs remain selectable when disconnected.",
             12f,
             COLOR_MUTED
         ).apply { setPadding(dp(4), 0, dp(4), 0) })
@@ -260,6 +263,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun groupCard(routeId: String, group: AudioProfileGroup): View {
         val overridden = repository.isGroupOverridden(routeId, group.id)
+        val observedCount = repository.nativeObservedCount(group)
         val card = card()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -283,16 +287,28 @@ class AudioProfilesActivity : AppCompatActivity() {
             isChecked = overridden
             trackTintList = switchTrackTint()
             thumbTintList = switchThumbTint()
-            setOnCheckedChangeListener { _, enabled ->
-                repository.setGroupOverride(routeId, group.id, enabled)
-                refreshAll()
+            setOnCheckedChangeListener { button, enabled ->
+                val saved = repository.setGroupOverride(routeId, group.id, enabled)
+                if (!saved && enabled) {
+                    button.setOnCheckedChangeListener(null)
+                    button.isChecked = false
+                    refreshAll()
+                    showNativeValuesMissingDialog(group)
+                } else {
+                    refreshAll()
+                }
             }
         }
         titleRow.addView(overrideSwitch)
         content.addView(titleRow)
 
+        val inheritedStatus = if (observedCount == group.fields.size) {
+            "GMMP current • inherited"
+        } else {
+            "GMMP current • $observedCount/${group.fields.size} values observed"
+        }
         content.addView(textView(
-            if (overridden) "Custom for this output" else "GMMP default • inherited",
+            if (overridden) "Custom for this output" else inheritedStatus,
             12f,
             if (overridden) COLOR_ACCENT else COLOR_MUTED
         ).apply { setPadding(0, dp(10), 0, dp(8)) })
@@ -312,13 +328,14 @@ class AudioProfilesActivity : AppCompatActivity() {
         field: AudioProfileField,
         enabled: Boolean
     ): View {
-        val initial = repository.value(routeId, field.id)
-            ?: repository.nativeValue(field.id)
-            ?: field.suggestedDefault
+        val native = repository.nativeValue(field.id)
+        val custom = if (enabled) repository.value(routeId, field.id) else null
+        val initial = custom ?: native ?: field.suggestedDefault
+        val previewOnly = !enabled && native == null
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            alpha = if (enabled) 1f else 0.45f
+            alpha = if (enabled) 1f else 0.62f
             setPadding(0, dp(10), 0, dp(10))
 
             when (field.valueType) {
@@ -379,8 +396,10 @@ class AudioProfilesActivity : AppCompatActivity() {
                                 if (!fromUser || !isEnabled) return@addOnChangeListener
                                 val normalized = field.normalize(sliderValue.toString()) ?: return@addOnChangeListener
                                 repository.setValue(routeId, field.id, normalized)
-                                if (group.id == GoneSmartAudioProfiles.equalizerGroup.id && field.id != "eq.enabled") {
-                                    repository.setValue(routeId, "eq.preset", "Custom")
+                                if (group.id == GoneSmartAudioProfiles.equalizerGroup.id &&
+                                    GoneSmartAudioProfiles.isEqualizerShapeField(field.id)
+                                ) {
+                                    markEqualizerCustom(routeId)
                                 }
                                 valueText.text = displayValue(field, normalized)
                             }
@@ -403,6 +422,11 @@ class AudioProfilesActivity : AppCompatActivity() {
                                     if (normalized != null) {
                                         setText(normalized)
                                         repository.setValue(routeId, field.id, normalized)
+                                        if (group.id == GoneSmartAudioProfiles.equalizerGroup.id &&
+                                            GoneSmartAudioProfiles.isEqualizerShapeField(field.id)
+                                        ) {
+                                            markEqualizerCustom(routeId)
+                                        }
                                         valueText.text = displayValue(field, normalized)
                                     }
                                 }
@@ -416,7 +440,7 @@ class AudioProfilesActivity : AppCompatActivity() {
                     addView(textView(field.subtitle, 12f, COLOR_TEXT_SECONDARY).apply {
                         setPadding(0, dp(2), 0, dp(8))
                     })
-                    addView(MaterialButton(
+                    val button = MaterialButton(
                         this@AudioProfilesActivity,
                         null,
                         com.google.android.material.R.attr.materialButtonOutlinedStyle
@@ -431,29 +455,50 @@ class AudioProfilesActivity : AppCompatActivity() {
                         insetTop = 0
                         insetBottom = 0
                         isEnabled = enabled
-                        setOnClickListener {
-                            showChoiceDialog(routeId, field, initial)
-                        }
-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
+                        setOnClickListener { showChoiceDialog(routeId, field) }
+                    }
+                    if (field.id == "eq.preset") equalizerPresetButton = button
+                    addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
                 }
+            }
+
+            if (previewOnly) {
+                addView(textView(
+                    "GMMP value not observed yet • preview only",
+                    11.5f,
+                    COLOR_MUTED
+                ).apply { setPadding(0, dp(4), 0, 0) })
             }
         }
     }
 
-    private fun showChoiceDialog(routeId: String, field: AudioProfileField, current: String) {
-        val customLabel = "Custom preset name…"
-        val items = (field.choices + current)
-            .filter { it.isNotBlank() }
+    private fun markEqualizerCustom(routeId: String) {
+        val current = repository.value(routeId, "eq.preset")
+        if (current != GoneSmartAudioProfiles.CUSTOM_PRESET) {
+            repository.setValue(routeId, "eq.preset", GoneSmartAudioProfiles.CUSTOM_PRESET)
+        }
+        equalizerPresetButton?.text = "${GoneSmartAudioProfiles.CUSTOM_PRESET}  ▾"
+    }
+
+    private fun showChoiceDialog(routeId: String, field: AudioProfileField) {
+        val current = repository.value(routeId, field.id)
+            ?: repository.nativeValue(field.id)
+            ?: field.suggestedDefault
+        val items = (field.choices + listOf(current))
+            .filter { it.isNotBlank() && it != GoneSmartAudioProfiles.CUSTOM_PRESET }
             .distinct()
-            .plus(customLabel)
             .toTypedArray()
 
         AlertDialog.Builder(this)
             .setTitle(field.title)
             .setItems(items) { _, which ->
                 val selected = items[which]
-                if (selected == customLabel) {
-                    showCustomChoiceDialog(routeId, field, current)
+                if (field.id == "eq.preset") {
+                    if (repository.applyEqualizerPreset(routeId, selected)) {
+                        refreshAll()
+                    } else {
+                        showPresetNotObservedDialog(selected)
+                    }
                 } else {
                     repository.setValue(routeId, field.id, selected)
                     refreshAll()
@@ -463,31 +508,25 @@ class AudioProfilesActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showCustomChoiceDialog(routeId: String, field: AudioProfileField, current: String) {
-        val input = EditText(this).apply {
-            setText(if (current == "Custom") "" else current)
-            setSelectAllOnFocus(true)
-            setTextColor(COLOR_TEXT)
-            setHintTextColor(COLOR_MUTED)
-            hint = "Preset name"
-        }
-        val wrapper = FrameLayout(this).apply {
-            setPadding(dp(24), dp(4), dp(24), 0)
-            addView(input, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ))
-        }
+    private fun showPresetNotObservedDialog(preset: String) {
         AlertDialog.Builder(this)
-            .setTitle("Custom GMMP preset")
-            .setView(wrapper)
-            .setPositiveButton("Use") { _, _ ->
-                field.normalize(input.text.toString())?.let {
-                    repository.setValue(routeId, field.id, it)
-                    refreshAll()
-                }
-            }
-            .setNegativeButton("Cancel", null)
+            .setTitle("Preset values not observed yet")
+            .setMessage(
+                "GoneSmart knows the preset name '$preset', but it has not yet seen GMMP load that preset's PRE and band values. " +
+                    "The current sliders are left unchanged instead of guessing the curve."
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun showNativeValuesMissingDialog(group: AudioProfileGroup) {
+        AlertDialog.Builder(this)
+            .setTitle("GMMP values not ready yet")
+            .setMessage(
+                "GoneSmart has not yet observed every current GMMP value needed for ${group.title}. " +
+                    "The override was not enabled, so no guessed defaults can replace your real GMMP settings."
+            )
+            .setPositiveButton("OK", null)
             .show()
     }
 
@@ -521,7 +560,7 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun resetButton(route: AudioRouteProfile): MaterialButton =
         MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-            text = "Reset this profile to GMMP defaults"
+            text = "Reset this profile to current GMMP settings"
             textSize = 14f
             setTextColor(COLOR_RED)
             strokeColor = ColorStateList.valueOf(withAlpha(COLOR_RED, 0.65f))
@@ -535,7 +574,7 @@ class AudioProfilesActivity : AppCompatActivity() {
             setOnClickListener {
                 AlertDialog.Builder(this@AudioProfilesActivity)
                     .setTitle("Reset ${route.label}?")
-                    .setMessage("All device-specific audio overrides for this output will be removed. GMMP's normal settings are not changed.")
+                    .setMessage("All device-specific audio overrides for this output will be removed. GMMP's own settings are not changed.")
                     .setPositiveButton("Reset") { _, _ ->
                         repository.clearRouteOverrides(route.id)
                         refreshAll()
