@@ -307,6 +307,22 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `natural current plus one can bootstrap initial size when natural refill was absent`() {
+        val boundary = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
+            currentQueuePosition = 1,
+            candidates = listOf(
+                TrackMixZeroPoolPolicy.PositionCommandCandidate("next", 2, 100)
+            )
+        )
+        assertEquals("next", boundary.key)
+        assertEquals(1, boundary.matchCount)
+
+        val refill = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 0)
+        assertNotNull(refill)
+        assertEquals(4, refill?.topUpCount)
+    }
+
+    @Test
     fun `native refill boundary tops device observed three followers to initial five`() {
         val plan = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 3)
         assertNotNull(plan)

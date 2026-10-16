@@ -542,7 +542,6 @@ internal class TrackMixController(
         key: String
     ) {
         if (request.zeroPoolNextSourceGuardAttempted) return
-        if (!request.zeroPoolBoundaryPrepared) return
         if (request.prePlayPrepared.trackIds.isNotEmpty()) return
         if (request.stage != "WAIT_PLAY") return
         if (request.prePlayTarget == null) return
@@ -550,6 +549,41 @@ internal class TrackMixController(
         if (request.nextSourceBoundaryAmbiguous || boundary.key != key) return
         if (boundary.service.get() !== service || boundary.method != method) return
         val autoDj = nativeAutoDj?.get() ?: return
+
+        // R62: GMMP does not deterministically issue a natural qr.z refill
+        // before its first current+1 lookup. If that unique, already-proven
+        // predecoder lookup arrives first, reuse the exact R60 seed-isolation
+        // and native-fill sequence with a zero original refill count. This is
+        // still before the original MusicService lookup/decoder creation; no
+        // playback method is replayed after materialization.
+        if (!request.zeroPoolBoundaryPrepared) {
+            val fallbackBoundary = prepareZeroPoolAtNativeRefill(
+                autoDj = autoDj,
+                requestedTracks = 0
+            ) ?: run {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL NEXT SOURCE PREPARE | " +
+                        "predecoder Initial Size boundary unavailable; fail closed"
+                )
+                return
+            }
+            if (!completeZeroPoolAtNativeRefill(autoDj, fallbackBoundary)) {
+                Log.e(
+                    TAG,
+                    "MIX ZERO-POOL NEXT SOURCE PREPARE | " +
+                        "native Initial Size preparation failed; fail closed"
+                )
+                return
+            }
+            Log.i(
+                TAG,
+                "MIX ZERO-POOL NEXT SOURCE PREPARE | verified=true | " +
+                    "beforeOriginal=true | source=natural-current-plus-one | " +
+                    "originalRequested=0 | nativeRequested=${fallbackBoundary.topUpCount}"
+            )
+        }
+
         val currentPosition = request.provisionalCurrentQueuePosition ?: return
         val plan = runCatching {
             TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
@@ -785,10 +819,15 @@ internal class TrackMixController(
             request.provisionalCurrentQueuePosition = boundary.currentPosition
             request.zeroPoolBoundaryPrepared = true
             request.stage = "WAIT_PLAY"
+            val boundarySource = if (boundary.originalRequested == 0) {
+                "natural-current-plus-one-fallback"
+            } else {
+                "natural-native-refill"
+            }
             Log.i(
                 TAG,
                 "MIX ZERO-POOL BOUNDARY | verified=true | beforeDecoder=true" +
-                    " | source=natural-native-refill | seed=${boundary.selectedTrackId}" +
+                    " | source=$boundarySource | seed=${boundary.selectedTrackId}" +
                     " | initial=${boundary.initialSize}" +
                     " | nativeGenerated=${nativeFallbackTrackIds.size}" +
                     " | currentPosition=${boundary.currentPosition}" +
@@ -1101,7 +1140,7 @@ internal class TrackMixController(
                         Log.i(
                             TAG,
                             "MIX PREPLAY FALLBACK | no GoneSmart matches; " +
-                                "awaiting native qr.z predecoder boundary"
+                                "awaiting native qr.z or current+1 predecoder boundary"
                         )
                     }
                 } else {
