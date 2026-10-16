@@ -15,12 +15,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Applies the active GoneSmart audio profile through GMMP's own proven state
- * boundaries. Effects and Equalizer enabled/preset use the same native GMMP
- * SharedPreferences keys written by GMMP's UI. PRE/bands use the semantically
- * resolved live Equalizer setters already proved by natural GMMP calls.
+ * boundaries. Effects and Equalizer metadata use the same native GMMP
+ * SharedPreferences keys written by GMMP's UI. PRE/bands/enabled use the
+ * semantically resolved live Equalizer setters proved by natural GMMP calls.
  *
- * No DSP implementation is duplicated here. If a native boundary cannot be
- * resolved uniquely, that part of the profile fails closed.
+ * No DSP implementation is duplicated here. If a native boundary or the
+ * Standard baseline is incomplete, that part of the profile fails closed.
  */
 class GoneSmartAudioProfileApplyModule : XposedModule() {
 
@@ -77,6 +77,9 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
     @Volatile
     private var eqBandSetter: Method? = null
+
+    @Volatile
+    private var eqEnabledSetter: Method? = null
 
     @Volatile
     private var lastAppliedEqFingerprint: String? = null
@@ -137,10 +140,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         method.invoke(null) as? Application
     }.getOrNull()
 
-    /**
-     * Resolve GMMP's settings store from the semantic audio keys it actually
-     * contains. The file name itself is not part of the contract.
-     */
+    /** Resolve GMMP's settings store from the semantic audio keys it contains. */
     private fun resolveNativePreferenceStore(application: Application): SharedPreferences? {
         val directory = File(application.applicationInfo.dataDir, "shared_prefs")
         val candidates = directory.listFiles { file -> file.isFile && file.name.endsWith(".xml") }
@@ -182,9 +182,6 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val interruptedOverlay = runtimePreferences?.getBoolean(KEY_OVERLAY_ACTIVE, false) == true
 
         if (firstObservation && standard && !interruptedOverlay) {
-            // Standard is authoritative when the process starts normally with no
-            // Bluetooth route. Do not overwrite native GMMP state before the
-            // observation module has mirrored any legitimate offline edits.
             Log.i(TAG, "PROFILE APPLY SKIP | route=${route.id} | initial Standard is authoritative")
             return
         }
@@ -214,6 +211,17 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val routeId = activeRouteId
         val standardRoute = AudioProfileRuntimePolicy.isStandardRoute(routeId)
 
+        // A Bluetooth overlay is meaningful only relative to a complete normal
+        // GMMP baseline. Never mutate GMMP while that baseline is incomplete;
+        // the observation module will capture it once Standard becomes active.
+        if (!hasCompleteStandard(profiles)) {
+            Log.w(
+                TAG,
+                "PROFILE APPLY BLOCKED | route=$routeId | reason=$reason | Standard baseline incomplete"
+            )
+            return
+        }
+
         val missingGroups = mutableListOf<String>()
         val writes = mutableListOf<NativeAudioMutation.PreferenceWrite>()
 
@@ -234,9 +242,10 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         }
 
         val eqTarget = resolveEqualizerTarget(profiles, routeId)
-        if (eqTarget == null) {
+        val eqReady = eqTarget?.shape != null
+        if (!eqReady) {
             missingGroups += GoneSmartAudioProfiles.equalizerGroup.id
-        } else {
+        } else if (eqTarget != null) {
             NativeAudioMutation.preferenceWrite("eq.enabled", eqTarget.enabled)?.let(writes::add)
             if (eqTarget.preset != GoneSmartAudioProfiles.CUSTOM_PRESET) {
                 NativeAudioMutation.preferenceWrite("eq.preset", eqTarget.preset)?.let(writes::add)
@@ -246,10 +255,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val prefsVerified = writeNativePreferences(native, writes)
         val eqState = when {
             eqTarget == null -> "missing"
-            eqTarget.shape == null -> {
-                if (eqTarget.preset == GoneSmartAudioProfiles.CUSTOM_PRESET) "missing-custom-shape"
-                else "native-preset-requested"
-            }
+            eqTarget.shape == null -> "missing-shape"
             applyEqualizerShape(routeId, eqTarget) -> "native-shape"
             else -> "shape-deferred"
         }
@@ -276,6 +282,11 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
                 if (missingGroups.isEmpty()) "" else " | missing=${missingGroups.distinct().joinToString(",")}"
         )
     }
+
+    private fun hasCompleteStandard(prefs: SharedPreferences): Boolean =
+        GoneSmartAudioProfiles.allFields.all { field ->
+            prefs.getString("$STANDARD_PREFIX${field.id}", null)?.let(field::normalize) != null
+        }
 
     private fun resolveGroupValues(
         prefs: SharedPreferences,
@@ -337,7 +348,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             !useRouteOverride -> "Standard"
             preset == GoneSmartAudioProfiles.CUSTOM_PRESET -> "Bluetooth Custom"
             shape != null -> "native preset $preset"
-            else -> "native preset $preset pending"
+            else -> "native preset $preset unavailable"
         }
         return EqualizerTarget(enabled, preset, shape, source)
     }
@@ -376,11 +387,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         return writes.all { write -> NativeAudioMutation.matches(prefs.all[write.key], write) }
     }
 
-    /**
-     * Capture the live Equalizer instance from natural calls only. The resolver
-     * uses a validated tested fast path and the same structural fallback rules
-     * as passive observation; no method is invoked during discovery.
-     */
+    /** Capture the live Equalizer instance from natural calls only. */
     private fun installEqualizerCapture(classLoader: ClassLoader, application: Application) {
         val mapping = GmmpEqualizerObservationResolver.resolveFastPath(classLoader)
             ?: GmmpEqualizerObservationResolver.resolveDynamic(
@@ -393,6 +400,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
         eqPreSetter = mapping.preSetter
         eqBandSetter = mapping.bandSetter
+        eqEnabledSetter = mapping.enabledSetter
         val methods = listOf(mapping.preSetter, mapping.bandSetter, mapping.enabledSetter)
         val installed = methods.all { method ->
             runCatching {
@@ -430,9 +438,15 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val handler = eqHandler ?: return false
         val preSetter = eqPreSetter ?: return false
         val bandSetter = eqBandSetter ?: return false
+        val enabledSetter = eqEnabledSetter ?: return false
+        val enabled = when (target.enabled) {
+            "true" -> true
+            "false" -> false
+            else -> return false
+        }
 
         val fingerprint = buildString {
-            append(routeId).append('|').append(target.preset).append('|')
+            append(routeId).append('|').append(target.preset).append('|').append(enabled).append('|')
             GoneSmartAudioProfiles.equalizerShapeFieldIds.forEach { fieldId ->
                 append(fieldId).append('=').append(shape[fieldId]).append('|')
             }
@@ -449,6 +463,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             val applied = runCatching {
                 preSetter.invoke(instance, pre)
                 bands.forEachIndexed { index, value -> bandSetter.invoke(instance, index, value) }
+                enabledSetter.invoke(instance, enabled)
                 true
             }.onFailure {
                 Log.w(TAG, "Native Equalizer shape application failed", it)
@@ -456,7 +471,11 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
             if (applied) {
                 lastAppliedEqFingerprint = fingerprint
-                Log.i(TAG, "EQ SHAPE APPLIED | route=$routeId | source=${target.shapeSource} | fields=${bands.size + 1}")
+                Log.i(
+                    TAG,
+                    "EQ SHAPE APPLIED | route=$routeId | source=${target.shapeSource}" +
+                        " | preBands=${bands.size + 1} | enabled=$enabled"
+                )
                 if (AudioProfileRuntimePolicy.isStandardRoute(routeId) &&
                     runtimePreferences?.getBoolean(KEY_OVERLAY_ACTIVE, false) == true
                 ) {
