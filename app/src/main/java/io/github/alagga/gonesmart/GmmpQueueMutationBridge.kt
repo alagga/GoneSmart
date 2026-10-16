@@ -124,8 +124,6 @@ internal class GmmpQueueMutationBridge(
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
         private val reportedEntityMappings =
             java.util.Collections.synchronizedSet(mutableSetOf<String>())
-        private val reportedTrackMixNativeOwnership =
-            java.util.concurrent.atomic.AtomicBoolean(false)
 
         internal fun typedEntityArray(
             modelClass: Class<*>,
@@ -763,29 +761,149 @@ internal class GmmpQueueMutationBridge(
     }
 
     /**
-     * Track Mix no longer rewrites queue positions after native refill on
-     * 4.2.1. GMMP owns those positions and its already prepared playback
-     * source. Returning false tells the caller no GoneSmart reordering was
-     * performed; native queue order remains authoritative.
+     * GMMP 4.2.0 reset its proven append-position allocator (ex3.p) together
+     * with the Track Auto-DJ seed. GMMP 4.2.1 no longer exposes a behaviorally
+     * proven equivalent. Do not guess one: while an explicit Track Auto-DJ
+     * session is armed, repair only the queue_position coordinates produced by
+     * GMMP's own qr.z refill through the already verified native Queue DAO.
+     * Track IDs, queue IDs and native order remain untouched.
      */
-    fun normalizeQueuePositionsIfNeeded(): Boolean {
-        reportNativeTrackMixOwnershipOnce()
-        return false
-    }
+    fun normalizeQueuePositionsIfNeeded(): Boolean =
+        normalizeQueuePositions(
+            rebaseToOne = false,
+            operation = "QUEUE POSITION NORMALIZE"
+        )
 
-    /** See [normalizeQueuePositionsIfNeeded]. */
-    fun rebaseQueueToOneIfNeeded(): Boolean {
-        reportNativeTrackMixOwnershipOnce()
-        return false
-    }
+    /**
+     * Settled fallback for callers that explicitly require a fresh 1..N root.
+     * The same verified DAO/current writers and identity checks apply.
+     */
+    fun rebaseQueueToOneIfNeeded(): Boolean =
+        normalizeQueuePositions(
+            rebaseToOne = true,
+            operation = "QUEUE POSITION REBASE"
+        )
 
-    private fun reportNativeTrackMixOwnershipOnce() {
-        if (reportedTrackMixNativeOwnership.compareAndSet(false, true)) {
+    private fun normalizeQueuePositions(
+        rebaseToOne: Boolean,
+        operation: String
+    ): Boolean {
+        val resolved = resolve(
+            requireDelete = false,
+            requireStatePosition = true
+        )
+        val state = resolved.statePosition
+            ?: error("Verified GMMP current-position writer unavailable")
+        val current = resolved.context.items.singleOrNull {
+            it.state == QueueItemState.CURRENT
+        } ?: error("Verified GMMP Current queue entry unavailable")
+        val ordered = resolved.context.items.sortedBy { it.queuePosition }
+        val rows = ordered.map {
+            QueuePositionNormalizationPolicy.Row(
+                queueId = it.queueEntryId,
+                position = it.queuePosition
+            )
+        }
+        val plan = if (rebaseToOne) {
+            QueuePositionNormalizationPolicy.rebaseToOne(
+                rows = rows,
+                currentQueueId = current.queueEntryId
+            )
+        } else {
+            QueuePositionNormalizationPolicy.plan(
+                rows = rows,
+                currentQueueId = current.queueEntryId
+            )
+        } ?: return false
+
+        check(plan.orderedQueueIds.size == resolved.rows.size) {
+            "GMMP queue entity count drifted before position normalization"
+        }
+        val rowsById = resolved.rows.associateBy {
+            number(resolved.queueId, it).toLong()
+        }
+        check(rowsById.keys.containsAll(plan.orderedQueueIds)) {
+            "GMMP queue entity identity drifted before position normalization"
+        }
+
+        val oldPositions = plan.orderedQueueIds.associateWith { queueId ->
+            val row = rowsById[queueId]
+                ?: error("Verified queue row disappeared before normalization")
+            number(resolved.position, row).toInt()
+        }
+        val oldState = state.read()
+        val changed = arrayListOf<Any>()
+
+        return try {
+            plan.orderedQueueIds.forEachIndexed { index, queueId ->
+                val row = rowsById[queueId]
+                    ?: error("Verified queue row disappeared during normalization")
+                val desired = plan.normalizedPositions[index]
+                if (number(resolved.position, row).toInt() != desired) {
+                    setInt(resolved.position, row, desired)
+                    changed += row
+                }
+            }
+            if (changed.isNotEmpty()) {
+                resolved.update.invoke(resolved.dao, ArrayList(changed))
+            }
+            if (oldState != plan.currentNewPosition) {
+                state.write(plan.currentNewPosition)
+            }
+
+            val verified = GmmpQueueReader().read(
+                autoDj,
+                state.read(),
+                current.queueEntryId
+            ) ?: error("Queue position normalization verification unavailable")
+            val verifiedOrdered = verified.items.sortedBy { it.queuePosition }
+            val verifiedCurrent = verified.items.singleOrNull {
+                it.state == QueueItemState.CURRENT
+            }
+            check(verifiedOrdered.map { it.queueEntryId } == plan.orderedQueueIds) {
+                "Queue order/identity changed during position normalization"
+            }
+            check(verifiedOrdered.map { it.queuePosition } == plan.normalizedPositions) {
+                "Queue positions did not match the normalization plan"
+            }
+            check(
+                verified.currentQueuePosition == plan.currentNewPosition &&
+                    verifiedCurrent?.queueEntryId == current.queueEntryId &&
+                    verifiedCurrent?.queuePosition == plan.currentNewPosition
+            ) {
+                "Current queue identity changed during position normalization"
+            }
+
             Log.i(
                 TAG,
-                "TRACK MIX QUEUE OWNERSHIP | native GMMP order retained | " +
-                    "GoneSmart position normalization disabled"
+                "$operation | verified=true" +
+                    " | rows=${plan.orderedQueueIds.size}" +
+                    " | updated=${changed.size}" +
+                    " | current=${current.queuePosition}->${plan.currentNewPosition}" +
+                    " | first=${plan.originalPositions.first()}->${plan.normalizedPositions.first()}" +
+                    " | last=${plan.originalPositions.last()}->${plan.normalizedPositions.last()}"
             )
+            true
+        } catch (failure: Throwable) {
+            runCatching {
+                val rollback = arrayListOf<Any>()
+                oldPositions.forEach { (queueId, position) ->
+                    rowsById[queueId]?.let { row ->
+                        setInt(resolved.position, row, position)
+                        rollback += row
+                    }
+                }
+                if (rollback.isNotEmpty()) {
+                    resolved.update.invoke(resolved.dao, rollback)
+                }
+                if (state.read() != oldState) {
+                    state.write(oldState)
+                }
+            }.onFailure { rollback ->
+                failure.addSuppressed(rollback)
+            }
+            Log.w(TAG, "$operation | failed; rolled back", failure)
+            false
         }
     }
 

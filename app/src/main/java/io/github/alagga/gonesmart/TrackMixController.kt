@@ -1053,6 +1053,7 @@ internal class TrackMixController(
     }
 
     private fun runTrackMix(request: Pending) {
+        var managedSessionReady = false
         try {
             val loadedPlay = waitForSelectedSong(request) ?: run {
                 fail("The selected song did not start.", request.context)
@@ -1143,6 +1144,17 @@ internal class TrackMixController(
             ) {
                 fail("Could not start a fresh recommendation session for this song.", request.context)
                 return
+            }
+
+            // GMMP 4.2.0 reset ex3.p together with Current before native
+            // Auto-DJ refilled. 4.2.1 has no behaviorally proven direct
+            // append-allocator binding, so arm only this explicit Track
+            // Auto-DJ session for the scoped post-qr.z coordinate shim.
+            if (!legacyQueue) {
+                armManagedAutoDjSession()
+                check(managedAutoDj?.get() === sessionAutoDj) {
+                    "Track Mix 4.2.1 queue compatibility session was not armed"
+                }
             }
 
             Log.i(
@@ -1247,6 +1259,9 @@ internal class TrackMixController(
                 return
             }
 
+            managedSessionReady =
+                !legacyQueue && managedAutoDj?.get() === sessionAutoDj
+
             Log.i(
                 TAG,
                 "MIX VERIFIED | initial=$initial | actual=${filled.ids.size} | " +
@@ -1271,7 +1286,14 @@ internal class TrackMixController(
                 activePendingController = null
             }
             zeroPoolBoundaryInFlight.set(false)
-            disarmManagedAutoDjSession("native-GMMP-ownership")
+            if (!managedSessionReady) {
+                disarmManagedAutoDjSession("track-mix-not-verified")
+            } else {
+                Log.i(
+                    TAG,
+                    "MIX CONTINUITY | retained after verified Initial Size"
+                )
+            }
         }
     }
 

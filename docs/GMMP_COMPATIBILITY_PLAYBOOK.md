@@ -300,3 +300,9 @@ The 2026-10-14 BUNT. device log proved that a visually correct five-row queue is
 ## GMMP 4.2.1 Track Mix architecture correction (r45)
 
 The 2026-10-14 r44 device trace proved that native-fallback preselection plus post-materialization `current+1` retargeting violates the accepted playback ownership model: BUNT. had zero GoneSmart recommendations but was presented as a successful four-track prepared pool, and the queue row for slot 2 diverged from GMMP's already cached decoder AudioSource. r45 retires that path. Track Mix again waits on the same provider/local-match pipeline up to the established 60 s preparation bound. A zero real-match result is FALLBACK/red and fails closed before native Play, leaving queue/audio state untouched. Device re-acceptance must first prove Levels uses real GoneSmart matches again; BUNT. must no longer turn green or mutate playback when the smart pool is empty. A native no-match fallback may be restored only after the 4.2.1 equivalent of the accepted 4.2.0 seed-isolation boundary is independently proven before decoder materialization.
+
+## Permanent porting rule: preserve behavior, remap boundaries
+
+For a GMMP version update, the previous accepted GoneSmart feature behavior is the specification. Update only hook discovery/binding and shape adapters required to reach the same semantic native boundary. Do not change feature algorithms as a substitute for finding the new hook. If the exact native replacement is not proven, fail closed or use a narrowly scoped compatibility shim that reproduces the old postcondition without guessing mutable obfuscated state, and document why it exists.
+
+For Track Auto-DJ, GMMP 4.2.0 commit `6f7751cb9a5a9c5ebc1d48da23aecbb68ec32c01` is the baseline for queue ownership semantics: one exact native seed, logical position/current/append root at 1, dynamic GMMP Initial Size, GMMP-owned follower materialization, and a fresh GoneSmart recommendation session per explicit invocation.
