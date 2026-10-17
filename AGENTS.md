@@ -119,9 +119,9 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 
 ## 10. Logging and diagnostics
 
-Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and user-visible failures.
+Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and user-visible failures. Accepted-version normal logs use compact summaries rather than per-candidate recommendation/result dumps.
 
-Broad class/method/recycler inventories are gated to unknown/failing compatibility boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
+Broad class/method/recycler inventories and detailed candidate/result dumps are gated to unknown/failing compatibility or explicit debug boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
 
 Accepted actions may retain one bounded postcondition check, not discovery-era polling loops.
 
@@ -169,9 +169,10 @@ A release candidate is complete only when:
 7. public release notes prioritize features, benefits and user-visible improvements over implementation internals;
 8. no enabled unsafe guessed writer remains;
 9. accepted-version diagnostics impose no obvious persistent hot-path cost;
-10. the merged `main` head is green before tagging/publishing;
-11. GMMP forum copy is current: update `THREAD_START_TEMPLATE.bbcode` when public features/compatibility change, regenerate via `python3 scripts/generate_forum_posts.py`, and review the generated first-post and release-reply BBCode;
-12. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
+10. the feature-closeout code-hygiene pass removed obsolete probes/debug dumps/dead helpers/stale comments and left no temporary infrastructure in the release tree;
+11. the merged `main` head is green before tagging/publishing;
+12. GMMP forum copy is current: update `THREAD_START_TEMPLATE.bbcode` when public features/compatibility change, regenerate via `python3 scripts/generate_forum_posts.py`, and review the generated first-post and release-reply BBCode;
+13. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
 
 After 0.4.0, new features should start on a normal named feature branch from the chosen clean `main` integration point.
 

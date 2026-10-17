@@ -72,12 +72,6 @@ class GoneSmartModule : XposedModule() {
         private const val LISTENBRAINZ_ARTIST_FALLBACK_PENALTY =
             0.72
 
-        private const val MERGED_RESULTS_TO_LOG =
-            20
-
-        private const val LOCAL_RESULTS_TO_LOG =
-            20
-
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
 
@@ -110,9 +104,6 @@ class GoneSmartModule : XposedModule() {
 
         private const val MIN_POOL_LOCAL_MATCH_SCORE =
             0.90
-
-        private const val ENABLE_SMART_SELECTION_TEST =
-            true
 
         private val CUSTOM_NUMBERED_EDIT_SUFFIX_REGEX =
             Regex(
@@ -5194,7 +5185,6 @@ class GoneSmartModule : XposedModule() {
                 autoDjSelectionWindow.get()
 
             if (
-                !ENABLE_SMART_SELECTION_TEST ||
                 selectionContext == null
             ) {
 
@@ -5946,10 +5936,6 @@ class GoneSmartModule : XposedModule() {
                         rawContributions
                     )
 
-            logMergedRecommendations(
-                merged
-            )
-
             logProviderBlendMetrics(
                 rawContributions = rawContributions,
                 merged = merged,
@@ -5996,10 +5982,6 @@ class GoneSmartModule : XposedModule() {
                     "SMART DJ BROAD SEARCH EXTERNAL END | " +
                         "broadContributions=${broadContributions.size} | " +
                         "merged=${merged.size}"
-                )
-
-                logMergedRecommendations(
-                    merged
                 )
             }
 
@@ -6393,10 +6375,6 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
             }
-
-            logLocalRecommendations(
-                qualityMatches
-            )
 
             if (
                 generation !=
@@ -7365,109 +7343,6 @@ class GoneSmartModule : XposedModule() {
                 "playlistMemberships=${playlistMetrics.memberships} | " +
                 "playlistSeedHits=${playlistMetrics.seedsMatched} | " +
                 "playlistSignals=${playlistMetrics.signals}"
-        )
-    }
-
-    private fun logMergedRecommendations(
-        candidates: List<RecommendationCandidate>
-    ) {
-
-        Log.i(
-            TAG,
-            "========== MERGED RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "MERGED CANDIDATE COUNT = " +
-                candidates.size
-        )
-
-        candidates
-            .take(
-                MERGED_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, candidate ->
-
-                val providers =
-                    candidate
-                        .contributions
-                        .map {
-                            it.provider
-                        }
-                        .distinct()
-
-                val seeds =
-                    candidate
-                        .contributions
-                        .map {
-                            it.seed.track.id
-                        }
-                        .distinct()
-
-                Log.i(
-                    TAG,
-                    "MERGED ${index + 1} | " +
-                        "score=${formatScore(candidate.totalScore)} | " +
-                        "artist=${candidate.artist} | " +
-                        "title=${candidate.title} | " +
-                        "providers=$providers | " +
-                        "seedIds=$seeds | " +
-                        "contributions=" +
-                        candidate.contributions.size
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== MERGED RECOMMENDATIONS END =========="
-        )
-    }
-
-    private fun logLocalRecommendations(
-        matches: List<LocalRecommendationMatch>
-    ) {
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "LOCAL MATCH COUNT = " +
-                matches.size
-        )
-
-        matches
-            .take(
-                LOCAL_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, match ->
-
-                Log.i(
-                    TAG,
-                    "LOCAL ${index + 1} | " +
-                        "rankingScore=${formatScore(match.rankingScore)} | " +
-                        "baseScore=${formatScore(match.finalScore)} | " +
-                        "matchScore=${formatScore(match.matchScore)} | " +
-                        "titleScore=${formatScore(match.titleScore)} | " +
-                        "artistScore=${formatScore(match.artistScore)} | " +
-                        "versionScore=${formatScore(match.versionScore)} | " +
-                        "preferenceMultiplier=${formatScore(match.preferenceMultiplier)} | " +
-                        "rating=${match.ratingStars ?: "unrated"} | " +
-                        "year=${match.libraryTrack.year} | " +
-                        "trackId=${match.track.id} | " +
-                        "localArtist=${match.track.artist} | " +
-                        "localTitle=${match.track.title} | " +
-                        "candidateArtist=${match.recommendation.artist} | " +
-                        "candidateTitle=${match.recommendation.title}"
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS END =========="
         )
     }
 

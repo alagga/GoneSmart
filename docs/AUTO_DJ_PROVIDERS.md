@@ -209,6 +209,12 @@ Future GMMP versions remain unverified until the normal compatibility workflow i
 
 The GoneSmart companion app is intentionally English-only. Provider names/settings/help text are GoneSmart-owned companion UI and therefore do not need a host-language translation table. The recommendation feature injects no new provider-specific labels into GMMP itself. Existing GMMP-facing actions continue to prefer GMMP's own localized resources and readable textual fallbacks according to the standing localization contract.
 
+### Code hygiene / logging audit
+
+The accepted provider path no longer emits the development-era per-candidate merged/local recommendation dumps. Normal runtime logging keeps compact provider counts, policy/rescue/fallback decisions, cache behavior, controlled-variety metrics, resolver failures and latency summaries that are useful for support without flooding Logcat. Broad compatibility inventories remain disabled/gated on the accepted GMMP version.
+
+The closeout pass also verifies that temporary probes/helper workflows are absent from the release tree, removes obsolete always-on test/feature gates and dead logging helpers, and keeps compatibility fallback machinery for future GMMP updates only when it is inactive/cheap until an unknown or failing boundary actually needs it.
+
 ## 0.6 provider outlook
 
 SoundCloud is the most credible next online-provider experiment because the documented SoundCloud API exposes related tracks. A release implementation still needs a safe distributed-client credential/authentication model; GoneSmart must not embed a shared client secret.

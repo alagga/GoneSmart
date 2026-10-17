@@ -7,10 +7,11 @@ Use this checklist before declaring a GoneSmart feature branch complete or ready
 1. **Behavior / scope** — the implemented behavior matches the accepted feature scope and known limitations are documented.
 2. **GMMP compatibility** — GMMP-facing reads/hooks/writers follow the native-first and semantic/dynamic compatibility rules. Tested obfuscated names may be fast paths, not semantic identity.
 3. **Safety / failure behavior** — ambiguous state-changing paths fail closed, unrelated feature families remain independent, and fallback behavior is explicit.
-4. **Performance / logging** — no discovery-era hot-path cost, excessive polling, repeated full scans, or log spam remains on an accepted version.
-5. **Localization / I18N — mandatory for every feature audit** — explicitly determine whether the feature adds or changes any user-visible text inside GMMP. Follow `docs/GONESMART_GMMP_I18N.md`: prefer the installed GMMP application's own localized resources, use the centralized GoneSmart GMMP-string table only for genuinely missing host phrases, and keep the GoneSmart companion app English-only. If the feature adds no GMMP-facing strings, record the audit result as **no new translations required** instead of silently skipping localization review.
-6. **Documentation** — README/help/FAQ/feature docs/roadmap/release-facing copy agree with the accepted behavior and shipping state.
-7. **Validation** — relevant tests pass and the normal exact-head Build workflow is green before the branch is treated as integration-ready.
+4. **Performance / logging** — no discovery-era hot-path cost, excessive polling, repeated full scans, or normal-runtime log spam remains on an accepted version. Keep concise summaries, decisions, failures and useful latency metrics; remove or explicitly gate per-candidate dumps and broad inventories.
+5. **Code hygiene / cleanup — mandatory for every feature audit** — remove dead/obsolete feature code, temporary probes, helper workflows/scripts, debug-only flags/dumps, stale comments, duplicate implementations and compatibility scaffolding that is no longer needed on the accepted path. Keep future-compatibility machinery only when it is deliberately gated, cheap while inactive and documented. Re-check imports/constants/helpers after cleanup.
+6. **Localization / I18N — mandatory for every feature audit** — explicitly determine whether the feature adds or changes any user-visible text inside GMMP. Follow `docs/GONESMART_GMMP_I18N.md`: prefer the installed GMMP application's own localized resources, use the centralized GoneSmart GMMP-string table only for genuinely missing host phrases, and keep the GoneSmart companion app English-only. If the feature adds no GMMP-facing strings, record the audit result as **no new translations required** instead of silently skipping localization review.
+7. **Documentation** — README/help/FAQ/feature docs/roadmap/release-facing copy agree with the accepted behavior and shipping state.
+8. **Validation** — relevant tests pass and the normal exact-head Build workflow is green before the branch is treated as integration-ready.
 
 ## Localization audit outcome template
 
