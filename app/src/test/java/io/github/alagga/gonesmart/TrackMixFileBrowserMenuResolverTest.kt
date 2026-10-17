@@ -4,10 +4,16 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TrackMixFileBrowserMenuResolverTest {
-    @Test fun gmmp421SongMenuShapeIsEligible() {
-        val result = TrackMixFileBrowserMenuShapePolicy.resolve(10)
-        assertEquals(TrackMixFileBrowserSelectionKind.REGULAR_FILE, result.kind)
-        assertEquals("gmmp421-native-song-menu-shape", result.evidence)
+    @Test fun gmmp421ObservedSongMenuShapesAreEligible() {
+        listOf(9, 10).forEach { count ->
+            val result = TrackMixFileBrowserMenuShapePolicy.resolve(count)
+            assertEquals(
+                "count=$count",
+                TrackMixFileBrowserSelectionKind.REGULAR_FILE,
+                result.kind
+            )
+            assertEquals("gmmp421-native-song-menu-shape", result.evidence)
+        }
     }
 
     @Test fun gmmp421DirectoryMenuShapeIsNotEligible() {
@@ -17,7 +23,7 @@ class TrackMixFileBrowserMenuResolverTest {
     }
 
     @Test fun unknownNativeMenuShapesFailClosed() {
-        listOf(0, 7, 9, 11, 12).forEach { count ->
+        listOf(0, 7, 11, 12).forEach { count ->
             val result = TrackMixFileBrowserMenuShapePolicy.resolve(count)
             assertEquals(
                 "count=$count",
