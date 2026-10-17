@@ -3,18 +3,16 @@ package io.github.alagga.gonesmart
 import android.os.Handler
 import android.os.Looper
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Process-local handoff from the passive GMMP Equalizer observers to the
  * profile application path. The r61 setter observer supplies the live owner
- * and setters, while the native DspManager creation observer supplies the
- * validated 2..10 band layout.
- *
- * Keeping those two facts independent is intentional: GMMP 4.2.1 does not
- * expose the live band count as the size of r61's gain-array field, and using
- * that field as a readiness gate caused Equalizer profile application to stay
- * permanently deferred.
+ * and setters. Runtime band count prefers an authoritative passive layout or
+ * preference observation, with the owner's unique DoubleArray size retained as
+ * a compatibility fallback so Equalizer application is never blocked merely
+ * because the auxiliary layout observer was unavailable.
  */
 object GmmpEqualizerRuntimeBridge {
     data class Target(
@@ -34,7 +32,8 @@ object GmmpEqualizerRuntimeBridge {
     @Volatile private var preSetter: Method? = null
     @Volatile private var bandSetter: Method? = null
     @Volatile private var enabledSetter: Method? = null
-    @Volatile private var bandCount: Int? = null
+    @Volatile private var observedBandCount: Int? = null
+    @Volatile private var fallbackBandCount: Int? = null
 
     fun registerSetters(pre: Method, band: Method, enabled: Method) {
         pre.isAccessible = true
@@ -53,12 +52,16 @@ object GmmpEqualizerRuntimeBridge {
     }
 
     fun observeInstance(observedInstance: Any, looper: Looper?) {
+        val detectedFallback = detectBandCount(observedInstance)
         val notify = synchronized(lock) {
             val wasReady = currentUnsafe() != null
+            val previousEffectiveBandCount = effectiveBandCountUnsafe()
             val changedInstance = instance !== observedInstance
             val previousLooper = handler?.looper
 
+            if (changedInstance) fallbackBandCount = null
             instance = observedInstance
+            if (detectedFallback != null) fallbackBandCount = detectedFallback
 
             // GMMP's natural Equalizer initialization currently runs on a
             // worker without a Looper. Requiring that worker to expose a
@@ -74,22 +77,28 @@ object GmmpEqualizerRuntimeBridge {
             }
 
             val changedDispatcher = previousLooper !== handler?.looper
-            currentUnsafe() != null && (!wasReady || changedInstance || changedDispatcher)
+            val changedBandCount = previousEffectiveBandCount != effectiveBandCountUnsafe()
+            currentUnsafe() != null &&
+                (!wasReady || changedInstance || changedDispatcher || changedBandCount)
         }
         if (notify) notifyReady()
     }
 
     /**
-     * Accept a band count only from a separately validated native layout
-     * observation. Returns true when the count actually changed.
+     * Publish a band count proven outside the r61 fallback (for example from
+     * GMMP's DspManager creation boundary or its uniquely resolved preference).
+     * This authoritative value wins over a stale owner-array fallback.
+     *
+     * @return true when the effective runtime count changed.
      */
-    fun observeBandCount(observedBandCount: Int): Boolean {
-        if (!GmmpEqualizerBandPolicy.isSupported(observedBandCount)) return false
+    fun observeBandCount(count: Int): Boolean {
+        if (!GmmpEqualizerBandPolicy.isSupported(count)) return false
         var changed = false
         val notify = synchronized(lock) {
             val wasReady = currentUnsafe() != null
-            changed = bandCount != observedBandCount
-            bandCount = observedBandCount
+            val previous = effectiveBandCountUnsafe()
+            observedBandCount = count
+            changed = previous != effectiveBandCountUnsafe()
             currentUnsafe() != null && (!wasReady || changed)
         }
         if (notify) notifyReady()
@@ -109,8 +118,23 @@ object GmmpEqualizerRuntimeBridge {
         val localPre = preSetter ?: return null
         val localBand = bandSetter ?: return null
         val localEnabled = enabledSetter ?: return null
-        val localBandCount = bandCount?.takeIf(GmmpEqualizerBandPolicy::isSupported) ?: return null
+        val localBandCount = effectiveBandCountUnsafe() ?: return null
         return Target(localInstance, localHandler, localPre, localBand, localEnabled, localBandCount)
+    }
+
+    private fun effectiveBandCountUnsafe(): Int? =
+        observedBandCount?.takeIf(GmmpEqualizerBandPolicy::isSupported)
+            ?: fallbackBandCount?.takeIf(GmmpEqualizerBandPolicy::isSupported)
+
+    private fun detectBandCount(observedInstance: Any): Int? {
+        val field = observedInstance.javaClass.declaredFields
+            .filterNot { Modifier.isStatic(it.modifiers) }
+            .filter { it.type == DoubleArray::class.java }
+            .singleOrNull()
+            ?.apply { isAccessible = true }
+            ?: return null
+        val count = runCatching { (field.get(observedInstance) as? DoubleArray)?.size }.getOrNull()
+        return count?.takeIf(GmmpEqualizerBandPolicy::isSupported)
     }
 
     private fun notifyReady() {

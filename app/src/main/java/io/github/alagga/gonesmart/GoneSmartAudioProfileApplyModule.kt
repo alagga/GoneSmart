@@ -11,7 +11,9 @@ import android.util.Log
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.io.File
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Applies the active GoneSmart audio profile through GMMP's own proven state
@@ -28,6 +30,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         private const val TAG = "GoneSmartAudioApply"
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val COMPANION_PACKAGE = "io.github.alagga.gonesmart"
+        private const val DSP_MANAGER = "gonemad.gmmp.audioengine.DspManager"
         private const val CONTEXT_RETRY_MS = 250L
         private const val CONTEXT_MAX_ATTEMPTS = 40
         private const val APPLY_DEBOUNCE_MS = 80L
@@ -44,6 +47,8 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     private val applyPending = AtomicBoolean(false)
     private val runtimeStandardFallbackLogged = AtomicBoolean(false)
     private val eqReadyListenerRegistered = AtomicBoolean(false)
+    private val nativeBandCountListenerRegistered = AtomicBoolean(false)
+    private val eqLayoutBinding = AtomicReference<GmmpEqualizerDspLayoutResolver.Binding?>(null)
 
     @Volatile
     private var pendingReason: String = "startup"
@@ -68,6 +73,14 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     @Volatile
     private var lastAppliedEqFingerprint: String? = null
 
+    @Volatile
+    private var configuredBandPreferenceKey: String? = null
+
+    @Volatile
+    private var configuredBandCount: Int? = null
+
+    private var nativeBandCountPreferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
     private val profilePreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
         if (key.startsWith(VALUE_PREFIX) ||
@@ -90,6 +103,12 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             Log.w(TAG, "Audio-profile preferences unavailable; native application disabled", it)
         }.getOrNull()
 
+        // Keep layout observation inside an already-established Xposed module.
+        // Some LSPosed/libxposed setups keep the initializer list for an updated
+        // module process, so adding a fourth java_init entry did not reliably
+        // activate the observer on the maintainer device. The apply module is
+        // already loaded and can observe the same passive DspManager boundary.
+        installEqualizerBandLayoutObserver(param.classLoader)
         resolveApplicationAndStart(attempt = 0)
     }
 
@@ -98,6 +117,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         if (application != null) {
             runtimePreferences = application.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
             nativePreferences = resolveNativePreferenceStore(application)
+            nativePreferences?.let { prefs -> installNativeBandCountObserver(application, prefs) }
 
             if (eqReadyListenerRegistered.compareAndSet(false, true)) {
                 GmmpEqualizerRuntimeBridge.addReadyListener {
@@ -134,6 +154,133 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val method = activityThread.getDeclaredMethod("currentApplication").apply { isAccessible = true }
         method.invoke(null) as? Application
     }.getOrNull()
+
+    private fun installEqualizerBandLayoutObserver(classLoader: ClassLoader) {
+        val dspManager = runCatching {
+            Class.forName(DSP_MANAGER, false, classLoader)
+        }.onFailure {
+            Log.w(TAG, "EQ DSP layout observer unavailable; preference/fallback detection remains active", it)
+        }.getOrNull() ?: return
+
+        val candidates = GmmpEqualizerDspLayoutResolver.candidateMethods(dspManager)
+        var installed = 0
+        candidates.forEach { method ->
+            method.isAccessible = true
+            runCatching {
+                hook(method).intercept { chain ->
+                    val args = method.parameterTypes.indices.map { index ->
+                        runCatching { chain.getArg(index) }.getOrNull()
+                    }
+                    val result = chain.proceed()
+                    observeEqualizerLayoutCall(method, args)
+                    result
+                }
+                installed += 1
+            }.onFailure {
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "EQ DSP candidate hook rejected | method=${GmmpEqualizerDspLayoutResolver.methodId(method)}")
+                }
+            }
+        }
+
+        Log.i(
+            TAG,
+            "EQ DSP LAYOUT OBSERVER | candidates=${candidates.size} | installed=$installed" +
+                if (BuildConfig.DEBUG) {
+                    " | methods=" + candidates.take(12).joinToString(";") {
+                        GmmpEqualizerDspLayoutResolver.methodId(it)
+                    }
+                } else {
+                    ""
+                }
+        )
+    }
+
+    private fun observeEqualizerLayoutCall(method: Method, args: List<Any?>) {
+        val existing = eqLayoutBinding.get()
+        val observation = if (existing != null) {
+            GmmpEqualizerDspLayoutResolver.readBound(existing, method, args)
+        } else {
+            GmmpEqualizerDspLayoutResolver.infer(method, args)
+        } ?: return
+
+        if (existing == null) {
+            if (!eqLayoutBinding.compareAndSet(null, observation.binding)) {
+                val winner = eqLayoutBinding.get() ?: return
+                val rebound = GmmpEqualizerDspLayoutResolver.readBound(winner, method, args) ?: return
+                publishEqualizerLayout(rebound, learned = false)
+                return
+            }
+            Log.i(
+                TAG,
+                "EQ DSP LAYOUT VERIFIED | method=${observation.binding.methodId}" +
+                    " | bandArg=${observation.binding.bandArgIndex}" +
+                    " | rateArg=${observation.binding.rateArgIndex}" +
+                    " | channelArg=${observation.binding.channelArgIndex}"
+            )
+            publishEqualizerLayout(observation, learned = true)
+            return
+        }
+
+        publishEqualizerLayout(observation, learned = false)
+    }
+
+    private fun publishEqualizerLayout(
+        observation: GmmpEqualizerDspLayoutResolver.Observation,
+        learned: Boolean
+    ) {
+        val changed = GmmpEqualizerRuntimeBridge.observeBandCount(observation.bandCount)
+        val application = currentApplication()
+        if (application != null) publishEqualizerBandCount(application, observation.bandCount)
+
+        // A DspManager creation can replace/reset the native Equalizer even
+        // when the configured band count did not change. Always invalidate the
+        // fingerprint and reapply after the creation boundary settles.
+        lastAppliedEqFingerprint = null
+        scheduleApply("native Equalizer layout created (${observation.bandCount} bands)")
+
+        if (changed || learned) {
+            Log.i(
+                TAG,
+                "EQ BAND LAYOUT | source=dsp-manager | bands=${observation.bandCount}" +
+                    " | rate=${observation.sampleRate} | channels=${observation.channels}" +
+                    " | canonical=${GmmpEqualizerBandPolicy.MAX_BANDS}"
+            )
+        }
+    }
+
+    private fun installNativeBandCountObserver(application: Application, prefs: SharedPreferences) {
+        if (!nativeBandCountListenerRegistered.compareAndSet(false, true)) return
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { changedPrefs, _ ->
+            observeConfiguredEqualizerBandCount(application, changedPrefs, "preference changed")
+        }
+        nativeBandCountPreferenceListener = listener
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        observeConfiguredEqualizerBandCount(application, prefs, "startup snapshot")
+    }
+
+    private fun observeConfiguredEqualizerBandCount(
+        application: Application,
+        prefs: SharedPreferences,
+        reason: String
+    ) {
+        val candidate = GmmpEqualizerBandPreferenceResolver.resolve(prefs.all) ?: return
+        val same = configuredBandPreferenceKey == candidate.key && configuredBandCount == candidate.count
+        if (same) return
+
+        configuredBandPreferenceKey = candidate.key
+        configuredBandCount = candidate.count
+        val changed = GmmpEqualizerRuntimeBridge.observeBandCount(candidate.count)
+        publishEqualizerBandCount(application, candidate.count)
+        if (changed) {
+            lastAppliedEqFingerprint = null
+            scheduleApply("configured Equalizer band count changed")
+        }
+        Log.i(
+            TAG,
+            "EQ BAND PREF RESOLVED | key=${candidate.key} | bands=${candidate.count} | reason=$reason"
+        )
+    }
 
     private fun publishEqualizerBandCount(application: Application, count: Int) {
         if (!GmmpEqualizerBandPolicy.isSupported(count)) return
