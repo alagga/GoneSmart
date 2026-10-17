@@ -10,6 +10,7 @@ internal data class GmmpLibraryPathIndexSnapshot(
     val trackCount: Int,
     val idsByPath: Map<String, Long>,
     val ambiguousPaths: Set<String>
+)
 
 private data class LibraryRevision(
     val trackCount: Long,
@@ -481,21 +482,6 @@ class GmmpLibraryReader {
                         "GMMP TrackDao field is null"
                     )
                 )
-                    ?: throw IllegalStateException(
-                        "TrackDao fast path is null"
-                    )
-            }.getOrElse {
-                // The obfuscated TrackDao field is a tested-version fast path,
-                // never a compatibility requirement. The semantic read-only
-                // Room/Cursor resolver below is sufficient on its own and is
-                // the accepted GMMP 4.2.1 path when DAO mappings move.
-                val tracks = loadLibraryThroughCursor(
-                    autoDjInstance,
-                    startTime
-                )
-                deterministicMappingFailure = false
-                return tracks
-            }
 
         val queryMethod =
             runCatching {
