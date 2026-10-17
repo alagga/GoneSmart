@@ -37,6 +37,27 @@ enum class RecommendationVariety(val preferenceValue: String) {
     }
 }
 
+object RecommendationSourceSelectionPolicy {
+    fun canDisable(
+        provider: RecommendationProvider,
+        options: GoneSmartOptions
+    ): Boolean {
+        if (!isEnabled(provider, options)) return true
+
+        return RecommendationProvider.entries
+            .count { isEnabled(it, options) } > 1
+    }
+
+    private fun isEnabled(
+        provider: RecommendationProvider,
+        options: GoneSmartOptions
+    ): Boolean = when (provider) {
+        RecommendationProvider.LISTENBRAINZ -> options.listenBrainzProviderEnabled
+        RecommendationProvider.LASTFM -> options.lastFmProviderEnabled
+        RecommendationProvider.LOCAL_PLAYLIST -> options.localPlaylistProviderEnabled
+    }
+}
+
 data class RecommendationProviderPolicy(
     val mode: RecommendationMode,
     val enabledProviders: Set<RecommendationProvider>,

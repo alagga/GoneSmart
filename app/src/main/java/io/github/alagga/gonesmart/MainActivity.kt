@@ -90,6 +90,7 @@ class MainActivity : AppCompatActivity() {
     private val settingRows = linkedMapOf<String, View>()
     private val providerWeightCards = linkedMapOf<String, View>()
     private val providerWeightSliders = linkedMapOf<String, Slider>()
+    private var playlistSizeWeightingCardView: View? = null
     private val tabButtons = linkedMapOf<Tab, LinearLayout>()
     private val tabIconBackgrounds = linkedMapOf<Tab, FrameLayout>()
     private val tabLabels = linkedMapOf<Tab, TextView>()
@@ -270,6 +271,7 @@ class MainActivity : AppCompatActivity() {
         settingRows.clear()
         providerWeightCards.clear()
         providerWeightSliders.clear()
+        playlistSizeWeightingCardView = null
         minimumRatingSlider = null
         minimumRatingValueText = null
         contentHost.removeAllViews()
@@ -670,12 +672,16 @@ class MainActivity : AppCompatActivity() {
             PlaylistSizeWeighting.BALANCED -> "Balanced"
             PlaylistSizeWeighting.STRONG -> "Strong"
         }
+        val enabled = options.localPlaylistProviderEnabled
         val card = card().apply {
             setContentPadding(dp(20), dp(18), dp(20), dp(18))
-            isClickable = true
-            isFocusable = true
+            isEnabled = enabled
+            isClickable = enabled
+            isFocusable = enabled
+            alpha = if (enabled) 1f else 0.45f
             setOnClickListener { showPlaylistSizeWeightingDialog(options.playlistSizeWeighting) }
         }
+        playlistSizeWeightingCardView = card
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1086,6 +1092,7 @@ class MainActivity : AppCompatActivity() {
         setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED, options.lastFmProviderEnabled)
         setSwitch(GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED, options.localPlaylistProviderEnabled)
         refreshProviderWeightAvailability(options)
+        refreshPlaylistSizeWeightingAvailability(options)
         setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)
         setSwitch(GoneSmartSettingsKeys.KEY_SMART_RATING, options.smartRatingEnabled)
         setSwitch(
@@ -1121,6 +1128,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun refreshPlaylistSizeWeightingAvailability(
+        options: GoneSmartOptions = settingsRepository.read()
+    ) {
+        val enabled = options.localPlaylistProviderEnabled
+        playlistSizeWeightingCardView?.apply {
+            isEnabled = enabled
+            isClickable = enabled
+            isFocusable = enabled
+            alpha = if (enabled) 1f else 0.45f
+        }
+    }
+
     private fun refreshPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {
         for (key in listOf(GoneSmartSettingsKeys.KEY_GROUP_EXTERNAL_PLAYLISTS, GoneSmartSettingsKeys.KEY_GROUP_ROOT_PLAYLISTS)) {
             switches[key]?.isEnabled = options.playlistFoldersEnabled
@@ -1147,7 +1166,37 @@ class MainActivity : AppCompatActivity() {
         settingRows[fallbackKey]?.alpha = if (available) 1f else 0.45f
     }
 
+    private fun recommendationProviderForSetting(
+        key: String
+    ): RecommendationProvider? = when (key) {
+        GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ->
+            RecommendationProvider.LOCAL_PLAYLIST
+        GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ->
+            RecommendationProvider.LISTENBRAINZ
+        GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED ->
+            RecommendationProvider.LASTFM
+        else -> null
+    }
+
     private fun onSettingChanged(key: String, checked: Boolean) {
+        val provider = recommendationProviderForSetting(key)
+        if (
+            provider != null &&
+            !checked &&
+            !RecommendationSourceSelectionPolicy.canDisable(
+                provider = provider,
+                options = settingsRepository.read()
+            )
+        ) {
+            setSwitch(key, true)
+            Toast.makeText(
+                this,
+                "At least one recommendation source must remain enabled.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
         if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {
             val options = settingsRepository.read()
             if (options.minimumRatingStars <= 0.0 && !options.smartRatingEnabled) {
@@ -1162,7 +1211,12 @@ class MainActivity : AppCompatActivity() {
             key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ||
             key == GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ||
             key == GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED
-        ) refreshProviderWeightAvailability()
+        ) {
+            refreshProviderWeightAvailability()
+            if (key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED) {
+                refreshPlaylistSizeWeightingAvailability()
+            }
+        }
         if (key == GoneSmartSettingsKeys.KEY_SMART_RATING) refreshRatingFallbackAvailability()
     }
 

@@ -75,9 +75,9 @@ Because these values belong to the Smart policy rather than user-stored tuning, 
 
 Custom mode lets the user:
 
-- enable or disable Local Playlists, ListenBrainz and Last.fm independently;
+- enable or disable Local Playlists, ListenBrainz and Last.fm independently, while always keeping at least one recommendation source enabled;
 - set each enabled provider's ranking weight from `×0.25` to `×1.50`;
-- choose Off, Balanced or Strong playlist-size weighting.
+- choose Off, Balanced or Strong playlist-size weighting when Local Playlists is enabled; the playlist-size control is disabled when that source is off.
 
 Request order is intentionally not configurable. Network providers run in parallel; weights express preference without adding avoidable latency.
 
