@@ -2157,9 +2157,12 @@ internal class TrackMixController(
                 autoDj = autoDj,
                 verifiedPositionWriter = currentWriter,
                 currentQueueEntryIdHint = current.queueEntryId
-            ).isolateTrackMixZeroPoolSeed(target.id)
+            ).isolateTrackMixZeroPoolSeedAnchored(
+                selectedTrackId = target.id,
+                expectedCurrentPosition = position
+            )
             check(isolated) {
-                "Could not isolate selected Track Auto-DJ seed at Current boundary"
+                "Could not isolate selected Track Auto-DJ seed at anchored Current boundary"
             }
 
             val initial = request.prePlayInitialSize.coerceAtLeast(1)
@@ -2175,6 +2178,17 @@ internal class TrackMixController(
             request.transitionalRefillSuppressed = false
             check(requestHeldNativeRefill(refillCount)) {
                 "GMMP rejected zero-pool native Initial Size refill"
+            }
+            check(
+                GmmpQueueMutationBridge(
+                    autoDj = autoDj,
+                    currentQueueEntryIdHint = current.queueEntryId
+                ).compactTrackMixZeroPoolRefillAnchored(
+                    selectedTrackId = target.id,
+                    expectedSize = initial
+                )
+            ) {
+                "Could not compact zero-pool native refill around anchored Current"
             }
 
             val verified = queueReader.read(

@@ -504,6 +504,113 @@ internal class GmmpQueueMutationBridge(
      * only source history/followers around it. No predecoder state write or
      * queue-position rewrite is permitted.
      */
+    /**
+     * R71 natural next-source isolation. R70 proves MusicService.I2 only as
+     * an event and independently proves the selected Current at its absolute
+     * queue_position. At that boundary the original I2 caller is about to ask
+     * for Current+1, so rebasing Current to 1 would require an unnecessary
+     * playback-state write and would invalidate the coordinate just proved.
+     *
+     * Delete source history/followers only. The pinned Current row, its
+     * queue_position and the verified native state coordinate remain exactly
+     * unchanged. Native qr.z then owns the follower identities; the existing
+     * anchored compactor may repair only their positions before I2 resumes.
+     */
+    fun isolateTrackMixZeroPoolSeedAnchored(
+        selectedTrackId: Long,
+        expectedCurrentPosition: Int
+    ): Boolean {
+        require(expectedCurrentPosition > 0) {
+            "Anchored Track Mix Current position must be positive"
+        }
+        val resolved = resolve(requireDelete = true, requireStatePosition = true)
+        val state = resolved.statePosition
+            ?: error("Verified GMMP current-position writer unavailable")
+        val current = resolved.context.items.singleOrNull {
+            it.state == QueueItemState.CURRENT
+        } ?: error("Track Mix pinned seed queue entry unavailable")
+        currentQueueEntryIdHint?.let { expected ->
+            require(current.queueEntryId == expected) {
+                "Track Mix pinned seed queue entry changed"
+            }
+        }
+        require(current.track.id == selectedTrackId) {
+            "Track Mix pinned seed Track changed before anchored isolation"
+        }
+
+        val oldState = state.read()
+        require(
+            current.queuePosition == expectedCurrentPosition &&
+                oldState == expectedCurrentPosition
+        ) {
+            "Track Mix anchored Current queue/state mismatch: " +
+                "row=${current.queuePosition} state=$oldState " +
+                "expected=$expectedCurrentPosition"
+        }
+        val plan = TrackMixZeroPoolPolicy.seedPlan(
+            entries = resolved.context.items.map { item ->
+                TrackMixPlan.NativeQueueEntry(
+                    queueId = item.queueEntryId,
+                    trackId = item.track.id,
+                    position = item.queuePosition
+                )
+            },
+            currentEntryId = current.queueEntryId,
+            selectedTrackId = selectedTrackId
+        )
+        require(plan.currentPosition == expectedCurrentPosition) {
+            "Track Mix anchored seed plan changed Current coordinate"
+        }
+
+        val rowsById = resolved.rows.associateBy {
+            number(resolved.queueId, it).toLong()
+        }
+        rowsById[current.queueEntryId]
+            ?: error("Verified anchored Track Mix Current entity disappeared")
+        val staleRows = (plan.pastEntryIds + plan.futureEntryIds).map { queueId ->
+            rowsById[queueId]
+                ?: error("Verified anchored Track Mix source row disappeared")
+        }
+        if (staleRows.isNotEmpty()) {
+            val delete = resolved.delete
+                ?: error("Verified GMMP Queue DAO delete unavailable")
+            delete.invoke(
+                resolved.dao,
+                typedEntityArray(resolved.rows.first().javaClass, staleRows)
+            )
+        }
+
+        val stateAfter = state.read()
+        check(stateAfter == expectedCurrentPosition) {
+            "Anchored Track Mix isolation changed native Current state"
+        }
+        val verified = GmmpQueueReader().read(
+            autoDj,
+            stateAfter,
+            current.queueEntryId
+        ) ?: error("Anchored Track Mix seed isolation verification unavailable")
+        val only = verified.items.singleOrNull()
+            ?: error("Anchored Track Mix seed isolation left extra native rows")
+        check(
+            only.queueEntryId == current.queueEntryId &&
+                only.track.id == selectedTrackId &&
+                only.queuePosition == expectedCurrentPosition &&
+                only.state == QueueItemState.CURRENT &&
+                verified.currentQueuePosition == expectedCurrentPosition
+        ) {
+            "Anchored Track Mix seed isolation changed Current identity/coordinate"
+        }
+        Log.i(
+            TAG,
+            "TRACK MIX SEED ISOLATION ANCHORED | verified=true" +
+                " | currentEntry=${current.queueEntryId}" +
+                " | currentPosition=$expectedCurrentPosition" +
+                " | stateWrite=false | rebased=false" +
+                " | deleted=${staleRows.size}"
+        )
+        return true
+    }
+
     /** R57 generic Track Mix seed isolation. This is the only queue
      * mutation owned by Track Mix before GMMP's native AUTO_DJ takes over. */
     fun isolateTrackMixSeed(selectedTrackId: Long): Boolean =

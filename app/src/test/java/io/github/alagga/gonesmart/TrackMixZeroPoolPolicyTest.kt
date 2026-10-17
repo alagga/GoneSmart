@@ -171,6 +171,36 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
+    fun `r71 natural next source seed plan preserves absolute current anchor`() {
+        val entries = (1..5).map { position ->
+            TrackMixPlan.NativeQueueEntry(
+                queueId = 100L + position,
+                trackId = if (position == 2) 18165L else 20_000L + position,
+                position = position
+            )
+        }
+        val seed = TrackMixZeroPoolPolicy.seedPlan(
+            entries = entries,
+            currentEntryId = 102L,
+            selectedTrackId = 18165L
+        )
+        val boundary = TrackMixZeroPoolPolicy.resolveVerifiedNextSourceBoundary(
+            selectedTrackId = 18165L,
+            currentTrackId = 18165L,
+            selectedQueuePosition = seed.currentPosition,
+            currentQueuePosition = seed.currentPosition,
+            writerReadback = seed.currentPosition
+        )
+
+        assertEquals(2, seed.currentPosition)
+        assertEquals(listOf(101L), seed.pastEntryIds)
+        assertEquals(listOf(103L, 104L, 105L), seed.futureEntryIds)
+        assertNotNull(boundary)
+        assertEquals(2, boundary!!.currentQueuePosition)
+        assertEquals(3, boundary.nextQueuePosition)
+    }
+
+    @Test
     fun `initial native refill can be compacted to one through Initial Size`() {
         val entries = listOf(
             TrackMixPlan.NativeQueueEntry(20, 200, 1),
