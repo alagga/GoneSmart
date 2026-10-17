@@ -309,7 +309,7 @@ internal class PlaylistBridgeController(
             }
         }.getOrNull()
         val context = contextRef?.get() ?: return original
-        val playlistLabel = NativeGmmpUiText.string(context, "playlist") ?: "Playlist"
+        val playlistLabel = NativeGmmpUiText.string(context, "playlist") ?: return original
         val smartPlaylistLabel = NativeGmmpUiText.smartPlaylist(context)
         val bridgeDisplay = PlaylistBridgeReference.decode(value)?.displayName
         val nativeSmartDisplay = value

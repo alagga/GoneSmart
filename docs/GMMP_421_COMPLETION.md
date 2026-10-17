@@ -1,3 +1,15 @@
+# GMMP 4.2.1 completion status — ACCEPTED
+
+**Final status (17 October 2026):** GMMP 4.2.1 is accepted/fixed on `fix/playlist-link-gmmp-4.2.1` after R72, the bundled maintainer device pass and the final native/performance/logging/localization audit. The chronology below is retained for provenance; older lines saying “pending” or “device re-acceptance required” describe their historical revision and are **not current blockers**. This branch is prepared for merge but is not merged/tagged/released by this status note.
+
+Current accepted Track Auto-DJ contracts: file-browser playable rows may have 9 or 10 visible native menu actions; 8 is the proven directory shape; 7/other shapes fail closed. `MusicService.I2(int)` identifies only the accepted natural next-source event and its integer argument is opaque. R71 preserves an independently verified absolute Current anchor on the natural I2 path; Queue-tail fallback retains its separate verified position-1 native-fill path.
+
+Playlist Link and queue/Track Auto-DJ writers remain native-first and fail closed on ambiguous mappings. Successful compatibility discovery graduates to cached/one-shot runtime bindings; broad inventories are reserved for a new or failing runtime shape.
+
+---
+
+## Historical 4.2.1 repair ledger
+
 - 8 October 2026: Playlist Link was found broken on the shipping 4.2.1 path because its bridge still depended on the old 4.2.0 obfuscated presenter/rule/parser/query/DAO map. A planned 0.4.2 repair replaces that all-or-nothing name map with shape-validated runtime bindings. This item is **not** re-accepted until the repaired add/save/reopen/evaluate/edit flow is verified on device.
 - 8 October 2026: the real 4.2.1 Link action was then passively proven from a natural device trace at `as4$g.accept(...)`, immediately upstream of GMMP's native event chain and resulting `MaterialDialog.show()`. The lone `as4.h2(boolean)` method is therefore not promoted as the old link action merely because its signature matches 4.2.0. Repair commit `cdd6a50c9c0814243d2471600056cd0471017060` uses the proven chooser callback and one-shot native continuation while retaining exact `ds4.g2(boolean)` only for the accepted 4.2.0 path. Device re-acceptance is still pending.
 - 8 October 2026: a subsequent device run showed GoneSmart's other hook families active while no Playlist Bridge startup/presenter/dispatch log appeared around the `as4` editor and native Link dialog. Because that run did not establish the exact GoneSmart build loaded by Vector, device debugging now records `BuildConfig.GIT_REVISION` (with `-dirty` for local source changes) in startup and Playlist Bridge readiness/presenter diagnostics. Build identity must be verified before changing Link semantics from an ambiguous device run.

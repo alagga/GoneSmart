@@ -59,6 +59,11 @@ older or UI/System lines in **Other**.
    remain a bounded compatibility diagnostic with a documented purpose.
 6. Update unit tests for `GoneSmartLogSummary`, and perform the relevant
    Android device smoke test before release.
+7. After compatibility acceptance, a successful structural binding/mapping is
+   logged at most once per stable runtime shape. Do not key success diagnostics
+   by changing queue size/current position or recreate their de-duplication set
+   per reader instance. New/ambiguous/failing runtime shapes may still emit the
+   bounded rich diagnostics needed for the next compatibility investigation.
 
 The Flip-specific native queue/order checks and on-device results are
 documented in [QUEUE_FLIP_TESTING.md](QUEUE_FLIP_TESTING.md).

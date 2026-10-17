@@ -181,6 +181,12 @@ class GmmpLibraryReader {
     private var deterministicMappingFailure =
         false
 
+    @Volatile
+    private var acceptedCursorAutoDjType: Class<*>? = null
+
+    private val reportedLibraryAccessBindings =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     fun hasDeterministicMappingFailure(): Boolean =
         deterministicMappingFailure
 
@@ -350,11 +356,27 @@ class GmmpLibraryReader {
         val startTime =
             System.nanoTime()
 
-        val trackDaoField =
-            findField(
-                type = autoDjInstance.javaClass,
-                name = "r"
+        if (acceptedCursorAutoDjType == autoDjInstance.javaClass) {
+            return loadLibraryThroughCursor(
+                autoDjInstance,
+                startTime
             )
+        }
+
+        val trackDaoField =
+            runCatching {
+                findField(
+                    type = autoDjInstance.javaClass,
+                    name = "r"
+                )
+            }.getOrElse { nativeMappingError ->
+                return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = null,
+                    nativeMappingError = nativeMappingError
+                )
+            }
 
         trackDaoField.isAccessible =
             true
@@ -363,8 +385,13 @@ class GmmpLibraryReader {
             trackDaoField.get(
                 autoDjInstance
             )
-                ?: throw IllegalStateException(
-                    "qr.r / TrackDao is null"
+                ?: return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = null,
+                    nativeMappingError = IllegalStateException(
+                        "GMMP TrackDao field is null"
+                    )
                 )
 
         val queryMethod =
@@ -376,12 +403,12 @@ class GmmpLibraryReader {
                 ) {
                     throw mappingError
                 }
-                val tracks = loadLibraryThroughCursor(
-                    autoDjInstance,
-                    startTime
+                return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = trackDao,
+                    nativeMappingError = mappingError
                 )
-                deterministicMappingFailure = false
-                return tracks
             }
 
         queryMethod.isAccessible =
@@ -470,6 +497,45 @@ class GmmpLibraryReader {
         )
 
         return tracks
+    }
+
+    private fun loadLibraryThroughCursorFallback(
+        autoDjInstance: Any,
+        startTime: Long,
+        trackDao: Any?,
+        nativeMappingError: Throwable
+    ): List<GmmpLibraryTrack> {
+        return try {
+            val tracks = loadLibraryThroughCursor(
+                autoDjInstance,
+                startTime
+            )
+            acceptedCursorAutoDjType = autoDjInstance.javaClass
+            deterministicMappingFailure = false
+            val key = "cursor|" + autoDjInstance.javaClass.name
+            if (reportedLibraryAccessBindings.add(key)) {
+                Log.i(
+                    TAG,
+                    "GMMP library access bound | mode=read-only-cursor" +
+                        " | runtime=" + autoDjInstance.javaClass.name +
+                        " | discovery=retired"
+                )
+            }
+            tracks
+        } catch (cursorFailure: Throwable) {
+            deterministicMappingFailure = true
+            Log.w(
+                TAG,
+                "GMMP LIBRARY MAPPING | native query unavailable and " +
+                    "read-only Cursor fallback failed" +
+                    " | runtime=" + autoDjInstance.javaClass.name +
+                    " | dao=" + (trackDao?.javaClass?.name ?: "unavailable"),
+                cursorFailure
+            )
+            trackDao?.let(::diagnoseTrackDaoStructure)
+            cursorFailure.addSuppressed(nativeMappingError)
+            throw cursorFailure
+        }
     }
 
     private fun loadLibraryThroughCursor(
@@ -994,29 +1060,6 @@ class GmmpLibraryReader {
             )
             return resolved
         }
-
-        deterministicMappingFailure = true
-
-        Log.w(
-            TAG,
-            "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
-                " | concreteRawQuery=" +
-                concreteRawQueryMethods.take(8).joinToString(",") {
-                    signature(it)
-                }.ifBlank { "none" } +
-                " | abstractContracts=" +
-                abstractListContracts.take(8).joinToString(",") {
-                    signature(it)
-                }.ifBlank { "none" } +
-                " | listCandidates=" +
-                listCandidates.take(12).joinToString(",") { signature(it) }
-                    .ifBlank { "none" } +
-                " | oneArgMethodCount=" + oneArgMethods.size
-        )
-
-        diagnoseTrackDaoStructure(
-            trackDao
-        )
 
         throw NoSuchMethodException(
             type.name + ".g2/1 is unavailable; GMMP library mapping is unverified"

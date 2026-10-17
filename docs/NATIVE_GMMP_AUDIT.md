@@ -1,3 +1,29 @@
+# GMMP 4.2.1 final native-function / compatibility audit — 17 October 2026
+
+**Scope:** `fix/playlist-link-gmmp-4.2.1` after R72 and the maintainer's successful bundled device run. This section is the current release-readiness audit; the older 4.2.0 audit is retained below as historical evidence. The branch is prepared for merge, but this document does not mean it has already been merged, tagged or released.
+
+## Final verdict
+
+- Playlist Link resumes GMMP's proven native editor/chooser/save/evaluate flow; semantic shape/ownership checks and postconditions replace R8 names as authority.
+- Track Auto-DJ dispatches the clicked row's native Play action, uses GMMP's own Auto-DJ/refill lifecycle, and limits queue mutation to the verified generated `queue_table` DAO. Queue IDs/order/Current are independently re-read after mutation. No direct SQL/Room writes are used.
+- Read-only Cursor access remains intentionally available for identity/queue/library observation where 4.2.1 exposes no independently verified native reader. It runs through GMMP's already-open Room database and is never promoted to write authority.
+- File-browser eligibility is the accepted R72 contract: playable file = 9 or 10 visible native actions; directory = 8; 7/other shapes = unknown and hidden. Click-time target identity remains independently verified.
+- The accepted `MusicService.I2(int)` event argument remains opaque. Absolute Current/Current+1 authority comes only from exact target + independently verified Current writer/readback. The R71 natural boundary preserves its absolute Current coordinate.
+- Final cleanup retires the obsolete r45 read-only context-Play observer and its dead list-narrowing placeholder, caches the accepted 4.2.1 library Cursor fallback per concrete Auto-DJ runtime class, makes successful queue mapping logs one-shot per runtime shape, and preserves rich diagnostics only for new/failing boundaries.
+- GMMP-visible Playlist Link text now preserves the original label when the live localized `playlist` resource is unavailable instead of falling back to an English noun. Companion UI/logging remains English-only by design.
+
+## Performance / logging conclusion
+
+The accepted runtime no longer keeps the retired r45 context hook or repeatedly emits successful queue mutation/mapping inventories. Library/index work remains background work; broad compatibility inventories are disabled in normal operation and remain available only for future unknown/failing GMMP shapes. Device logs can still contain GMMP/Android frame-skip or GC messages, so they are not attributed to GoneSmart without a feature-specific causal trace.
+
+## Merge gate
+
+The fix branch is merge-ready only after the normal Build workflow is green on the exact final audit head (generated-forum check, unit tests, Debug APK, unsigned Release smoke and artifact upload) and no temporary audit workflow/script remains. The later 0.5.0 integration must rerun CI after this branch and both feature branches are combined; it must not reuse this branch's green status as proof for the merged release tree.
+
+---
+
+# Historical audit
+
 # GMMP localization and native-function audit — 28 September 2026
 
 **Code audited:** `feature/multi-playlist-add`, after the maintainer accepted the complete Playlist folders feature on the tested GMMP **4.2.0** device. This is a **source-level audit**, grounded in the repository implementation and the earlier documented investigation of the supplied original GMMP 4.2.0 APK. It is **not** a claim that all 76 raw APK language codes, every skin, or every action listed below were newly exercised on a device during this audit. Green CI proves compile/pure regression tests, not live GMMP resource availability or interface grammar.

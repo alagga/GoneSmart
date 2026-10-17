@@ -1197,20 +1197,25 @@ internal class GmmpQueueMutationBridge(
             null
         }
 
-        Log.i(
-            TAG,
-            "QUEUE MUTATION MAPPING | dao=" + dao.javaClass.name +
-                " | model=" + modelClass.name +
-                " | readRows=" + rows.size +
-                " | queueId=" + queueId.name +
-                " | trackId=" + trackId.name +
-                " | position=" + position.name +
-                " | update=" + update.name +
-                " | delete=" + (delete?.name ?: "none") +
-                " | state=" +
-                (statePosition?.description ?: "deferred-if-needed") +
-                " | reader=" + reconstructed.boundary
-        )
+        val mappingKey =
+            "mutation-bound|" + dao.javaClass.name + "|" + modelClass.name
+        if (reportedShapes.add(mappingKey)) {
+            Log.i(
+                TAG,
+                "QUEUE MUTATION MAPPING | dao=" + dao.javaClass.name +
+                    " | model=" + modelClass.name +
+                    " | readRows=" + rows.size +
+                    " | queueId=" + queueId.name +
+                    " | trackId=" + trackId.name +
+                    " | position=" + position.name +
+                    " | update=" + update.name +
+                    " | delete=" + (delete?.name ?: "none") +
+                    " | state=" +
+                    (statePosition?.description ?: "deferred-if-needed") +
+                    " | reader=" + reconstructed.boundary +
+                    " | discovery=retired"
+            )
+        }
 
         return Resolved(
             dao = dao,

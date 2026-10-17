@@ -24,6 +24,9 @@ class GmmpQueueReader {
 
     companion object {
         private const val TAG = "GoneSmart"
+        private val reportedCursorBindings =
+            java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
         private const val CURSOR_QUERY =
             """
             SELECT queue_table.queue_position AS queue_position,
@@ -60,8 +63,6 @@ class GmmpQueueReader {
         val source: String
     )
 
-    private val reportedCursorBindings =
-        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     fun read(
         autoDjInstance: Any,
@@ -288,7 +289,6 @@ class GmmpQueueReader {
             val currentQueuePosition = ordered[currentIndex].queuePosition
             val key =
                 autoDjInstance.javaClass.name + "|" +
-                    marker.source + "|" +
                     if (useShuffle) "shuffle" else "queue"
             if (reportedCursorBindings.add(key)) {
                 Log.i(

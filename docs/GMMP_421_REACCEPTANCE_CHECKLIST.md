@@ -1,4 +1,13 @@
-# GMMP 4.2.1 bundled re-acceptance
+# GMMP 4.2.1 bundled re-acceptance — COMPLETED
+
+**Completed 17 October 2026.** The final R72-era device run accepted the repaired Playlist Link / Track Auto-DJ behavior, including repeated verified Track Auto-DJ initial queues and the corrected file-browser menu gate, without the previous Current-position writer dispatch timeout. The checklist below is retained as a historical investigation record from the r45 phase; it is no longer an open release blocker.
+
+For current merge/release gating use `AGENTS.md`, `NATIVE_GMMP_AUDIT.md`, the exact-head normal Build workflow and the 0.5.0 integration test on the eventual merged tree.
+
+---
+
+## Historical r45 checklist
+
 
 This checklist is the single device pass for the current **r45** Playlist Link / Track Mix architecture-correction and read-only mapping candidate. Do not split it into exploratory builds unless one of the independent postconditions below fails and the exact-head log proves a new boundary.
 
