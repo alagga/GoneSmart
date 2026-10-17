@@ -43,6 +43,25 @@ class RecommendationSourceSelectionPolicyTest {
     }
 
     @Test
+    fun everySourceCanBeDisabledWhileAllThreeAreEnabled() {
+        val options = GoneSmartOptions(
+            recommendationMode = RecommendationMode.CUSTOM,
+            localPlaylistProviderEnabled = true,
+            listenBrainzProviderEnabled = true,
+            lastFmProviderEnabled = true
+        )
+
+        RecommendationProvider.entries.forEach { provider ->
+            assertTrue(
+                RecommendationSourceSelectionPolicy.canDisable(
+                    provider = provider,
+                    options = options
+                )
+            )
+        }
+    }
+
+    @Test
     fun alreadyDisabledSourceDoesNotBlockUiRefresh() {
         val options = optionsWithOnly(RecommendationProvider.LOCAL_PLAYLIST)
 
