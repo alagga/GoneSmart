@@ -62,6 +62,7 @@ internal class TrackMixController(
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val COMMAND_AUTO_DJ = "gonemad.gmmp.command.AUTO_DJ"
         private const val MIX_ITEM_ID = 0x47534D01
+        private const val FILE_BROWSER_MENU = "menu_gm_context_file_browser"
         // These GMMP 4.2.0 menu XMLs all have native Play and Play next.
         // Contexts that represent whole albums/artists/playlists are excluded.
         private val SONG_MENUS = setOf(
@@ -69,7 +70,7 @@ internal class TrackMixController(
             "menu_gm_context_queue",
             "menu_gm_context_search",
             "menu_gm_context_playlist_details",
-            "menu_gm_context_file_browser",
+            FILE_BROWSER_MENU,
             "menu_gm_context_shared"
         )
 
@@ -128,6 +129,13 @@ internal class TrackMixController(
     private data class LoadedPlay(
         val snapshot: Snapshot,
         val selectedTrackId: Long
+    )
+
+    private data class MenuSelectionContext(
+        val callback: Any?,
+        val popup: Any?,
+        val listener: Any?,
+        val roots: List<Any>
     )
 
     internal data class ZeroPoolNativeRefillBoundary(
@@ -204,6 +212,7 @@ internal class TrackMixController(
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
     private val queueReader = GmmpQueueReader()
+    private val fileBrowserMenuResolver = TrackMixFileBrowserMenuResolver()
     private val prePlayAutoDjResolver = TrackMixAutoDjResolver()
     private val nativePlayListResolver = TrackMixNativePlayListResolver()
 
@@ -1010,11 +1019,11 @@ internal class TrackMixController(
             context.resources.getResourceEntryName(menuResId)
         }.getOrNull() ?: return
         if (name !in SONG_MENUS) return
-        menu.findItem(MIX_ITEM_ID)?.let {
-            it.isVisible = enabled
+        val existing = menu.findItem(MIX_ITEM_ID)
+        if (!enabled) {
+            existing?.isVisible = false
             return
         }
-        if (!enabled) return
 
         val playId = context.resources.getIdentifier(
             "menuContextPlay", "id", GMMP_PACKAGE
@@ -1024,6 +1033,27 @@ internal class TrackMixController(
         )
         val nativePlay = menu.findItem(playId) ?: return
         val nativeNext = menu.findItem(nextId) ?: return
+        if (name == FILE_BROWSER_MENU) {
+            val selectionContext = menuSelectionContext(menu, nativePlay)
+            val browserSelection = fileBrowserMenuResolver.resolve(selectionContext.roots)
+            if (browserSelection.kind != TrackMixFileBrowserSelectionKind.REGULAR_FILE) {
+                existing?.isVisible = false
+                Log.i(
+                    TAG,
+                    "MIX MENU SKIP | menu=$name" +
+                        " | browserContext=${browserSelection.kind.name.lowercase()}" +
+                        " | evidence=${browserSelection.evidence}" +
+                        " | depth=${browserSelection.depth ?: -1}" +
+                        " | roots=${selectionContext.roots.size}" +
+                        " | inspected=${browserSelection.inspectedObjects}"
+                )
+                return
+            }
+        }
+        if (existing != null) {
+            existing.isVisible = true
+            return
+        }
         val language = context.resources.configuration.locales[0].language
         fun nativeText(resource: String): String? {
             val resourceId = context.resources.getIdentifier(
@@ -1094,17 +1124,9 @@ internal class TrackMixController(
         // waited up to 350 ms on the UI thread for this Room read, which made
         // the context-menu click visibly stall. Keep the ordering proof, but
         // never block GMMP's main thread for it.
-        val callback = runCatching { field(menu, "mCallback") }.getOrNull()
-        val popup = callback?.let { runCatching { field(it, "this$0") }.getOrNull() }
-        val listener = popup?.let {
-            runCatching {
-                field(it, "mMenuItemClickListener")
-                    ?: field(it, "mOnMenuItemClickListener")
-            }.getOrNull()
-        }
-        val prePlayRoots = listOfNotNull(
-            listener, popup, callback, menu, nativePlay
-        ).distinctBy { System.identityHashCode(it) }
+        val selectionContext = menuSelectionContext(menu, nativePlay)
+        val listener = selectionContext.listener
+        val prePlayRoots = selectionContext.roots
         Log.i(
             TAG,
             "MIX CLICK | source=$source | roots=${prePlayRoots.size} | " +
@@ -3068,6 +3090,30 @@ internal class TrackMixController(
             )
             true
         }.getOrDefault(false)
+    }
+
+    private fun menuSelectionContext(
+        menu: Menu,
+        nativePlay: MenuItem
+    ): MenuSelectionContext {
+        val callback = runCatching { field(menu, "mCallback") }.getOrNull()
+        val popup = callback?.let {
+            runCatching { field(it, "this$0") }.getOrNull()
+        }
+        val listener = popup?.let {
+            runCatching {
+                field(it, "mMenuItemClickListener")
+                    ?: field(it, "mOnMenuItemClickListener")
+            }.getOrNull()
+        }
+        return MenuSelectionContext(
+            callback = callback,
+            popup = popup,
+            listener = listener,
+            roots = listOfNotNull(
+                listener, popup, callback, menu, nativePlay
+            ).distinctBy { System.identityHashCode(it) }
+        )
     }
 
     private fun menuContext(menu: Menu, inflater: Any?): Context? {
