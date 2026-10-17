@@ -13,25 +13,28 @@ internal data class TrackMixFileBrowserSelection(
 
 /**
  * GMMP 4.2.1 reuses menu_gm_context_file_browser for directories and playable
- * files, but its final native menu visibility differs deterministically after
- * the caller finishes configuring the row. Directory rows expose eight native
- * items; playable files expose ten. Any other cardinality fails closed.
+ * files. Device evidence originally showed eight visible native items for a
+ * directory and ten for a playable file. A later device pass with the same
+ * GMMP build showed a playable-file menu with nine native items because one
+ * unrelated native action was conditionally hidden. Accept only the two
+ * device-observed playable-file shapes (9/10). The historical directory shape
+ * remains 8; every other cardinality still fails closed.
  *
  * This is deliberately only a UI eligibility signal. Track Auto-DJ still has
  * to resolve one exact Track through the existing strong pre-Play resolver
  * before native Play can be dispatched.
  */
 internal object TrackMixFileBrowserMenuShapePolicy {
+    private val GMMP_421_SONG_VISIBLE_ITEMS = setOf(9, 10)
     private const val GMMP_421_DIRECTORY_VISIBLE_ITEMS = 8
-    private const val GMMP_421_SONG_VISIBLE_ITEMS = 10
 
     fun resolve(nativeVisibleItems: Int): TrackMixFileBrowserSelection =
-        when (nativeVisibleItems) {
-            GMMP_421_SONG_VISIBLE_ITEMS -> TrackMixFileBrowserSelection(
+        when {
+            nativeVisibleItems in GMMP_421_SONG_VISIBLE_ITEMS -> TrackMixFileBrowserSelection(
                 kind = TrackMixFileBrowserSelectionKind.REGULAR_FILE,
                 evidence = "gmmp421-native-song-menu-shape"
             )
-            GMMP_421_DIRECTORY_VISIBLE_ITEMS -> TrackMixFileBrowserSelection(
+            nativeVisibleItems == GMMP_421_DIRECTORY_VISIBLE_ITEMS -> TrackMixFileBrowserSelection(
                 kind = TrackMixFileBrowserSelectionKind.DIRECTORY,
                 evidence = "gmmp421-native-directory-menu-shape"
             )
