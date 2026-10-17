@@ -23,6 +23,14 @@ jobs:
       - name: Apply R68 patch
         run: python3 scripts/tmp_r68_patch.py
 
+      - name: Normalize R68 playbook EOF
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md')
+          path.write_text(path.read_text().rstrip() + '\n')
+          PY
+
       - name: Verify R68 scope
         run: |
           git diff --check
