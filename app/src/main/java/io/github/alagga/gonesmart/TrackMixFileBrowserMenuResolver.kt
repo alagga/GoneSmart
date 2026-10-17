@@ -20,13 +20,16 @@ internal data class TrackMixFileBrowserSelection(
 
 /**
  * GMMP reuses menu_gm_context_file_browser for both playable files and
- * directories. Resolve only filesystem identity from the bounded selected-row
- * callback graph. Collections/arrays are deliberately not traversed so a
- * folder's child rows cannot make the folder itself look playable.
+ * directories. The selected file-browser row is nested behind a small native
+ * collection on 4.2.1, so bounded collection traversal is required. Only the
+ * unique shallowest filesystem target is authoritative: deeper child rows can
+ * never promote a selected directory, and an adapter-like set of multiple
+ * paths fails closed as ambiguous.
  */
 internal class TrackMixFileBrowserMenuResolver(
-    private val maxDepth: Int = 4,
-    private val maxObjects: Int = 64,
+    private val maxDepth: Int = 5,
+    private val maxObjects: Int = 240,
+    private val maxCollectionItems: Int = 48,
     private val pathKind: (String) -> TrackMixFileBrowserSelectionKind = ::probePath
 ) {
     private data class Node(val value: Any, val depth: Int)
@@ -59,8 +62,8 @@ internal class TrackMixFileBrowserMenuResolver(
             }
 
             if (node.depth >= maxDepth) continue
-            directChildren(node.value).forEach { child ->
-                if (visited[child] == null && shouldTraverse(child)) {
+            directChildren(node.value).take(maxCollectionItems).forEach { child ->
+                if (visited[child] == null && shouldInspect(child)) {
                     queue.add(Node(child, node.depth + 1))
                 }
             }
@@ -72,14 +75,27 @@ internal class TrackMixFileBrowserMenuResolver(
                 inspectedObjects = inspected
             )
         val atDepth = candidates.filter { it.depth == shallowest }
-        val winner = atDepth.firstOrNull {
-            it.kind == TrackMixFileBrowserSelectionKind.REGULAR_FILE
-        } ?: atDepth.firstOrNull {
-            it.kind == TrackMixFileBrowserSelectionKind.DIRECTORY
-        } ?: return TrackMixFileBrowserSelection(
-            kind = TrackMixFileBrowserSelectionKind.UNKNOWN,
-            inspectedObjects = inspected
-        )
+        val distinctTargets = atDepth
+            .groupBy { it.path }
+        if (distinctTargets.size != 1) {
+            return TrackMixFileBrowserSelection(
+                kind = TrackMixFileBrowserSelectionKind.UNKNOWN,
+                depth = shallowest,
+                evidence = "ambiguous-shallow-paths",
+                inspectedObjects = inspected
+            )
+        }
+        val sameTarget = distinctTargets.values.single()
+        val kinds = sameTarget.map { it.kind }.distinct()
+        if (kinds.size != 1) {
+            return TrackMixFileBrowserSelection(
+                kind = TrackMixFileBrowserSelectionKind.UNKNOWN,
+                depth = shallowest,
+                evidence = "ambiguous-path-kind",
+                inspectedObjects = inspected
+            )
+        }
+        val winner = sameTarget.first()
         return TrackMixFileBrowserSelection(
             kind = winner.kind,
             depth = winner.depth,
@@ -93,9 +109,11 @@ internal class TrackMixFileBrowserMenuResolver(
     }
 
     private fun directPaths(value: Any): Sequence<String> = sequence {
-        if (value is File) {
-            normalizePath(value.path)?.let { yield(it) }
+        when (value) {
+            is File -> normalizePath(value.path)?.let { yield(it) }
+            is CharSequence -> normalizePath(value.toString())?.let { yield(it) }
         }
+        if (value is File || value is CharSequence) return@sequence
         fields(value.javaClass).forEach { field ->
             val child = runCatching {
                 field.isAccessible = true
@@ -109,9 +127,25 @@ internal class TrackMixFileBrowserMenuResolver(
     }
 
     private fun directChildren(value: Any): Sequence<Any> = sequence {
-        // Never walk adapter/list contents: only the selected callback/model
-        // chain is eligible to decide whether the menu represents a file.
-        if (value is Iterable<*> || value is Map<*, *> || value.javaClass.isArray) {
+        when (value) {
+            is File, is CharSequence -> return@sequence
+            is Iterable<*> -> {
+                value.take(maxCollectionItems).filterNotNull().forEach { yield(it) }
+                return@sequence
+            }
+            is Map<*, *> -> {
+                value.entries.take(maxCollectionItems).forEach { entry ->
+                    entry.key?.let { yield(it) }
+                    entry.value?.let { yield(it) }
+                }
+                return@sequence
+            }
+        }
+        if (value.javaClass.isArray) {
+            val length = java.lang.reflect.Array.getLength(value).coerceAtMost(maxCollectionItems)
+            repeat(length) { index ->
+                java.lang.reflect.Array.get(value, index)?.let { yield(it) }
+            }
             return@sequence
         }
         fields(value.javaClass).forEach { field ->
@@ -125,14 +159,17 @@ internal class TrackMixFileBrowserMenuResolver(
         }
     }
 
-    private fun shouldTraverse(value: Any): Boolean {
+    private fun shouldInspect(value: Any): Boolean {
+        if (value is File || value is CharSequence) return true
+        if (value is Iterable<*> || value is Map<*, *> || value.javaClass.isArray) return true
         if (isScalar(value)) return false
         val name = value.javaClass.name
         return !(
             name.startsWith("android.") ||
                 name.startsWith("androidx.") ||
                 name.startsWith("com.google.android.") ||
-                name.startsWith("java.") ||
+                name.startsWith("java.lang.") ||
+                name.startsWith("java.util.concurrent.") ||
                 name.startsWith("kotlin.")
         )
     }
