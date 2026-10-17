@@ -6,10 +6,10 @@ on:
     paths: ['.github/workflows/rc-integration-helper.yml']
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect-auto-dj-merge:
+  merge-auto-dj:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout RC with history
@@ -17,35 +17,154 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch Auto-DJ provider branch
-        run: git fetch origin feature/auto-dj-providers:refs/remotes/origin/feature/auto-dj-providers
-
-      - name: Attempt real three-way merge and collect conflicts
+      - name: Merge Auto-DJ providers with audited resolutions
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           git config user.name "GoneSmart RC integration"
           git config user.email "69852271+alagga@users.noreply.github.com"
-          rm -rf integration-artifact
-          mkdir -p integration-artifact/{base,ours,theirs,merged}
+          git fetch origin feature/auto-dj-providers:refs/remotes/origin/feature/auto-dj-providers
           git merge --no-commit --no-ff origin/feature/auto-dj-providers || true
-          git status --short > integration-artifact/status.txt
-          git diff --name-only --diff-filter=U > integration-artifact/conflicts.txt
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            for side in base ours theirs; do
-              mkdir -p "integration-artifact/$side/$(dirname "$file")"
-            done
-            mkdir -p "integration-artifact/merged/$(dirname "$file")"
-            git show ":1:$file" > "integration-artifact/base/$file" || true
-            git show ":2:$file" > "integration-artifact/ours/$file" || true
-            git show ":3:$file" > "integration-artifact/theirs/$file" || true
-            cp "$file" "integration-artifact/merged/$file"
-          done < integration-artifact/conflicts.txt
 
-      - name: Upload merge evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: rc-auto-dj-merge-evidence
-          path: integration-artifact
-          retention-days: 1
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          marker = re.compile(
+              r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> origin/feature/auto-dj-providers\n?',
+              re.S,
+          )
+
+          def resolve(path, resolver):
+              p = Path(path)
+              text = p.read_text()
+              matches = list(marker.finditer(text))
+              if not matches:
+                  raise SystemExit(f"Expected merge conflicts in {path}")
+              index = 0
+              def repl(match):
+                  nonlocal index
+                  ours, theirs = match.group(1), match.group(2)
+                  value = resolver(index, ours, theirs)
+                  index += 1
+                  return value.rstrip() + "\n"
+              resolved = marker.sub(repl, text)
+              if '<<<<<<<' in resolved or '=======' in resolved or '>>>>>>>' in resolved:
+                  raise SystemExit(f"Conflict marker remains in {path}")
+              p.write_text(resolved)
+
+          def library_resolver(index, ours, theirs):
+              if index == 0:
+                  return ours.rstrip() + "\n\n" + theirs.rstrip()
+              if index == 1:
+                  return '''                val cachedAt = SystemClock.elapsedRealtime()
+                cacheCreatedAtElapsedMs = cachedAt
+                cacheValidatedAtElapsedMs = cachedAt
+                cachedRevision =
+                    readLibraryRevision(autoDjInstance)
+                        ?: revisionFromTracks(loaded)
+
+                Log.i(
+                    TAG,
+                    "GMMP library path index ready | tracks=${pathIndex.trackCount} | " +
+                        "paths=${pathIndex.idsByPath.size} | " +
+                        "ambiguous=${pathIndex.ambiguousPaths.size}"
+                )'''
+              if index == 2:
+                  return ours.rstrip() + "\n\n" + theirs.rstrip()
+              if index == 3:
+                  # Keep the newer 4.2.1 accepted resolver/fallback. The provider
+                  # branch's tested-name lookup is only an older optional fast path.
+                  return ours.rstrip()
+              raise SystemExit(f"Unexpected GmmpLibraryReader conflict #{index}")
+
+          resolve(
+              'app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt',
+              library_resolver,
+          )
+
+          def agents_resolver(index, ours, theirs):
+              if index == 0:
+                  # Keep exact-build identity verification and add both support
+                  # diagnostic layers. The common paragraph below the conflict
+                  # already owns the broad-inventory rule.
+                  build_identity = ours.split('\n\nBroad class/method/recycler inventories', 1)[0].rstrip()
+                  return build_identity + "\n\n" + theirs.rstrip()
+              if index == 1:
+                  return ours.rstrip() + "\n\n" + theirs.rstrip()
+              raise SystemExit(f"Unexpected AGENTS conflict #{index}")
+
+          resolve('AGENTS.md', agents_resolver)
+
+          resolve(
+              'docs/GMMP_COMPATIBILITY_PLAYBOOK.md',
+              lambda index, ours, theirs: ours.rstrip() + "\n\n" + theirs.rstrip(),
+          )
+
+          Path('docs/ROADMAP.md').write_text('''# GoneSmart roadmap
+
+This roadmap describes the current direction for upcoming GoneSmart releases. Planned items may change as development and GMMP compatibility work progresses.
+
+## 0.5.0 release candidate
+
+The three completed 0.5.0 workstreams are being integrated and audited together before the stable release.
+
+### Bluetooth device audio profiles
+
+Per-output GMMP Equalizer and Effects profiles are implemented and device-accepted on GMMP 4.2.1. GoneSmart can remember a Standard no-Bluetooth baseline and Bluetooth-specific overrides, restore them automatically, use GMMP native Equalizer presets, and adapt stored curves across supported 2–10-band layouts.
+
+See `docs/AUDIO_PROFILES.md` and `docs/AUDIO_PROFILES_COMPLETION.md`.
+
+### Smarter recommendation blend
+
+Smart Auto-DJ can combine Local Playlist Affinity, ListenBrainz and Last.fm with Smart/Custom provider policy, per-provider weights, bounded corroboration, controlled near-tie variety, staged artist rescue, local/offline recommendations and cached large-library/playlist reads. Every final playable result still has to exist in the local GMMP library.
+
+See `docs/AUTO_DJ_PROVIDERS.md` and `docs/PROVIDERS.md`.
+
+### GMMP 4.2.1 compatibility
+
+The accepted Playlist Link and Track Auto-DJ compatibility work is included in the same 0.5.0 candidate. Native GMMP behavior remains authoritative, dynamic semantic/structural resolution is preferred over obfuscated names, and ambiguous state-changing boundaries fail closed.
+
+The release candidate is promoted to stable 0.5.0 only after the combined audit, exact-head CI and device smoke testing are complete.
+
+## 0.6.0 outlook
+
+### SoundCloud recommendations
+
+SoundCloud remains the strongest additional online-provider candidate currently being considered, especially for electronic music, remixes and newer independent releases. Any implementation still needs a safe authorization/credential design suitable for a distributed Android client.
+
+### Optional Smart-Playlist affinity
+
+Smart Playlists may become an opt-in local recommendation source with deliberately lower weight than hand-curated normal playlists because their rule-based membership can be broader and more dynamic.
+
+## Unlikely provider directions for now
+
+- **Spotify:** not planned as a normal provider while the current public API model is unsuitable for the recommendation behavior GoneSmart needs. Private WebPlayer/GraphQL APIs would be too brittle for GoneSmart's compatibility goals.
+- **YouTube:** the documented Data API does not provide a stable direct related-track recommender suitable for this use case.
+- **YouTube Music:** there is no suitable public recommendation API; private/undocumented integration would be too brittle for a normal GoneSmart provider.
+
+These directions can be reevaluated if the providers expose stable documented APIs and practical public-client authorization models.
+
+## Later ideas
+
+- Distinguish simultaneously remembered Bluetooth devices that expose the same product name without reintroducing route-ID fragmentation.
+- Consider caller-authenticated IPC for the GMMP-to-companion audio-observation fallback where Android package visibility prevents the preferred provider transport.
+- Revalidate Equalizer compatibility data when support moves beyond GMMP 4.2.1.
+- Additional smart-library, playback and GMMP workflow extensions after 0.5.0 is stable.
+''')
+          PY
+
+          test -z "$(git diff --name-only --diff-filter=U)" || {
+            echo "Unresolved merge conflicts remain:" >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          }
+          if grep -R -n -E '^(<<<<<<<|=======|>>>>>>>)' AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md; then
+            echo "Conflict markers remain after resolution" >&2
+            exit 1
+          fi
+          git diff --check
+          git add AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
+          git status --short
+          git commit -m "merge: integrate Auto-DJ providers for 0.5.0 RC"
+          git push origin HEAD:release/0.5.0-rc.1
