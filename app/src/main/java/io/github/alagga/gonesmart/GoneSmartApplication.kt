@@ -20,7 +20,6 @@ class GoneSmartApplication : Application(), XposedServiceHelper.OnServiceListene
 
     override fun onCreate() {
         super.onCreate()
-        GmmpEqualizerBandRuntimeMetadata.restore(this)
         XposedServiceHelper.registerListener(this)
     }
 

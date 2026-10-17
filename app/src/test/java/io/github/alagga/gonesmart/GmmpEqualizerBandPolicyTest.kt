@@ -9,6 +9,25 @@ import org.junit.Test
 
 class GmmpEqualizerBandPolicyTest {
 
+    private val expectedFrequencies = mapOf(
+        2 to listOf(350.0, 15_000.0),
+        3 to listOf(150.0, 1_000.0, 15_000.0),
+        4 to listOf(70.0, 400.0, 2_000.0, 15_000.0),
+        5 to listOf(64.0, 256.0, 1_000.0, 4_000.0, 16_000.0),
+        6 to listOf(45.0, 150.0, 450.0, 1_000.0, 4_000.0, 15_000.0),
+        7 to listOf(40.0, 100.0, 300.0, 750.0, 2_000.0, 5_000.0, 15_000.0),
+        8 to listOf(35.0, 85.0, 200.0, 500.0, 1_000.0, 3_000.0, 6_000.0, 15_000.0),
+        9 to listOf(35.0, 70.0, 150.0, 350.0, 700.0, 1_000.0, 3_000.0, 7_000.0, 15_000.0),
+        10 to listOf(32.0, 64.0, 128.0, 256.0, 512.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0)
+    )
+
+    @Test
+    fun everyGmmpBandLayoutMatchesObserved421Ui() {
+        expectedFrequencies.forEach { (count, expected) ->
+            assertEquals("count=$count", expected, GmmpEqualizerBandPolicy.frequenciesFor(count))
+        }
+    }
+
     @Test
     fun tenBandsStayExact() {
         val source = (0 until 10).map(Int::toDouble)
@@ -16,22 +35,25 @@ class GmmpEqualizerBandPolicyTest {
     }
 
     @Test
-    fun projectsTenBandsToFiveWithStableEndpoints() {
+    fun tenToFiveUsesTheExactSharedFrequencyAnchors() {
         val source = (0 until 10).map(Int::toDouble)
         val projected = GmmpEqualizerBandPolicy.project(source, 5)!!
 
-        assertEquals(listOf(0.0, 2.25, 4.5, 6.75, 9.0), projected)
+        assertEquals(listOf(1.0, 3.0, 5.0, 7.0, 9.0), projected)
     }
 
     @Test
-    fun expandsFiveBandEditBackToCanonicalTenPoints() {
+    fun fiveToTenKeepsExactAnchorsAndClampsOnlyOutsideItsRange() {
         val five = listOf(-6.0, -3.0, 0.0, 3.0, 6.0)
         val expanded = GmmpEqualizerBandPolicy.project(five, 10)!!
 
         assertEquals(10, expanded.size)
-        assertEquals(-6.0, expanded.first(), 0.000001)
-        assertEquals(6.0, expanded.last(), 0.000001)
-        assertEquals(3.333333333333333, expanded[7], 0.000001)
+        assertEquals(-6.0, expanded[0], 0.000001) // 32 Hz, below 5-band range
+        assertEquals(-6.0, expanded[1], 0.000001) // 64 Hz exact
+        assertEquals(-3.0, expanded[3], 0.000001) // 256 Hz exact
+        assertEquals(0.0, expanded[5], 0.000001)  // 1 kHz exact
+        assertEquals(3.0, expanded[7], 0.000001)  // 4 kHz exact
+        assertEquals(6.0, expanded[9], 0.000001)  // 16 kHz exact
     }
 
     @Test
@@ -46,16 +68,12 @@ class GmmpEqualizerBandPolicyTest {
             projected!!
             assertEquals("10->$count should expose exactly the active GMMP bands", count, projected.size)
             assertTrue("10->$count should stay finite", projected.all(Double::isFinite))
-            assertEquals(canonical.first(), projected.first(), 0.000001)
-            assertEquals(canonical.last(), projected.last(), 0.000001)
 
             val expanded = GmmpEqualizerBandPolicy.project(projected, 10)
             assertNotNull("$count->10 expansion should exist", expanded)
             expanded!!
             assertEquals(10, expanded.size)
             assertTrue("$count->10 should stay finite", expanded.all(Double::isFinite))
-            assertEquals(projected.first(), expanded.first(), 0.000001)
-            assertEquals(projected.last(), expanded.last(), 0.000001)
         }
 
         assertFalse(GmmpEqualizerBandPolicy.isSupported(1))
@@ -74,7 +92,19 @@ class GmmpEqualizerBandPolicyTest {
     }
 
     @Test
-    fun verifiedNativeFrequenciesBecomeBandLabels() {
+    fun uiUsesActualObservedFrequencyLabelsForEveryCount() {
+        for (count in GmmpEqualizerBandPolicy.MIN_BANDS..GmmpEqualizerBandPolicy.MAX_BANDS) {
+            val group = GmmpEqualizerBandPolicy.uiGroup(GoneSmartAudioProfiles.equalizerGroup, count)
+            val expected = expectedFrequencies.getValue(count)
+
+            assertEquals("enabled + preset + PRE + $count bands", 3 + count, group.fields.size)
+            assertEquals(GmmpEqualizerBandPolicy.frequencyTitle(expected.first()), group.fields[3].title)
+            assertEquals(GmmpEqualizerBandPolicy.frequencyTitle(expected.last()), group.fields.last().title)
+        }
+    }
+
+    @Test
+    fun verifiedDiagnosticFrequenciesCanOverrideTheKnownTable() {
         val group = GmmpEqualizerBandPolicy.uiGroup(
             GoneSmartAudioProfiles.equalizerGroup,
             3,
@@ -83,47 +113,8 @@ class GmmpEqualizerBandPolicyTest {
 
         assertEquals(6, group.fields.size)
         assertEquals("31.25 Hz", group.fields[3].title)
-        assertEquals("1000 Hz", group.fields[4].title)
-        assertEquals("16000.5 Hz", group.fields[5].title)
-    }
-
-    @Test
-    fun uiGroupShowsExactlyEveryActiveGmmpBandCount() {
-        for (count in GmmpEqualizerBandPolicy.MIN_BANDS..GmmpEqualizerBandPolicy.MAX_BANDS) {
-            val group = GmmpEqualizerBandPolicy.uiGroup(
-                GoneSmartAudioProfiles.equalizerGroup,
-                count,
-                verifiedFrequencies = null
-            )
-
-            assertEquals("enabled + preset + PRE + $count bands", 3 + count, group.fields.size)
-            if (count == 10) {
-                assertEquals("32 Hz", group.fields[3].title)
-                assertEquals("16 kHz", group.fields.last().title)
-            } else {
-                assertEquals("Band 1", group.fields[3].title)
-                assertEquals("Band $count", group.fields.last().title)
-            }
-        }
-    }
-
-    @Test
-    fun uiGroupShowsOnlyActiveBandCount() {
-        val fiveBand = GmmpEqualizerBandPolicy.uiGroup(
-            GoneSmartAudioProfiles.equalizerGroup,
-            5,
-            verifiedFrequencies = null
-        )
-        val tenBand = GmmpEqualizerBandPolicy.uiGroup(
-            GoneSmartAudioProfiles.equalizerGroup,
-            10,
-            verifiedFrequencies = null
-        )
-
-        assertEquals(8, fiveBand.fields.size)
-        assertEquals("Band 1", fiveBand.fields[3].title)
-        assertEquals(13, tenBand.fields.size)
-        assertEquals("32 Hz", tenBand.fields[3].title)
+        assertEquals("1 kHz", group.fields[4].title)
+        assertEquals("16.001 kHz", group.fields[5].title)
     }
 
     @Test
@@ -131,5 +122,7 @@ class GmmpEqualizerBandPolicyTest {
         assertNull(GmmpEqualizerBandPolicy.project(listOf(0.0), 10))
         assertNull(GmmpEqualizerBandPolicy.project(List(10) { 0.0 }, 1))
         assertNull(GmmpEqualizerBandPolicy.project(List(11) { 0.0 }, 10))
+        assertNull(GmmpEqualizerBandPolicy.frequenciesFor(1))
+        assertNull(GmmpEqualizerBandPolicy.frequenciesFor(11))
     }
 }
