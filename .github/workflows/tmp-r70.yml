@@ -5,6 +5,7 @@ on:
     branches: ['fix/playlist-link-gmmp-4.2.1']
     paths:
       - 'scripts/tmp_r70_patch.py'
+      - 'scripts/tmp_r70_fix.py'
       - '.github/workflows/tmp-r70.yml'
 
 permissions:
@@ -21,7 +22,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply R70 patch
-        run: python3 scripts/tmp_r70_patch.py
+        run: |
+          python3 scripts/tmp_r70_patch.py
+          python3 scripts/tmp_r70_fix.py
 
       - name: Verify R70 scope
         run: |
@@ -71,7 +74,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm scripts/tmp_r70_patch.py .github/workflows/tmp-r70.yml
+          git rm scripts/tmp_r70_patch.py scripts/tmp_r70_fix.py .github/workflows/tmp-r70.yml
           git add AGENTS.md app/src/main/java/io/github/alagga/gonesmart/TrackMixController.kt app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt app/src/test/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicyTest.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md
           git diff --cached --check
           git commit -m 'fix(track-mix): verify natural next-source coordinates'
