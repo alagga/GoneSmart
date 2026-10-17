@@ -109,6 +109,7 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 - Provider corroboration is evidence: after provider/seed deduplication, independent providers confirming the same logical track may receive a bounded bonus. A local playlist signal must never bypass the normal local-library quality/rating/duplicate gates.
 - Final selection may add controlled variety only inside bounded near-equal score buckets. Do not add global random score noise that can promote a clearly weaker candidate over a stronger one; Smart mode uses the balanced policy and Custom may expose Off/Balanced/High.
 - Revalidate large-library caches with cheap read-only revision signals before repeating an expensive full-library scan; retain a bounded hard refresh for metadata changes the revision signal may miss.
+- Recommendation-side GMMP reads must not require one obfuscated TrackDao field or method. Tested R8 names may remain optional fast paths, but the structural read-only Room/Cursor resolver and semantic playlist-catalogue discovery must remain sufficient and fail closed on ambiguity.
 - Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.

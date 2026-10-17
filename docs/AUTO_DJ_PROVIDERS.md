@@ -1,6 +1,6 @@
 # Smart Auto-DJ provider roadmap
 
-Status: 2026-10-16
+Status: **feature-complete / ready for 0.5.0 integration** (2026-10-17)
 Branch: `feature/auto-dj-providers`
 
 ## Goal
@@ -176,3 +176,43 @@ GoneSmart treats artist-level provider expansion as a rescue stage. Playlist Aff
 If fewer suitable GoneSmart tracks exist than GMMP requests in a refill, GoneSmart returns only those suitable tracks. It does not preserve untouched native/random rows to pad the request. A partial successful fill is treated as temporary scarcity: while useful tracks remain in that partial pool, low-water background top-up does not immediately call the online providers again. Once those tracks are consumed, a fresh refill is allowed. Visible multi-track underfills may show one concise status message when status messages are enabled. The configured native fallback remains relevant when there are zero suitable GoneSmart tracks.
 
 `Prevent Version Duplicates` groups the classic base variants Original, Radio, Extended and Club Mix. Remixes remain independent by default. A separate `Prevent Remix Duplicates` option is off by default; when enabled, it rejects a remix if another version of the same normalized artist + base title is already in duplicate context, and symmetrically rejects a non-remix if a remix of that song is already present. Edit, Bootleg, Mashup, Acoustic and Live variants keep their own version families unless a future policy explicitly broadens them.
+
+## Feature-completion audit
+
+The provider branch is considered feature-complete for integration into the planned 0.5.0 release. This is a branch acceptance state, **not** a merge, tag or published release.
+
+Accepted behavior on GMMP 4.2.1 includes:
+
+- Local Playlist Affinity, ListenBrainz and Last.fm blended through the same local quality pipeline;
+- Smart and Custom provider modes with live enablement/weights;
+- at least one Custom source always remaining enabled;
+- playlist-size weighting disabled when Local Playlists is disabled;
+- bounded corroboration and controlled near-tie variety;
+- staged artist rescue only when direct local coverage is insufficient;
+- local/offline playlist recommendations and session-pool continuation;
+- cheap library-cache revalidation and cached playlist membership/indexes;
+- partial smart fills without random native padding;
+- exact native GMMP Auto-DJ refill ownership retained.
+
+### Compatibility / hook audit
+
+The recommendation feature does not require a new guessed state-changing GMMP writer. Its GMMP-facing read boundaries are deliberately semantic/dynamic:
+
+- `NativeAutoDjAccessorResolver` identifies the live Auto-DJ object from structural ownership evidence rather than an accessor's obfuscated name.
+- `GmmpReadOnlySql` resolves the live GMMP Room database and compatible Cursor query boundary structurally, caches the proved binding, and fails closed on ambiguity.
+- `GmmpPlaylistCatalogReader` discovers the playlist path/URI column from actual data instead of assuming an R8 member name.
+- `GmmpLibraryReader` keeps historical TrackDao names only as an optional tested-version fast path. Failure to locate that fast path now falls directly to the structural read-only Room/Cursor route, so an R8 field rename cannot by itself disable recommendations.
+
+Future GMMP versions remain unverified until the normal compatibility workflow is run, but the provider feature no longer depends on one exact obfuscated library-DAO field in order to function.
+
+### Translation / wording audit
+
+The GoneSmart companion app is intentionally English-only. Provider names/settings/help text are GoneSmart-owned companion UI and therefore do not need a host-language translation table. The recommendation feature injects no new provider-specific labels into GMMP itself. Existing GMMP-facing actions continue to prefer GMMP's own localized resources and readable textual fallbacks according to the standing localization contract.
+
+## 0.6 provider outlook
+
+SoundCloud is the most credible next online-provider experiment because the documented SoundCloud API exposes related tracks. A release implementation still needs a safe distributed-client credential/authentication model; GoneSmart must not embed a shared client secret.
+
+Smart Playlists are also a candidate for an optional, deliberately weaker local affinity signal.
+
+Spotify, YouTube and YouTube Music are unlikely normal providers for now. Spotify's current developer-access model and recommendation-endpoint restrictions are unsuitable for a broadly distributed independent client; YouTube no longer exposes the former documented related-video search path; and YouTube Music has no suitable public recommendation API. GoneSmart will not make undocumented/private WebPlayer, GraphQL or InnerTube endpoints a normal dependency simply to add those providers.

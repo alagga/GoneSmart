@@ -110,6 +110,18 @@ For a Track-Auto-DJ-owned normalized queue only:
 
 This continuation path is device-accepted for 0.4.0.
 
+### Recommendation read boundaries
+
+The 0.5 recommendation blend has no new guessed state-changing writer. Its read-side compatibility contract is:
+
+- resolve the live Auto-DJ owner semantically/structurally, not by one obfuscated accessor name;
+- resolve the GMMP Room database and compatible Cursor query boundary structurally and fail closed on ambiguity;
+- discover the playlist-catalogue path/URI column from the actual data shape;
+- treat the historical TrackDao field/method mapping only as an optional tested-version fast path; if it is unavailable, the structural read-only Cursor path must remain sufficient;
+- cache successful structural bindings and playlist/library indexes so accepted-version runtime does not repeatedly perform broad discovery.
+
+A future GMMP compatibility self-test must include these read-only Smart DJ boundaries in addition to the queue/UI mutation families.
+
 ### Recommendation-pool latency
 
 - successful fills may top up again as soon as low-water requires it;

@@ -66,3 +66,11 @@ The same log identified the actual input widget as GMMP's `AestheticTextInputEdi
 Device feedback rejected the redundant small MaterialDialogs caption after it was successfully localized: with the dialog title and the field placeholder already describing the new folder, a second floating `New Folder Name` / translated equivalent adds no useful information. GoneSmart now disables only that floating TextInputLayout caption and keeps one localized placeholder in the actual input field. The large native dialog title and buttons remain untouched.
 
 The same device log showed the live `!mainColorAccent` arriving after the initial input pass, which allowed Android's unrelated red static focus accent to appear briefly. The shared Aesthetic bridge now delivers a current color immediately when its observer emits on GMMP's main thread instead of always queueing another `View.post`. Until the live color is available, creation dialogs use a transparent focused underline/cursor state rather than the red fallback. As soon as Aesthetic emits, the field underline and cursor receive the real GMMP accent.
+
+## 0.5 recommendation UI audit
+
+The recommendation-provider feature does not add new host-language strings inside GMMP. Provider mode, source weights, playlist weighting and variety are GoneSmart companion settings, and the companion app intentionally remains English-only.
+
+GMMP-facing actions continue to use the host application's own localized resources whenever suitable wording exists. Track Auto-DJ success confirmation prefers GMMP's localized `started` string and otherwise uses the readable English word `started`; symbol-only fallback messages are not allowed.
+
+The historical custom Move / Other Locations translation inventory remains separate from the recommendation feature. The overall accepted GMMP compatibility target is now 4.2.1.

@@ -26,10 +26,13 @@ GoneSmart integrates with GMMP internals, so a future GMMP update can temporaril
 
 ## Looking toward 0.5.0
 
-- **More recommendation providers:** additional recommendation sources are being explored. Services such as Spotify, YouTube and YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
-- **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
+The planned 0.5.0 integration currently brings together three separate workstreams:
 
-These are current directions and may change during development.
+- **Smarter recommendation blend:** Local Playlist Affinity alongside ListenBrainz and Last.fm, with Smart/Custom provider policy, weights, controlled variety, staged rescue and better caching. The recommendation workstream is feature-complete, but 0.5.0 itself has not been merged or released.
+- **Bluetooth device audio profiles:** per-device GMMP equalizer/effects overrides, developed separately.
+- **GMMP 4.2.1 playlist compatibility:** the separate Playlist Link / playlist-sync fixes, developed and accepted independently before integration.
+
+For a later 0.6.0 direction, SoundCloud is the strongest additional online-provider candidate because it has an official related-track API, while Smart Playlists may become an optional weaker local affinity source. Spotify, YouTube and YouTube Music are currently unlikely normal providers because their documented APIs/access models do not provide a robust equivalent for GoneSmart's use case; private/undocumented integrations would be too brittle.
 
 ## Installation
 

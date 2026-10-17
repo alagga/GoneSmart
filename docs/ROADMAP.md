@@ -2,26 +2,42 @@
 
 This roadmap describes the current direction for upcoming GoneSmart releases. Planned items may change as development and GMMP compatibility work progresses.
 
-## Ideas for 0.5.0
+## 0.5.0 integration plan
 
-### Smarter recommendation blend
+### Smarter recommendation blend — feature complete
 
-Continue strengthening Last.fm and ListenBrainz together with local Playlist Affinity: tracks that repeatedly occur together in the user's normal GMMP playlists can reinforce one another even when a new release is not yet represented well by public recommendation graphs. Independent provider agreement receives a bounded ranking boost while every final result still has to resolve to the local GMMP library.
+The recommendation-provider workstream is feature-complete and ready to be integrated into the future 0.5.0 release once the other planned 0.5 workstreams are ready.
 
-The companion app should keep **Smart** as the recommended automatic provider policy while allowing an optional **Custom** mode for users who want to enable or disable individual sources, tune their ranking weights and choose how strongly very large normal playlists are down-weighted.
-
-SoundCloud remains an interesting later provider to investigate, especially for electronic music, remixes and new releases, but it is not committed until a safe public-client credential model is practical. Spotify, YouTube and YouTube Music remain evaluated examples rather than planned integrations.
+It adds Local Playlist Affinity alongside ListenBrainz and Last.fm, Smart/Custom provider policy, per-provider weights, bounded cross-provider corroboration, controlled near-tie variety, staged artist rescue, local/offline recommendations, cached large-library/playlist reads, and provider/runtime diagnostics. Every final playable result still has to exist in the local GMMP library.
 
 ### Bluetooth device audio profiles
 
-Add per-device audio profiles for Bluetooth playback devices.
+The 0.5.0 plan also includes per-device audio profiles so different Bluetooth headphones, speakers, car audio systems or the no-Bluetooth state can use different GMMP equalizer/effects overrides while retaining a native/default option for each setting.
 
-GoneSmart should be able to automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other device is currently connected.
+This work is developed separately and is not considered complete merely because the recommendation branch is complete.
 
-For example, connecting one pair of headphones could activate one EQ/effects profile, while connecting a car stereo could automatically switch to another.
+### GMMP 4.2.1 playlist compatibility
+
+The 0.5.0 integration plan also includes the separate Playlist Link / playlist-sync compatibility fixes for GMMP 4.2.1. That workstream remains separate until it is accepted on its own branch.
+
+## 0.6.0 outlook
+
+### SoundCloud recommendations
+
+SoundCloud is the strongest additional online-provider candidate currently being considered because its official API exposes related-track recommendations and is particularly interesting for electronic music, remixes and newer independent releases. Before implementation is accepted, GoneSmart needs a safe authorization/credential design for a distributed Android client and must not embed a shared confidential client secret.
+
+### Optional Smart-Playlist affinity
+
+Smart Playlists may become an opt-in local recommendation source with deliberately lower weight than hand-curated normal playlists. Their rule-based membership can be much broader and more dynamic, so they should never automatically count as equivalent evidence.
+
+## Unlikely provider directions for now
+
+- **Spotify:** not planned as a normal provider while current Web API Development Mode remains unsuitable for broad distribution and new development use cases lack the former Recommendations/Related Artists functionality. Private WebPlayer/GraphQL APIs would be too brittle for GoneSmart's compatibility goals.
+- **YouTube:** the documented Data API no longer exposes the former related-video search path, so there is no stable direct related-track recommender. Search/playlist-derived approximations would be indirect and quota-heavy.
+- **YouTube Music:** there is no suitable public recommendation API. An InnerTube/private integration would be undocumented and too experimental/brittle for a normal GoneSmart provider.
+
+These directions can be reevaluated if the providers expose a stable documented API and practical public-client authorization model in the future.
 
 ## Later ideas
 
-- Optionally let Smart Playlists contribute a deliberately much weaker affinity signal; broad/dynamic Smart Playlist membership must never be treated like a hand-curated normal playlist by default.
-- Revisit SoundCloud recommendations if authentication/credential handling becomes suitable for a distributed Android module.
-- Additional smart-library, playback and GMMP workflow extensions can be considered after the 0.5.0 work is stable.
+Additional smart-library, playback and GMMP workflow extensions can be considered after the 0.5.0 work is integrated and stable.

@@ -380,22 +380,35 @@ class GmmpLibraryReader {
         val startTime =
             System.nanoTime()
 
-        val trackDaoField =
-            findField(
-                type = autoDjInstance.javaClass,
-                name = "r"
-            )
-
-        trackDaoField.isAccessible =
-            true
-
         val trackDao =
-            trackDaoField.get(
-                autoDjInstance
-            )
-                ?: throw IllegalStateException(
-                    "qr.r / TrackDao is null"
+            runCatching {
+                val trackDaoField =
+                    findField(
+                        type = autoDjInstance.javaClass,
+                        name = "r"
+                    )
+
+                trackDaoField.isAccessible =
+                    true
+
+                trackDaoField.get(
+                    autoDjInstance
                 )
+                    ?: throw IllegalStateException(
+                        "TrackDao fast path is null"
+                    )
+            }.getOrElse {
+                // The obfuscated TrackDao field is a tested-version fast path,
+                // never a compatibility requirement. The semantic read-only
+                // Room/Cursor resolver below is sufficient on its own and is
+                // the accepted GMMP 4.2.1 path when DAO mappings move.
+                val tracks = loadLibraryThroughCursor(
+                    autoDjInstance,
+                    startTime
+                )
+                deterministicMappingFailure = false
+                return tracks
+            }
 
         val queryMethod =
             runCatching {

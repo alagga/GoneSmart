@@ -824,7 +824,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("HOW IT WORKS"))
         container.addView(infoCard(
             title = "How are tracks selected?",
-            body = "GoneSmart keeps GMMP's playback and queue handling, but replaces Auto-DJ track selection. It builds a session-aware context from the current and recent user-selected tracks, asks ListenBrainz and Last.fm for similar music, merges both signals, and matches the result against your local GMMP library. Only tracks that actually exist in your library can be selected."
+            body = "GoneSmart keeps GMMP's playback and queue handling, but replaces Auto-DJ track selection. It builds a session-aware context from the current and recent user-selected tracks, combines relationships from your normal GMMP playlists with ListenBrainz and Last.fm recommendations, and matches everything against your local GMMP library. Only tracks that actually exist in your library can be selected; broader artist-level provider work is used only when direct local coverage is too small."
         ))
         container.addView(verticalGap(12))
         container.addView(infoCard(
