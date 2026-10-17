@@ -21,22 +21,17 @@ jobs:
           fetch-depth: 0
 
       - name: Apply R67 patch
-        run: python3 scripts/tmp_r67_patch.py
-
-      - name: Capture R67 whitespace diagnostics
-        run: git diff --check > r67-whitespace.txt 2>&1 || true
-
-      - name: Upload R67 whitespace diagnostics
-        uses: actions/upload-artifact@v4
-        with:
-          name: r67-whitespace
-          path: r67-whitespace.txt
-
-      - name: R67 whitespace check
-        run: test ! -s r67-whitespace.txt
+        run: |
+          python3 scripts/tmp_r67_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('docs/GMMP_COMPATIBILITY_PLAYBOOK.md')
+          p.write_text(p.read_text().rstrip() + '\n')
+          PY
 
       - name: Verify R67 scope
         run: |
+          git diff --check
           python3 - <<'PY'
           import subprocess
           allowed = {
