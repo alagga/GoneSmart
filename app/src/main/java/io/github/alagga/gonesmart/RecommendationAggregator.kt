@@ -139,7 +139,12 @@ class RecommendationAggregator(
                         mappedContributions
                             .sumOf {
                                 it.weightedScore
-                            }
+                            } * RecommendationScoring.corroborationMultiplier(
+                                mappedContributions
+                                    .map { it.provider }
+                                    .distinct()
+                                    .size
+                            )
                 )
             }
             .sortedByDescending {
@@ -482,12 +487,14 @@ data class RawRecommendationContribution(
     val mbid: String?,
     val providerSimilarity: Double,
     val seedWeight: Double,
-    val identityConfidence: Double
+    val identityConfidence: Double,
+    val providerWeight: Double = 1.0
 ) {
 
     val weightedScore: Double
         get() =
             providerSimilarity *
                     seedWeight *
-                    identityConfidence
+                    identityConfidence *
+                    providerWeight
 }

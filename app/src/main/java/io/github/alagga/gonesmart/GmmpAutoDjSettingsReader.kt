@@ -18,7 +18,8 @@ data class GmmpAutoDjSettings(
 data class SmartPoolSizing(
     val targetSize: Int,
     val lowWaterMark: Int,
-    val minimumConsumedBeforeRefill: Int
+    val minimumConsumedBeforeRefill: Int,
+    val rescueCandidateTarget: Int
 )
 
 
@@ -189,6 +190,32 @@ class GmmpAutoDjSettingsReader {
                     MAX_POOL_SIZE
                 )
 
+        /*
+         * Artist-level provider expansion is a rescue stage, not a default
+         * tax on every seed. Scale its local-candidate gate from GMMP's
+         * visible Auto-DJ demand. Initial Size includes the current seed.
+         * Keep roughly two visible turns of useful local choices, but never
+         * less than 60% of the internal pool target, before skipping broader
+         * artist calls. The larger reserve costs more up front only when direct
+         * coverage is sparse and reduces repeated provider rounds later.
+         */
+        val visibleDemand =
+            max(
+                (settings.initialQueueSize - 1)
+                    .coerceAtLeast(1),
+                settings.upcomingTrackCount
+            )
+
+        val rescueCandidateTarget =
+            max(
+                visibleDemand * 2,
+                ceil(target * 0.60).toInt()
+            )
+                .coerceIn(
+                    4,
+                    target
+                )
+
         val lowWater =
             max(
                 settings.upcomingTrackCount * 2,
@@ -220,7 +247,9 @@ class GmmpAutoDjSettingsReader {
             targetSize = target,
             lowWaterMark = lowWater,
             minimumConsumedBeforeRefill =
-                minimumConsumedBeforeRefill
+                minimumConsumedBeforeRefill,
+            rescueCandidateTarget =
+                rescueCandidateTarget
         )
     }
 

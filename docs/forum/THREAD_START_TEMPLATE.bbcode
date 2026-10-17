@@ -20,14 +20,16 @@ GoneSmart keeps GMMP as the actual music player and adds extra functionality aro
 • [b]Smart Auto-DJ[/b] – uses the current listening session to find related music and matches those recommendations against tracks that already exist in your local GMMP library.
 • [b]UI & workflow extensions[/b] – additional playlist, Smart-Playlist, queue and playback tools integrated into GMMP.
 
-For Smart Auto-DJ, GoneSmart currently combines recommendations from [b]ListenBrainz[/b] and [b]Last.fm[/b]. Your complete music library is not uploaded to those services; matching against your library happens locally.
+For Smart Auto-DJ, GoneSmart combines [b]Local Playlist Affinity[/b] from normal GMMP playlists with recommendations from [b]ListenBrainz[/b] and [b]Last.fm[/b]. Your complete music library is not uploaded to those services; matching against your library happens locally.
 
 
 [b]Main features[/b]
 
 [b]Smart Auto-DJ[/b]
 • Session-aware recommendations based on the current and recently selected tracks
-• ListenBrainz + Last.fm recommendation sources
+• Local Playlist Affinity + ListenBrainz + Last.fm recommendation sources
+• Smart defaults plus optional Custom provider switches/weights
+• Controlled variety only among near-equal matches
 • Only selects music that exists in your GMMP library
 • Recommendation pool for faster Auto-DJ refills
 • Rating and matching preferences
@@ -76,15 +78,17 @@ If you run into something that looks like a GMMP bug, please disable GoneSmart f
 GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. I recommend disabling automatic Play Store updates for GMMP and checking the tested GMMP version here or on GitHub before updating manually. GoneSmart also warns when it detects a different GMMP version.
 
 
-[b]Ideas for 0.5.0[/b]
+[b]0.5.0 plan[/b]
 
-Current directions for the next larger update include:
+The next larger integration is planned around three separate workstreams:
 
-• [b]More recommendation providers[/b] – additional recommendation sources are being considered. Services such as Spotify, YouTube or YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
-• [b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
+• [b]Smarter recommendation blend[/b] – Local Playlist Affinity, ListenBrainz and Last.fm with provider controls, controlled variety, staged rescue and caching. This recommendation workstream is feature-complete.
+• [b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer/effects overrides for different playback devices.
+• [b]GMMP 4.2.1 playlist compatibility[/b] – separate Playlist Link / playlist-sync fixes before the combined release.
 
-These ideas may change during development.
+For a later [b]0.6.0[/b] direction, SoundCloud is the strongest additional provider candidate because it offers an official related-track API, and Smart Playlists may become an optional weaker local-affinity source.
 
+Spotify, YouTube and YouTube Music are currently unlikely normal providers: their documented APIs/access models do not provide a robust equivalent for this use case, while private WebPlayer/GraphQL/InnerTube integrations would be too brittle for GoneSmart's compatibility goals.
 
 [b]Feedback & bug reports[/b]
 

@@ -1,5 +1,19 @@
 package io.github.alagga.gonesmart
 
+data class TrackDuplicateIdentity(
+    val versionFamilyKeys: Set<String>,
+    val songIdentityKeys: Set<String>,
+    val isRemix: Boolean
+) {
+    companion object {
+        val EMPTY = TrackDuplicateIdentity(
+            versionFamilyKeys = emptySet(),
+            songIdentityKeys = emptySet(),
+            isRemix = false
+        )
+    }
+}
+
 class TrackFamilyKeyBuilder(
     private val metadataNormalizer:
     TrackMetadataNormalizer,
@@ -31,7 +45,13 @@ class TrackFamilyKeyBuilder(
 
     fun familyKeys(
         track: TrackInfo
-    ): Set<String> {
+    ): Set<String> =
+        duplicateIdentity(track)
+            .versionFamilyKeys
+
+    fun duplicateIdentity(
+        track: TrackInfo
+    ): TrackDuplicateIdentity {
 
         return try {
 
@@ -47,7 +67,7 @@ class TrackFamilyKeyBuilder(
                         resolved.track
                     )
 
-            familyKeys(
+            duplicateIdentity(
                 metadata = metadata,
                 rawTitle = resolved.track.title
             )
@@ -56,7 +76,7 @@ class TrackFamilyKeyBuilder(
             _: Throwable
         ) {
 
-            emptySet()
+            TrackDuplicateIdentity.EMPTY
         }
     }
 
@@ -99,10 +119,10 @@ class TrackFamilyKeyBuilder(
                     )
     }
 
-    private fun familyKeys(
+    private fun duplicateIdentity(
         metadata: NormalizedTrackMetadata,
         rawTitle: String?
-    ): Set<String> {
+    ): TrackDuplicateIdentity {
 
         val titleKey =
             metadataNormalizer
@@ -114,14 +134,8 @@ class TrackFamilyKeyBuilder(
             titleKey.isBlank()
         ) {
 
-            return emptySet()
+            return TrackDuplicateIdentity.EMPTY
         }
-
-        val versionFamily =
-            versionFamilyKey(
-                metadata = metadata,
-                rawTitle = rawTitle
-            )
 
         val artistKeys =
             metadata
@@ -134,27 +148,48 @@ class TrackFamilyKeyBuilder(
                 }
                 .filter {
                     it.isNotBlank() &&
-                            it !=
-                            "unknown" &&
-                            it !=
-                            "unknownartist"
+                        it != "unknown" &&
+                        it != "unknownartist"
                 }
                 .toSet()
 
-        if (
-            artistKeys.isEmpty()
-        ) {
+        val normalizedArtists =
+            if (
+                artistKeys.isEmpty()
+            ) {
 
-            return setOf(
-                "*|$titleKey|$versionFamily"
-            )
-        }
+                setOf("*")
 
-        return artistKeys
-            .map { artistKey ->
-                "$artistKey|$titleKey|$versionFamily"
+            } else {
+
+                artistKeys
             }
-            .toSet()
+
+        val songIdentityKeys =
+            normalizedArtists
+                .map { artistKey ->
+                    "$artistKey|$titleKey"
+                }
+                .toSet()
+
+        val versionFamily =
+            versionFamilyKey(
+                metadata = metadata,
+                rawTitle = rawTitle
+            )
+
+        val versionFamilyKeys =
+            songIdentityKeys
+                .map { songKey ->
+                    "$songKey|$versionFamily"
+                }
+                .toSet()
+
+        return TrackDuplicateIdentity(
+            versionFamilyKeys = versionFamilyKeys,
+            songIdentityKeys = songIdentityKeys,
+            isRemix = metadata.versionType == TrackVersionType.REMIX
+        )
     }
 
     private fun versionFamilyKey(
@@ -187,41 +222,41 @@ class TrackFamilyKeyBuilder(
             TrackVersionType.REMIX -> {
 
                 "REMIX:" +
-                        versionLabelKey(
-                            metadata
-                        )
+                    versionLabelKey(
+                        metadata
+                    )
             }
 
             TrackVersionType.EDIT -> {
 
                 "EDIT:" +
-                        versionLabelKey(
-                            metadata
-                        )
+                    versionLabelKey(
+                        metadata
+                    )
             }
 
             TrackVersionType.BOOTLEG -> {
 
                 "BOOTLEG:" +
-                        versionLabelKey(
-                            metadata
-                        )
+                    versionLabelKey(
+                        metadata
+                    )
             }
 
             TrackVersionType.MASHUP -> {
 
                 "MASHUP:" +
-                        versionLabelKey(
-                            metadata
-                        )
+                    versionLabelKey(
+                        metadata
+                    )
             }
 
             TrackVersionType.ACOUSTIC_VERSION -> {
 
                 "ACOUSTIC:" +
-                        versionLabelKey(
-                            metadata
-                        )
+                    versionLabelKey(
+                        metadata
+                    )
             }
         }
     }

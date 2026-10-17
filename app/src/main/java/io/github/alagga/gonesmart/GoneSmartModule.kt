@@ -69,11 +69,8 @@ class GoneSmartModule : XposedModule() {
         private const val BROAD_LISTENBRAINZ_IDENTITIES_TO_USE =
             3
 
-        private const val MERGED_RESULTS_TO_LOG =
-            20
-
-        private const val LOCAL_RESULTS_TO_LOG =
-            20
+        private const val LISTENBRAINZ_ARTIST_FALLBACK_PENALTY =
+            0.72
 
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
@@ -108,9 +105,6 @@ class GoneSmartModule : XposedModule() {
 
         private const val MIN_POOL_LOCAL_MATCH_SCORE =
             0.90
-
-        private const val ENABLE_SMART_SELECTION_TEST =
-            true
 
         private val CUSTOM_NUMBERED_EDIT_SUFFIX_REGEX =
             Regex(
@@ -395,6 +389,12 @@ class GoneSmartModule : XposedModule() {
     private val gmmpLibraryReader =
         GmmpLibraryReader()
 
+    private val localPlaylistAffinityProvider =
+        LocalPlaylistAffinityProvider()
+
+    private val localArtistSignalExpander =
+        LocalArtistSignalExpander()
+
     private val localLibraryMatcher =
         LocalLibraryMatcher(
             metadataNormalizer =
@@ -650,13 +650,18 @@ class GoneSmartModule : XposedModule() {
         ThreadLocal<SelectionWindowContext?>()
 
     /*
-     * One provider pipeline at a time is intentional. Network
-     * requests and full recommendation aggregation are the
-     * expensive part; serializing them avoids duplicate work and
-     * keeps resource usage predictable.
+     * Keep one overall pool-fill pipeline per session so queue state and
+     * recommendation aggregation stay deterministic. Independent network
+     * providers are parallelized inside that pipeline; provider priority is a
+     * ranking weight, never an artificial request-order delay.
      */
     private val pipelineExecutor =
         Executors.newSingleThreadExecutor()
+
+    private val providerExecutor =
+        Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "GoneSmart-Provider").apply { isDaemon = true }
+        }
 
     private val startupExecutor =
         Executors.newSingleThreadExecutor()
@@ -4725,7 +4730,7 @@ class GoneSmartModule : XposedModule() {
         autoDjInstance: Any
     ) {
         if (!options.enabled) return
-        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) return
+        // Local Playlist Affinity can prewarm a useful pool without network.
 
         startupExecutor.execute {
             val startedAt = SystemClock.elapsedRealtime()
@@ -5152,7 +5157,8 @@ class GoneSmartModule : XposedModule() {
                     "upcoming=${gmmpSettings.upcomingTrackCount} | " +
                     "source=${gmmpSettings.source} | " +
                     "poolTarget=${poolSizing.targetSize} | " +
-                    "lowWater=${poolSizing.lowWaterMark}"
+                    "lowWater=${poolSizing.lowWaterMark} | " +
+                    "rescueTarget=${poolSizing.rescueCandidateTarget}"
             )
 
             val queueTrackIds =
@@ -5176,7 +5182,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -5186,70 +5192,9 @@ class GoneSmartModule : XposedModule() {
                 appendRuntimeEvent = false
             )
 
-            if (
-                !poolAlreadyReady &&
-                networkState ==
-                GoneSmartNetworkState.OFFLINE
-            ) {
-
-                Log.i(
-                    TAG,
-                    "SMART DJ OFFLINE FALLBACK | " +
-                        "current session has no usable cached tracks - " +
-                        "using native GMMP Auto-DJ"
-                )
-
-                showSessionNoticeOnce(
-                    sessionId = session.sessionId,
-                    noticeKey = "offline-native-fallback",
-                    message = "GoneSmart is offline. Using GMMP Auto-DJ fallback."
-                )
-
-                autoDjSelectionWindow.set(
-                    null
-                )
-
-                playerBadgeController
-                    .setMode(
-                        PlayerAutoDjBadgeController.Mode.FALLBACK
-                    )
-
-                runtimeReporter.report(
-                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
-                    message = "Offline: using GMMP Auto-DJ fallback for the current queue.",
-                    appendEvent = true
-                )
-
-                val result =
-                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
-
-                val afterContext =
-                    readQueueContext(autoDjInstance)
-
-                if (
-                    afterContext != null
-                ) {
-
-                    queueSessionTracker
-                        .commitGeneratedAdditions(
-                            beforeContext = beforeContext,
-                            afterContext = afterContext,
-                            origin = QueueEntryOrigin.NATIVE_AUTO_DJ
-                        )
-
-                    logAddedTracks(
-                        beforeContext = beforeContext,
-                        afterContext = afterContext
-                    )
-                }
-
-                Log.i(
-                    TAG,
-                    "========================================"
-                )
-
-                return@intercept result
-            }
+            // Offline no longer means immediate native fallback: give the
+            // local Playlist Affinity provider one bounded background-pipeline
+            // attempt first. The later failure branch still falls back natively.
 
             val seeds =
                 seedSelector
@@ -5693,7 +5638,6 @@ class GoneSmartModule : XposedModule() {
                 autoDjSelectionWindow.get()
 
             if (
-                !ENABLE_SMART_SELECTION_TEST ||
                 selectionContext == null
             ) {
 
@@ -5744,15 +5688,13 @@ class GoneSmartModule : XposedModule() {
                     )
 
             if (
-                smartTrackIds.size <
-                desiredCount
+                smartTrackIds.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
                     "SMART DJ SUPPRESSED | " +
-                        "needed=$desiredCount | " +
-                        "poolAvailable=${smartTrackIds.size}"
+                        "needed=$desiredCount | poolAvailable=0"
                 )
 
                 playerBadgeController
@@ -5763,16 +5705,17 @@ class GoneSmartModule : XposedModule() {
                 return@intercept ArrayList<Any>()
             }
 
-            var appliedCount =
-                0
+            val appliedRows =
+                ArrayList<Any>()
+
+            val appliedTrackIds =
+                mutableListOf<Long>()
 
             smartTrackIds
                 .forEachIndexed { index, trackId ->
 
                     val row =
-                        rows[
-                            index
-                        ]
+                        rows.getOrNull(index)
                             ?: return@forEachIndexed
 
                     try {
@@ -5782,8 +5725,11 @@ class GoneSmartModule : XposedModule() {
                             trackId = trackId
                         )
 
-                        appliedCount +=
-                            1
+                        appliedRows +=
+                            row
+
+                        appliedTrackIds +=
+                            trackId
 
                         Log.i(
                             TAG,
@@ -5804,15 +5750,12 @@ class GoneSmartModule : XposedModule() {
                 }
 
             if (
-                appliedCount !=
-                desiredCount
+                appliedRows.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
-                    "SMART DJ SUPPRESSED | " +
-                        "replacement incomplete " +
-                        "($appliedCount/$desiredCount)"
+                    "SMART DJ SUPPRESSED | no native row could be replaced"
                 )
 
                 playerBadgeController
@@ -5826,13 +5769,38 @@ class GoneSmartModule : XposedModule() {
             recommendationPool
                 .commitSelected(
                     expectedSessionId = selectionContext.sessionId,
-                    selectedTrackIds = smartTrackIds
+                    selectedTrackIds = appliedTrackIds
                 )
+
+            if (
+                appliedRows.size <
+                desiredCount
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ PARTIAL | " +
+                        "requested=$desiredCount | " +
+                        "applied=${appliedRows.size} | " +
+                        "deferred=${desiredCount - appliedRows.size} | " +
+                        "nativePadding=false"
+                )
+
+                if (
+                    options.showStatusMessages &&
+                    desiredCount > 1 &&
+                    appliedRows.isNotEmpty()
+                ) {
+                    statusNotifier.show(
+                        "Only ${appliedRows.size} of $desiredCount suitable tracks found"
+                    )
+                }
+            }
 
             Log.i(
                 TAG,
                 "SMART DJ APPLIED | " +
-                    "$appliedCount/$desiredCount track(s) replaced | " +
+                    "${appliedRows.size}/$desiredCount track(s) replaced | " +
                     recommendationPool.describe(
                         selectionContext.sessionId
                     )
@@ -5845,11 +5813,13 @@ class GoneSmartModule : XposedModule() {
 
             runtimeReporter.report(
                 mode = GoneSmartRuntimeContract.MODE_SMART,
-                message = "GoneSmart selected $appliedCount track(s) from the current session pool.",
-                appendEvent = true
+                message = "GoneSmart selected ${appliedRows.size} track(s) from the current session pool.",
+                // Keep current Smart-DJ status fresh without adding one Logs-row
+                // for every routine pool delivery.
+                appendEvent = false
             )
 
-            nativeResult
+            appliedRows
         }
 
         Log.i(
@@ -6136,7 +6106,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -6186,14 +6156,9 @@ class GoneSmartModule : XposedModule() {
         sizing: SmartPoolSizing
     ) {
 
-        if (
-            networkStateReader
-                .getState() !=
-            GoneSmartNetworkState.ONLINE
-        ) {
-
-            return
-        }
+        // Do not gate background refill on connectivity: the local
+        // Playlist Affinity provider remains productive offline. Network
+        // providers are gated inside collectSeedContributions().
 
         if (
             !recommendationPool
@@ -6278,7 +6243,9 @@ class GoneSmartModule : XposedModule() {
                                 queueContext = queueContext,
                                 session = session,
                                 generation = generation,
-                                targetPoolSize = sizing.targetSize
+                                targetPoolSize = sizing.targetSize,
+                                rescueCandidateTarget =
+                                    sizing.rescueCandidateTarget
                             )
 
                         if (
@@ -6337,7 +6304,8 @@ class GoneSmartModule : XposedModule() {
         queueContext: QueueContext,
         session: QueueSessionSnapshot,
         generation: Long,
-        targetPoolSize: Int
+        targetPoolSize: Int,
+        rescueCandidateTarget: Int
     ): List<Long> {
 
         return try {
@@ -6351,8 +6319,65 @@ class GoneSmartModule : XposedModule() {
                 "========== GONESMART AGGREGATION START =========="
             )
 
+            val library =
+                gmmpLibraryReader
+                    .read(autoDjInstance)
+
+            Log.i(TAG, "LOCAL LIBRARY TRACK COUNT = ${library.size}")
+
+            if (library.isEmpty()) {
+                return emptyList()
+            }
+
+            val providerPolicy =
+                RecommendationProviderPolicy.from(options)
+
+            Log.i(
+                TAG,
+                "SMART DJ PROVIDER POLICY | mode=${providerPolicy.mode} | " +
+                    "enabled=${providerPolicy.enabledProviders.sortedBy { it.name }} | " +
+                    "weights=LB:${formatScore(providerPolicy.weight(RecommendationProvider.LISTENBRAINZ))}," +
+                    "LASTFM:${formatScore(providerPolicy.weight(RecommendationProvider.LASTFM))}," +
+                    "PLAYLIST:${formatScore(providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST))} | " +
+                    "playlistSize=${providerPolicy.playlistSizeWeighting}"
+            )
+
+            val playlistAffinityBatch =
+                if (providerPolicy.isEnabled(RecommendationProvider.LOCAL_PLAYLIST)) {
+                    localPlaylistAffinityProvider.collect(
+                        autoDjInstance = autoDjInstance,
+                        seeds = seeds,
+                        library = library,
+                        playlistSizeWeighting = providerPolicy.playlistSizeWeighting,
+                        maxResultsPerSeed = (targetPoolSize * 3).coerceAtLeast(24)
+                    )
+                } else {
+                    PlaylistAffinityBatch(emptyList(), PlaylistAffinityMetrics())
+                }
+
             val rawContributions =
                 mutableListOf<RawRecommendationContribution>()
+
+            rawContributions +=
+                playlistAffinityBatch.signals.mapNotNull { signal ->
+                    val artist = signal.libraryTrack.track.artist?.trim().orEmpty()
+                    val title = signal.libraryTrack.track.title?.trim().orEmpty()
+                    if (artist.isBlank() || title.isBlank()) {
+                        null
+                    } else {
+                        RawRecommendationContribution(
+                            provider = RecommendationProvider.LOCAL_PLAYLIST,
+                            seed = signal.seed,
+                            artist = artist,
+                            title = title,
+                            mbid = null,
+                            providerSimilarity = signal.score,
+                            seedWeight = seedWeight(signal.seed),
+                            identityConfidence = 1.0,
+                            providerWeight = providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST)
+                        )
+                    }
+                }
 
             seeds.forEachIndexed { seedIndex, seed ->
 
@@ -6404,7 +6429,9 @@ class GoneSmartModule : XposedModule() {
                     collectSeedContributions(
                         seedNumber = seedNumber,
                         seed = seed,
-                        metadata = metadata
+                        metadata = metadata,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -6444,7 +6471,9 @@ class GoneSmartModule : XposedModule() {
                                 collectSeedContributions(
                                     seedNumber = seedNumber,
                                     seed = seed,
-                                    metadata = fallbackMetadata
+                                    metadata = fallbackMetadata,
+                                    library = library,
+                                    providerPolicy = providerPolicy
                                 )
                         }
                     }
@@ -6471,8 +6500,10 @@ class GoneSmartModule : XposedModule() {
                         rawContributions
                     )
 
-            logMergedRecommendations(
-                merged
+            logProviderBlendMetrics(
+                rawContributions = rawContributions,
+                merged = merged,
+                playlistMetrics = playlistAffinityBatch.metrics
             )
 
             if (
@@ -6482,7 +6513,7 @@ class GoneSmartModule : XposedModule() {
                 Log.i(
                     TAG,
                     "SMART DJ BROAD SEARCH START | " +
-                        "reason=no-external-recommendations | " +
+                        "reason=no-provider-recommendations | " +
                         "seeds=${seeds.size}"
                 )
 
@@ -6491,7 +6522,9 @@ class GoneSmartModule : XposedModule() {
 
                 val broadContributions =
                     collectBroadSeedContributions(
-                        seeds = seeds
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -6514,10 +6547,6 @@ class GoneSmartModule : XposedModule() {
                         "broadContributions=${broadContributions.size} | " +
                         "merged=${merged.size}"
                 )
-
-                logMergedRecommendations(
-                    merged
-                )
             }
 
             if (
@@ -6526,27 +6555,8 @@ class GoneSmartModule : XposedModule() {
 
                 Log.w(
                     TAG,
-                    "SMART DJ PIPELINE | no external recommendations after broad search"
+                    "SMART DJ PIPELINE | no provider recommendations after broad search"
                 )
-
-                return emptyList()
-            }
-
-            val library =
-                gmmpLibraryReader
-                    .read(
-                        autoDjInstance
-                    )
-
-            Log.i(
-                TAG,
-                "LOCAL LIBRARY TRACK COUNT = " +
-                    library.size
-            )
-
-            if (
-                library.isEmpty()
-            ) {
 
                 return emptyList()
             }
@@ -6583,6 +6593,91 @@ class GoneSmartModule : XposedModule() {
                         library = library,
                         excludedTrackIds = excludedTrackIds
                     )
+
+            var directLocalTrackCount =
+                directLocalMatches
+                    .map { it.track.id }
+                    .distinct()
+                    .size
+
+            val shouldRunArtistRescue =
+                !broadSearchPerformed &&
+                    networkStateReader.getState() ==
+                        GoneSmartNetworkState.ONLINE &&
+                    directLocalTrackCount <
+                        rescueCandidateTarget
+
+            Log.i(
+                TAG,
+                "SMART DJ ARTIST RESCUE GATE | " +
+                    "localDirect=$directLocalTrackCount | " +
+                    "target=$rescueCandidateTarget | " +
+                    "action=${if (shouldRunArtistRescue) "run" else "skip"}"
+            )
+
+            if (
+                shouldRunArtistRescue
+            ) {
+
+                val rescueContributions =
+                    collectArtistRescueContributions(
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
+                    )
+
+                if (
+                    generation !=
+                    pipelineGeneration.get()
+                ) {
+
+                    return emptyList()
+                }
+
+                if (
+                    rescueContributions.isNotEmpty()
+                ) {
+
+                    rawContributions +=
+                        rescueContributions
+
+                    val rescueMerged =
+                        recommendationAggregator
+                            .aggregate(
+                                rawContributions
+                            )
+
+                    if (
+                        rescueMerged.isNotEmpty()
+                    ) {
+
+                        activeRecommendations =
+                            rescueMerged
+
+                        directLocalMatches =
+                            localLibraryMatcher
+                                .match(
+                                    recommendations = activeRecommendations,
+                                    library = library,
+                                    excludedTrackIds = excludedTrackIds
+                                )
+
+                        directLocalTrackCount =
+                            directLocalMatches
+                                .map { it.track.id }
+                                .distinct()
+                                .size
+                    }
+                }
+
+                Log.i(
+                    TAG,
+                    "SMART DJ ARTIST RESCUE END | " +
+                        "contributions=${rescueContributions.size} | " +
+                        "localDirect=$directLocalTrackCount | " +
+                        "target=$rescueCandidateTarget"
+                )
+            }
 
             /*
              * External services recommend tracks globally, but the user can
@@ -6659,7 +6754,9 @@ class GoneSmartModule : XposedModule() {
 
                 val broadContributions =
                     collectBroadSeedContributions(
-                        seeds = seeds
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -6843,10 +6940,6 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
-            logLocalRecommendations(
-                qualityMatches
-            )
-
             if (
                 generation !=
                 pipelineGeneration.get()
@@ -7024,60 +7117,97 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy,
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
 
-        val result =
-            mutableListOf<RawRecommendationContribution>()
+        val startedNs = System.nanoTime()
+        val tasks = mutableListOf<Pair<RecommendationProvider, Future<List<RawRecommendationContribution>>>>()
 
-        result +=
-            collectListenBrainzContributions(
-                seedNumber = seedNumber,
-                seed = seed,
-                metadata = metadata,
-                broadSearch = broadSearch
-            )
+        if (providerPolicy.isEnabled(RecommendationProvider.LISTENBRAINZ)) {
+            tasks += RecommendationProvider.LISTENBRAINZ to
+                providerExecutor.submit<List<RawRecommendationContribution>> {
+                    collectListenBrainzContributions(
+                        seedNumber = seedNumber,
+                        seed = seed,
+                        metadata = metadata,
+                        library = library,
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
+                    )
+                }
+        }
+        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM)) {
+            tasks += RecommendationProvider.LASTFM to
+                providerExecutor.submit<List<RawRecommendationContribution>> {
+                    collectLastFmContributions(
+                        seedNumber = seedNumber,
+                        seed = seed,
+                        metadata = metadata,
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
+                    )
+                }
+        }
 
-        result +=
-            collectLastFmContributions(
-                seedNumber = seedNumber,
-                seed = seed,
-                metadata = metadata,
-                broadSearch = broadSearch
-            )
+        if (tasks.isEmpty()) return emptyList()
 
+        val result = mutableListOf<RawRecommendationContribution>()
+        for ((provider, future) in tasks) {
+            val contributions = try {
+                future.get()
+            } catch (interrupted: InterruptedException) {
+                tasks.forEach { it.second.cancel(true) }
+                Thread.currentThread().interrupt()
+                return emptyList()
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "$provider contribution task failed for seed $seedNumber", throwable)
+                emptyList()
+            }
+
+            val providerWeight = providerPolicy.weight(provider)
+            result += contributions.map { it.copy(providerWeight = providerWeight) }
+        }
+
+        Log.i(
+            TAG,
+            "SMART DJ PROVIDER ROUND | seed=$seedNumber | " +
+                "stage=${when {
+                    artistFallbackOnly -> "artist-rescue"
+                    broadSearch -> "broad"
+                    else -> "direct"
+                }} | " +
+                "enabled=${tasks.map { it.first }} | contributions=${result.size} | " +
+                "elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000L}"
+        )
         return result
     }
 
-    private fun collectBroadSeedContributions(
-        seeds: List<RecommendationSeed>
+    private fun collectArtistRescueContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy
     ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
 
         val result =
             mutableListOf<RawRecommendationContribution>()
 
         seeds.forEachIndexed { seedIndex, seed ->
-
-            val seedNumber =
-                seedIndex + 1
-
-            val resolvedInput =
-                trackInputResolver
-                    .resolve(
-                        seed.track
-                    )
-
-            val metadata =
-                metadataNormalizer
-                    .normalize(
-                        resolvedInput.track
-                    )
-
-            if (
-                metadata.searchArtist.isBlank() ||
-                metadata.searchTitle.isBlank()
-            ) {
-
+            val seedNumber = seedIndex + 1
+            val resolvedInput = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolvedInput.track)
+            if (metadata.searchArtist.isBlank() || metadata.searchTitle.isBlank()) {
                 return@forEachIndexed
             }
 
@@ -7086,41 +7216,39 @@ class GoneSmartModule : XposedModule() {
                     seedNumber = seedNumber,
                     seed = seed,
                     metadata = metadata,
-                    broadSearch = true
+                    library = library,
+                    providerPolicy = providerPolicy,
+                    allowArtistFallback = true,
+                    artistFallbackOnly = true
                 )
 
             if (
                 contributions.isEmpty() &&
-                resolvedInput.source !=
-                TrackInputSource.TAGS
+                resolvedInput.source != TrackInputSource.TAGS
             ) {
-
-                val providerFallbackTrack =
+                val fallbackTrack =
                     buildProviderFallbackTrack(
                         resolvedInput.track
                     )
-
-                if (
-                    providerFallbackTrack != null
-                ) {
-
+                if (fallbackTrack != null) {
                     val fallbackMetadata =
                         metadataNormalizer
                             .normalize(
-                                providerFallbackTrack
+                                fallbackTrack
                             )
-
                     if (
                         fallbackMetadata.searchArtist.isNotBlank() &&
                         fallbackMetadata.searchTitle.isNotBlank()
                     ) {
-
                         contributions =
                             collectSeedContributions(
                                 seedNumber = seedNumber,
                                 seed = seed,
                                 metadata = fallbackMetadata,
-                                broadSearch = true
+                                library = library,
+                                providerPolicy = providerPolicy,
+                                allowArtistFallback = true,
+                                artistFallbackOnly = true
                             )
                     }
                 }
@@ -7130,6 +7258,57 @@ class GoneSmartModule : XposedModule() {
                 contributions
         }
 
+        return result
+    }
+
+    private fun collectBroadSeedContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy
+    ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
+
+        val result = mutableListOf<RawRecommendationContribution>()
+        seeds.forEachIndexed { seedIndex, seed ->
+            val seedNumber = seedIndex + 1
+            val resolvedInput = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolvedInput.track)
+            if (metadata.searchArtist.isBlank() || metadata.searchTitle.isBlank()) {
+                return@forEachIndexed
+            }
+
+            var contributions = collectSeedContributions(
+                seedNumber = seedNumber,
+                seed = seed,
+                metadata = metadata,
+                library = library,
+                providerPolicy = providerPolicy,
+                broadSearch = true,
+                allowArtistFallback = true
+            )
+
+            if (contributions.isEmpty() && resolvedInput.source != TrackInputSource.TAGS) {
+                val fallbackTrack = buildProviderFallbackTrack(resolvedInput.track)
+                if (fallbackTrack != null) {
+                    val fallbackMetadata = metadataNormalizer.normalize(fallbackTrack)
+                    if (fallbackMetadata.searchArtist.isNotBlank() &&
+                        fallbackMetadata.searchTitle.isNotBlank()
+                    ) {
+                        contributions = collectSeedContributions(
+                            seedNumber = seedNumber,
+                            seed = seed,
+                            metadata = fallbackMetadata,
+                            library = library,
+                            providerPolicy = providerPolicy,
+                            broadSearch = true
+                        )
+                    }
+                }
+            }
+            result += contributions
+        }
         return result
     }
 
@@ -7175,201 +7354,180 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        library: List<GmmpLibraryTrack>,
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
-
-        val broadListenBrainzContributions =
-            mutableListOf<RawRecommendationContribution>()
-
-        var broadListenBrainzIdentityCount =
-            0
+        val broadContributions = mutableListOf<RawRecommendationContribution>()
+        var identitiesUsed = 0
 
         try {
+            val matches = listenBrainzClient.searchRecording(
+                artist = metadata.searchArtist,
+                title = metadata.searchTitle
+            )
+            val evaluations = matchSelector.evaluateAll(metadata, matches)
+                .filter { it.accepted }
+                .take(
+                    if (broadSearch) BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES
+                    else MAX_RECORDING_MATCHES_TO_TRY
+                )
 
-            val matches =
-                listenBrainzClient
-                    .searchRecording(
-                        artist = metadata.searchArtist,
-                        title = metadata.searchTitle
-                    )
-
-            val evaluations =
-                matchSelector
-                    .evaluateAll(
-                        localMetadata = metadata,
-                        matches = matches
-                    )
-                    .filter {
-                        it.accepted
-                    }
-                    .take(
-                        if (
-                            broadSearch
-                        ) {
-
-                            BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES
-
-                        } else {
-
-                            MAX_RECORDING_MATCHES_TO_TRY
-                        }
-                    )
-
-            for (
-                evaluation in
-                evaluations
-            ) {
-
-                val similar =
-                    try {
-
-                        listenBrainzClient
-                            .getSimilarRecordings(
-                                evaluation
-                                    .match
-                                    .recordingMbid
-                            )
-
-                    } catch (t: Throwable) {
-
-                        emptyList()
-                    }
-
-                if (
-                    similar.isEmpty()
-                ) {
-
-                    continue
+            if (!artistFallbackOnly) {
+                for (evaluation in evaluations) {
+                    val similar = try {
+                    listenBrainzClient.getSimilarRecordings(evaluation.match.recordingMbid)
+                } catch (_: Throwable) {
+                    emptyList()
                 }
+                if (similar.isEmpty()) continue
 
-                val highestScore =
-                    similar
-                        .maxOfOrNull {
-                            it.score
-                        }
-                        ?.takeIf {
-                            it > 0.0
-                        }
-                        ?: 1.0
-
-                val seedWeight =
-                    seedWeight(
-                        seed
+                val highest = similar.maxOfOrNull { it.score }
+                    ?.takeIf { it > 0.0 } ?: 1.0
+                val mapped = similar.map { item ->
+                    RawRecommendationContribution(
+                        provider = RecommendationProvider.LISTENBRAINZ,
+                        seed = seed,
+                        artist = item.artistName,
+                        title = item.recordingName,
+                        mbid = item.recordingMbid,
+                        providerSimilarity = (item.score / highest).coerceIn(0.0, 1.0),
+                        seedWeight = seedWeight(seed),
+                        identityConfidence = evaluation.totalScore.coerceIn(0.0, 1.0)
                     )
+                }
 
                 Log.i(
                     TAG,
-                    (
-                        if (
-                            broadSearch
-                        ) {
-
-                            "LB BROAD CONTRIBUTIONS seed=$seedNumber | "
-
-                        } else {
-
-                            "LB CONTRIBUTIONS seed=$seedNumber | "
-                        }
-                    ) +
-                        "results=${similar.size} | " +
-                        "identityConfidence=" +
-                        formatScore(
-                            evaluation.totalScore
-                        )
+                    (if (broadSearch) "LB BROAD" else "LB") +
+                        " TRACK CONTRIBUTIONS seed=$seedNumber | results=${mapped.size} | " +
+                        "identityConfidence=${formatScore(evaluation.totalScore)}"
                 )
 
-                val mapped =
-                    similar
-                        .map { item ->
-
-                            val normalizedSimilarity =
-                                (
-                                    item.score /
-                                        highestScore
-                                    )
-                                    .coerceIn(
-                                        0.0,
-                                        1.0
-                                    )
-
-                            RawRecommendationContribution(
-                                provider =
-                                    RecommendationProvider
-                                        .LISTENBRAINZ,
-
-                                seed = seed,
-
-                                artist =
-                                    item.artistName,
-
-                                title =
-                                    item.recordingName,
-
-                                mbid =
-                                    item.recordingMbid,
-
-                                providerSimilarity =
-                                    normalizedSimilarity,
-
-                                seedWeight =
-                                    seedWeight,
-
-                                identityConfidence =
-                                    evaluation.totalScore
-                                        .coerceIn(
-                                            0.0,
-                                            1.0
-                                        )
-                            )
-                        }
-
-                if (
-                    !broadSearch
-                ) {
-
-                    return mapped
+                if (!broadSearch) return mapped
+                broadContributions += mapped
+                identitiesUsed++
+                    if (identitiesUsed >= BROAD_LISTENBRAINZ_IDENTITIES_TO_USE) break
                 }
 
-                broadListenBrainzContributions +=
-                    mapped
-
-                broadListenBrainzIdentityCount +=
-                    1
-
-                if (
-                    broadListenBrainzIdentityCount >=
-                    BROAD_LISTENBRAINZ_IDENTITIES_TO_USE
-                ) {
-
-                    break
-                }
-            }
-
-            if (
-                broadSearch &&
-                broadListenBrainzContributions.isNotEmpty()
-            ) {
-
-                return broadListenBrainzContributions
-                    .distinctBy { contribution ->
-                        Triple(
-                            contribution.artist,
-                            contribution.title,
-                            contribution.mbid
-                        )
+                if (broadContributions.isNotEmpty()) {
+                    return broadContributions.distinctBy {
+                        Triple(it.artist, it.title, it.mbid)
                     }
+                }
             }
 
+            if (!allowArtistFallback) {
+                return emptyList()
+            }
+
+            // Recording graph exhausted: use ListenBrainz's official
+            // similar-artists dataset as a lower-confidence signal and expand
+            // it only to tracks that are already in the local GMMP library.
+            // A sparse/new track may have no accepted recording identity even
+            // though recording search still returned a reliable artist MBID.
+            // Recover only that artist identity; never treat the rejected
+            // recording row itself as a track recommendation.
+            val fallbackEvaluation = evaluations.firstOrNull {
+                it.match.artistMbids.isNotEmpty()
+            }
+            val acceptedArtistMbid =
+                fallbackEvaluation?.match?.artistMbids?.firstOrNull()
+            val recoveredArtistIdentity =
+                if (acceptedArtistMbid.isNullOrBlank()) {
+                    ListenBrainzArtistIdentityPolicy.select(
+                        metadata = metadata,
+                        matches = matches,
+                        comparisonKey = metadataNormalizer::comparisonKey,
+                        artistMbidsForRecording = { match ->
+                            if (match.artistMbids.isNotEmpty()) {
+                                match.artistMbids
+                            } else {
+                                try {
+                                    listenBrainzClient.getArtistMbidsForRecording(
+                                        match.recordingMbid
+                                    )
+                                } catch (t: Throwable) {
+                                    Log.w(
+                                        TAG,
+                                        "LB ARTIST ID LOOKUP FAILED seed=$seedNumber | " +
+                                            "recording=${match.recordingMbid} | " +
+                                            "${t.javaClass.simpleName}: ${t.message}"
+                                    )
+                                    emptyList()
+                                }
+                            }
+                        }
+                    )
+                } else {
+                    null
+                }
+            val artistMbid = acceptedArtistMbid ?: recoveredArtistIdentity?.artistMbid
+            val fallbackConfidence =
+                fallbackEvaluation?.totalScore?.coerceIn(0.0, 1.0)
+                    ?: recoveredArtistIdentity?.confidence?.coerceIn(0.0, 1.0)
+                    ?: 0.0
+
+            if (recoveredArtistIdentity != null) {
+                Log.i(
+                    TAG,
+                    "LB ARTIST IDENTITY FALLBACK seed=$seedNumber | " +
+                        "artist=${recoveredArtistIdentity.artistName} | " +
+                        "confidence=${formatScore(recoveredArtistIdentity.confidence)}"
+                )
+            } else if (acceptedArtistMbid.isNullOrBlank()) {
+                Log.i(
+                    TAG,
+                    "LB ARTIST FALLBACK UNAVAILABLE seed=$seedNumber | " +
+                        "recordingMatches=${matches.size}"
+                )
+            }
+
+            if (!artistMbid.isNullOrBlank() && fallbackConfidence > 0.0) {
+                val artists = try {
+                    listenBrainzClient.getSimilarArtists(
+                        artistMbid = artistMbid,
+                        limit = if (broadSearch) 20 else 12
+                    )
+                } catch (_: Throwable) {
+                    emptyList()
+                }
+                val expanded = localArtistSignalExpander.expand(
+                    artists = artists,
+                    library = library,
+                    excludedTrackIds = setOf(seed.track.id),
+                    maxArtists = if (broadSearch) 20 else 12,
+                    maxTracksPerArtist = 3
+                )
+                if (expanded.isNotEmpty()) {
+                    Log.i(
+                        TAG,
+                        "LB ARTIST FALLBACK seed=$seedNumber | artists=${artists.size} | " +
+                            "localTracks=${expanded.size} | identityConfidence=${formatScore(fallbackConfidence)}"
+                    )
+                    return expanded.mapNotNull { item ->
+                        val artist = item.libraryTrack.track.artist?.trim().orEmpty()
+                        val title = item.libraryTrack.track.title?.trim().orEmpty()
+                        if (artist.isBlank() || title.isBlank()) null else
+                            RawRecommendationContribution(
+                                provider = RecommendationProvider.LISTENBRAINZ,
+                                seed = seed,
+                                artist = artist,
+                                title = title,
+                                mbid = null,
+                                providerSimilarity = (
+                                    item.providerScore * LISTENBRAINZ_ARTIST_FALLBACK_PENALTY
+                                ).coerceIn(0.0, 1.0),
+                                seedWeight = seedWeight(seed),
+                                identityConfidence = fallbackConfidence
+                            )
+                    }
+                }
+            }
         } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "ListenBrainz contribution collection failed " +
-                    "for seed $seedNumber",
-                t
-            )
+            Log.w(TAG, "ListenBrainz contribution collection failed for seed $seedNumber", t)
         }
-
         return emptyList()
     }
 
@@ -7377,162 +7535,98 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
+        if (!lastFmClient.isConfigured()) return emptyList()
 
-        if (
-            !lastFmClient.isConfigured()
-        ) {
+        val queryCandidates = buildLastFmQueryCandidates(metadata)
+        val testedIdentityKeys = mutableSetOf<String>()
+        var fallbackIdentity: LastFmTrackIdentity? = null
+        var fallbackConfidence = 0.0
 
-            return emptyList()
-        }
+        for (candidate in queryCandidates) {
+            val identity = try {
+                lastFmClient.resolveTrack(candidate.artist, candidate.title)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
 
-        val queryCandidates =
-            buildLastFmQueryCandidates(
-                metadata
-            )
+            val identityKey = buildLastFmIdentityKey(identity)
+            if (!testedIdentityKeys.add(identityKey)) continue
 
-        val testedIdentityKeys =
-            mutableSetOf<String>()
+            val identityConfidence = lastFmIdentityConfidence(metadata, candidate)
+            if (identityConfidence > fallbackConfidence) {
+                fallbackIdentity = identity
+                fallbackConfidence = identityConfidence
+            }
 
-        for (
-            candidate in
-            queryCandidates
-        ) {
-
-            val identity =
-                try {
-
-                    lastFmClient
-                        .resolveTrack(
-                            artist = candidate.artist,
-                            title = candidate.title
-                        )
-
-                } catch (t: Throwable) {
-
-                    null
-                }
-                    ?: continue
-
-            val identityKey =
-                buildLastFmIdentityKey(
-                    identity
-                )
-
-            if (
-                identityKey in
-                testedIdentityKeys
-            ) {
-
+            if (artistFallbackOnly) {
                 continue
             }
 
-            testedIdentityKeys +=
-                identityKey
-
-            val similar =
-                try {
-
-                    lastFmClient
-                        .getSimilarTracks(
-                            identity = identity,
-                            limit =
-                                if (
-                                    broadSearch
-                                ) {
-
-                                    BROAD_LASTFM_RESULT_LIMIT
-
-                                } else {
-
-                                    LASTFM_RESULT_LIMIT
-                                }
-                        )
-
-                } catch (t: Throwable) {
-
-                    emptyList()
-                }
-
-            if (
-                similar.isEmpty()
-            ) {
-
-                continue
+            val similar = try {
+                lastFmClient.getSimilarTracksDirect(
+                    identity = identity,
+                    limit = if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+                )
+            } catch (_: Throwable) {
+                emptyList()
             }
-
-            val identityConfidence =
-                lastFmIdentityConfidence(
-                    metadata = metadata,
-                    candidate = candidate
-                )
-
-            val seedWeight =
-                seedWeight(
-                    seed
-                )
+            if (similar.isEmpty()) continue
 
             Log.i(
                 TAG,
-                (
-                    if (
-                        broadSearch
-                    ) {
-
-                        "LASTFM BROAD CONTRIBUTIONS seed=$seedNumber | "
-
-                    } else {
-
-                        "LASTFM CONTRIBUTIONS seed=$seedNumber | "
-                    }
-                ) +
-                    "results=${similar.size} | " +
-                    "identityConfidence=" +
-                    formatScore(
-                        identityConfidence
-                    ) +
-                    " | source=${candidate.artist} - " +
-                    candidate.title
+                (if (broadSearch) "LASTFM BROAD" else "LASTFM") +
+                    " TRACK CONTRIBUTIONS seed=$seedNumber | results=${similar.size} | " +
+                    "identityConfidence=${formatScore(identityConfidence)} | " +
+                    "source=${candidate.artist} - ${candidate.title}"
             )
-
-            return similar
-                .map { item ->
-
-                    RawRecommendationContribution(
-                        provider =
-                            RecommendationProvider
-                                .LASTFM,
-
-                        seed = seed,
-
-                        artist =
-                            item.artistName,
-
-                        title =
-                            item.trackName,
-
-                        mbid =
-                            item.mbid,
-
-                        providerSimilarity =
-                            item.match
-                                .coerceIn(
-                                    0.0,
-                                    1.0
-                                ),
-
-                        seedWeight =
-                            seedWeight,
-
-                        identityConfidence =
-                            identityConfidence
-                    )
-                }
+            return mapLastFmContributions(similar, seed, identityConfidence)
         }
 
-        return emptyList()
+        if (!allowArtistFallback) {
+            return emptyList()
+        }
+
+        val identity = fallbackIdentity ?: return emptyList()
+        val fallback = try {
+            lastFmClient.getArtistFallbackTracks(
+                artist = identity.artistName,
+                limit = if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+            )
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        if (fallback.isEmpty()) return emptyList()
+
+        Log.i(
+            TAG,
+            (if (broadSearch) "LASTFM BROAD" else "LASTFM") +
+                " ARTIST FALLBACK seed=$seedNumber | results=${fallback.size} | " +
+                "artist=${identity.artistName}"
+        )
+        return mapLastFmContributions(fallback, seed, fallbackConfidence)
     }
+
+    private fun mapLastFmContributions(
+        tracks: List<LastFmSimilarTrack>,
+        seed: RecommendationSeed,
+        identityConfidence: Double
+    ): List<RawRecommendationContribution> =
+        tracks.map { item ->
+            RawRecommendationContribution(
+                provider = RecommendationProvider.LASTFM,
+                seed = seed,
+                artist = item.artistName,
+                title = item.trackName,
+                mbid = item.mbid,
+                providerSimilarity = item.match.coerceIn(0.0, 1.0),
+                seedWeight = seedWeight(seed),
+                identityConfidence = identityConfidence.coerceIn(0.0, 1.0)
+            )
+        }
 
     private fun seedWeight(
         seed: RecommendationSeed
@@ -7794,106 +7888,25 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun logMergedRecommendations(
-        candidates: List<RecommendationCandidate>
+    private fun logProviderBlendMetrics(
+        rawContributions: List<RawRecommendationContribution>,
+        merged: List<RecommendationCandidate>,
+        playlistMetrics: PlaylistAffinityMetrics
     ) {
-
+        val counts = rawContributions
+            .groupingBy { it.provider }
+            .eachCount()
+        val corroborated = merged.count { candidate ->
+            candidate.contributions.map { it.provider }.distinct().size >= 2
+        }
         Log.i(
             TAG,
-            "========== MERGED RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "MERGED CANDIDATE COUNT = " +
-                candidates.size
-        )
-
-        candidates
-            .take(
-                MERGED_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, candidate ->
-
-                val providers =
-                    candidate
-                        .contributions
-                        .map {
-                            it.provider
-                        }
-                        .distinct()
-
-                val seeds =
-                    candidate
-                        .contributions
-                        .map {
-                            it.seed.track.id
-                        }
-                        .distinct()
-
-                Log.i(
-                    TAG,
-                    "MERGED ${index + 1} | " +
-                        "score=${formatScore(candidate.totalScore)} | " +
-                        "artist=${candidate.artist} | " +
-                        "title=${candidate.title} | " +
-                        "providers=$providers | " +
-                        "seedIds=$seeds | " +
-                        "contributions=" +
-                        candidate.contributions.size
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== MERGED RECOMMENDATIONS END =========="
-        )
-    }
-
-    private fun logLocalRecommendations(
-        matches: List<LocalRecommendationMatch>
-    ) {
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "LOCAL MATCH COUNT = " +
-                matches.size
-        )
-
-        matches
-            .take(
-                LOCAL_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, match ->
-
-                Log.i(
-                    TAG,
-                    "LOCAL ${index + 1} | " +
-                        "rankingScore=${formatScore(match.rankingScore)} | " +
-                        "baseScore=${formatScore(match.finalScore)} | " +
-                        "matchScore=${formatScore(match.matchScore)} | " +
-                        "titleScore=${formatScore(match.titleScore)} | " +
-                        "artistScore=${formatScore(match.artistScore)} | " +
-                        "versionScore=${formatScore(match.versionScore)} | " +
-                        "preferenceMultiplier=${formatScore(match.preferenceMultiplier)} | " +
-                        "rating=${match.ratingStars ?: "unrated"} | " +
-                        "year=${match.libraryTrack.year} | " +
-                        "trackId=${match.track.id} | " +
-                        "localArtist=${match.track.artist} | " +
-                        "localTitle=${match.track.title} | " +
-                        "candidateArtist=${match.recommendation.artist} | " +
-                        "candidateTitle=${match.recommendation.title}"
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS END =========="
+            "SMART DJ PROVIDER METRICS | contributions=$counts | " +
+                "merged=${merged.size} | multiProvider=$corroborated | " +
+                "playlistUsable=${playlistMetrics.usablePlaylists} | " +
+                "playlistMemberships=${playlistMetrics.memberships} | " +
+                "playlistSeedHits=${playlistMetrics.seedsMatched} | " +
+                "playlistSignals=${playlistMetrics.signals}"
         )
     }
 

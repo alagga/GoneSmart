@@ -34,7 +34,7 @@ GoneSmart is a **libxposed module and companion app for [GoneMAD Music Player](h
 
 The goal is to keep **GMMP as the player** while adding focused features around it. GoneSmart does not replace GMMP's library or playback engine.
 
-For Smart Auto-DJ, GoneSmart currently uses [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) as recommendation sources. Their suggestions are matched locally against your GMMP library, so an externally recommended track is only playable when that track already exists on your device and in GMMP.
+Smart Auto-DJ can combine **Local Playlist Affinity** from your normal GMMP playlists with [ListenBrainz](https://listenbrainz.org/) and [Last.fm](https://www.last.fm/) recommendation signals. Everything is matched locally against your GMMP library, so a recommendation is only playable when that track already exists on your device and in GMMP.
 
 The matching system is especially tuned for electronic-music libraries, where Original / Radio Edit / Extended Mix / Club Mix / Remix variants, featured artists, aliases and inconsistent release naming are common. GoneSmart is not limited to electronic music, though, and feedback from other genres is welcome.
 
@@ -65,10 +65,10 @@ This section is the short overview. Each major feature links directly to a more 
 | Feature | What it does |
 |---|---|
 | Session-aware recommendations | Uses the current and recent user-selected tracks as musical context |
-| Multiple providers | Combines ListenBrainz and Last.fm recommendation signals |
+| Multiple sources | Combines Local Playlist Affinity, ListenBrainz and Last.fm recommendation signals |
 | Local-library matching | Only selects tracks that actually exist in your GMMP library |
 | Recommendation pool | Prepares several future candidates in the background for faster refills |
-| Broad second pass | Can widen the provider search once if the normal search finds no usable local result |
+| Staged artist rescue | Expands to lower-confidence artist evidence only when direct local coverage is too small |
 | Artist fallback | Can use another local track from a strongly related artist when the exact recording is unavailable |
 | Drift control | Keeps user-selected session context stronger than GoneSmart's own previous picks |
 | Rating controls | Supports minimum rating, Smart Rating, rating fallback and higher-rated-match preference |
@@ -76,7 +76,7 @@ This section is the short overview. Each major feature links directly to a more 
 | GMMP integration | Keeps GMMP in charge of playback and Auto-DJ while GoneSmart supplies smarter track choices |
 | Player indicator | Shows GoneSmart's Auto-DJ readiness directly on GMMP's playback-mode icon |
 | Native fallback | Can hand selection back to regular GMMP Auto-DJ when GoneSmart cannot provide a suitable track |
-| Offline pool | A still-valid pool from the current session can continue to supply tracks without a new provider request |
+| Offline recommendations | Local Playlist Affinity works offline, and a still-valid session pool can continue without new network requests |
 
 </details>
 
@@ -106,16 +106,18 @@ This section is the short overview. Each major feature links directly to a more 
 
 1. **GMMP requests another Auto-DJ track.** GoneSmart takes over the recommendation step while GMMP remains responsible for playback and queue behavior.
 2. **GoneSmart builds musical context.** The current and recent user-selected tracks form the strongest part of the session context.
-3. **ListenBrainz and Last.fm are queried.** Their recommendation results are combined into a broader candidate set.
+3. **Local and online evidence are collected.** Normal GMMP playlist relationships are combined with direct ListenBrainz and Last.fm recommendations.
 4. **Candidates are matched against your local library.** External providers suggest music; GoneSmart only plays files that already exist in GMMP.
-5. **Your preferences are applied.** Rating, era, recency, live/studio and version-duplicate options can influence which local candidate wins.
-6. **Several recommendations are prepared ahead of time.** This reduces the need for a new network round every time GMMP needs another track.
-7. **Fallback remains available.** If GoneSmart cannot provide a suitable local match, regular GMMP Auto-DJ can take over when enabled.
+5. **Artist rescue is conditional.** Lower-confidence artist expansion runs only when the direct local candidate reserve is too small.
+6. **Your preferences and controlled variety are applied.** Ratings, era, recency, live/studio, duplicate rules and near-tie variety can influence the final order.
+7. **Several recommendations are prepared ahead of time.** This reduces the need for a new network round every time GMMP needs another track.
+8. **Fallback remains available.** If GoneSmart cannot provide a suitable local match, regular GMMP Auto-DJ can take over when enabled.
 
 #### Recommendation providers
 
-- **[ListenBrainz](https://listenbrainz.org/)** — MusicBrainz-backed recording lookup and recommendation data.
-- **[Last.fm](https://www.last.fm/)** — similar-track data through the Last.fm API.
+- **Local Playlists** — read-only co-occurrence in your normal GMMP playlists; this personal signal also works offline.
+- **[ListenBrainz](https://listenbrainz.org/)** — recording similarity plus a lower-confidence similar-artist rescue when needed.
+- **[Last.fm](https://www.last.fm/)** — similar-track data plus a bounded related-artist/top-track rescue when needed.
 
 GoneSmart only sends the seed metadata needed for recommendation lookups. Your full GMMP library remains on-device and is matched locally.
 
@@ -137,6 +139,10 @@ Smart Auto-DJ is GoneSmart's recommendation system for local music libraries. It
 
 | Setting | Effect |
 |---|---|
+| Recommendation mode | Smart uses GoneSmart-owned defaults; Custom exposes provider switches/weights, playlist weighting and variety |
+| Provider weights | Tune the ranking influence of Local Playlists, ListenBrainz and Last.fm in Custom mode |
+| Large-playlist weighting | Reduces the influence of very large catch-all normal playlists |
+| Recommendation variety | Rotates only among near-equal final matches; Off/Balanced/High in Custom mode |
 | Minimum rating | Requires a configurable minimum rating |
 | Smart Rating | Uses the current session's rating context as a dynamic threshold |
 | Rating fallback | Can retry without the hard rating threshold when it would otherwise eliminate every result |
@@ -146,6 +152,7 @@ Smart Auto-DJ is GoneSmart's recommendation system for local music libraries. It
 | Favor recently added tracks | Can prefer newer additions when the current session is also recent |
 | Prefer studio over live | Can penalize live versions unless the session itself is live-oriented |
 | Version duplicate prevention | Helps avoid back-to-back Original / Radio / Extended / Club variants of the same song family |
+| Remix duplicate prevention | Optional stricter remix-vs-other-version duplicate blocking |
 
 The current metadata/version heuristics are particularly tuned for electronic music. If another genre exposes bad matches or missing normalization rules, please open a [feature request](https://github.com/alagga/GoneSmart/issues/new/choose) with a few representative artist/title examples.
 
@@ -281,14 +288,14 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 **Does GoneSmart upload my music library?**  
 No. Provider requests use the seed metadata needed to find similar music. Matching against your GMMP library happens locally on the device.
 
-**What happens if no recommended track exists locally?**  
-GoneSmart can perform one broader provider search. If that still produces no usable local candidate, the configured fallback behavior takes over.
+**What happens if direct recommendations do not provide enough local tracks?**
+GoneSmart conditionally expands to bounded artist-level provider evidence. A partial smart pool is valid; native fallback is used according to the configured zero-suitable-track policy.
 
 **Does changing a setting require restarting GMMP?**  
 Normally no. Most settings apply live. Restarting GMMP is mainly useful after module updates or for troubleshooting.
 
 **Does GoneSmart work offline?**  
-A still-valid recommendation pool from the current session can continue offline. Once no suitable cached track remains, regular GMMP fallback can take over if enabled.
+Yes. Local Playlist Affinity can generate recommendations offline, and a still-valid recommendation pool can continue to be consumed. Online providers are skipped until connectivity returns.
 
 **Can I use the playlist/UI features without Smart Auto-DJ?**  
 Yes. Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link and Queue Flip are independent features. Track Auto-DJ intentionally starts a Smart Auto-DJ session.
@@ -299,14 +306,22 @@ More detail: [docs/FAQ.md](docs/FAQ.md).
 
 ## Roadmap
 
-### Ideas for 0.5.0
+### Planned 0.5.0 integration
 
-- **More recommendation providers:** additional recommendation sources are being explored. Services such as Spotify, YouTube and YouTube Music are examples of possible directions only; the exact providers and feasibility still need to be evaluated.
-- **Bluetooth device audio profiles:** automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other playback device is connected.
+- **Smarter recommendation blend:** the Local Playlist + ListenBrainz + Last.fm blend, provider controls, controlled variety, staged rescue and caching work is feature-complete and intended for 0.5.0 integration.
+- **Bluetooth device audio profiles:** separate work to apply per-device GMMP equalizer/effects overrides.
+- **GMMP 4.2.1 playlist compatibility:** separate Playlist Link / playlist-sync compatibility work is also planned for the 0.5.0 integration.
 
-These are current directions and may change during development. See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
+The recommendation workstream being complete does not imply the other two workstreams are already accepted or that 0.5.0 has been released.
 
----
+### 0.6.0 outlook
+
+- Evaluate **SoundCloud** as an official related-track provider once a safe distributed-client credential/authentication design is available.
+- Evaluate **Smart Playlists** as an optional, deliberately weaker local affinity signal.
+
+Spotify, YouTube and YouTube Music are unlikely normal providers for now: Spotify's current development-access model and endpoint restrictions are poor fits for a broadly distributed independent client; YouTube no longer provides the old documented related-video search path; and YouTube Music has no suitable public recommendation API. GoneSmart will not depend on undocumented/private WebPlayer, GraphQL or InnerTube endpoints just to add these sources.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
 
 ## Development
 
@@ -319,7 +334,7 @@ These are current directions and may change during development. See [docs/ROADMA
 | **Hooking API** | libxposed API 102 |
 | **UI** | AndroidX AppCompat + Material Components |
 | **Build system** | Gradle Kotlin DSL / Android Gradle Plugin |
-| **Recommendation providers** | ListenBrainz + Last.fm over HTTP/JSON |
+| **Recommendation sources** | Local Playlist Affinity + ListenBrainz + Last.fm |
 | **CI / releases** | GitHub Actions, signed APK release workflow |
 
 A more detailed component overview lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

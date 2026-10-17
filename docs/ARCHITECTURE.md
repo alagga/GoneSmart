@@ -11,35 +11,43 @@ GMMP queue / current session
 libxposed hook in GMMP process
         |
         v
-Queue/session tracking
+Queue/session tracking + representative seeds
         |
-        v
-Representative seed selection (max 5 provider seeds)
-        |
-        +------------------+
-        |                  |
-        v                  v
-  ListenBrainz          Last.fm
-        |                  |
-        +--------+---------+
-                 |
-                 v
-Recommendation aggregation / normalization
-                 |
-                 v
-Local GMMP-library matching
-                 |
-                 v
-Preference ranking + hard filters
-                 |
-                 v
-Session recommendation pool
-                 |
-                 v
-GMMP Auto-DJ selection
+        +-------------------+--------------------+
+        |                   |                    |
+        v                   v                    v
+Local Playlist         ListenBrainz           Last.fm
+  Affinity            direct recording      direct track
+        |                   |                    |
+        +-------------------+--------------------+
+                            |
+                            v
+              aggregation / dedup / weights
+                            |
+                            v
+                  local GMMP-library match
+                            |
+             +--------------+--------------+
+             | direct local coverage low?  |
+             +--------------+--------------+
+                            | yes
+                            v
+                 bounded artist rescue
+                            |
+                            v
+              preferences + duplicate rules
+                            |
+                            v
+             controlled near-tie variety
+                            |
+                            v
+                session recommendation pool
+                            |
+                            v
+                  native GMMP Auto-DJ refill
 ```
 
-GMMP remains responsible for playback, queue lifecycle and deciding when Auto-DJ needs another track. GoneSmart only replaces the selection decision when Smart Auto-DJ is active.
+GMMP remains responsible for playback, queue lifecycle and deciding when Auto-DJ needs more tracks. GoneSmart owns recommendation selection only; it does not introduce a parallel queue writer.
 
 ## Main components
 
@@ -47,7 +55,7 @@ GMMP remains responsible for playback, queue lifecycle and deciding when Auto-DJ
 
 `GoneSmartModule.kt` is loaded into the GMMP target process through libxposed. It installs the Auto-DJ hooks, reads queue state, coordinates recommendation preparation and hands a selected local track back to GMMP.
 
-Because GMMP internals are obfuscated, compatibility is version-sensitive. The current tested target is GMMP 4.2.0.
+Because GMMP internals are obfuscated, compatibility is version-sensitive. The current accepted/tested target is GMMP 4.2.1.
 
 ### Queue and session context
 
@@ -57,12 +65,24 @@ Provider traffic is intentionally bounded: up to five representative seed tracks
 
 ### Provider layer
 
-- `ListenBrainzClient` handles MusicBrainz/ListenBrainz-backed lookup and similar-recording recommendations.
-- `LastFmClient` handles Last.fm similar-track requests.
-- `ListenBrainzMatchSelector` ranks plausible recording identities before similar-track lookup.
-- `RecommendationAggregator` merges provider contributions into one recommendation signal.
+- `LocalPlaylistAffinityProvider` turns read-only normal-playlist co-occurrence into a personal local signal with cached membership and configurable large-playlist down-weighting.
+- `ListenBrainzClient` prefers recording-level similarity and supports a lower-confidence artist rescue when direct local coverage is insufficient.
+- `LastFmClient` prefers similar-track evidence and provides a bounded related-artist/top-track rescue.
+- `RecommendationAggregator` deduplicates provider+seed evidence, applies provider weights and adds only a bounded bonus when independent providers corroborate the same logical track.
+- `ControlledVarietyPolicy` shuffles only within near-equal final score neighborhoods; it never adds global random score noise.
 
-The normal pass is the fast path. If it yields no usable local candidates, GoneSmart performs exactly one broader provider pass and then stops.
+Direct Local Playlist + recording/track evidence is matched to the local library first. Artist-level network expansion is a conditional rescue stage, not an unconditional second provider pass.
+
+#### Recommendation read compatibility
+
+The provider feature deliberately separates tested-version fast paths from compatibility requirements:
+
+- `NativeAutoDjAccessorResolver` uses structural ownership/type evidence to find the live Auto-DJ instance.
+- `GmmpReadOnlySql` structurally resolves the live Room database and a compatible Cursor query boundary, then caches that binding.
+- `GmmpPlaylistCatalogReader` identifies the native playlist path/URI column from values instead of an obfuscated field name.
+- The historical TrackDao R8 field/method can still be used as a fast path, but `GmmpLibraryReader` falls directly to the structural read-only Cursor path if that mapping is unavailable.
+
+All of these recommendation-side database operations are read-only. Queue insertion remains the verified native GMMP Auto-DJ refill path.
 
 ### Metadata normalization and local matching
 
@@ -171,6 +191,7 @@ GMMP and GoneSmart may load equivalent AndroidX classes through different classl
 - libxposed API 102
 - Gradle Kotlin DSL
 - GitHub Actions
+- Local GMMP Playlist Affinity (read-only)
 - ListenBrainz / MusicBrainz recommendation infrastructure
 - Last.fm API
 

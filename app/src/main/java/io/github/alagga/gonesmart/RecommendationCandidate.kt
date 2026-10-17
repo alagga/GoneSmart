@@ -2,7 +2,8 @@ package io.github.alagga.gonesmart
 
 enum class RecommendationProvider {
     LISTENBRAINZ,
-    LASTFM
+    LASTFM,
+    LOCAL_PLAYLIST
 }
 
 data class RecommendationContribution(

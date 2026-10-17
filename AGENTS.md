@@ -138,22 +138,32 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 
 ## 9. Smart Auto-DJ performance invariants
 
-- Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up.
+- Normal GMMP playlists are a first-class local recommendation signal: use read-only indexed playlist identities, cache membership by file fingerprint, weight focused playlists more strongly than huge catch-all lists, and reward independent playlist co-occurrence. Smart Playlists are not part of this signal unless a future explicitly weaker opt-in policy is implemented.
+- Smart recommendation mode is the default and owns conservative stable-provider enablement/weights. Custom mode may expose provider enablement, bounded ranking weights and playlist-size weighting, but provider request order is not a user preference.
+- Independent network providers should run in parallel inside one deterministic pool-fill pipeline when this reduces latency. Weight/ranking priority must not be implemented by serially delaying one enabled provider behind another.
+- Provider corroboration is evidence: after provider/seed deduplication, independent providers confirming the same logical track may receive a bounded bonus. A local playlist signal must never bypass the normal local-library quality/rating/duplicate gates.
+- Final selection may add controlled variety only inside bounded near-equal score buckets. Do not add global random score noise that can promote a clearly weaker candidate over a stronger one; Smart mode uses the balanced policy and Custom may expose Off/Balanced/High.
+- Revalidate large-library caches with cheap read-only revision signals before repeating an expensive full-library scan; retain a bounded hard refresh for metadata changes the revision signal may miss.
+- Recommendation-side GMMP reads must not require one obfuscated TrackDao field or method. Tested R8 names may remain optional fast paths, but the structural read-only Room/Cursor resolver and semantic playlist-catalogue discovery must remain sufficient and fail closed on ambiguity.
+- Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
-- Latency diagnostics distinguish queue-read-before, pool hit/fill, native refill, queue-read-after and total time.
+- Latency diagnostics distinguish queue-read-before, pool hit/fill, provider rounds/playlist affinity, native refill, queue-read-after and total time.
 - Reuse the already passively proved current-position hint for queue snapshots; do not restart broad getter discovery on transient CURRENT ambiguity.
 - Pre-action Queue/Room race barriers run off GMMP's main thread.
 
 ## 10. Logging and diagnostics
 
-Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and user-visible failures.
+GoneSmart has two deliberate diagnostic layers and every feature audit must review both:
 
 Every device-debug build exposes the exact local Git revision through `BuildConfig.GIT_REVISION`; local uncommitted source is suffixed `-dirty`. Startup and feature-local Playlist Link diagnostics include that revision. Before interpreting a device failure or asking for another probe build, verify that a revision-bearing boundary reached by the captured flow matches the intended branch head. Package-filtered Logcat can miss early startup lines, so a later editor/presenter/dispatch marker is equally authoritative. An actual mismatch, or the absence of any revision marker from a boundary the flow demonstrably reached, leaves build identity unverified.
 
-Broad class/method/recycler inventories are gated to unknown/failing compatibility boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
+- **Companion Logs tab:** bounded, copyable, high-signal support history. Record meaningful state changes, verified user actions, fallbacks/degraded states, feature-unavailable conditions and failures with enough context to identify the broad failure class. Routine per-track/per-refill success, candidate lists, reflection inventories and other hot-path detail do not belong here. Keep categories, duplicate suppression, retention, Copy/Clear behavior, Help copy and the displayed Logcat-filter guidance current as features evolve.
+- **Android Logcat:** detailed developer diagnostics. Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and useful latency summaries. Accepted-version normal logs use compact summaries rather than per-candidate recommendation/result dumps. Stable GoneSmart-family tags should make feature-specific filtering practical; whenever tags are added/renamed/retired, update the companion Logs/Help guidance in the same change.
 
-Accepted actions may retain one bounded postcondition check, not discovery-era polling loops.
+Broad class/method/recycler inventories and detailed candidate/result dumps are gated to unknown/failing compatibility or explicit debug boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
+
+Accepted actions may retain one bounded postcondition check, not discovery-era polling loops. The companion Logs timeline is the first support artifact for bug triage; filtered Logcat is the second-level artifact when the high-level event history is insufficient.
 
 ## 11. Mutation safety
 
@@ -169,6 +179,7 @@ Accepted actions may retain one bounded postcondition check, not discovery-era p
 - `docs/GMMP_COMPATIBILITY_PLAYBOOK.md`: version ledger and future-update procedure.
 - `docs/GMMP_421_COMPLETION.md`: concise final 4.2.1 / 0.4.0 acceptance state.
 - `docs/NATIVE_GMMP_AUDIT.md` and dated `GMMP_421_*` files: historical reverse-engineering evidence.
+- `docs/FEATURE_AUDIT_CHECKLIST.md`: mandatory feature-closeout checklist. Run it before calling a feature complete or integration-ready; every feature audit must explicitly review companion Logs + Logcat diagnostics and record its Localization/I18N outcome, including **no new translations required** when applicable.
 - `docs/ROADMAP.md`: public planned direction for upcoming releases; keep it concise and user-facing.
 - `docs/forum/`: copy-ready GMMP forum thread/release BBCode. `THREAD_START_TEMPLATE.bbcode` is maintained source; `THREAD_START.bbcode` and `LATEST_RELEASE_REPLY.bbcode` are generated by `scripts/generate_forum_posts.py` and must not be hand-edited.
 - Feature docs: detailed user/developer behavior.
@@ -198,9 +209,11 @@ A release candidate is complete only when:
 7. public release notes prioritize features, benefits and user-visible improvements over implementation internals;
 8. no enabled unsafe guessed writer remains;
 9. accepted-version diagnostics impose no obvious persistent hot-path cost;
-10. the merged `main` head is green before tagging/publishing;
-11. GMMP forum copy is current: update `THREAD_START_TEMPLATE.bbcode` when public features/compatibility change, regenerate via `python3 scripts/generate_forum_posts.py`, and review the generated first-post and release-reply BBCode;
-12. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
+10. the feature-closeout code-hygiene pass removed obsolete probes/debug dumps/dead helpers/stale comments and left no temporary infrastructure in the release tree;
+11. the companion Logs/support timeline and Logcat diagnostics were audited for signal, noise, failure coverage, current categories/tags and up-to-date filter/help text;
+12. the merged `main` head is green before tagging/publishing;
+13. GMMP forum copy is current: update `THREAD_START_TEMPLATE.bbcode` when public features/compatibility change, regenerate via `python3 scripts/generate_forum_posts.py`, and review the generated first-post and release-reply BBCode;
+14. the release workflow publishes versioned forum BBCode assets and keeps the copy-ready `docs/forum` outputs synchronized for manual main releases.
 
 After 0.4.0, new features should start on a normal named feature branch from the chosen clean `main` integration point.
 
@@ -336,3 +349,7 @@ After 0.4.0, new features should start on a normal named feature branch from the
 - R63 device evidence closes the prepared-pool Queue-context gap. When native Queue Play selected Green Day from an existing five-row queue, the target was independently verified as Current at absolute position 4, but the prepared Smart path kept the old row at position 5 and requested only the three missing followers; the three prepared tracks were therefore appended while the stale follower survived, and verification failed (`expected=1470`, `actual=12819`). For `menu_gm_context_queue` with a non-empty prepared pool, first isolate/rebase the exact verified selected queue entry to the one-row position-1 invariant through the already-proven native queue/current writers, then request the full dynamic `Initial Size - 1` through the ordinary `qr.z` bootstrap. Keep non-Queue prepared starts unchanged.
 - R64 device evidence closes a remaining R62 scheduling race in zero-provider startup. A failing BUNT. run naturally called `MusicService.I2(2)` before the Track-Mix worker had published `provisionalCurrentQueuePosition`; the hook therefore recorded the command but could not yet prove it was CURRENT+1, allowed the original call through, and only promoted the boundary after GMMP had already read the stale position-2 follower. While a zero-provider request is pending, that first natural command may now synchronously prime Current=1 only when the selected Track is uniquely present at queue position 1, the independently verified Current writer reads 1, the queue reader resolves that exact row as Current, and the natural argument is exactly 2. Then the existing R62 seed-isolation/native-fill guard runs before the original MusicService call. Wider coordinates, identity/readback disagreement or ambiguity remain fail-closed; never replay the playback call later.
 - Never reintroduce a post-decode `MusicService(Int)->void` replay as a next-source refresh. R49 and the 2026-10-16 trace both disprove that model.
+
+- Provider artist fallbacks are a rescue stage, not a default per-provider tax: first evaluate Playlist Affinity plus direct track/recording recommendations locally, then run artist-level provider expansion only when unique local coverage is below a reserve scaled from GMMP Initial Size / Upcoming Tracks and a bounded fraction of the internal pool target. Prefer one sufficiently rich first pass over repeated closely spaced provider rounds.
+- A partially populated GoneSmart pool is valid. If GMMP requests more tracks than GoneSmart currently has suitable candidates, return only the suitable GoneSmart rows and never pad the remainder with untouched/native random rows. Treat a partial successful fill as scarcity: suppress low-water background provider top-up while useful partial-pool tracks remain, then allow a fresh refill after they are consumed. Native fallback for recommendation scarcity is reserved for the zero-suitable-track case according to the fallback policy.
+- `Prevent Version Duplicates` groups the classic base-version family (Original/Radio/Extended/Club) while leaving remixes independent. `Prevent Remix Duplicates` is a separate opt-in setting, default off, that blocks remix-vs-other-version conflicts for the same normalized artist + base title in either direction.

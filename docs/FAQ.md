@@ -8,7 +8,31 @@ Within Smart Auto-DJ, GoneSmart replaces only GMMP's track-selection step. GMMP 
 
 ## Where do recommendations come from?
 
-GoneSmart combines similar-music data from ListenBrainz and Last.fm, then matches those suggestions against the local GMMP database. The providers do not decide which file is played; the final selection must be a local GMMP track.
+GoneSmart combines three sources:
+
+- **Local Playlists** — read-only co-occurrence in your normal GMMP playlists;
+- **ListenBrainz** — recording similarity plus a lower-confidence artist rescue when needed;
+- **Last.fm** — similar tracks plus a bounded artist/top-track rescue when needed.
+
+Every final result is still matched against the local GMMP library. Providers never decide which remote file is played.
+
+## What are Smart and Custom recommendation modes?
+
+**Smart** is the recommended default and lets GoneSmart own conservative source/weight defaults. **Custom** exposes the three source switches, per-provider ranking weights, large-playlist weighting and recommendation variety.
+
+Custom always keeps at least one source enabled. If Local Playlists is disabled, Large-playlist weighting is greyed out because it has no effect on ListenBrainz or Last.fm.
+
+## What do provider weights actually do?
+
+Weights change the contribution of that provider's evidence before aggregation; they are not quotas and do not force a fixed percentage of selected tracks to come from each service. A strong Local Playlist-only candidate may still win, while a logical track independently supported by several sources receives a small bounded corroboration bonus.
+
+## What is Recommendation variety?
+
+Variety changes only the ordering of **near-equal final matches**. Balanced uses a narrow near-tie window, High a wider one, and Off keeps score order unchanged. GoneSmart does not add global random score noise, so a clearly weaker recommendation cannot jump over a clearly stronger one just for variety.
+
+## Are Smart Playlists used as recommendation evidence?
+
+Not currently. Normal playlists are often deliberately curated, while rule-based Smart Playlists can be much broader or dynamic. A future opt-in may allow Smart Playlists to contribute a deliberately weaker affinity signal.
 
 ## Is Smart Auto-DJ only for electronic music?
 
@@ -20,13 +44,13 @@ Other genres should work too. If rock, metal, hip-hop, pop, classical or another
 
 GoneSmart uses up to five representative provider seeds. The current and recent tracks receive the strongest weight. The broader session still informs local ranking and drift control without causing an API request for every item in a long queue.
 
-## What happens if the normal search finds nothing locally?
+## What happens if direct recommendations do not provide enough local tracks?
 
-Exactly one broader provider pass is performed. Last.fm requests a wider similar-track set and ListenBrainz explores a wider set of plausible recording identities. If the broader pass also yields no usable local candidate, GoneSmart stops broadening and follows the configured fallback rules.
+GoneSmart first combines Local Playlist Affinity with direct ListenBrainz/Last.fm recording or track evidence and matches that set locally. Artist-level provider expansion is requested only when the number of unique local direct candidates is below a bounded reserve. This keeps the common path fast while still rescuing sparse/new/obscure seeds.
 
 ## Why not keep searching indefinitely?
 
-Unbounded retries would increase API traffic, battery/network use and Auto-DJ latency without guaranteeing a local match. One bounded broad pass gives sparse libraries a second chance without turning every difficult seed into a long search loop.
+Unbounded retries would increase API traffic, battery/network use and Auto-DJ latency without guaranteeing a local match. GoneSmart therefore uses bounded direct evidence, one conditional rescue stage and a reusable recommendation pool. A partial smart pool is valid; native GMMP fallback is reserved for the configured zero-suitable-track case.
 
 ## How does the recommendation pool work?
 
@@ -48,7 +72,7 @@ If GoneSmart cannot supply a smart track and native fallback is enabled, regular
 
 ## What happens offline?
 
-A still-valid pool from the current session can continue offline. Starting a different queue invalidates the old session pool. If no cached smart candidate remains, native GMMP fallback can take over when enabled.
+Local Playlist Affinity can generate new recommendations without a network connection. A still-valid pool from the current session can also continue offline. Online providers are skipped while offline. Starting a different queue invalidates the old session pool; if no enabled local source can provide a suitable track, native GMMP fallback can take over when enabled.
 
 ## What does the sparkle mean?
 
@@ -62,7 +86,9 @@ No. GoneSmart sends the seed metadata required for recommendation lookup. The GM
 
 ## Why can another GMMP version break GoneSmart?
 
-GoneSmart currently hooks obfuscated GMMP internals. Internal class, method or field names can change between GMMP releases even if the visible feature behaves the same. Version 4.2.0 is the current tested target.
+GoneSmart integrates with obfuscated GMMP internals, so structural details can change even when the visible GMMP feature does not. The current accepted/tested target is **GMMP 4.2.1**.
+
+The recommendation feature deliberately avoids treating one R8 name as semantic identity: the live Auto-DJ owner, read-only Room/Cursor query boundary and playlist path/URI data are resolved structurally/semantically, with tested names used only as optional fast paths where appropriate. This improves forward robustness, but a new GMMP version is still unverified until the compatibility workflow has been run.
 
 ## Does changing settings require a restart?
 
@@ -86,7 +112,7 @@ After a successful, verified mix, GoneSmart displays just **one short confirmati
 
 ## Why does the GoneSmart app say “Track Auto-DJ” when GMMP is German?
 
-GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it shows a language-neutral checkmark. No copied GMMP translations are maintained in GoneSmart.
+GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it uses the readable English fallback *started*. No copied GMMP translations are maintained in GoneSmart.
 
 ## How are GoneSmart updates handled?
 
@@ -109,7 +135,7 @@ Yes. In the main Playlists tab, long-press the first playlist and select additio
 
 Enable **UI → Smart-Playlists → Folders**. GMMP's original Smart-Playlist rows remain native; GoneSmart adds the physical-folder header, breadcrumb and folder actions. **Group root Smart-Playlists** optionally places root `.spl` files in virtual **Other Locations**.
 
-Enable **Multi-selection** in the same section to long-press one native Smart-Playlist row, select more rows and move them together. This selection mode is provided by GoneSmart on the tested GMMP 4.2.0 runtime because native Smart-row long press does not actually start GMMP's generic selection ActionMode there.
+Enable **Multi-selection** in the same section to long-press one native Smart-Playlist row, select more rows and move them together. This selection mode is provided by GoneSmart on the accepted GMMP 4.2.1 runtime because native Smart-row long press does not provide the multi-move workflow GoneSmart needs.
 
 ## Can I move Smart-Playlists between folders?
 
@@ -134,3 +160,17 @@ Playlist Link identifies the ordinary source by its stored path. If that source 
 ## Why does Move have a separate translation table?
 
 GMMP 4.2.0 has localized resources for its built-in playlist/folder actions, but no suitable native **Move** resource for GoneSmart's new playlist relocation action. GoneSmart resolves other injected player text from the installed GMMP's resources and uses one central host-locale translation for **Move**, covering the known GMMP 4.2.0 language codes. The additional feature-owned virtual **Other Locations** name also has host-language fallbacks when no installed native translation exists. Unknown future languages fall back to English. This is distinct from the **English-only** GoneSmart companion UI; these custom translations still need independent native-speaker review before broader release claims.
+
+## Why not Spotify, YouTube or YouTube Music?
+
+GoneSmart prefers stable, documented recommendation APIs that can be used safely by a distributed Android module.
+
+- **Spotify:** current Web API Development Mode is intentionally restricted for broad distribution, and new development use cases no longer receive the former Recommendations/Related Artists functionality. A private WebPlayer/GraphQL integration would be too brittle for a normal provider.
+- **YouTube:** the documented Data API no longer offers the former related-video search parameter, so there is no direct stable related-track equivalent.
+- **YouTube Music:** there is no suitable public recommendation API. An InnerTube/private integration would be undocumented and too experimental for GoneSmart's normal compatibility contract.
+
+These choices can be reevaluated if stable public APIs become available.
+
+## Is SoundCloud planned?
+
+SoundCloud is a strong candidate for investigation in the 0.6 timeframe because the official API exposes related-track recommendations. The blocker is not recommendation quality but safe credential/authentication design for a distributed Android client; GoneSmart will not embed a shared confidential client secret.

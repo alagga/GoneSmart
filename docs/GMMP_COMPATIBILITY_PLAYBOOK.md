@@ -117,6 +117,18 @@ Runtime `3cf7c504dc7d` then proved that this 90 ms 4.2.1 command boundary was ac
 
 The 2026-10-09 device trace then proved a different ownership detail in the 4.2.1 public-clear path: after `CLEAR_QUEUE`, the independent queue reader repeatedly showed exactly one row whose Current track was the selected seed, while the old verifier still timed out because it also required the pre-clear `queue_id`. GMMP is allowed to recreate its own queue row while preserving playback identity. The accepted postcondition is therefore exactly one row, exactly one Current, and that Current's Track ID equals the selected seed. Queue-entry identity is diagnostic only. GoneSmart continues to leave post-clear/refill queue ordering to GMMP instead of rewriting Room positions behind an already prepared AudioSource.
 
+### Recommendation read boundaries
+
+The 0.5 recommendation blend has no new guessed state-changing writer. Its read-side compatibility contract is:
+
+- resolve the live Auto-DJ owner semantically/structurally, not by one obfuscated accessor name;
+- resolve the GMMP Room database and compatible Cursor query boundary structurally and fail closed on ambiguity;
+- discover the playlist-catalogue path/URI column from the actual data shape;
+- treat the historical TrackDao field/method mapping only as an optional tested-version fast path; if it is unavailable, the structural read-only Cursor path must remain sufficient;
+- cache successful structural bindings and playlist/library indexes so accepted-version runtime does not repeatedly perform broad discovery.
+
+A future GMMP compatibility self-test must include these read-only Smart DJ boundaries in addition to the queue/UI mutation families.
+
 ### Recommendation-pool latency
 
 - successful fills may top up again as soon as low-water requires it;
