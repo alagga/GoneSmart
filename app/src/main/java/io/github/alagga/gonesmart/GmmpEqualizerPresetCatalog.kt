@@ -9,9 +9,10 @@ import java.util.zip.ZipFile
 /**
  * Bounded read-only discovery of GMMP's installed Equalizer preset files.
  *
- * GMMP stores preset families by Equalizer band count. GoneSmart currently
- * manages the ten-band GMMP shape, so discovery reads that subtree directly
- * instead of requiring every preset to be selected once in GMMP.
+ * Current GMMP stores preset families by Equalizer band count below
+ * /storage/emulated/0/gmmp/eq_presets. GoneSmart manages the ten-band GMMP
+ * shape, so discovery reads that family directly instead of requiring every
+ * preset to be selected once in GMMP.
  */
 object GmmpEqualizerPresetCatalog {
     private const val MAX_PRESET_BYTES = 128 * 1024L
@@ -36,8 +37,10 @@ object GmmpEqualizerPresetCatalog {
 
     fun discover(application: Application): Result {
         val accepted = linkedMapOf<String, Entry>()
+        val seenFilePaths = linkedSetOf<String>()
         var candidateCount = 0
         var rejectedCount = 0
+        var fileCandidateCount = 0
 
         fun accept(nameHint: String, bytes: ByteArray, source: String) {
             candidateCount += 1
@@ -57,25 +60,34 @@ object GmmpEqualizerPresetCatalog {
                 .asSequence()
                 .take(MAX_FILES_PER_DIRECTORY)
                 .forEach { file ->
+                    val canonical = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+                    if (!seenFilePaths.add(canonical)) return@forEach
                     val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@forEach
+                    fileCandidateCount += 1
                     accept(file.name, bytes, "file:${file.absolutePath}")
                 }
         }
 
-        applicationApkPaths(application).forEach { apkPath ->
-            runCatching {
-                ZipFile(apkPath).use { zip ->
-                    zip.entries().asSequence()
-                        .filter { entry ->
-                            !entry.isDirectory &&
-                                entry.size in 1..MAX_PRESET_BYTES &&
-                                looksLikePresetPath(entry.name)
-                        }
-                        .take(MAX_APK_CANDIDATES)
-                        .forEach { entry ->
-                            val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            accept(entry.name.substringAfterLast('/'), bytes, "apk:${entry.name}")
-                        }
+        // The runtime-installed GMMP preset files are the authoritative source:
+        // they include built-ins restored by GMMP and user-created presets for
+        // the actual band family. Only fall back to packaged resources when no
+        // readable GMMP-owned preset file exists at all.
+        if (fileCandidateCount == 0) {
+            applicationApkPaths(application).forEach { apkPath ->
+                runCatching {
+                    ZipFile(apkPath).use { zip ->
+                        zip.entries().asSequence()
+                            .filter { entry ->
+                                !entry.isDirectory &&
+                                    entry.size in 1..MAX_PRESET_BYTES &&
+                                    looksLikePresetPath(entry.name)
+                            }
+                            .take(MAX_APK_CANDIDATES)
+                            .forEach { entry ->
+                                val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                                accept(entry.name.substringAfterLast('/'), bytes, "apk:${entry.name}")
+                            }
+                    }
                 }
             }
         }
@@ -90,8 +102,9 @@ object GmmpEqualizerPresetCatalog {
     /**
      * Enumerate real preset files below one GMMP preset root. Numeric or
      * band-labelled child directories are treated as band-count scopes. If a
-     * ten-band scope exists, other explicitly scoped band counts are ignored;
-     * unscoped files remain valid because some GMMP versions store them flat.
+     * ten-band scope exists, files from other band counts and Android's
+     * separate Equalizer family are excluded. The root-level eqstate.eq file is
+     * runtime state, not a selectable preset, and is never imported.
      */
     internal fun presetFilesForDirectory(directory: File, expectedBandCount: Int): List<File> {
         if (!directory.isDirectory || !directory.canRead()) return emptyList()
@@ -99,7 +112,8 @@ object GmmpEqualizerPresetCatalog {
         data class Node(val file: File, val depth: Int, val bandHint: Int?)
         val queue = ArrayDeque<Node>()
         val expected = mutableListOf<File>()
-        val unscoped = mutableListOf<File>()
+        val rootUnscoped = mutableListOf<File>()
+        val neutralFallback = mutableListOf<File>()
         queue.add(Node(directory, 0, bandCountHint(directory.name)))
         var visited = 0
 
@@ -112,19 +126,30 @@ object GmmpEqualizerPresetCatalog {
                 .take(128)
                 .forEach { child ->
                     if (child.isFile) {
-                        if (child.length() !in 1..MAX_PRESET_BYTES) return@forEach
-                        when (node.bandHint) {
-                            expectedBandCount -> expected += child
-                            null -> unscoped += child
+                        if (child.length() !in 1..MAX_PRESET_BYTES || isPresetStateFile(child.name)) {
+                            return@forEach
+                        }
+                        when {
+                            node.bandHint == expectedBandCount -> expected += child
+                            node.bandHint != null -> Unit
+                            node.depth == 0 -> rootUnscoped += child
+                            else -> neutralFallback += child
                         }
                     } else if (child.isDirectory && child.canRead() && node.depth < MAX_PRESET_TREE_DEPTH) {
-                        val childHint = bandCountHint(child.name) ?: node.bandHint
+                        if (looksLikeAndroidEqDirectory(child.name)) return@forEach
+                        val explicitBandHint = bandCountHint(child.name)
+                        if (explicitBandHint != null && explicitBandHint != expectedBandCount) return@forEach
+                        val childHint = explicitBandHint ?: node.bandHint
                         queue.add(Node(child, node.depth + 1, childHint))
                     }
                 }
         }
 
-        val selected = if (expected.isNotEmpty()) unscoped + expected else unscoped
+        val selected = if (expected.isNotEmpty()) {
+            rootUnscoped + expected
+        } else {
+            rootUnscoped + neutralFallback
+        }
         return selected
             .distinctBy { runCatching { it.canonicalPath }.getOrDefault(it.absolutePath) }
             .sortedBy { it.absolutePath.lowercase(Locale.US) }
@@ -136,6 +161,16 @@ object GmmpEqualizerPresetCatalog {
         return match.groupValues.getOrNull(1)?.toIntOrNull()
     }
 
+    private fun isPresetStateFile(name: String): Boolean {
+        val normalized = name.lowercase(Locale.US).replace('-', '_').replace(' ', '_')
+        return normalized == "eqstate.eq" || normalized == "eq_state.eq"
+    }
+
+    private fun looksLikeAndroidEqDirectory(name: String): Boolean {
+        val normalized = name.lowercase(Locale.US).replace('-', '_').replace(' ', '_')
+        return normalized == "android_eq" || normalized == "androideq"
+    }
+
     private fun candidateDirectories(application: Application): List<File> {
         val ordered = linkedSetOf<File>()
 
@@ -144,28 +179,28 @@ object GmmpEqualizerPresetCatalog {
             listOf(File(external, "gmmp"), File(external, "GMMP"))
                 .distinctBy { it.absolutePath }
                 .forEach { gmmpRoot ->
-                    ordered += File(gmmpRoot, "eq_preset")
                     ordered += File(gmmpRoot, "eq_presets")
+                    ordered += File(gmmpRoot, "eq_preset")
                     if (gmmpRoot.isDirectory && gmmpRoot.canRead()) {
                         discoverNamedPresetDirectories(gmmpRoot).forEach(ordered::add)
                     }
                 }
         }
 
-        ordered += File(application.applicationInfo.dataDir, "files/gmmp/eq_preset")
         ordered += File(application.applicationInfo.dataDir, "files/gmmp/eq_presets")
-        ordered += File(application.applicationInfo.dataDir, "files/eq_preset")
+        ordered += File(application.applicationInfo.dataDir, "files/gmmp/eq_preset")
         ordered += File(application.applicationInfo.dataDir, "files/eq_presets")
-        ordered += File(application.applicationInfo.dataDir, "eq_preset")
+        ordered += File(application.applicationInfo.dataDir, "files/eq_preset")
         ordered += File(application.applicationInfo.dataDir, "eq_presets")
+        ordered += File(application.applicationInfo.dataDir, "eq_preset")
 
         runCatching { application.getExternalFilesDirs(null).filterNotNull() }
             .getOrDefault(emptyList())
             .forEach { externalFiles ->
-                ordered += File(externalFiles, "gmmp/eq_preset")
                 ordered += File(externalFiles, "gmmp/eq_presets")
-                ordered += File(externalFiles, "eq_preset")
+                ordered += File(externalFiles, "gmmp/eq_preset")
                 ordered += File(externalFiles, "eq_presets")
+                ordered += File(externalFiles, "eq_preset")
             }
 
         // Current GMMP versions are free to move the files. Search only GMMP's
