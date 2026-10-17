@@ -1,0 +1,49 @@
+name: RC Integration Helper
+
+on:
+  push:
+    branches: ['release/0.5.0-rc.1']
+    paths: ['.github/workflows/rc-integration-helper.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-auto-dj-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout RC with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Auto-DJ provider branch
+        run: git fetch origin feature/auto-dj-providers:refs/remotes/origin/feature/auto-dj-providers
+
+      - name: Attempt real three-way merge and collect conflicts
+        shell: bash
+        run: |
+          set -u
+          rm -rf integration-artifact
+          mkdir -p integration-artifact/{base,ours,theirs,merged}
+          git merge --no-commit --no-ff origin/feature/auto-dj-providers || true
+          git status --short > integration-artifact/status.txt
+          git diff --name-only --diff-filter=U > integration-artifact/conflicts.txt
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            for side in base ours theirs; do
+              mkdir -p "integration-artifact/$side/$(dirname "$file")"
+            done
+            mkdir -p "integration-artifact/merged/$(dirname "$file")"
+            git show ":1:$file" > "integration-artifact/base/$file" || true
+            git show ":2:$file" > "integration-artifact/ours/$file" || true
+            git show ":3:$file" > "integration-artifact/theirs/$file" || true
+            cp "$file" "integration-artifact/merged/$file"
+          done < integration-artifact/conflicts.txt
+
+      - name: Upload merge evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-auto-dj-merge-evidence
+          path: integration-artifact
+          retention-days: 1
