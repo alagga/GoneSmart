@@ -27,8 +27,8 @@ jobs:
           git status --short
           test "$(grep -R "observeNativeContextPlayBoundary" -n app/src/main/java/io/github/alagga/gonesmart || true)" = ""
           test "$(grep -R "narrowNativePlaybackListForZeroPool" -n app/src/main/java/io/github/alagga/gonesmart || true)" = ""
-          grep -q 'nativeVisibleItems == 9 || nativeVisibleItems == 10' app/src/main/java/io/github/alagga/gonesmart/TrackMixFileBrowserMenuResolver.kt
-          grep -q 'nativeVisibleItems == 8' app/src/main/java/io/github/alagga/gonesmart/TrackMixFileBrowserMenuResolver.kt
+          grep -q 'GMMP_421_SONG_VISIBLE_ITEMS = setOf(9, 10)' app/src/main/java/io/github/alagga/gonesmart/TrackMixFileBrowserMenuResolver.kt
+          grep -q 'GMMP_421_DIRECTORY_VISIBLE_ITEMS = 8' app/src/main/java/io/github/alagga/gonesmart/TrackMixFileBrowserMenuResolver.kt
           grep -q 'listOf(0, 7, 11, 12)' app/src/test/java/io/github/alagga/gonesmart/TrackMixFileBrowserMenuResolverTest.kt
 
       - name: Verify generated forum copy
