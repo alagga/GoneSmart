@@ -3,14 +3,13 @@ name: Temporary final 4.2.1 audit
 on:
   push:
     branches: [fix/playlist-link-gmmp-4.2.1]
-    paths:
-      - scripts/tmp_final_421_audit.py
 
 permissions:
   contents: write
 
 jobs:
   audit:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
