@@ -212,7 +212,6 @@ internal class TrackMixController(
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
     private val queueReader = GmmpQueueReader()
-    private val fileBrowserMenuResolver = TrackMixFileBrowserMenuResolver()
     private val prePlayAutoDjResolver = TrackMixAutoDjResolver()
     private val nativePlayListResolver = TrackMixNativePlayListResolver()
 
@@ -1033,25 +1032,12 @@ internal class TrackMixController(
         )
         val nativePlay = menu.findItem(playId) ?: return
         val nativeNext = menu.findItem(nextId) ?: return
-        if (name == FILE_BROWSER_MENU) {
-            val selectionContext = menuSelectionContext(menu, nativePlay)
-            val browserSelection = fileBrowserMenuResolver.resolve(selectionContext.roots)
-            if (browserSelection.kind != TrackMixFileBrowserSelectionKind.REGULAR_FILE) {
-                existing?.isVisible = false
-                Log.i(
-                    TAG,
-                    "MIX MENU SKIP | menu=$name" +
-                        " | browserContext=${browserSelection.kind.name.lowercase()}" +
-                        " | evidence=${browserSelection.evidence}" +
-                        " | depth=${browserSelection.depth ?: -1}" +
-                        " | roots=${selectionContext.roots.size}" +
-                        " | inspected=${browserSelection.inspectedObjects}"
-                )
-                return
-            }
-        }
         if (existing != null) {
-            existing.isVisible = true
+            if (name == FILE_BROWSER_MENU) {
+                scheduleFileBrowserMenuEligibility(menu, existing)
+            } else {
+                existing.isVisible = true
+            }
             return
         }
         val language = context.resources.configuration.locales[0].language
@@ -1090,6 +1076,9 @@ internal class TrackMixController(
         item.setOnMenuItemClickListener {
             onMixClicked(context, name, menu, nativePlay, confirmation, label)
             true
+        }
+        if (name == FILE_BROWSER_MENU) {
+            scheduleFileBrowserMenuEligibility(menu, item)
         }
 
         val inserted = insertAfter(menu, item, nativeNext)
@@ -3067,6 +3056,42 @@ internal class TrackMixController(
             canvas.translate(x, lineCenter - px / 2f)
             sparkle.draw(canvas)
             canvas.restoreToCount(save)
+        }
+    }
+
+    /**
+     * MenuInflater.inflate returns before GMMP's file-browser caller applies
+     * the row-specific visibility state. Keep GoneSmart hidden during that
+     * call stack, then classify the final native menu shape on the next main
+     * loop turn. The exact 4.2.1 shapes are device-proven: directory rows have
+     * eight visible native items, playable files have ten. This controls UI
+     * exposure only; click-time pre-Play Track resolution remains mandatory.
+     */
+    private fun scheduleFileBrowserMenuEligibility(
+        menu: Menu,
+        item: MenuItem
+    ) {
+        item.isVisible = false
+        main.post {
+            val nativeVisibleItems = (0 until menu.size()).count { index ->
+                val candidate = menu.getItem(index)
+                candidate.itemId != MIX_ITEM_ID && candidate.isVisible
+            }
+            val selection = TrackMixFileBrowserMenuShapePolicy.resolve(
+                nativeVisibleItems
+            )
+            val eligible =
+                selection.kind == TrackMixFileBrowserSelectionKind.REGULAR_FILE
+            item.isVisible = eligible
+            Log.i(
+                TAG,
+                (if (eligible) "MIX MENU FILE BROWSER" else "MIX MENU SKIP") +
+                    " | menu=$FILE_BROWSER_MENU" +
+                    " | browserContext=${selection.kind.name.lowercase()}" +
+                    " | evidence=${selection.evidence}" +
+                    " | nativeVisible=$nativeVisibleItems" +
+                    " | deferred=true"
+            )
         }
     }
 

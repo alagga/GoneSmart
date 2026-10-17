@@ -1,70 +1,30 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.nio.file.Files
 
 class TrackMixFileBrowserMenuResolverTest {
-    private data class Selected(val path: String)
-    private data class Listener(val selected: Any, val adapterRows: List<Any> = emptyList())
-    private data class CollectionBridge(val rows: List<Any>)
-
-    @Test fun regularFileBehindBoundedCollectionIsEligible() {
-        val root = Files.createTempDirectory("gs-track-mix-file").toFile()
-        val file = root.resolve("song.mp3").apply { writeText("x") }
-        val result = TrackMixFileBrowserMenuResolver().resolve(
-            listOf(CollectionBridge(listOf(Listener(Selected(file.absolutePath)))))
-        )
+    @Test fun gmmp421SongMenuShapeIsEligible() {
+        val result = TrackMixFileBrowserMenuShapePolicy.resolve(10)
         assertEquals(TrackMixFileBrowserSelectionKind.REGULAR_FILE, result.kind)
-        assertEquals("existing-file", result.evidence)
-        root.deleteRecursively()
+        assertEquals("gmmp421-native-song-menu-shape", result.evidence)
     }
 
-    @Test fun shallowDirectoryWinsOverDeeperChildFile() {
-        val root = Files.createTempDirectory("gs-track-mix-dir").toFile()
-        val child = root.resolve("child.mp3").apply { writeText("x") }
-        val result = TrackMixFileBrowserMenuResolver().resolve(
-            listOf(
-                CollectionBridge(
-                    listOf(
-                        Listener(
-                            selected = Selected(root.absolutePath),
-                            adapterRows = listOf(Selected(child.absolutePath))
-                        )
-                    )
-                )
-            )
-        )
+    @Test fun gmmp421DirectoryMenuShapeIsNotEligible() {
+        val result = TrackMixFileBrowserMenuShapePolicy.resolve(8)
         assertEquals(TrackMixFileBrowserSelectionKind.DIRECTORY, result.kind)
-        assertTrue(result.inspectedObjects <= 240)
-        root.deleteRecursively()
+        assertEquals("gmmp421-native-directory-menu-shape", result.evidence)
     }
 
-    @Test fun adapterLikeCollectionWithMultipleFileTargetsFailsClosed() {
-        val root = Files.createTempDirectory("gs-track-mix-many").toFile()
-        val first = root.resolve("one.mp3").apply { writeText("1") }
-        val second = root.resolve("two.mp3").apply { writeText("2") }
-        val result = TrackMixFileBrowserMenuResolver().resolve(
-            listOf(
-                CollectionBridge(
-                    listOf(
-                        Selected(first.absolutePath),
-                        Selected(second.absolutePath)
-                    )
-                )
+    @Test fun unknownNativeMenuShapesFailClosed() {
+        listOf(0, 7, 9, 11, 12).forEach { count ->
+            val result = TrackMixFileBrowserMenuShapePolicy.resolve(count)
+            assertEquals(
+                "count=$count",
+                TrackMixFileBrowserSelectionKind.UNKNOWN,
+                result.kind
             )
-        )
-        assertEquals(TrackMixFileBrowserSelectionKind.UNKNOWN, result.kind)
-        assertEquals("ambiguous-shallow-paths", result.evidence)
-        root.deleteRecursively()
-    }
-
-    @Test fun unknownPathFailsClosed() {
-        val missing = "/definitely/not/a/real/gonesmart/path/song.mp3"
-        val result = TrackMixFileBrowserMenuResolver().resolve(
-            listOf(CollectionBridge(listOf(Selected(missing))))
-        )
-        assertEquals(TrackMixFileBrowserSelectionKind.UNKNOWN, result.kind)
+            assertEquals("unexpected-native-menu-shape", result.evidence)
+        }
     }
 }
