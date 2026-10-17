@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import java.nio.charset.StandardCharsets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -30,6 +31,58 @@ class GmmpEqualizerPresetParserTest {
         assertEquals("-1", parsed.shape["eq.band_32_db"])
         assertEquals("3", parsed.shape["eq.band_1000_db"])
         assertEquals(11, parsed.shape.size)
+    }
+
+    @Test
+    fun parsesNativeNameThenPreAndTenBandLines() {
+        val text = """
+            Bass & Treble
+            -2.0
+            5.0
+            4.0
+            2.0
+            0.0
+            -1.0
+            -1.0
+            0.0
+            2.0
+            4.0
+            5.0
+        """.trimIndent()
+
+        val parsed = GmmpEqualizerPresetParser.parse("ignored.eq", text.toByteArray())!!
+        assertEquals("Bass & Treble", parsed.name)
+        assertEquals("-2", parsed.shape["eq.pre_db"])
+        assertEquals("5", parsed.shape["eq.band_32_db"])
+        assertEquals("5", parsed.shape["eq.band_16000_db"])
+        assertEquals(11, parsed.shape.size)
+    }
+
+    @Test
+    fun parsesNativeUtf16LittleEndianPresetWithoutBom() {
+        val text = """
+            Club
+            0
+            1
+            2
+            3
+            4
+            5
+            4
+            3
+            2
+            1
+            0
+        """.trimIndent()
+
+        val parsed = GmmpEqualizerPresetParser.parse(
+            "wrong-name.eq",
+            text.toByteArray(StandardCharsets.UTF_16LE)
+        )!!
+
+        assertEquals("Club", parsed.name)
+        assertEquals("0", parsed.shape["eq.pre_db"])
+        assertEquals("5", parsed.shape["eq.band_512_db"])
     }
 
     @Test
