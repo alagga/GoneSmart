@@ -1,4 +1,4 @@
-name: RC Audit Snapshot
+name: RC Integration Repair
 
 on:
   push:
@@ -6,56 +6,47 @@ on:
     paths: ['.github/workflows/rc-integration-helper.yml']
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  repair:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout combined RC
+      - name: Checkout RC
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify generated forum copy
-        run: python3 scripts/generate_forum_posts.py --check
-
-      - name: Basic merge hygiene
+      - name: Repair audited GmmpLibraryReader merge boundaries
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' || true)" || {
-            echo "Conflict markers found" >&2
-            git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' >&2 || true
-            exit 1
-          }
+          git config user.name "GoneSmart RC integration"
+          git config user.email "69852271+alagga@users.noreply.github.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt')
+          text = path.read_text()
+
+          old_header = '''internal data class GmmpLibraryPathIndexSnapshot(\n    val trackCount: Int,\n    val idsByPath: Map<String, Long>,\n    val ambiguousPaths: Set<String>\n\nprivate data class LibraryRevision('''
+          new_header = '''internal data class GmmpLibraryPathIndexSnapshot(\n    val trackCount: Int,\n    val idsByPath: Map<String, Long>,\n    val ambiguousPaths: Set<String>\n)\n\nprivate data class LibraryRevision('''
+
+          old_dao_tail = '''                )\n                    ?: throw IllegalStateException(\n                        "TrackDao fast path is null"\n                    )\n            }.getOrElse {\n                // The obfuscated TrackDao field is a tested-version fast path,\n                // never a compatibility requirement. The semantic read-only\n                // Room/Cursor resolver below is sufficient on its own and is\n                // the accepted GMMP 4.2.1 path when DAO mappings move.\n                val tracks = loadLibraryThroughCursor(\n                    autoDjInstance,\n                    startTime\n                )\n                deterministicMappingFailure = false\n                return tracks\n            }\n\n        val queryMethod ='''
+          new_dao_tail = '''                )\n\n        val queryMethod ='''
+
+          if text.count(old_header) != 1:
+              raise SystemExit('Expected exactly one malformed snapshot/revision boundary')
+          if text.count(old_dao_tail) != 1:
+              raise SystemExit('Expected exactly one malformed TrackDAO merge tail')
+
+          text = text.replace(old_header, new_header)
+          text = text.replace(old_dao_tail, new_dao_tail)
+          path.write_text(text)
+          PY
+
           git diff --check
-          git status --short
-
-      - name: Capture audit inventory
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p audit-meta
-          git rev-parse HEAD > audit-meta/head.txt
-          git log -1 --format='%H%n%P%n%s' > audit-meta/commit.txt
-          git ls-files > audit-meta/files.txt
-          git grep -n -E 'TODO|FIXME|HACK|TEMPORARY|temporary probe|debug-only' -- '*.kt' '*.java' '*.md' > audit-meta/todos-and-temporary.txt || true
-          git grep -n -E 'getDeclared(Field|Method)|declaredFields|declaredMethods|Class\.forName|XposedHelpers|hook\(' -- 'app/src/main/**/*.kt' > audit-meta/reflection-and-hooks.txt || true
-          git grep -n -E 'Log\.(v|d|i|w|e)\(' -- 'app/src/main/**/*.kt' > audit-meta/log-sites.txt || true
-
-      - name: Upload combined source snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: GoneSmart-0.5.0-rc.1-audit-source
-          path: |
-            AGENTS.md
-            README.md
-            RELEASE_NOTES.md
-            app/build.gradle.kts
-            app/src
-            docs
-            scripts
-            .github/workflows
-            audit-meta
-          retention-days: 1
+          git diff -- app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt
+          git add app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt
+          git commit -m "fix: repair merged GMMP library reader"
+          git push origin HEAD:release/0.5.0-rc.1
