@@ -4,85 +4,63 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackMixZeroPoolPolicyTest {
     @Test
-    fun `promotes only the unique recent current plus one position command`() {
-        val result = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
-            currentQueuePosition = 1,
-            candidates = listOf(
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("other", 9, 100),
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("next", 2, 900)
+    fun `accepted 421 next source callback is the exact tested passive shape`() {
+        assertTrue(
+            TrackMixZeroPoolPolicy.isAcceptedGmmp421NextSourceCommand(
+                declaringClassName = "gonemad.gmmp.playback.service.MusicService",
+                methodName = "I2",
+                parameterTypeName = "int",
+                returnTypeName = "void"
             )
         )
-        assertEquals("next", result.key)
-        assertEquals(1, result.matchCount)
+        assertFalse(
+            TrackMixZeroPoolPolicy.isAcceptedGmmp421NextSourceCommand(
+                declaringClassName = "gonemad.gmmp.playback.service.MusicService",
+                methodName = "I3",
+                parameterTypeName = "int",
+                returnTypeName = "void"
+            )
+        )
     }
 
     @Test
-    fun `ambiguous or stale next source boundaries fail closed`() {
-        val ambiguous = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
-            6,
-            listOf(
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("a", 7, 100),
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("b", 7, 200)
-            )
+    fun `next source proof derives position from verified Current not opaque argument`() {
+        val boundary = TrackMixZeroPoolPolicy.resolveVerifiedNextSourceBoundary(
+            selectedTrackId = 18165L,
+            currentTrackId = 18165L,
+            selectedQueuePosition = 2,
+            currentQueuePosition = 2,
+            writerReadback = 2
         )
-        assertNull(ambiguous.key)
-        assertEquals(2, ambiguous.matchCount)
-
-        val stale = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
-            1,
-            listOf(
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("next", 2, 3_001)
-            )
-        )
-        assertNull(stale.key)
-        assertEquals(0, stale.matchCount)
+        assertNotNull(boundary)
+        assertEquals(2, boundary!!.currentQueuePosition)
+        assertEquals(3, boundary.nextQueuePosition)
     }
 
     @Test
-    fun `preworker current plus one proof accepts only exact selected position one`() {
-        assertEquals(
-            1,
-            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
-                selectedTrackId = 19118L,
-                currentTrackId = 19118L,
-                selectedQueuePosition = 1,
-                currentQueuePosition = 1,
-                writerReadback = 1,
-                observedArgument = 2
+    fun `next source proof rejects identity or coordinate disagreement`() {
+        assertNull(
+            TrackMixZeroPoolPolicy.resolveVerifiedNextSourceBoundary(
+                selectedTrackId = 18165L,
+                currentTrackId = 18166L,
+                selectedQueuePosition = 2,
+                currentQueuePosition = 2,
+                writerReadback = 2
             )
         )
         assertNull(
-            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
-                selectedTrackId = 19118L,
-                currentTrackId = 19104L,
-                selectedQueuePosition = 1,
-                currentQueuePosition = 1,
-                writerReadback = 1,
-                observedArgument = 2
-            )
-        )
-        assertNull(
-            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
-                selectedTrackId = 19118L,
-                currentTrackId = 19118L,
-                selectedQueuePosition = 4,
-                currentQueuePosition = 4,
-                writerReadback = 4,
-                observedArgument = 5
-            )
-        )
-        assertNull(
-            TrackMixZeroPoolPolicy.resolveSynchronousNextSourceCurrentProof(
-                selectedTrackId = 19118L,
-                currentTrackId = 19118L,
-                selectedQueuePosition = 1,
-                currentQueuePosition = 1,
-                writerReadback = 0,
-                observedArgument = 2
+            TrackMixZeroPoolPolicy.resolveVerifiedNextSourceBoundary(
+                selectedTrackId = 18165L,
+                currentTrackId = 18165L,
+                selectedQueuePosition = 2,
+                currentQueuePosition = 2,
+                writerReadback = 1
             )
         )
     }
@@ -251,21 +229,9 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `natural source guard uses only the persisted first native fallback identity`() {
-        val plan = TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
-            currentQueuePosition = 1,
-            observedArgument = 2,
-            nativeFallbackTrackIds = listOf(10106L, 653L, 11874L, 15245L)
-        )
-        assertEquals(2, plan.nextQueuePosition)
-        assertEquals(10106L, plan.expectedTrackId)
-    }
-
-    @Test
-    fun `natural source guard accepts anchored absolute current plus one`() {
+    fun `natural source guard derives first follower from verified Current`() {
         val plan = TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
             currentQueuePosition = 6,
-            observedArgument = 7,
             nativeFallbackTrackIds = listOf(10106L, 653L)
         )
         assertEquals(7, plan.nextQueuePosition)
@@ -273,19 +239,17 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `natural source guard refuses non current plus one or invalid current`() {
+    fun `natural source guard refuses invalid current or missing fallback identity`() {
         assertThrows(IllegalArgumentException::class.java) {
             TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
-                currentQueuePosition = 1,
-                observedArgument = 3,
+                currentQueuePosition = 0,
                 nativeFallbackTrackIds = listOf(10106L)
             )
         }
         assertThrows(IllegalArgumentException::class.java) {
             TrackMixZeroPoolPolicy.naturalNextSourceGuardPlan(
-                currentQueuePosition = 0,
-                observedArgument = 1,
-                nativeFallbackTrackIds = listOf(10106L)
+                currentQueuePosition = 1,
+                nativeFallbackTrackIds = emptyList()
             )
         }
     }
@@ -386,15 +350,16 @@ class TrackMixZeroPoolPolicyTest {
     }
 
     @Test
-    fun `natural current plus one can bootstrap initial size when natural refill was absent`() {
-        val boundary = TrackMixZeroPoolPolicy.selectNextSourceBoundary(
-            currentQueuePosition = 1,
-            candidates = listOf(
-                TrackMixZeroPoolPolicy.PositionCommandCandidate("next", 2, 100)
-            )
+    fun `verified natural next source can bootstrap initial size when natural refill was absent`() {
+        val boundary = TrackMixZeroPoolPolicy.resolveVerifiedNextSourceBoundary(
+            selectedTrackId = 18165L,
+            currentTrackId = 18165L,
+            selectedQueuePosition = 2,
+            currentQueuePosition = 2,
+            writerReadback = 2
         )
-        assertEquals("next", boundary.key)
-        assertEquals(1, boundary.matchCount)
+        assertNotNull(boundary)
+        assertEquals(3, boundary!!.nextQueuePosition)
 
         val refill = TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 0)
         assertNotNull(refill)
@@ -418,6 +383,70 @@ class TrackMixZeroPoolPolicyTest {
     @Test
     fun `native refill boundary rejects overfill`() {
         assertNull(TrackMixZeroPoolPolicy.nativeRefillBoundaryPlan(5, 5))
+    }
+
+    @Test
+    fun `queue tail fallback accepts only exact zero-provider queue target before next source`() {
+        assertTrue(
+            TrackMixZeroPoolPolicy.shouldPrepareQueueTailFallback(
+                source = "menu_gm_context_queue",
+                currentResolutionSource = "queue-context-target",
+                preparedTrackCount = 0,
+                boundaryPrepared = false,
+                boundaryAttempted = false,
+                nextSourceObserved = false,
+                currentIndex = 4,
+                queueSize = 5,
+                currentQueuePosition = 5,
+                currentTrackId = 4843L,
+                selectedTrackId = 4843L
+            )
+        )
+        assertFalse(
+            TrackMixZeroPoolPolicy.shouldPrepareQueueTailFallback(
+                source = "menu_gm_context_queue",
+                currentResolutionSource = "queue-context-target",
+                preparedTrackCount = 0,
+                boundaryPrepared = false,
+                boundaryAttempted = false,
+                nextSourceObserved = true,
+                currentIndex = 4,
+                queueSize = 5,
+                currentQueuePosition = 5,
+                currentTrackId = 4843L,
+                selectedTrackId = 4843L
+            )
+        )
+        assertFalse(
+            TrackMixZeroPoolPolicy.shouldPrepareQueueTailFallback(
+                source = "menu_gm_context_queue",
+                currentResolutionSource = "queue-context-target",
+                preparedTrackCount = 0,
+                boundaryPrepared = false,
+                boundaryAttempted = false,
+                nextSourceObserved = false,
+                currentIndex = 3,
+                queueSize = 5,
+                currentQueuePosition = 4,
+                currentTrackId = 4843L,
+                selectedTrackId = 4843L
+            )
+        )
+        assertFalse(
+            TrackMixZeroPoolPolicy.shouldPrepareQueueTailFallback(
+                source = "menu_gm_context_file_browser",
+                currentResolutionSource = "queue-context-target",
+                preparedTrackCount = 0,
+                boundaryPrepared = false,
+                boundaryAttempted = false,
+                nextSourceObserved = false,
+                currentIndex = 4,
+                queueSize = 5,
+                currentQueuePosition = 5,
+                currentTrackId = 4843L,
+                selectedTrackId = 4843L
+            )
+        )
     }
 
 }

@@ -1,17 +1,6 @@
 package io.github.alagga.gonesmart
 
 internal object TrackMixZeroPoolPolicy {
-    data class PositionCommandCandidate(
-        val key: String,
-        val argument: Int,
-        val ageMs: Long
-    )
-
-    data class BoundarySelection(
-        val key: String?,
-        val matchCount: Int
-    )
-
     data class SeedPlan(
         val currentEntryId: Long,
         val currentPosition: Int,
@@ -24,50 +13,50 @@ internal object TrackMixZeroPoolPolicy {
         val currentPosition: Int
     )
 
-    fun selectNextSourceBoundary(
-        currentQueuePosition: Int,
-        candidates: List<PositionCommandCandidate>,
-        maxAgeMs: Long = 3_000L
-    ): BoundarySelection {
-        if (currentQueuePosition <= 0 ||
-            currentQueuePosition == Int.MAX_VALUE ||
-            maxAgeMs < 0L
-        ) {
-            return BoundarySelection(null, 0)
-        }
-        val expected = currentQueuePosition + 1
-        val matches = candidates
-            .filter { candidate ->
-                candidate.argument == expected &&
-                    candidate.ageMs in 0..maxAgeMs
-            }
-            .distinctBy { it.key }
-        return BoundarySelection(
-            key = matches.singleOrNull()?.key,
-            matchCount = matches.size
-        )
-    }
+    data class VerifiedNextSourceBoundary(
+        val currentQueuePosition: Int,
+        val nextQueuePosition: Int
+    )
 
     /**
-     * R64 request-local proof for the race where the natural CURRENT+1
-     * MusicService command arrives before the Track-Mix worker has published
-     * provisionalCurrentQueuePosition. The existing R62 fallback rebases the
-     * seed to position 1, so an early command is safe only when every
-     * independent coordinate already proves logical position 1 and the exact
-     * selected Track is Current. Wider absolute positions stay fail-closed.
+     * Accepted GMMP 4.2.1 event alias. The name/signature is allowed to
+     * identify a passive next-source callback only because repeated device
+     * traces correlate the natural I2 invocation with the immediately nested
+     * queue_position lookup. Mutation authority still comes exclusively from
+     * resolveVerifiedNextSourceBoundary below.
      */
-    fun resolveSynchronousNextSourceCurrentProof(
+    fun isAcceptedGmmp421NextSourceCommand(
+        declaringClassName: String,
+        methodName: String,
+        parameterTypeName: String?,
+        returnTypeName: String?
+    ): Boolean =
+        declaringClassName == "gonemad.gmmp.playback.service.MusicService" &&
+            methodName == "I2" &&
+            parameterTypeName == "int" &&
+            returnTypeName == "void"
+
+    /**
+     * R70 proof for a natural next-source event. The obfuscated method
+     * argument is deliberately absent: the selected row, independently
+     * resolved Current, and verified writer/readback must all agree on one
+     * positive absolute queue_position. Next is derived from that coordinate.
+     */
+    fun resolveVerifiedNextSourceBoundary(
         selectedTrackId: Long,
         currentTrackId: Long?,
         selectedQueuePosition: Int,
         currentQueuePosition: Int?,
-        writerReadback: Int?,
-        observedArgument: Int
-    ): Int? {
+        writerReadback: Int?
+    ): VerifiedNextSourceBoundary? {
         if (selectedTrackId <= 0L || currentTrackId != selectedTrackId) return null
-        if (selectedQueuePosition != 1 || currentQueuePosition != 1) return null
-        if (writerReadback != 1 || observedArgument != 2) return null
-        return 1
+        val current = currentQueuePosition ?: return null
+        if (current <= 0 || current == Int.MAX_VALUE) return null
+        if (selectedQueuePosition != current || writerReadback != current) return null
+        return VerifiedNextSourceBoundary(
+            currentQueuePosition = current,
+            nextQueuePosition = current + 1
+        )
     }
 
     data class StateWriterMapping(
@@ -179,20 +168,16 @@ internal object TrackMixZeroPoolPolicy {
     )
 
     /**
-     * R50 pre-source contract. The only guarded source boundary is the unique
-     * natural CURRENT+1 command, and its Track identity must come from the
-     * already persisted native fallback order selected before decode.
+     * R70 pre-source contract. The next queue position is always derived from
+     * the independently verified Current coordinate, never from I2(int)'s
+     * opaque argument.
      */
     fun naturalNextSourceGuardPlan(
         currentQueuePosition: Int,
-        observedArgument: Int,
         nativeFallbackTrackIds: List<Long>
     ): NaturalNextSourceGuardPlan {
         require(currentQueuePosition > 0 && currentQueuePosition < Int.MAX_VALUE) {
             "Zero-pool Current queue position must be positive and incrementable"
-        }
-        require(observedArgument == currentQueuePosition + 1) {
-            "Observed source command is not CURRENT+1"
         }
         require(nativeFallbackTrackIds.isNotEmpty()) {
             "Zero-pool native fallback has no current+1 Track"
@@ -201,9 +186,38 @@ internal object TrackMixZeroPoolPolicy {
             "Zero-pool native fallback Track IDs must be positive"
         }
         return NaturalNextSourceGuardPlan(
-            nextQueuePosition = observedArgument,
+            nextQueuePosition = currentQueuePosition + 1,
             expectedTrackId = nativeFallbackTrackIds.first()
         )
+    }
+
+    /**
+     * If Queue Play selects the last native row, GMMP has no existing follower
+     * that can force the natural next-source callback before Track Mix's worker
+     * verifies the selection. R70 allows the already accepted position-1
+     * zero-pool native fill only for that exact tail case and only if no
+     * next-source event or other zero-pool boundary has already occurred.
+     */
+    fun shouldPrepareQueueTailFallback(
+        source: String,
+        currentResolutionSource: String?,
+        preparedTrackCount: Int,
+        boundaryPrepared: Boolean,
+        boundaryAttempted: Boolean,
+        nextSourceObserved: Boolean,
+        currentIndex: Int,
+        queueSize: Int,
+        currentQueuePosition: Int?,
+        currentTrackId: Long?,
+        selectedTrackId: Long
+    ): Boolean {
+        if (source != "menu_gm_context_queue") return false
+        if (currentResolutionSource != "queue-context-target") return false
+        if (preparedTrackCount != 0 || boundaryPrepared || boundaryAttempted) return false
+        if (nextSourceObserved) return false
+        if (selectedTrackId <= 0L || currentTrackId != selectedTrackId) return false
+        if (queueSize <= 0 || currentIndex != queueSize - 1) return false
+        return currentQueuePosition != null && currentQueuePosition > 0
     }
 
     data class SourceBatchEntry(
