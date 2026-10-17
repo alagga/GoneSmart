@@ -1,0 +1,109 @@
+name: Assistant custom provider guard
+
+on:
+  push:
+    branches: ['feature/auto-dj-providers']
+    paths: ['.github/workflows/assistant-custom-provider-guard.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout provider branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/auto-dj-providers
+          fetch-depth: 0
+
+      - name: Apply provider UI invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          main = 'app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt'
+
+          replace_once(
+              main,
+              '''    private val providerWeightCards = linkedMapOf<String, View>()\n    private val providerWeightSliders = linkedMapOf<String, Slider>()\n    private val tabButtons = linkedMapOf<Tab, LinearLayout>()''',
+              '''    private val providerWeightCards = linkedMapOf<String, View>()\n    private val providerWeightSliders = linkedMapOf<String, Slider>()\n    private var playlistSizeWeightingCardView: View? = null\n    private val tabButtons = linkedMapOf<Tab, LinearLayout>()'''
+          )
+
+          replace_once(
+              main,
+              '''        providerWeightCards.clear()\n        providerWeightSliders.clear()\n        minimumRatingSlider = null''',
+              '''        providerWeightCards.clear()\n        providerWeightSliders.clear()\n        playlistSizeWeightingCardView = null\n        minimumRatingSlider = null'''
+          )
+
+          replace_once(
+              main,
+              '''        val card = card().apply {\n            setContentPadding(dp(20), dp(18), dp(20), dp(18))\n            isClickable = true\n            isFocusable = true\n            setOnClickListener { showPlaylistSizeWeightingDialog(options.playlistSizeWeighting) }\n        }''',
+              '''        val enabled = options.localPlaylistProviderEnabled\n        val card = card().apply {\n            setContentPadding(dp(20), dp(18), dp(20), dp(18))\n            isEnabled = enabled\n            isClickable = enabled\n            isFocusable = enabled\n            alpha = if (enabled) 1f else 0.45f\n            setOnClickListener { showPlaylistSizeWeightingDialog(options.playlistSizeWeighting) }\n        }\n        playlistSizeWeightingCardView = card'''
+          )
+
+          replace_once(
+              main,
+              '''        refreshProviderWeightAvailability(options)\n        setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)''',
+              '''        refreshProviderWeightAvailability(options)\n        refreshPlaylistSizeWeightingAvailability(options)\n        setSwitch(GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED, options.preferHigherRatedMatches)'''
+          )
+
+          replace_once(
+              main,
+              '''    private fun refreshPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {''',
+              '''    private fun refreshPlaylistSizeWeightingAvailability(\n        options: GoneSmartOptions = settingsRepository.read()\n    ) {\n        val enabled = options.localPlaylistProviderEnabled\n        playlistSizeWeightingCardView?.apply {\n            isEnabled = enabled\n            isClickable = enabled\n            isFocusable = enabled\n            alpha = if (enabled) 1f else 0.45f\n        }\n    }\n\n    private fun refreshPlaylistFolderAvailability(options: GoneSmartOptions = settingsRepository.read()) {'''
+          )
+
+          replace_once(
+              main,
+              '''    private fun onSettingChanged(key: String, checked: Boolean) {\n        if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {''',
+              '''    private fun recommendationProviderForSetting(\n        key: String\n    ): RecommendationProvider? = when (key) {\n        GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ->\n            RecommendationProvider.LOCAL_PLAYLIST\n        GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ->\n            RecommendationProvider.LISTENBRAINZ\n        GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED ->\n            RecommendationProvider.LASTFM\n        else -> null\n    }\n\n    private fun onSettingChanged(key: String, checked: Boolean) {\n        val provider = recommendationProviderForSetting(key)\n        if (\n            provider != null &&\n            !checked &&\n            !RecommendationSourceSelectionPolicy.canDisable(\n                provider = provider,\n                options = settingsRepository.read()\n            )\n        ) {\n            setSwitch(key, true)\n            Toast.makeText(\n                this,\n                "At least one recommendation source must remain enabled.",\n                Toast.LENGTH_SHORT\n            ).show()\n            return\n        }\n\n        if (key == GoneSmartSettingsKeys.KEY_FALLBACK_WITHOUT_RATING) {'''
+          )
+
+          replace_once(
+              main,
+              '''        if (\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ||\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ||\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED\n        ) refreshProviderWeightAvailability()''',
+              '''        if (\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED ||\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED ||\n            key == GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED\n        ) {\n            refreshProviderWeightAvailability()\n            if (key == GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED) {\n                refreshPlaylistSizeWeightingAvailability()\n            }\n        }'''
+          )
+
+          policy = Path('app/src/main/java/io/github/alagga/gonesmart/RecommendationProviderPolicy.kt')
+          text = policy.read_text()
+          anchor = '''data class RecommendationProviderPolicy(\n'''
+          helper = '''object RecommendationSourceSelectionPolicy {\n    fun canDisable(\n        provider: RecommendationProvider,\n        options: GoneSmartOptions\n    ): Boolean {\n        if (!isEnabled(provider, options)) return true\n\n        return RecommendationProvider.entries\n            .count { isEnabled(it, options) } > 1\n    }\n\n    private fun isEnabled(\n        provider: RecommendationProvider,\n        options: GoneSmartOptions\n    ): Boolean = when (provider) {\n        RecommendationProvider.LISTENBRAINZ -> options.listenBrainzProviderEnabled\n        RecommendationProvider.LASTFM -> options.lastFmProviderEnabled\n        RecommendationProvider.LOCAL_PLAYLIST -> options.localPlaylistProviderEnabled\n    }\n}\n\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit('RecommendationProviderPolicy anchor mismatch')
+          policy.write_text(text.replace(anchor, helper + anchor, 1))
+
+          Path('app/src/test/java/io/github/alagga/gonesmart/RecommendationSourceSelectionPolicyTest.kt').write_text('''package io.github.alagga.gonesmart\n\nimport org.junit.Assert.assertFalse\nimport org.junit.Assert.assertTrue\nimport org.junit.Test\n\nclass RecommendationSourceSelectionPolicyTest {\n\n    @Test\n    fun lastEnabledSourceCannotBeDisabled() {\n        RecommendationProvider.entries.forEach { onlyEnabled ->\n            val options = optionsWithOnly(onlyEnabled)\n            assertFalse(\n                RecommendationSourceSelectionPolicy.canDisable(\n                    provider = onlyEnabled,\n                    options = options\n                )\n            )\n        }\n    }\n\n    @Test\n    fun sourceCanBeDisabledWhenAnotherSourceRemains() {\n        val options = GoneSmartOptions(\n            recommendationMode = RecommendationMode.CUSTOM,\n            localPlaylistProviderEnabled = true,\n            listenBrainzProviderEnabled = true,\n            lastFmProviderEnabled = false\n        )\n\n        assertTrue(\n            RecommendationSourceSelectionPolicy.canDisable(\n                RecommendationProvider.LOCAL_PLAYLIST,\n                options\n            )\n        )\n        assertTrue(\n            RecommendationSourceSelectionPolicy.canDisable(\n                RecommendationProvider.LISTENBRAINZ,\n                options\n            )\n        )\n    }\n\n    @Test\n    fun alreadyDisabledSourceDoesNotBlockUiRefresh() {\n        val options = optionsWithOnly(RecommendationProvider.LOCAL_PLAYLIST)\n\n        assertTrue(\n            RecommendationSourceSelectionPolicy.canDisable(\n                RecommendationProvider.LISTENBRAINZ,\n                options\n            )\n        )\n    }\n\n    private fun optionsWithOnly(\n        provider: RecommendationProvider\n    ) = GoneSmartOptions(\n        recommendationMode = RecommendationMode.CUSTOM,\n        localPlaylistProviderEnabled = provider == RecommendationProvider.LOCAL_PLAYLIST,\n        listenBrainzProviderEnabled = provider == RecommendationProvider.LISTENBRAINZ,\n        lastFmProviderEnabled = provider == RecommendationProvider.LASTFM\n    )\n}\n''')
+
+          docs = Path('docs/AUTO_DJ_PROVIDERS.md')
+          text = docs.read_text()
+          old = '''Custom mode lets the user:\n\n- enable or disable Local Playlists, ListenBrainz and Last.fm independently;\n- set each enabled provider's ranking weight from `×0.25` to `×1.50`;\n- choose Off, Balanced or Strong playlist-size weighting.'''
+          new = '''Custom mode lets the user:\n\n- enable or disable Local Playlists, ListenBrainz and Last.fm independently, while always keeping at least one recommendation source enabled;\n- set each enabled provider's ranking weight from `×0.25` to `×1.50`;\n- choose Off, Balanced or Strong playlist-size weighting when Local Playlists is enabled; the playlist-size control is disabled when that source is off.'''
+          if text.count(old) != 1:
+              raise SystemExit('AUTO_DJ_PROVIDERS custom-mode anchor mismatch')
+          docs.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Commit scoped changes and remove helper
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/assistant-custom-provider-guard.yml
+          git add app/src/main/java/io/github/alagga/gonesmart/MainActivity.kt \
+                  app/src/main/java/io/github/alagga/gonesmart/RecommendationProviderPolicy.kt \
+                  app/src/test/java/io/github/alagga/gonesmart/RecommendationSourceSelectionPolicyTest.kt \
+                  docs/AUTO_DJ_PROVIDERS.md
+          git commit -m "fix(settings): guard custom recommendation sources"
+          git push origin HEAD:feature/auto-dj-providers
