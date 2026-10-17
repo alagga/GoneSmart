@@ -192,6 +192,73 @@ class GoneSmartAudioProfileRepository(context: Context) {
         return true
     }
 
+    /** Active live GMMP band count; ten is the safe UI fallback before observation. */
+    fun equalizerBandCount(): Int {
+        val observed = nativeValue(GmmpEqualizerBandPolicy.BAND_COUNT_FIELD_ID)
+            ?.toDoubleOrNull()
+            ?.toInt()
+        return GmmpEqualizerBandPolicy.normalizedOrDefault(observed)
+    }
+
+    /**
+     * Read one visible GMMP band from the canonical ten-point profile curve.
+     * Non-ten-band layouts are projected without mutating the stored profile.
+     */
+    fun equalizerBandValue(routeId: String, index: Int, useRouteOverride: Boolean): String? {
+        val count = equalizerBandCount()
+        if (index !in 0 until count) return null
+        val canonical = GoneSmartAudioProfiles.equalizerBandFieldIds.map { fieldId ->
+            val raw = if (useRouteOverride) value(routeId, fieldId) else inheritedValue(routeId, fieldId)
+            raw?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: return null
+        }
+        val projected = GmmpEqualizerBandPolicy.project(canonical, count) ?: return null
+        return AudioProfileField.formatNumber(projected[index])
+    }
+
+    /**
+     * Save an edit made in the currently visible N-band layout. The edited
+     * curve is expanded back to the canonical ten-point representation so a
+     * later GMMP band-count switch can be projected again without an error or
+     * profile reset.
+     */
+    fun setProjectedEqualizerBandValue(routeId: String, index: Int, rawValue: String): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
+        if (!isGroupOverridden(routeId, GoneSmartAudioProfiles.equalizerGroup.id)) return false
+        val count = equalizerBandCount()
+        if (index !in 0 until count) return false
+
+        val valueField = GoneSmartAudioProfiles.field(GoneSmartAudioProfiles.equalizerBandFieldIds.first())
+            ?: return false
+        val normalized = valueField.normalize(rawValue) ?: return false
+        val replacement = normalized.toDoubleOrNull() ?: return false
+        val canonical = GoneSmartAudioProfiles.equalizerBandFieldIds.map { fieldId ->
+            value(routeId, fieldId)?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: return false
+        }
+        val projected = GmmpEqualizerBandPolicy.project(canonical, count)?.toMutableList() ?: return false
+        projected[index] = replacement
+        val expanded = GmmpEqualizerBandPolicy.project(
+            projected,
+            GoneSmartAudioProfiles.equalizerBandFieldIds.size
+        ) ?: return false
+
+        val keys = mutableSetOf<String>()
+        val editor = local.edit()
+        GoneSmartAudioProfiles.equalizerBandFieldIds.forEachIndexed { canonicalIndex, fieldId ->
+            val field = GoneSmartAudioProfiles.field(fieldId) ?: return false
+            val stored = field.normalize(AudioProfileField.formatNumber(expanded[canonicalIndex])) ?: return false
+            val key = GoneSmartAudioProfiles.valueKey(routeId, fieldId)
+            editor.putString(key, stored)
+            keys += key
+        }
+        val presetKey = GoneSmartAudioProfiles.valueKey(routeId, "eq.preset")
+        editor.putString(presetKey, GoneSmartAudioProfiles.CUSTOM_PRESET)
+        keys += presetKey
+        editor.apply()
+        markPending(keys)
+        synchronizeWithFramework()
+        return true
+    }
+
     /** Last passively observed live GMMP state, which may be temporary on Bluetooth. */
     fun nativeValue(fieldId: String): String? =
         local.getString(GoneSmartAudioProfiles.nativeValueKey(fieldId), null)
@@ -211,9 +278,20 @@ class GoneSmartAudioProfileRepository(context: Context) {
 
     /**
      * Every observation updates the live mirror. Only observations made while
-     * no Bluetooth route is active are allowed to redefine Standard.
+     * no Bluetooth route is active are allowed to redefine Standard. Band count
+     * is runtime metadata and intentionally never becomes part of Standard.
      */
     fun setNativeValue(fieldId: String, rawValue: String, observedRouteId: String = activeRouteId()) {
+        if (fieldId == GmmpEqualizerBandPolicy.BAND_COUNT_FIELD_ID) {
+            val count = rawValue.toDoubleOrNull()?.toInt()?.takeIf(GmmpEqualizerBandPolicy::isSupported)
+                ?: return
+            val key = GoneSmartAudioProfiles.nativeValueKey(fieldId)
+            local.edit().putString(key, count.toString()).apply()
+            markPending(setOf(key))
+            synchronizeWithFramework()
+            return
+        }
+
         val field = GoneSmartAudioProfiles.field(fieldId) ?: return
         val normalized = field.normalize(rawValue) ?: return
         val keys = mutableSetOf(GoneSmartAudioProfiles.nativeValueKey(fieldId))
@@ -228,6 +306,14 @@ class GoneSmartAudioProfileRepository(context: Context) {
     }
 
     fun clearNativeValue(fieldId: String, observedRouteId: String = activeRouteId()) {
+        if (fieldId == GmmpEqualizerBandPolicy.BAND_COUNT_FIELD_ID) {
+            val key = GoneSmartAudioProfiles.nativeValueKey(fieldId)
+            local.edit().remove(key).apply()
+            markPending(setOf(key))
+            synchronizeWithFramework()
+            return
+        }
+
         GoneSmartAudioProfiles.field(fieldId) ?: return
         val keys = mutableSetOf(GoneSmartAudioProfiles.nativeValueKey(fieldId))
         val editor = local.edit().remove(GoneSmartAudioProfiles.nativeValueKey(fieldId))

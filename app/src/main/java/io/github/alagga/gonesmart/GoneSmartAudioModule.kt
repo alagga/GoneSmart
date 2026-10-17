@@ -92,6 +92,9 @@ class GoneSmartAudioModule : XposedModule() {
     @Volatile
     private var preReaderVerified = false
 
+    @Volatile
+    private var observedEqBandCount: Int? = null
+
     private val currentEqBands = ConcurrentHashMap<Int, Double>()
     private val verifiedBandReaderIndices = ConcurrentHashMap.newKeySet<Int>()
     private val publishedNativeValues = ConcurrentHashMap<String, String>()
@@ -369,6 +372,7 @@ class GoneSmartAudioModule : XposedModule() {
                     GmmpEqualizerRuntimeBridge.observeInstance(instance, looper)
                 }
                 val result = chain.proceed()
+                if (instance != null) observeEqualizerBandCount(instance)
 
                 when (role) {
                     EqualizerObservationRole.PRE -> (args.getOrNull(0) as? Number)?.toDouble()?.let { raw ->
@@ -382,10 +386,10 @@ class GoneSmartAudioModule : XposedModule() {
                     EqualizerObservationRole.BAND -> {
                         val index = (args.getOrNull(0) as? Number)?.toInt()
                         val raw = (args.getOrNull(1) as? Number)?.toDouble()
-                        if (index != null && raw != null) {
+                        val count = activeEqualizerBandCount()
+                        if (index != null && raw != null && count != null && index in 0 until count) {
                             currentEqBands[index] = raw
                             if (instance != null) verifyBandReader(instance, index, raw)
-                            NativeAudioObservation.equalizerBand(index, raw)?.let(::publishNativeValue)
                             updateCompleteShapeTimestamp()
                             maybeCompletePendingPresetFromObservedShape()
                         }
@@ -411,6 +415,28 @@ class GoneSmartAudioModule : XposedModule() {
             Log.w(TAG, "Could not install passive EQ observer for role=$role", it)
         }.getOrDefault(false)
 
+    private fun observeEqualizerBandCount(instance: Any): Int? {
+        val field = eqBandArrayField ?: return GmmpEqualizerRuntimeBridge.current()?.bandCount
+        val array = runCatching { field.get(instance) as? DoubleArray }.getOrNull() ?: return null
+        val count = array.size.takeIf(GmmpEqualizerBandPolicy::isSupported) ?: return null
+        if (observedEqBandCount != count) {
+            observedEqBandCount = count
+            currentEqPre = null
+            currentEqBands.clear()
+            verifiedBandReaderIndices.clear()
+            lastCompleteShapeElapsed = 0L
+            if (count != GmmpEqualizerBandPolicy.MAX_BANDS) {
+                pendingPresetName = null
+                pendingPresetUntilElapsed = 0L
+            }
+            Log.i(TAG, "EQ BAND LAYOUT | bands=$count | canonical=${GmmpEqualizerBandPolicy.MAX_BANDS}")
+        }
+        return count
+    }
+
+    private fun activeEqualizerBandCount(): Int? =
+        observedEqBandCount ?: GmmpEqualizerRuntimeBridge.current()?.bandCount
+
     private fun verifyPreReader(instance: Any, raw: Double) {
         if (preReaderVerified) return
         val getter = eqPreGetter ?: return
@@ -422,51 +448,58 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     private fun verifyBandReader(instance: Any, index: Int, raw: Double) {
-        if (index !in GoneSmartAudioProfiles.equalizerBandFieldIds.indices) return
+        val count = observeEqualizerBandCount(instance) ?: return
+        if (index !in 0 until count) return
         val field = eqBandArrayField ?: return
         val array = runCatching { field.get(instance) as? DoubleArray }.getOrNull() ?: return
-        if (array.size != GoneSmartAudioProfiles.equalizerBandFieldIds.size) return
+        if (array.size != count) return
         if (array[index].isFinite() && abs(array[index] - raw) <= READER_EPSILON) {
             verifiedBandReaderIndices += index
-            if (BuildConfig.DEBUG && verifiedBandReaderIndices.size == array.size) {
-                Log.i(PROBE_TAG, "EQ READBACK VERIFIED | component=BANDS | count=${array.size}")
+            if (BuildConfig.DEBUG && (0 until count).all { it in verifiedBandReaderIndices }) {
+                Log.i(PROBE_TAG, "EQ READBACK VERIFIED | component=BANDS | count=$count")
             }
         }
     }
 
     private fun readCurrentEqualizerShape(): Map<String, String>? {
-        if (!preReaderVerified ||
-            verifiedBandReaderIndices.size < GoneSmartAudioProfiles.equalizerBandFieldIds.size
-        ) return null
         val instance = eqStateInstance ?: return null
         val getter = eqPreGetter ?: return null
         val field = eqBandArrayField ?: return null
+        val count = observeEqualizerBandCount(instance) ?: return null
+        if (!preReaderVerified || !(0 until count).all { it in verifiedBandReaderIndices }) return null
         val pre = runCatching { (getter.invoke(instance) as? Number)?.toDouble() }.getOrNull() ?: return null
         val bands = runCatching { (field.get(instance) as? DoubleArray)?.copyOf() }.getOrNull() ?: return null
-        if (bands.size != GoneSmartAudioProfiles.equalizerBandFieldIds.size) return null
+        if (bands.size != count) return null
+        return canonicalEqualizerShape(pre, bands.toList())
+    }
 
+    private fun shapeFromObservedSetters(): Map<String, String>? {
+        val pre = currentEqPre ?: return null
+        val count = activeEqualizerBandCount() ?: return null
+        val bands = (0 until count).map { index -> currentEqBands[index] ?: return null }
+        return canonicalEqualizerShape(pre, bands)
+    }
+
+    private fun canonicalEqualizerShape(pre: Double, liveBands: List<Double>): Map<String, String>? {
+        val canonicalBands = GmmpEqualizerBandPolicy.project(
+            liveBands,
+            GoneSmartAudioProfiles.equalizerBandFieldIds.size
+        ) ?: return null
         val shape = linkedMapOf<String, String>()
         NativeAudioObservation.equalizerPre(pre)?.let { shape[it.fieldId] = it.value } ?: return null
-        bands.forEachIndexed { index, raw ->
+        canonicalBands.forEachIndexed { index, raw ->
             NativeAudioObservation.equalizerBand(index, raw)?.let { shape[it.fieldId] = it.value } ?: return null
         }
         return shape.takeIf { it.size == GoneSmartAudioProfiles.equalizerShapeFieldIds.size }
     }
 
-    private fun shapeFromObservedSetters(): Map<String, String>? {
-        val pre = currentEqPre ?: return null
-        val shape = linkedMapOf<String, String>()
-        NativeAudioObservation.equalizerPre(pre)?.let { shape[it.fieldId] = it.value } ?: return null
-        GoneSmartAudioProfiles.equalizerBandFieldIds.indices.forEach { index ->
-            val raw = currentEqBands[index] ?: return null
-            NativeAudioObservation.equalizerBand(index, raw)?.let { shape[it.fieldId] = it.value } ?: return null
-        }
-        return shape
-    }
-
     private fun updateCompleteShapeTimestamp() {
-        if (shapeFromObservedSetters() != null) {
-            lastCompleteShapeElapsed = SystemClock.elapsedRealtime()
+        val shape = shapeFromObservedSetters() ?: return
+        lastCompleteShapeElapsed = SystemClock.elapsedRealtime()
+        shape.forEach { (fieldId, value) ->
+            if (fieldId != "eq.pre_db") {
+                publishNativeValue(NativeAudioObservation.Value(fieldId, value))
+            }
         }
     }
 
@@ -596,6 +629,23 @@ class GoneSmartAudioModule : XposedModule() {
                 return
             }
 
+            // The installed preset catalog is authoritative ten-band reference
+            // data. A natural preset action in a smaller live layout is useful
+            // for playback observation but must not overwrite that exact curve
+            // with an interpolated projection.
+            val liveCount = activeEqualizerBandCount()
+            if (liveCount != null && liveCount != GmmpEqualizerBandPolicy.MAX_BANDS) {
+                pendingPresetName = null
+                pendingPresetUntilElapsed = 0L
+                if (BuildConfig.DEBUG) {
+                    Log.i(
+                        PROBE_TAG,
+                        "PRESET NATURAL ACTION | preset=${mapped.value} | bands=$liveCount | learning=false"
+                    )
+                }
+                return
+            }
+
             val now = SystemClock.elapsedRealtime()
             val recentShape = shapeFromObservedSetters()?.takeIf {
                 lastCompleteShapeElapsed > 0L && now - lastCompleteShapeElapsed <= PRESET_RECENT_SHAPE_MS
@@ -622,6 +672,7 @@ class GoneSmartAudioModule : XposedModule() {
     private fun schedulePresetReadback(preset: String) {
         val task = Runnable {
             if (pendingPresetName != preset || SystemClock.elapsedRealtime() > pendingPresetUntilElapsed) return@Runnable
+            if (activeEqualizerBandCount() != GmmpEqualizerBandPolicy.MAX_BANDS) return@Runnable
             val shape = readCurrentEqualizerShape()
             if (shape == null) {
                 if (BuildConfig.DEBUG) Log.i(PROBE_TAG, "PRESET READBACK DEFERRED | preset=$preset | verified=false")
@@ -714,6 +765,7 @@ class GoneSmartAudioModule : XposedModule() {
 
     private fun maybeCompletePendingPresetFromObservedShape() {
         val preset = pendingPresetName ?: return
+        if (activeEqualizerBandCount() != GmmpEqualizerBandPolicy.MAX_BANDS) return
         if (SystemClock.elapsedRealtime() > pendingPresetUntilElapsed) return
         val shape = shapeFromObservedSetters() ?: return
         lastCompleteShapeElapsed = SystemClock.elapsedRealtime()

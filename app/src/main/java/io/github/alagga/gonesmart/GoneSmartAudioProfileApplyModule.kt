@@ -2,7 +2,9 @@ package io.github.alagga.gonesmart
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -25,6 +27,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
     companion object {
         private const val TAG = "GoneSmartAudioApply"
         private const val GMMP_PACKAGE = "gonemad.gmmp"
+        private const val COMPANION_PACKAGE = "io.github.alagga.gonesmart"
         private const val CONTEXT_RETRY_MS = 250L
         private const val CONTEXT_MAX_ATTEMPTS = 40
         private const val APPLY_DEBOUNCE_MS = 80L
@@ -98,8 +101,13 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
 
             if (eqReadyListenerRegistered.compareAndSet(false, true)) {
                 GmmpEqualizerRuntimeBridge.addReadyListener {
+                    val target = GmmpEqualizerRuntimeBridge.current() ?: return@addReadyListener
                     lastAppliedEqFingerprint = null
-                    Log.i(TAG, "EQ APPLY TARGET READY | source=shared-observer-bridge")
+                    publishEqualizerBandCount(application, target.bandCount)
+                    Log.i(
+                        TAG,
+                        "EQ APPLY TARGET READY | source=shared-observer-bridge | bands=${target.bandCount}"
+                    )
                     scheduleApply("shared live Equalizer state ready")
                 }
             }
@@ -126,6 +134,35 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
         val method = activityThread.getDeclaredMethod("currentApplication").apply { isAccessible = true }
         method.invoke(null) as? Application
     }.getOrNull()
+
+    private fun publishEqualizerBandCount(application: Application, count: Int) {
+        if (!GmmpEqualizerBandPolicy.isSupported(count)) return
+        val extras = Bundle().apply {
+            putString(AudioProfileEventReceiver.EXTRA_ROUTE_ID, activeRouteId)
+            putString(AudioProfileEventReceiver.EXTRA_SETTING_ID, GmmpEqualizerBandPolicy.BAND_COUNT_FIELD_ID)
+            putString(AudioProfileEventReceiver.EXTRA_SETTING_VALUE, count.toString())
+            putBoolean(AudioProfileEventReceiver.EXTRA_SETTING_CLEAR, false)
+        }
+        if (AudioProfileCompanionBridge.report(
+                application,
+                AudioProfileCompanionBridge.METHOD_NATIVE_VALUE,
+                extras
+            )
+        ) {
+            return
+        }
+
+        runCatching {
+            application.sendBroadcast(
+                Intent(AudioProfileEventReceiver.ACTION_NATIVE_VALUE_OBSERVED)
+                    .setPackage(COMPANION_PACKAGE)
+                    .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND)
+                    .putExtras(extras)
+            )
+        }.onFailure {
+            Log.w(TAG, "Could not mirror Equalizer band count to companion", it)
+        }
+    }
 
     /** Resolve GMMP's settings store from the semantic audio keys it contains. */
     private fun resolveNativePreferenceStore(application: Application): SharedPreferences? {
@@ -339,9 +376,8 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             storedPreset
         }
 
-        // A route profile always owns a complete explicit shape. Selecting a
-        // learned native preset copies that exact curve into these route values,
-        // so the runtime never has to rediscover a preset while applying it.
+        // A route profile always owns a complete explicit canonical ten-point
+        // shape. The live band count is only a runtime projection of it.
         val shape = if (useRouteOverride) {
             readShape { fieldId ->
                 prefs.getString(GoneSmartAudioProfiles.valueKey(routeId, fieldId), null)
@@ -402,22 +438,29 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
             else -> return false
         }
 
+        val pre = shape["eq.pre_db"]?.toDoubleOrNull() ?: return false
+        val canonicalBands = GoneSmartAudioProfiles.equalizerBandFieldIds.map { fieldId ->
+            shape[fieldId]?.toDoubleOrNull() ?: return false
+        }
+        val bands = GmmpEqualizerBandPolicy.project(canonicalBands, runtimeTarget.bandCount) ?: return false
+
         val fingerprint = buildString {
-            append(routeId).append('|').append(target.preset).append('|').append(enabled).append('|')
-            GoneSmartAudioProfiles.equalizerShapeFieldIds.forEach { fieldId ->
-                append(fieldId).append('=').append(shape[fieldId]).append('|')
+            append(routeId).append('|').append(target.preset).append('|').append(enabled)
+                .append("|bands=").append(runtimeTarget.bandCount).append('|')
+            append("pre=").append(pre).append('|')
+            bands.forEachIndexed { index, value ->
+                append(index).append('=').append(value).append('|')
             }
         }
         if (lastAppliedEqFingerprint == fingerprint) return true
 
-        val pre = shape["eq.pre_db"]?.toDoubleOrNull() ?: return false
-        val bands = GoneSmartAudioProfiles.equalizerBandFieldIds.map { fieldId ->
-            shape[fieldId]?.toDoubleOrNull() ?: return false
-        }
-
         runtimeTarget.handler.post {
             val currentTarget = GmmpEqualizerRuntimeBridge.current()
-            if (activeRouteId != routeId || currentTarget?.instance !== runtimeTarget.instance) return@post
+            if (activeRouteId != routeId ||
+                currentTarget?.instance !== runtimeTarget.instance ||
+                currentTarget.bandCount != runtimeTarget.bandCount
+            ) return@post
+
             val applied = runCatching {
                 runtimeTarget.preSetter.invoke(runtimeTarget.instance, pre)
                 bands.forEachIndexed { index, value ->
@@ -434,7 +477,7 @@ class GoneSmartAudioProfileApplyModule : XposedModule() {
                 Log.i(
                     TAG,
                     "EQ SHAPE APPLIED | route=$routeId | source=${target.shapeSource}" +
-                        " | preBands=${bands.size + 1} | enabled=$enabled"
+                        " | bands=${bands.size} | enabled=$enabled"
                 )
                 if (AudioProfileRuntimePolicy.isStandardRoute(routeId) &&
                     runtimePreferences?.getBoolean(KEY_OVERLAY_ACTIVE, false) == true

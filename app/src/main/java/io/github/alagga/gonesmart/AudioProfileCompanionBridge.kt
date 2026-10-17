@@ -89,11 +89,25 @@ class AudioProfileBridgeProvider : ContentProvider() {
             AudioProfileCompanionBridge.METHOD_NATIVE_VALUE -> {
                 val settingId = payload.getString(AudioProfileEventReceiver.EXTRA_SETTING_ID)
                     ?: return result(false)
-                val field = GoneSmartAudioProfiles.field(settingId) ?: return result(false)
                 val routeId = payload.getString(AudioProfileEventReceiver.EXTRA_ROUTE_ID)
                     ?.takeIf { it.isNotBlank() }
                     ?: repository.activeRouteId()
                 val clear = payload.getBoolean(AudioProfileEventReceiver.EXTRA_SETTING_CLEAR, false)
+
+                if (settingId == GmmpEqualizerBandPolicy.BAND_COUNT_FIELD_ID) {
+                    if (clear) {
+                        repository.clearNativeValue(settingId, routeId)
+                        return result(repository.nativeValue(settingId) == null)
+                    }
+                    val raw = payload.getString(AudioProfileEventReceiver.EXTRA_SETTING_VALUE)
+                        ?: return result(false)
+                    val count = raw.toDoubleOrNull()?.toInt()?.takeIf(GmmpEqualizerBandPolicy::isSupported)
+                        ?: return result(false)
+                    repository.setNativeValue(settingId, count.toString(), routeId)
+                    return result(repository.nativeValue(settingId) == count.toString())
+                }
+
+                val field = GoneSmartAudioProfiles.field(settingId) ?: return result(false)
                 if (clear) {
                     repository.clearNativeValue(settingId, routeId)
                     result(repository.nativeValue(settingId) == null)

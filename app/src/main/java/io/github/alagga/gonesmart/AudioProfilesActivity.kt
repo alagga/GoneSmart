@@ -215,7 +215,8 @@ class AudioProfilesActivity : AppCompatActivity() {
     }
 
     private fun renderContent(route: AudioRouteProfile) {
-        val contentKey = "${route.id}:${section.name}"
+        val bandCount = repository.equalizerBandCount()
+        val contentKey = "${route.id}:${section.name}:${if (section == AudioProfileSection.EQUALIZER) bandCount else 0}"
         val restoreScrollY = if (renderedContentKey == contentKey) contentScrollView?.scrollY ?: 0 else 0
         equalizerPresetButton = null
         contentHost.removeAllViews()
@@ -241,7 +242,11 @@ class AudioProfilesActivity : AppCompatActivity() {
 
         when (section) {
             AudioProfileSection.EQUALIZER -> {
-                body.addView(groupCard(route.id, GoneSmartAudioProfiles.equalizerGroup))
+                val group = GmmpEqualizerBandPolicy.uiGroup(
+                    GoneSmartAudioProfiles.equalizerGroup,
+                    bandCount
+                )
+                body.addView(groupCard(route.id, group))
             }
 
             AudioProfileSection.EFFECTS -> {
@@ -357,9 +362,26 @@ class AudioProfilesActivity : AppCompatActivity() {
         field: AudioProfileField,
         enabled: Boolean
     ): View {
-        val inherited = repository.inheritedValue(routeId, field.id)
+        val equalizerBandIndex = if (group.id == GoneSmartAudioProfiles.equalizerGroup.id) {
+            GoneSmartAudioProfiles.equalizerBandFieldIds.indexOf(field.id).takeIf { it >= 0 }
+        } else {
+            null
+        }
+        val inherited = if (equalizerBandIndex != null) {
+            repository.equalizerBandValue(routeId, equalizerBandIndex, useRouteOverride = false)
+        } else {
+            repository.inheritedValue(routeId, field.id)
+        }
         val groupOverridden = repository.isGroupOverridden(routeId, group.id)
-        val custom = if (groupOverridden) repository.value(routeId, field.id) else null
+        val custom = if (groupOverridden) {
+            if (equalizerBandIndex != null) {
+                repository.equalizerBandValue(routeId, equalizerBandIndex, useRouteOverride = true)
+            } else {
+                repository.value(routeId, field.id)
+            }
+        } else {
+            null
+        }
         val initial = custom ?: inherited ?: field.suggestedDefault
         val previewOnly = !groupOverridden && inherited == null
 
@@ -505,7 +527,13 @@ class AudioProfilesActivity : AppCompatActivity() {
         if (group.id == GoneSmartAudioProfiles.equalizerGroup.id &&
             GoneSmartAudioProfiles.isEqualizerShapeField(field.id)
         ) {
-            if (repository.setEqualizerShapeValue(routeId, field.id, normalized)) {
+            val bandIndex = GoneSmartAudioProfiles.equalizerBandFieldIds.indexOf(field.id)
+            val saved = if (bandIndex >= 0) {
+                repository.setProjectedEqualizerBandValue(routeId, bandIndex, normalized)
+            } else {
+                repository.setEqualizerShapeValue(routeId, field.id, normalized)
+            }
+            if (saved) {
                 equalizerPresetButton?.text = "${GoneSmartAudioProfiles.CUSTOM_PRESET}  ▾"
             }
         } else {
@@ -548,10 +576,10 @@ class AudioProfilesActivity : AppCompatActivity() {
 
     private fun showNoLearnedPresetsDialog() {
         AlertDialog.Builder(this)
-            .setTitle("No native 10-band presets found")
+            .setTitle("No native presets found")
             .setMessage(
-                "GoneSmart reads complete 10-band preset curves directly from GMMP's own preset storage. " +
-                    "No preset-by-preset setup in GMMP is required. If this list is empty, GMMP's preset storage was not readable or no complete 10-band curves were found."
+                "GoneSmart reads complete preset curves directly from GMMP's own preset storage. " +
+                    "No preset-by-preset setup in GMMP is required. If this list is empty, GMMP's preset storage was not readable or no complete curves were found."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -589,7 +617,8 @@ class AudioProfilesActivity : AppCompatActivity() {
                     "If Standard is not ready yet, disconnect Bluetooth once, wait a moment, then reconnect. GoneSmart captures the normal GMMP audio settings while Bluetooth is disconnected.\n\n" +
                     "Cards with an Enabled switch keep their dependent controls disabled while the effect is off. " +
                     "Equalizer is one complete override; turning it off disables preset, PRE and all band controls. " +
-                    "The preset list is read from GMMP's own complete 10-band preset curves; moving PRE or a band changes the profile to Custom."
+                    "GoneSmart follows GMMP's active 2–10 band layout and automatically remaps the saved curve if the band count changes. " +
+                    "The preset list is read from GMMP's own complete preset curves; moving PRE or a band changes the profile to Custom."
             )
             .setPositiveButton("OK", null)
             .show()
