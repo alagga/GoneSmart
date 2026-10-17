@@ -43,17 +43,32 @@ object GmmpEqualizerBandPolicy {
      * frequencies. Gain is interpolated linearly in log-frequency space,
      * which matches how a graphic EQ's frequency axis is laid out. Targets
      * outside the source layout retain the nearest edge gain.
+     *
+     * Every returned point is normalized through the real GoneSmart/GMMP band
+     * field contract. This keeps projected values on the 0.1 dB grid expected
+     * by the Material slider instead of leaking interpolation-only fractions
+     * such as 9.045 dB into a stepped control.
      */
     fun project(values: List<Double>, targetCount: Int): List<Double>? {
         if (!isSupported(values.size) || !isSupported(targetCount)) return null
         if (values.any { !it.isFinite() }) return null
-        if (values.size == targetCount) return values.toList()
+
+        if (values.size == targetCount) {
+            return values.map { value -> normalizeProjectedGain(value) ?: return null }
+        }
 
         val sourceFrequencies = frequenciesFor(values.size) ?: return null
         val targetFrequencies = frequenciesFor(targetCount) ?: return null
         return targetFrequencies.map { target ->
-            interpolateAtFrequency(sourceFrequencies, values, target)
+            val raw = interpolateAtFrequency(sourceFrequencies, values, target)
+            normalizeProjectedGain(raw) ?: return null
         }
+    }
+
+    private fun normalizeProjectedGain(value: Double): Double? {
+        val fieldId = GoneSmartAudioProfiles.equalizerBandFieldIds.firstOrNull() ?: return null
+        val field = GoneSmartAudioProfiles.field(fieldId) ?: return null
+        return field.normalize(AudioProfileField.formatNumber(value))?.toDoubleOrNull()
     }
 
     private fun interpolateAtFrequency(

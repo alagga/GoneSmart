@@ -372,7 +372,7 @@ class GoneSmartAudioModule : XposedModule() {
                     GmmpEqualizerRuntimeBridge.observeInstance(instance, looper)
                 }
                 val result = chain.proceed()
-                if (instance != null) observeEqualizerBandCount(instance)
+                if (instance != null) observeEqualizerBandCount()
 
                 when (role) {
                     EqualizerObservationRole.PRE -> (args.getOrNull(0) as? Number)?.toDouble()?.let { raw ->
@@ -415,10 +415,8 @@ class GoneSmartAudioModule : XposedModule() {
             Log.w(TAG, "Could not install passive EQ observer for role=$role", it)
         }.getOrDefault(false)
 
-    private fun observeEqualizerBandCount(instance: Any): Int? {
-        val field = eqBandArrayField ?: return GmmpEqualizerRuntimeBridge.current()?.bandCount
-        val array = runCatching { field.get(instance) as? DoubleArray }.getOrNull() ?: return null
-        val count = array.size.takeIf(GmmpEqualizerBandPolicy::isSupported) ?: return null
+    private fun observeEqualizerBandCount(): Int? {
+        val count = GmmpEqualizerRuntimeBridge.current()?.bandCount ?: return null
         if (observedEqBandCount != count) {
             observedEqBandCount = count
             currentEqPre = null
@@ -429,13 +427,17 @@ class GoneSmartAudioModule : XposedModule() {
                 pendingPresetName = null
                 pendingPresetUntilElapsed = 0L
             }
-            Log.i(TAG, "EQ BAND LAYOUT | bands=$count | canonical=${GmmpEqualizerBandPolicy.MAX_BANDS}")
+            Log.i(
+                TAG,
+                "EQ BAND LAYOUT | bands=$count | canonical=${GmmpEqualizerBandPolicy.MAX_BANDS}" +
+                    " | source=validated-runtime"
+            )
         }
         return count
     }
 
     private fun activeEqualizerBandCount(): Int? =
-        observedEqBandCount ?: GmmpEqualizerRuntimeBridge.current()?.bandCount
+        GmmpEqualizerRuntimeBridge.current()?.bandCount ?: observedEqBandCount
 
     private fun verifyPreReader(instance: Any, raw: Double) {
         if (preReaderVerified) return
@@ -448,7 +450,7 @@ class GoneSmartAudioModule : XposedModule() {
     }
 
     private fun verifyBandReader(instance: Any, index: Int, raw: Double) {
-        val count = observeEqualizerBandCount(instance) ?: return
+        val count = observeEqualizerBandCount() ?: return
         if (index !in 0 until count) return
         val field = eqBandArrayField ?: return
         val array = runCatching { field.get(instance) as? DoubleArray }.getOrNull() ?: return
@@ -465,7 +467,7 @@ class GoneSmartAudioModule : XposedModule() {
         val instance = eqStateInstance ?: return null
         val getter = eqPreGetter ?: return null
         val field = eqBandArrayField ?: return null
-        val count = observeEqualizerBandCount(instance) ?: return null
+        val count = observeEqualizerBandCount() ?: return null
         if (!preReaderVerified || !(0 until count).all { it in verifiedBandReaderIndices }) return null
         val pre = runCatching { (getter.invoke(instance) as? Number)?.toDouble() }.getOrNull() ?: return null
         val bands = runCatching { (field.get(instance) as? DoubleArray)?.copyOf() }.getOrNull() ?: return null

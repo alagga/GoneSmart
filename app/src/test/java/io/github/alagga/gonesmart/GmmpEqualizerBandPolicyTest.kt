@@ -1,5 +1,6 @@
 package io.github.alagga.gonesmart
 
+import kotlin.math.round
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -78,6 +79,27 @@ class GmmpEqualizerBandPolicyTest {
 
         assertFalse(GmmpEqualizerBandPolicy.isSupported(1))
         assertFalse(GmmpEqualizerBandPolicy.isSupported(11))
+    }
+
+    @Test
+    fun everyProjectedBandValueStaysOnTheSliderStepGrid() {
+        val canonical = listOf(9.0, 8.7, 7.1, 4.8, 2.6, 0.2, -1.7, -4.3, -6.8, -8.5)
+        val bandField = GoneSmartAudioProfiles.field(GoneSmartAudioProfiles.equalizerBandFieldIds.first())!!
+        val minimum = bandField.minimum!!
+        val step = bandField.step!!
+
+        for (count in GmmpEqualizerBandPolicy.MIN_BANDS..GmmpEqualizerBandPolicy.MAX_BANDS) {
+            val projected = GmmpEqualizerBandPolicy.project(canonical, count)!!
+            projected.forEachIndexed { index, value ->
+                val ticks = (value - minimum) / step
+                assertEquals(
+                    "count=$count index=$index value=$value must be valid for the stepped Material slider",
+                    round(ticks),
+                    ticks,
+                    0.000001
+                )
+            }
+        }
     }
 
     @Test
