@@ -1,4 +1,4 @@
-name: RC Integration Repair
+name: RC Final Audit Apply
 
 on:
   push:
@@ -9,44 +9,36 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  apply-final-audit:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout RC
+      - name: Checkout RC with history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Repair audited GmmpLibraryReader merge boundaries
+      - name: Apply and validate final RC audit patch
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "GoneSmart RC integration"
           git config user.email "69852271+alagga@users.noreply.github.com"
-          python3 - <<'PY'
-          from pathlib import Path
 
-          path = Path('app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt')
-          text = path.read_text()
+          cat .github/rc-patch/part* | base64 -d | gzip -d > /tmp/gonesmart-050-rc1.patch
+          echo "e6e1f6c59495e946dfdf9b6c746dd5ae5b26c9f64c4cd864918bf2bb09b1ebd8  /tmp/gonesmart-050-rc1.patch" | sha256sum -c -
+          git apply --check /tmp/gonesmart-050-rc1.patch
+          git apply /tmp/gonesmart-050-rc1.patch
+          rm -rf .github/rc-patch
 
-          old_header = '''internal data class GmmpLibraryPathIndexSnapshot(\n    val trackCount: Int,\n    val idsByPath: Map<String, Long>,\n    val ambiguousPaths: Set<String>\n\nprivate data class LibraryRevision('''
-          new_header = '''internal data class GmmpLibraryPathIndexSnapshot(\n    val trackCount: Int,\n    val idsByPath: Map<String, Long>,\n    val ambiguousPaths: Set<String>\n)\n\nprivate data class LibraryRevision('''
-
-          old_dao_tail = '''                )\n                    ?: throw IllegalStateException(\n                        "TrackDao fast path is null"\n                    )\n            }.getOrElse {\n                // The obfuscated TrackDao field is a tested-version fast path,\n                // never a compatibility requirement. The semantic read-only\n                // Room/Cursor resolver below is sufficient on its own and is\n                // the accepted GMMP 4.2.1 path when DAO mappings move.\n                val tracks = loadLibraryThroughCursor(\n                    autoDjInstance,\n                    startTime\n                )\n                deterministicMappingFailure = false\n                return tracks\n            }\n\n        val queryMethod ='''
-          new_dao_tail = '''                )\n\n        val queryMethod ='''
-
-          if text.count(old_header) != 1:
-              raise SystemExit('Expected exactly one malformed snapshot/revision boundary')
-          if text.count(old_dao_tail) != 1:
-              raise SystemExit('Expected exactly one malformed TrackDAO merge tail')
-
-          text = text.replace(old_header, new_header)
-          text = text.replace(old_dao_tail, new_dao_tail)
-          path.write_text(text)
-          PY
-
+          python3 -m py_compile scripts/generate_forum_posts.py
+          python3 scripts/generate_forum_posts.py --check
+          test "$(grep -E 'versionName = "0\.5\.0-rc\.1"' app/build.gradle.kts | wc -l)" -eq 1
+          test "$(grep -E 'versionCode = 48' app/build.gradle.kts | wc -l)" -eq 1
+          test -z "$(git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' || true)"
           git diff --check
-          git diff -- app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt
-          git add app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt
-          git commit -m "fix: repair merged GMMP library reader"
+
+          git add -A
+          git diff --cached --check
+          git status --short
+          git commit -m "release: prepare 0.5.0-rc.1"
           git push origin HEAD:release/0.5.0-rc.1
