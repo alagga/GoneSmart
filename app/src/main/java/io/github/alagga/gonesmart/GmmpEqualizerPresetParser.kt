@@ -77,10 +77,10 @@ object GmmpEqualizerPresetParser {
             return buildPreset(name, pre, bands)
         }
 
-        // Some GMMP preset files are compact numeric lists. Accept this only
-        // when they resolve to exactly PRE + ten gains. A leading literal 10
-        // is also accepted as an explicit band-count marker because GMMP keeps
-        // presets in band-count-specific families.
+        // Some exported preset files are compact numeric lists. Accept only a
+        // complete PRE + ten-band curve. Both the native GMMP ordering
+        // [PRE, bandCount, bands...] and the older supported ordering
+        // [bandCount, PRE, bands...] are recognized.
         compactNumbers(text)?.let { compact ->
             return buildPreset(name, compact.first(), compact.drop(1))
         }
@@ -95,26 +95,37 @@ object GmmpEqualizerPresetParser {
     }
 
     /**
-     * Current GMMP preset files use one preset-name line followed by PRE and
-     * one numeric line per band. Parse that exact shape first so the human name
-     * is not mistaken for curve metadata and the filename remains only a hint.
+     * Current GMMP preset files are: preset name, PRE, explicit band-count,
+     * then one numeric line per band. For GoneSmart's current ten-band schema
+     * the count marker must be exactly 10; other families fail closed.
      */
     private fun parseNativeLinePreset(nameHint: String, text: String): ParsedPreset? {
         val lines = text.lineSequence()
             .map { it.trim().trimStart('\uFEFF') }
             .filter { it.isNotEmpty() }
             .toList()
-        if (lines.size != frequencies.size + 2) return null
+        if (lines.size != frequencies.size + 3) return null
 
         val firstLine = lines.first()
         if (firstLine.isBlank() || strictNumberRegex.matches(firstLine)) return null
-        val values = lines.drop(1).map { line ->
+
+        val preLine = lines[1]
+        val countLine = lines[2]
+        if (!strictNumberRegex.matches(preLine) || !strictNumberRegex.matches(countLine)) return null
+        val pre = preLine.toNumber() ?: return null
+        val bandCount = countLine.toNumber() ?: return null
+        if (!plausible(pre) || abs(bandCount - frequencies.size.toDouble()) > 0.001) return null
+
+        val bands = lines.drop(3).map { line ->
             if (!strictNumberRegex.matches(line)) return null
-            line.toNumber() ?: return null
+            val value = line.toNumber() ?: return null
+            if (!plausible(value)) return null
+            value
         }
-        val complete = completeCurveNumbers(values) ?: return null
+        if (bands.size != frequencies.size) return null
+
         val name = firstLine.takeIf { it.isNotBlank() } ?: cleanName(nameHint)
-        return buildPreset(name, complete.first(), complete.drop(1))
+        return buildPreset(name, pre, bands)
     }
 
     private fun compactNumbers(text: String): List<Double>? {
@@ -142,6 +153,9 @@ object GmmpEqualizerPresetParser {
 
     private fun completeCurveNumbers(numbers: List<Double>): List<Double>? = when {
         numbers.size == 11 && numbers.all(::plausible) -> numbers
+        numbers.size == 12 && abs(numbers[1] - frequencies.size.toDouble()) <= 0.001 &&
+            plausible(numbers.first()) && numbers.drop(2).all(::plausible) ->
+            listOf(numbers.first()) + numbers.drop(2)
         numbers.size == 12 && abs(numbers.first() - frequencies.size.toDouble()) <= 0.001 &&
             numbers.drop(1).all(::plausible) -> numbers.drop(1)
         else -> null
