@@ -211,7 +211,9 @@ The GoneSmart companion app is intentionally English-only. Provider names/settin
 
 ### Code hygiene / logging audit
 
-The accepted provider path no longer emits the development-era per-candidate merged/local recommendation dumps. Normal runtime logging keeps compact provider counts, policy/rescue/fallback decisions, cache behavior, controlled-variety metrics, resolver failures and latency summaries that are useful for support without flooding Logcat. Broad compatibility inventories remain disabled/gated on the accepted GMMP version.
+The accepted provider path no longer emits the development-era per-candidate merged/local recommendation dumps. Normal Logcat output keeps compact provider counts, policy/rescue/fallback decisions, cache behavior, controlled-variety metrics, resolver failures and latency summaries without flooding normal operation. Broad compatibility inventories remain disabled/gated on the accepted GMMP version.
+
+The companion Logs tab is deliberately higher-level: provider/hook unavailability, fallback/no-match/offline states and other support-relevant transitions remain visible, while routine successful pool deliveries refresh Smart-DJ status without appending one history row per refill. The Logs/Help copy now points to the current detailed tag family (`GoneSmart`, `GoneSmartCompat`, `GoneSmartPlaylist`, `GoneSmartPlaylistBridge`, `GoneSmartFlip`, `GoneSmartTrackMix`) and recommends copying the companion timeline before collecting filtered Logcat for deeper diagnosis.
 
 The closeout pass also verifies that temporary probes/helper workflows are absent from the release tree, removes obsolete always-on test/feature gates and dead logging helpers, and keeps compatibility fallback machinery for future GMMP updates only when it is inactive/cheap until an unknown or failing boundary actually needs it.
 

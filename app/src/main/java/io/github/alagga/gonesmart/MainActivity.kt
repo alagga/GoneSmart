@@ -772,7 +772,7 @@ class MainActivity : AppCompatActivity() {
         val container = pageContainer()
         container.addView(pageTitle("Logs"))
         container.addView(textView(
-            "Recent activity from Smart DJ, playlists, Flip and ${companionTrackAutoDjLabel()}.",
+            "Concise support history from Smart DJ, playlists, Flip and ${companionTrackAutoDjLabel()}. Routine per-track diagnostics stay out of this view.",
             14f,
             COLOR_TEXT_SECONDARY
         ))
@@ -810,7 +810,7 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "Shows recent activity from all GoneSmart features. For detailed diagnostics, filter Logcat by GoneSmart, GoneSmartPlaylist, GoneSmartFlip or GoneSmartTrackMix.",
+            "Shows high-signal GoneSmart activity such as verified actions, state changes, fallbacks and failures. For deeper diagnostics, capture Android Logcat and filter by GoneSmart, GoneSmartCompat, GoneSmartPlaylist, GoneSmartPlaylistBridge, GoneSmartFlip or GoneSmartTrackMix. When reporting a problem, copy this Logs view first and attach filtered Logcat when detailed diagnosis is needed.",
             13f,
             COLOR_MUTED
         ))
@@ -958,7 +958,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(sectionTitle("TROUBLESHOOTING"))
         container.addView(infoCard(
             title = "Module not active?",
-            body = "Make sure GoneSmart is enabled for gonemad.gmmp in your Xposed framework. If hooks do not refresh after a module update, use Restart GMMP below. The Logs tab contains high-level GoneSmart events; detailed development logs are available in Logcat with the tag GoneSmart."
+            body = "Make sure GoneSmart is enabled for gonemad.gmmp in your Xposed framework. If hooks do not refresh after a module update, use Restart GMMP below. The Logs tab is the first support view: it keeps concise verified actions, state changes, fallbacks and failures without per-track debug noise. Copy it when reporting an issue. If deeper diagnosis is needed, capture Android Logcat with the GoneSmart-family tags listed below the Logs view."
         ))
         container.addView(verticalGap(14))
         container.addView(outlineButton("Restart GMMP") { restartGmmp() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))

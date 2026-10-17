@@ -5361,7 +5361,9 @@ class GoneSmartModule : XposedModule() {
             runtimeReporter.report(
                 mode = GoneSmartRuntimeContract.MODE_SMART,
                 message = "GoneSmart selected ${appliedRows.size} track(s) from the current session pool.",
-                appendEvent = true
+                // Keep current Smart-DJ status fresh without adding one Logs-row
+                // for every routine pool delivery.
+                appendEvent = false
             )
 
             appliedRows
