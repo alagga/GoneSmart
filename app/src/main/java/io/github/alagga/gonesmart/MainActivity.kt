@@ -820,7 +820,7 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "Shows high-signal GoneSmart activity such as verified actions, state changes, fallbacks and failures. For deeper diagnostics, capture Android Logcat and filter by GoneSmart, GoneSmartCompat, GoneSmartPlaylist, GoneSmartPlaylistBridge, GoneSmartFlip or GoneSmartTrackMix. When reporting a problem, copy this Logs view first and attach filtered Logcat when detailed diagnosis is needed.",
+            "Shows high-signal GoneSmart activity such as verified actions, state changes, fallbacks and failures. For deeper diagnostics, capture Android Logcat and filter by GoneSmart, GoneSmartCompat, GoneSmartPlaylist, GoneSmartPlaylistBridge, GoneSmartFlip, GoneSmartTrackMix, GoneSmartAudioProfiles or GoneSmartAudioApply. When reporting a problem, copy this Logs view first and attach filtered Logcat when detailed diagnosis is needed.",
             13f,
             COLOR_MUTED
         ))
@@ -881,6 +881,18 @@ class MainActivity : AppCompatActivity() {
         container.addView(outlineButton("Open Last.fm") {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.last.fm/")))
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)))
+
+        container.addView(verticalGap(22))
+        container.addView(sectionTitle("AUDIO PROFILES"))
+        container.addView(infoCard(
+            title = "How do Audio Profiles work?",
+            body = "Standard is your normal no-Bluetooth GMMP Equalizer and Effects state. A remembered Bluetooth output can override only the audio groups you enable; settings left on GMMP default keep following Standard. Connecting, disconnecting or switching outputs reapplies the effective profile automatically."
+        ))
+        container.addView(verticalGap(12))
+        container.addView(infoCard(
+            title = "What if the Equalizer band count changes?",
+            body = "GoneSmart keeps one canonical Equalizer curve and maps it to GMMP's current 2-10-band layout using the verified center frequencies. Editing the visible layout is mapped back into canonical storage, so switching band layouts does not create a separate hidden profile."
+        ))
 
         container.addView(verticalGap(22))
         container.addView(sectionTitle("GMMP UI EXTENSIONS"))

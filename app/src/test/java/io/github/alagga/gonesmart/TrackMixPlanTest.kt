@@ -86,7 +86,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "Track Auto-DJ started",
+            "Track Auto-DJ ✓",
             TrackMixPlan.localizedStartedMessage(
                 "en", "Track Auto-DJ", null
             )
@@ -98,7 +98,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "トラック オートDJ started",
+            "トラック オートDJ ✓",
             TrackMixPlan.localizedStartedMessage(
                 "ja", "トラック オートDJ", null
             )

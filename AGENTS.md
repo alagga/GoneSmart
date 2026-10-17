@@ -2,7 +2,7 @@
 
 **Purpose:** Canonical entry point for assistants and contributors. Read this file before changing code, then inspect the relevant source, current branch head, compatibility docs and exact-head CI.
 
-**Last consolidated:** 2026-10-17. **Release line:** 0.4.1. **Accepted GMMP target:** 4.2.1. **4.2.1 fix status:** accepted after R72 + final audit.
+**Last consolidated:** 2026-10-17. **Release line:** 0.5.0 (release candidate `0.5.0-rc.1`). **Accepted GMMP target:** 4.2.1. **0.5.0 integration status:** Bluetooth Audio Profiles, Auto-DJ Providers and the GMMP 4.2.1 compatibility work are combined; release still requires exact-head RC CI, merged-main CI and prerelease publication.
 
 ## 1. Collaboration and repository discipline
 

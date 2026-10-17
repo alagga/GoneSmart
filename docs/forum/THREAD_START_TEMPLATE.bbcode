@@ -1,8 +1,8 @@
-[b]GoneSmart – Smart Auto-DJ, Playlist & UI Extensions for GoneMAD Music Player[/b]
+[b]GoneSmart – Smart Auto-DJ, Audio Profiles & GMMP Extensions[/b]
 
 Hi everyone,
 
-I'd like to share [b]GoneSmart[/b], an independent Xposed/libxposed module and companion app that extends GoneMAD Music Player with a smarter Auto-DJ and several optional playlist, playback and UI features.
+I'd like to share [b]GoneSmart[/b], an independent Xposed/libxposed module and companion app that extends GoneMAD Music Player with a smarter Auto-DJ and optional audio, playlist and playback features.
 
 I'll keep this first post updated and use the thread replies for future releases.
 
@@ -15,30 +15,29 @@ I'll keep this first post updated and use the thread replies for future releases
 
 [b]What is GoneSmart?[/b]
 
-GoneSmart keeps GMMP as the actual music player and adds extra functionality around it.
-
-• [b]Smart Auto-DJ[/b] – uses the current listening session to find related music and matches those recommendations against tracks that already exist in your local GMMP library.
-• [b]UI & workflow extensions[/b] – additional playlist, Smart-Playlist, queue and playback tools integrated into GMMP.
-
-For Smart Auto-DJ, GoneSmart combines [b]Local Playlist Affinity[/b] from normal GMMP playlists with recommendations from [b]ListenBrainz[/b] and [b]Last.fm[/b]. Your complete music library is not uploaded to those services; matching against your library happens locally.
+GoneSmart keeps GMMP as the actual music player and adds extra functionality around it. Smart Auto-DJ combines relationships from your own normal GMMP playlists with ListenBrainz and Last.fm, then matches recommendations against music that already exists in your local GMMP library. Your complete music library is not uploaded to those services.
 
 
 [b]Main features[/b]
 
 [b]Smart Auto-DJ[/b]
 • Session-aware recommendations based on the current and recently selected tracks
-• Local Playlist Affinity + ListenBrainz + Last.fm recommendation sources
-• Smart defaults plus optional Custom provider switches/weights
-• Controlled variety only among near-equal matches
+• Local Playlist Affinity + ListenBrainz + Last.fm
+• Smart defaults plus optional Custom provider controls
+• Controlled variety, rating/matching preferences and recommendation caching
 • Only selects music that exists in your GMMP library
-• Recommendation pool for faster Auto-DJ refills
-• Rating and matching preferences
 • Optional fallback to GMMP's normal Auto-DJ
 • Player indicator showing GoneSmart Auto-DJ status
 
+[b]Bluetooth Audio Profiles[/b]
+• Different GMMP Equalizer and Effects overrides for remembered Bluetooth outputs
+• Normal no-Bluetooth GMMP state remains Standard
+• Automatic Standard/Bluetooth restoration when outputs change
+• GMMP Equalizer presets, PRE and adaptive 2–10-band layouts
+• Individual Effects overrides such as Balance, Limiter, Bass boost, Tempo, Virtualizer and Amplifier
+
 [b]Playlist & Smart-Playlist tools[/b]
-• Playlist folders
-• Smart-Playlist folders
+• Playlist folders and Smart-Playlist folders
 • Multi-selection
 • Playlist Link – use a normal playlist as a live source inside a Smart Playlist
 
@@ -49,7 +48,7 @@ For Smart Auto-DJ, GoneSmart combines [b]Local Playlist Affinity[/b] from normal
 
 [b]Companion app[/b]
 • Module and GMMP status
-• Smart DJ and UI settings
+• Smart DJ, Audio Profiles and UI settings
 • Compatibility information
 • High-level activity/error logs
 • Update checking and built-in help
@@ -78,21 +77,14 @@ If you run into something that looks like a GMMP bug, please disable GoneSmart f
 GoneSmart integrates with GMMP internals, so a future GMMP update can temporarily break compatibility. I recommend disabling automatic Play Store updates for GMMP and checking the tested GMMP version here or on GitHub before updating manually. GoneSmart also warns when it detects a different GMMP version.
 
 
-[b]0.5.0 plan[/b]
+[b]0.5.0 release candidate[/b]
 
-The next larger integration is planned around three separate workstreams:
+The 0.5.0 candidate combines Bluetooth Audio Profiles, the smarter Auto-DJ provider blend and the accepted GMMP 4.2.1 Playlist Link / Track Auto-DJ compatibility work. The release candidate is for combined testing before the stable 0.5.0 release.
 
-• [b]Smarter recommendation blend[/b] – Local Playlist Affinity, ListenBrainz and Last.fm with provider controls, controlled variety, staged rescue and caching. This recommendation workstream is feature-complete.
-• [b]Bluetooth device audio profiles[/b] – automatically use different GMMP equalizer/effects overrides for different playback devices.
-• [b]GMMP 4.2.1 playlist compatibility[/b] – separate Playlist Link / playlist-sync fixes before the combined release.
-
-For a later [b]0.6.0[/b] direction, SoundCloud is the strongest additional provider candidate because it offers an official related-track API, and Smart Playlists may become an optional weaker local-affinity source.
-
-Spotify, YouTube and YouTube Music are currently unlikely normal providers: their documented APIs/access models do not provide a robust equivalent for this use case, while private WebPlayer/GraphQL/InnerTube integrations would be too brittle for GoneSmart's compatibility goals.
 
 [b]Feedback & bug reports[/b]
 
-Feedback is very welcome, especially with different libraries, Android setups and GMMP configurations. If something breaks, please include your exact GMMP version and, if possible, the relevant GoneSmart logs.
+Feedback is very welcome, especially with different libraries, Bluetooth outputs, Android setups and GMMP configurations. If something breaks, please include your exact GMMP version and, if possible, the relevant GoneSmart logs.
 
 [url=https://github.com/alagga/GoneSmart/issues]GitHub issues and feature requests[/url]
 

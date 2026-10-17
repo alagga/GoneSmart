@@ -36,7 +36,7 @@ When a small patch becomes GitHub's **Latest Release** immediately after a large
 
 ## Prereleases
 
-Use a version such as `0.5.0-beta1`, update release notes and dispatch **Release APK** with **prerelease** enabled.
+Use a SemVer prerelease version such as `0.5.0-rc.1`, update release notes and dispatch **Release APK** with **prerelease** enabled. Tags whose `versionName` contains a prerelease suffix (for example `-rc.1`) are also marked as GitHub prereleases automatically when the tag-triggered workflow runs.
 
 ## Compatibility gate
 

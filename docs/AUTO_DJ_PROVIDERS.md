@@ -1,7 +1,7 @@
 # Smart Auto-DJ provider roadmap
 
-Status: **feature-complete / ready for 0.5.0 integration** (2026-10-17)
-Branch: `feature/auto-dj-providers`
+Status: **integrated into `0.5.0-rc.1` / feature-complete** (2026-10-17)
+Origin branch: `feature/auto-dj-providers`
 
 ## Goal
 
@@ -120,7 +120,7 @@ Lower-friction personalization paths remain:
 
 Provider login must always remain optional: Smart Auto-DJ must work with the non-personalized providers and local signals.
 
-## Implemented blend on this branch
+## Implemented blend
 
 The branch now implements the first local/provider quality pass as one coordinated pipeline:
 
@@ -142,7 +142,7 @@ SoundCloud stays on the later-evaluation list because its related-track signal i
 
 ## Quality metrics
 
-Before this work is merged into `main`, compare the blend against the previous provider baseline with seeds containing:
+For future provider/ranking changes, compare the blend against the accepted 0.5.0 provider baseline with seeds containing:
 
 - newly released tracks;
 - progressive house / festival EDM;
@@ -179,7 +179,7 @@ If fewer suitable GoneSmart tracks exist than GMMP requests in a refill, GoneSma
 
 ## Feature-completion audit
 
-The provider branch is considered feature-complete for integration into the planned 0.5.0 release. This is a branch acceptance state, **not** a merge, tag or published release.
+The provider work is feature-complete and integrated into the `0.5.0-rc.1` release candidate. Stable `0.5.0` still depends on prerelease validation of the combined tree.
 
 Accepted behavior on GMMP 4.2.1 includes:
 
@@ -207,13 +207,13 @@ Future GMMP versions remain unverified until the normal compatibility workflow i
 
 ### Translation / wording audit
 
-The GoneSmart companion app is intentionally English-only. Provider names/settings/help text are GoneSmart-owned companion UI and therefore do not need a host-language translation table. The recommendation feature injects no new provider-specific labels into GMMP itself. Existing GMMP-facing actions continue to prefer GMMP's own localized resources and readable textual fallbacks according to the standing localization contract.
+The GoneSmart companion app is intentionally English-only. Provider names/settings/help text are GoneSmart-owned companion UI and therefore do not need a host-language translation table. The recommendation feature injects no new provider-specific labels into GMMP itself. Existing GMMP-facing actions continue to use GMMP's own localized resources; if a required host term is unavailable, the injected action is omitted or kept language-neutral rather than inventing arbitrary English inside GMMP.
 
 ### Code hygiene / logging audit
 
 The accepted provider path no longer emits the development-era per-candidate merged/local recommendation dumps. Normal Logcat output keeps compact provider counts, policy/rescue/fallback decisions, cache behavior, controlled-variety metrics, resolver failures and latency summaries without flooding normal operation. Broad compatibility inventories remain disabled/gated on the accepted GMMP version.
 
-The companion Logs tab is deliberately higher-level: provider/hook unavailability, fallback/no-match/offline states and other support-relevant transitions remain visible, while routine successful pool deliveries refresh Smart-DJ status without appending one history row per refill. The Logs/Help copy now points to the current detailed tag family (`GoneSmart`, `GoneSmartCompat`, `GoneSmartPlaylist`, `GoneSmartPlaylistBridge`, `GoneSmartFlip`, `GoneSmartTrackMix`) and recommends copying the companion timeline before collecting filtered Logcat for deeper diagnosis.
+The companion Logs tab is deliberately higher-level: provider/hook unavailability, fallback/no-match/offline states and other support-relevant transitions remain visible, while routine successful pool deliveries refresh Smart-DJ status without appending one history row per refill. The Logs/Help copy points to the current detailed tag family, including the audio-profile tags added by the combined 0.5.0 tree, and recommends copying the companion timeline before collecting filtered Logcat for deeper diagnosis.
 
 The closeout pass also verifies that temporary probes/helper workflows are absent from the release tree, removes obsolete always-on test/feature gates and dead logging helpers, and keeps compatibility fallback machinery for future GMMP updates only when it is inactive/cheap until an unknown or failing boundary actually needs it.
 

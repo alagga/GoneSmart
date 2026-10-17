@@ -1,6 +1,6 @@
 # Playlist Link
 
-**Current status (8 October 2026): the feature remains accepted on GMMP 4.2.0, but a post-v0.4.1 device check found the 4.2.1 path broken by stale 4.2.0-only obfuscation bindings. The `fix/playlist-link-gmmp-4.2.1` / planned v0.4.2 repair replaces those bindings with shape-validated runtime resolution. Device re-acceptance is still pending.**
+**Current status (17 October 2026): Playlist Link is re-accepted on GMMP 4.2.1 and integrated into `0.5.0-rc.1`. The 4.2.1 repair replaces stale 4.2.0-only obfuscation assumptions with shape-validated runtime resolution and preserves native/fail-closed behavior.**
 
 Playlist Link lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Link**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
 
@@ -79,7 +79,7 @@ The old development-only hooks that traced native reader pages, generic Smart-ru
 
 ## Device verification already completed
 
-On the maintainer's GMMP 4.2.0 device, the following have been accepted:
+The original end-to-end behavior was accepted on GMMP 4.2.0. The repaired flow has since been re-accepted on the maintainer's GMMP 4.2.1 setup. The verified behavior includes:
 
 - Link popup and ordinary playlist choice.
 - Add/save/reopen/edit of a Playlist Link rule.
@@ -92,7 +92,7 @@ These accepted tests should not be repeated merely because documentation was cle
 
 ## Known release boundaries
 
-- GMMP **4.2.0** is the previously device-accepted Playlist Link baseline. GMMP **4.2.1** has a v0.4.2 repair candidate pending device re-acceptance.
+- GMMP **4.2.1** is the current accepted compatibility target. The older GMMP 4.2.0 path remains historical baseline evidence, not the release target.
 - Very large ordinary playlists rely on the current verified URI-IN chunking behavior.
 - A missing source intentionally matches nothing while GoneSmart is active.
 - Moving/renaming a Playlist Link source is not guessed from its display name.

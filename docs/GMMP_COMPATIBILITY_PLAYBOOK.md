@@ -9,7 +9,7 @@ Standing contributor rules live in `AGENTS.md`; detailed chronology remains in `
 | GMMP version | State | Notes |
 | --- | --- | --- |
 | 4.2.0 | Accepted historical baseline | Original 0.3.x/early-0.4 mappings and device evidence. |
-| 4.2.1 | **Accepted core target; Playlist Link / Track Mix repair pending re-acceptance** | Core 0.4.x features are accepted. Post-0.4.1 device traces exposed stale Playlist Link bindings and a Track Mix first-row/continuity regression; the bundled 0.4.2 repair candidate still requires one device re-acceptance pass. |
+| 4.2.1 | **Accepted current target** | Playlist Link and Track Auto-DJ were re-accepted after the final R72 device/audit pass and are integrated into the 0.5.0 release candidate. |
 | Any other version | Untested | Show amber Compatibility status and run the bounded workflow before claiming support. |
 
 Source of truth: `GmmpCompatibilityPolicy.TESTED_VERSION = "4.2.1"`.
@@ -83,39 +83,19 @@ Queue Flip then correlates native entities 1:1, reverses through proven native w
 
 ### Track Auto-DJ
 
-Accepted from ordinary playlists and large Smart Playlists:
+The accepted 4.2.1 Track Auto-DJ contract is the semantic continuation of the last known-good native-ownership behavior, not a literal port of old R8 names:
 
-1. dispatch GMMP's exact native Play action;
-2. use the bounded generic-track completion guard while native list playback settles;
-3. preserve the clicked/provisional target if it remains uniquely identifiable through a large rebuild;
-4. if the first provisional CURRENT disappears completely inside the guard, retarget to the independently observed live CURRENT and restart settling;
-5. outside the guard, fail closed on competing/manual playback;
-6. an unchanged CURRENT may count as a replay only when an independent native playback/queue-update signal confirms the action; a successful menu callback alone is not playback identity;
-7. isolate through a GMMP-owned native boundary: the accepted legacy native transaction on 4.2.0 or GMMP's public `CLEAR_QUEUE` command on 4.2.1;
-8. verify the selected seed is the sole Current track; native `queue_id` is not a stable identity across a GMMP-owned clear;
-9. request exactly `Initial Size - seed size` through native refill;
-10. verify exact Initial Size and preserved selected track.
+1. Resolve the clicked track before native Play from unique semantic evidence and dispatch GMMP's exact native Play action.
+2. Treat playback/current observations during the bounded Smart-Playlist/file/Queue settling window as evidence, not as permission to retarget to an unrelated track. Ambiguity fails closed.
+3. Start a fresh GoneSmart recommendation session for every explicit Track Auto-DJ invocation.
+4. Establish the selected native queue entry as the sole logical seed/root through the already verified queue/current boundaries. **Do not use `CLEAR_QUEUE` for GMMP 4.2.1 startup.**
+5. Read GMMP's `autoDj_initialSize` dynamically; never hard-code a five-row queue.
+6. Let GMMP's normal Auto-DJ/refill lifecycle own follower-row creation, ordering and decoder materialization. GoneSmart influences eligible follower identities only through the ordinary Smart Auto-DJ selection path.
+7. Do not rewrite Track IDs after a next AudioSource/decoder may already exist, replay playback to repair a queue, or invoke a guessed next-source method.
+8. The naturally observed MusicService integer event used by the accepted path is identified by context/correlation; its obfuscated name/argument are not general semantic authority.
+9. Verify final queue size/positions, selected Current identity and any native writer postconditions before reporting success.
 
-#### 4.2.1 queue-root continuity (r42–r43)
-
-Seed isolation changes the logical queue root. Device evidence showed that rebasing Queue DAO row positions does not prove GMMP's hidden append/end allocator was reset. GoneSmart therefore does **not** guess that allocator.
-
-For a Track-Auto-DJ-owned normalized queue only:
-
-- use the already verified natural CURRENT transition as the event trigger;
-- read the actual remaining queue once;
-- compare it with GMMP's configured upcoming count;
-- invoke the existing native `qr.z(deficit)` refill boundary only for a real deficit;
-- deduplicate by verified queue position and allow only one managed refill in flight;
-- disarm on unrelated native list playback.
-
-This continuation path is device-accepted for 0.4.0.
-
-The 2026-10-08 `d5ff3ddabff2` trace exposed two Track Mix regressions around the already accepted native boundaries. First, a queue-menu click that had actually started track `9772` was later reclassified as an unchanged replay of stale CURRENT track `9761`; the GoneSmart verification line itself showed `nativeSignal=false` and `changed=false`. Same-current replay therefore now requires the independent native playback signal instead of treating a successful menu dispatch as proof. Second, after isolating the seed, GMMP 4.2.1 populated its Auto-DJ pool in about 86–95 ms but could query queue position 2 and reach `next audio source is null` as early as about 208 ms. The historical 1.8 s command-settling guard is retained only for the accepted legacy `ex3` path. The 4.2.1 path crosses the already proven `qr.z(initial-deficit)` boundary after a short bounded native preparation window, before playback can observe an empty next position.
-
-Runtime `3cf7c504dc7d` then proved that this 90 ms 4.2.1 command boundary was actually active, but also exposed a second wait **inside GoneSmart's Smart-DJ refill interceptor**: after the queue had already been reduced to the single seed, recommendation-pool preparation blocked the explicit `qr.z(4)` path for another 1500 ms. During that interval GMMP requested `queue_position=2`, received `next audio source is null`, and only several hundred milliseconds later received the four fallback rows. The repair therefore no longer waits for the remote Smart-DJ pool at all once an explicit Track Mix seed is isolated. It starts or reuses the recommendation fill, immediately allows GMMP's native Initial Size refill to proceed, and keeps the recommendation work running only for later refills. This removes the GoneSmart-created empty-next window instead of tuning another delay.
-
-The 2026-10-09 device trace then proved a different ownership detail in the 4.2.1 public-clear path: after `CLEAR_QUEUE`, the independent queue reader repeatedly showed exactly one row whose Current track was the selected seed, while the old verifier still timed out because it also required the pre-clear `queue_id`. GMMP is allowed to recreate its own queue row while preserving playback identity. The accepted postcondition is therefore exactly one row, exactly one Current, and that Current's Track ID equals the selected seed. Queue-entry identity is diagnostic only. GoneSmart continues to leave post-clear/refill queue ordering to GMMP instead of rewriting Room positions behind an already prepared AudioSource.
+The final 4.2.1 path is device-accepted across ordinary playlists, Queue, playable file-browser rows and large Smart Playlists. The detailed Rxx chronology remains in `AGENTS.md`, `GMMP_421_COMPLETION.md` and the dated evidence files; those historical intermediate architectures are not the current implementation contract.
 
 ### Recommendation read boundaries
 
@@ -134,9 +114,10 @@ A future GMMP compatibility self-test must include these read-only Smart DJ boun
 - successful fills may top up again as soon as low-water requires it;
 - the long provider backoff applies only after an unproductive fill;
 - startup/session prewarm is asynchronous;
-- for Track Mix on 4.2.1, recommendation preparation is selected-seed-specific and happens before seed isolation while the original source queue still protects `current+1`;
-- the same pre-clear window primes GMMP's native Auto-DJ candidate machinery through a native-only `qr.z(1)` call; that disposable row is removed with the source queue and does not consume GoneSmart's prepared pool;
-- after `CLEAR_QUEUE`, the recreated sole Current row remains the same semantic recommendation session when its Track ID is unchanged even if GMMP assigned a new `queue_id`; prepared GoneSmart rows are inserted first and only a real shortfall falls back to native GMMP. Legacy 4.2.0 keeps the accepted full native initial refill.
+- Track Auto-DJ recommendation preparation is selected-seed-specific and never authorizes a stale session to leak into the new explicit mix;
+- a non-empty prepared pool is consumed through the ordinary Auto-DJ selection boundary while GMMP retains ownership of native row creation;
+- zero-suitable-track behavior follows the configured native fallback policy without inventing a Track-Mix-specific random padding path;
+- accepted bindings/caches are reused so normal refills do not repeat broad reflection/database discovery.
 
 ### Playlist / Smart-Playlist surfaces
 
@@ -145,18 +126,20 @@ Accepted on 4.2.1:
 - Playlist folders;
 - Smart-Playlist folders;
 - ordinary and Smart multi-selection;
-- Playlist Link — post-0.4.1 regression discovered; 0.4.2 repair candidate pending device re-acceptance;
+- Playlist Link — re-accepted after the 4.2.1 repair;
 - Play flipped;
 - Queue Flip;
 - navigation/player sparkle badges and Status/Compatibility UI.
 
 Resolvers prefer semantic adapter/model/writer ownership. Historical class names remain fast paths only where useful and safe.
 
-For the still-pending Playlist Link re-acceptance, the native editor Link action itself must be passively correlated from a real user-triggered GMMP dialog/event chain. A historical method name plus the same parameter shape is insufficient evidence for interception. The 2026-10-08 device trace now proves the GMMP 4.2.1 chooser boundary at `as4$g.accept(...)`: that callback appears immediately upstream of GMMP's native event chain and resulting `MaterialDialog.show()`. The unrelated `as4.h2(boolean)` shape therefore remains untrusted.
+For Playlist Link, the native editor Link action is passively correlated from a real user-triggered GMMP dialog/event chain; the accepted 4.2.1 binding must retain that proof. A historical method name plus the same parameter shape is insufficient evidence for interception. The 2026-10-08 device trace now proves the GMMP 4.2.1 chooser boundary at `as4$g.accept(...)`: that callback appears immediately upstream of GMMP's native event chain and resulting `MaterialDialog.show()`. The unrelated `as4.h2(boolean)` shape therefore remains untrusted.
 
 For Playlist Link specifically, do not rely on a post-inflate `MenuItem` listener as the sole dispatch boundary. GMMP can replace that listener later in the Smart editor lifecycle. Keep the accepted 4.2.0 `ds4.g2(boolean)` path exact. On 4.2.1, intercept the proven `as4$g.accept(...)` callback for GoneSmart's type chooser and retain the exact callback instance/payload as a one-shot native continuation; choosing Smart Playlist resumes that original continuation. This avoids inventing an upstream mapping while keeping ordinary native edit/disabled paths pass-through.
 
 For the Smart-editor add-rule action, resolve only a method declared directly by the resolved presenter whose single parameter is exactly the resolved Smart-rule base class and whose return type is `void`. Historical `P1` (4.2.0) and observed `Q1` (4.2.1) names are only fast paths. Broad assignability is intentionally rejected because 4.2.1 exposed false candidates such as inherited `equals(Object)` and `S1(...)`.
+
+Historical 4.2.1 repair chronology follows; statements that say “pending” below describe their revision at that time, not the current release state.
 
 The 2026-10-08 `70b44c814aef` runtime probe then advanced past `Q1(dt4)` and exposed the next stale assumption: a generic two-argument query-helper shape admitted six 4.2.1 methods (`ot0.E/F/G/H/J/K`) for the old equality-helper role. Playlist Link does not guess one. Equality was needed only to manufacture the fail-closed `ID = Long.MIN_VALUE` predicate, so the repair now builds that already accepted native leaf rule and asks the resolved native leaf-rule evaluator to compile it. The same centralized sentinel encoding is used by the portability compatibility rules. This removes an unnecessary R8-specific operator mapping while keeping predicate semantics owned by GMMP.
 

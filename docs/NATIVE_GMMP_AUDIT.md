@@ -1,6 +1,6 @@
 # GMMP 4.2.1 final native-function / compatibility audit — 17 October 2026
 
-**Scope:** `fix/playlist-link-gmmp-4.2.1` after R72 and the maintainer's successful bundled device run. This section is the current release-readiness audit; the older 4.2.0 audit is retained below as historical evidence. The branch is prepared for merge, but this document does not mean it has already been merged, tagged or released.
+**Scope:** accepted GMMP 4.2.1 compatibility work after R72 and the maintainer's successful bundled device run, now integrated into `0.5.0-rc.1`. This section is the current compatibility audit; the older 4.2.0 audit is retained below as historical evidence.
 
 ## Final verdict
 
@@ -16,9 +16,9 @@
 
 The accepted runtime no longer keeps the retired r45 context hook or repeatedly emits successful queue mutation/mapping inventories. Library/index work remains background work; broad compatibility inventories are disabled in normal operation and remain available only for future unknown/failing GMMP shapes. Device logs can still contain GMMP/Android frame-skip or GC messages, so they are not attributed to GoneSmart without a feature-specific causal trace.
 
-## Merge gate
+## Integrated release gate
 
-The fix branch is merge-ready only after the normal Build workflow is green on the exact final audit head (generated-forum check, unit tests, Debug APK, unsigned Release smoke and artifact upload) and no temporary audit workflow/script remains. The later 0.5.0 integration must rerun CI after this branch and both feature branches are combined; it must not reuse this branch's green status as proof for the merged release tree.
+The fix-branch gate was completed before integration. The combined `0.5.0-rc.1` tree must independently pass the normal exact-head Build after all three workstreams, documentation and release metadata are reconciled, and no temporary audit workflow/script may remain. A green feature/fix branch is not proof for the merged release tree.
 
 ---
 

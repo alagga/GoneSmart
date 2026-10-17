@@ -71,6 +71,6 @@ The same device log showed the live `!mainColorAccent` arriving after the initia
 
 The recommendation-provider feature does not add new host-language strings inside GMMP. Provider mode, source weights, playlist weighting and variety are GoneSmart companion settings, and the companion app intentionally remains English-only.
 
-GMMP-facing actions continue to use the host application's own localized resources whenever suitable wording exists. Track Auto-DJ success confirmation prefers GMMP's localized `started` string and otherwise uses the readable English word `started`; symbol-only fallback messages are not allowed.
+GMMP-facing actions continue to use the host application's own localized resources whenever suitable wording exists. Track Auto-DJ success confirmation prefers GMMP's localized `started` string; if it is unavailable, the already-native Track Auto-DJ label is kept and only a language-neutral `✓` is appended. Required native nouns/actions still fail closed rather than inventing English inside GMMP.
 
 The historical custom Move / Other Locations translation inventory remains separate from the recommendation feature. The overall accepted GMMP compatibility target is now 4.2.1.

@@ -92,8 +92,8 @@ android {
         applicationId = "io.github.alagga.gonesmart"
         minSdk = 26
         targetSdk = 37
-        versionCode = 47
-        versionName = "0.4.1"
+        versionCode = 48
+        versionName = "0.5.0-rc.1"
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
@@ -152,9 +152,9 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
-    // Match the exact AndroidX RecyclerView version packaged by GMMP 4.2.0.
-    // Both playlist ItemAnimator and Files quickNav EdgeEffectFactory run
-    // on GMMP's host-process RecyclerView implementation at runtime.
+    // Keep RecyclerView aligned with the version used by the accepted GMMP
+    // host runtime. Playlist ItemAnimator and Files quickNav EdgeEffectFactory
+    // execute on GMMP's host-process RecyclerView implementation at runtime.
     implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     implementation(

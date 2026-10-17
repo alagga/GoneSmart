@@ -27,9 +27,10 @@
 
 ## What is GoneSmart?
 
-GoneSmart is a **libxposed module and companion app for [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/)**. It extends GMMP in two main areas:
+GoneSmart is a **libxposed module and companion app for [GoneMAD Music Player](https://gonemadmusicplayer.blogspot.com/)**. It extends GMMP in three main areas:
 
 - **Smart Auto-DJ** — session-aware music recommendations that are matched against the tracks you already keep in your local GMMP library.
+- **Audio Profiles** — optional per-output GMMP Equalizer and Effects overrides for Bluetooth devices, with the normal no-Bluetooth GMMP state kept as Standard.
 - **UI and workflow extensions** — optional playlist, Smart-Playlist and playback tools that add capabilities such as folders, multi-selection, Playlist Link, Queue Flip and Track Auto-DJ.
 
 The goal is to keep **GMMP as the player** while adding focused features around it. GoneSmart does not replace GMMP's library or playback engine.
@@ -55,6 +56,7 @@ This section is the short overview. Each major feature links directly to a more 
 | **[Smart Auto-DJ](#smart-auto-dj)** | Session-aware recommendations, local-library matching, multiple providers, recommendation pool, rating and matching controls, GMMP fallback and player status indicator |
 | **[Playlist tools](#playlist--smart-playlist-tools)** | Playlist folders, Smart-Playlist folders, multi-selection and Playlist Link |
 | **[Playback tools](#playback-tools)** | Queue Flip / Play flipped and Track Auto-DJ from an individual song |
+| **[Audio Profiles](#audio-profiles)** | Standard plus per-Bluetooth-output GMMP Equalizer/Effects overrides with automatic switching |
 | **[Companion app](#companion-app)** | Status, settings, logs, compatibility information, update checks and built-in help |
 
 <details open>
@@ -93,6 +95,7 @@ This section is the short overview. Each major feature links directly to a more 
 | Playlist Link | Use a normal playlist as a live source inside a Smart Playlist |
 | Flip queue / Play flipped | Reverse the current queue or play a Playlist / Smart Playlist from end to start |
 | Track Auto-DJ | Start a fresh Smart Auto-DJ session directly from an individual song |
+| Audio Profiles | Remember Equalizer and Effects overrides per Bluetooth output and restore Standard automatically |
 | GMMP-style UI | Added actions follow GMMP's active look, theme and available native wording where possible |
 | Independent controls | UI extensions can be enabled separately from the normal Smart Auto-DJ settings |
 
@@ -215,6 +218,14 @@ GMMP's configured Auto-DJ queue settings continue to determine how much music is
 
 See [docs/TRACK_MIX_TESTING.md](docs/TRACK_MIX_TESTING.md) for detailed behavior and compatibility notes.
 
+### Audio Profiles
+
+**Audio Profiles** can apply different GMMP Equalizer and Effects settings when a remembered Bluetooth output is active. The normal no-Bluetooth GMMP configuration remains the **Standard** baseline and is restored automatically when the Bluetooth override no longer applies.
+
+Bluetooth profiles can override the Equalizer, including GMMP presets, PRE and the currently active 2–10-band layout, plus individual Effects such as Balance, Force mono, Limiter, Bass boost, Tempo, Auto pitch correction, Virtualizer and Amplifier. Settings left on **GMMP default** continue to inherit Standard instead of creating a hidden duplicate setting.
+
+See [docs/AUDIO_PROFILES.md](docs/AUDIO_PROFILES.md) for behavior, controls and known route limitations.
+
 ### Companion app
 
 The GoneSmart companion app separates the main areas into **Home**, **Smart DJ**, **UI**, **Logs** and **Help**:
@@ -245,7 +256,7 @@ Most normal setting changes apply live. A GMMP restart is mainly useful after mo
 GoneSmart depends on GMMP internals, so future GMMP updates can require compatibility work. Many hooks and lookups are intentionally dynamic to improve robustness across future versions, but versions other than the tested one should still be treated as unverified until checked.
 
 > [!IMPORTANT]
-> We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart's tested GMMP version before updating GMMP manually. GoneSmart 0.4.1 also warns when it detects a GMMP version that has not already been acknowledged in the companion app.
+> We recommend disabling automatic Play Store updates for GMMP and checking GoneSmart's tested GMMP version before updating GMMP manually. GoneSmart warns when it detects a GMMP version that has not already been acknowledged in the companion app.
 
 Developer-facing compatibility details live in [docs/GMMP_COMPATIBILITY_PLAYBOOK.md](docs/GMMP_COMPATIBILITY_PLAYBOOK.md).
 
@@ -285,20 +296,23 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for troubleshooting and more de
 
 ## FAQ
 
-**Does GoneSmart upload my music library?**  
+**Does GoneSmart upload my music library?**
 No. Provider requests use the seed metadata needed to find similar music. Matching against your GMMP library happens locally on the device.
 
 **What happens if direct recommendations do not provide enough local tracks?**
 GoneSmart conditionally expands to bounded artist-level provider evidence. A partial smart pool is valid; native fallback is used according to the configured zero-suitable-track policy.
 
-**Does changing a setting require restarting GMMP?**  
+**Does changing a setting require restarting GMMP?**
 Normally no. Most settings apply live. Restarting GMMP is mainly useful after module updates or for troubleshooting.
 
-**Does GoneSmart work offline?**  
+**Does GoneSmart work offline?**
 Yes. Local Playlist Affinity can generate recommendations offline, and a still-valid recommendation pool can continue to be consumed. Online providers are skipped until connectivity returns.
 
-**Can I use the playlist/UI features without Smart Auto-DJ?**  
-Yes. Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link and Queue Flip are independent features. Track Auto-DJ intentionally starts a Smart Auto-DJ session.
+**Can I use the playlist/UI features without Smart Auto-DJ?**
+Yes. Playlist folders, Smart-Playlist folders, multi-selection, Playlist Link, Queue Flip and Audio Profiles are independent features. Track Auto-DJ intentionally starts a Smart Auto-DJ session.
+
+**What happens when I connect a Bluetooth device with an Audio Profile?**
+GoneSmart reconstructs the active settings from Standard plus the enabled overrides for that output. Disconnecting or switching outputs restores Standard or the next matching profile automatically.
 
 More detail: [docs/FAQ.md](docs/FAQ.md).
 
@@ -306,20 +320,21 @@ More detail: [docs/FAQ.md](docs/FAQ.md).
 
 ## Roadmap
 
-### Planned 0.5.0 integration
+### 0.5.0 release candidate
 
-- **Smarter recommendation blend:** the Local Playlist + ListenBrainz + Last.fm blend, provider controls, controlled variety, staged rescue and caching work is feature-complete and intended for 0.5.0 integration.
-- **Bluetooth device audio profiles:** separate work to apply per-device GMMP equalizer/effects overrides.
-- **GMMP 4.2.1 playlist compatibility:** separate Playlist Link / playlist-sync compatibility work is also planned for the 0.5.0 integration.
+The `0.5.0-rc.1` candidate combines the three completed workstreams in one testable build:
 
-The recommendation workstream being complete does not imply the other two workstreams are already accepted or that 0.5.0 has been released.
+- **Smarter recommendation blend** — Local Playlist Affinity + ListenBrainz + Last.fm, Smart/Custom provider controls, controlled variety, staged rescue and caching.
+- **Bluetooth Audio Profiles** — per-output GMMP Equalizer/Effects overrides with Standard inheritance and adaptive 2–10-band Equalizer layouts.
+- **GMMP 4.2.1 compatibility** — accepted Playlist Link and Track Auto-DJ reliability work, with dynamic/fail-closed native binding where GMMP internals can move.
+
+The candidate is promoted to stable `0.5.0` only after prerelease testing.
 
 ### 0.6.0 outlook
 
-- Evaluate **SoundCloud** as an official related-track provider once a safe distributed-client credential/authentication design is available.
+- Evaluate **SoundCloud** as an additional provider if a safe distributed-client authentication design is available.
 - Evaluate **Smart Playlists** as an optional, deliberately weaker local affinity signal.
-
-Spotify, YouTube and YouTube Music are unlikely normal providers for now: Spotify's current development-access model and endpoint restrictions are poor fits for a broadly distributed independent client; YouTube no longer provides the old documented related-video search path; and YouTube Music has no suitable public recommendation API. GoneSmart will not depend on undocumented/private WebPlayer, GraphQL or InnerTube endpoints just to add these sources.
+- Continue reducing version-specific GMMP fast paths where semantic runtime proof can replace them safely.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the current roadmap.
 

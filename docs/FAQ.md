@@ -112,12 +112,28 @@ After a successful, verified mix, GoneSmart displays just **one short confirmati
 
 ## Why does the GoneSmart app say “Track Auto-DJ” when GMMP is German?
 
-GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it uses the readable English fallback *started*. No copied GMMP translations are maintained in GoneSmart.
+GoneSmart's companion app remains English: its UI, Logs and Help always call the feature **Track Auto-DJ**. The action inside GMMP uses **GMMP's own localized strings** for *track* and *Auto-DJ*, so German GMMP shows **Titel Auto-DJ** and English GMMP shows **Track Auto-DJ**. Other GMMP languages use their existing translations, including any in-player language override. For the sole success confirmation, GoneSmart uses GMMP's translated *started* string if available; otherwise it keeps the fully native action label and adds only a language-neutral checkmark. No copied GMMP translations are maintained in GoneSmart.
 
 ## How are GoneSmart updates handled?
 
 The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.
 
+
+## What are Audio Profiles?
+
+Audio Profiles let GoneSmart remember optional GMMP Equalizer and Effects overrides for Bluetooth outputs. **Standard** is the normal no-Bluetooth GMMP state and remains GMMP-owned. A Bluetooth profile only replaces the groups you explicitly enable; everything else continues to inherit Standard.
+
+## What happens when I connect, disconnect or switch Bluetooth outputs?
+
+GoneSmart rebuilds the effective audio state from Standard plus the enabled overrides for the active remembered output. Disconnecting restores Standard; switching to another remembered output applies that output's overrides. The normal one-active-Bluetooth-output case is the accepted path. Two different devices that expose exactly the same product name currently share one profile identity.
+
+## What happens if I change the Equalizer band count in GMMP?
+
+GoneSmart stores one canonical curve and projects it onto GMMP's currently active 2–10-band layout using the verified center frequencies. Existing shared frequency anchors stay exact and intermediate bands are interpolated. Editing the visible layout expands the result back into canonical storage, so changing the band count does not discard the remembered profile.
+
+## Do Audio Profiles add new translated text inside GMMP?
+
+No. Audio Profiles are configured in the English-only GoneSmart companion app and apply GMMP's own audio state; they do not inject a new audio-profile menu or provider label into GMMP.
 
 ## How do Playlist folders work?
 
@@ -151,7 +167,7 @@ Enable **UI → Smart-Playlists → Playlist Link**. Playlist Link extends the S
 
 Saved Playlist Link rules are not deleted. They remain visible inside the Smart-Playlist, and GMMP can still open and use that Smart-Playlist. The persisted V2 Playlist Link representation contains a native boolean-neutral linked-`.spl` compatibility rule, so while **UI → Smart-Playlists → Playlist Link** is off — or when GoneSmart itself is unavailable — the Link leaves stop contributing membership instead of breaking the Smart-Playlist. The remaining native rules continue to work. Re-enabling Playlist Link restores live membership from the ordinary playlists.
 
-Both the disabled-GoneSmart compatibility and the separate live Playlist Link switch have now been confirmed on the maintainer's GMMP 4.2.0 setup. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
+The disabled-GoneSmart compatibility and separate live Playlist Link switch were first confirmed on GMMP 4.2.0, and the repaired Playlist Link flow is now re-accepted on GMMP 4.2.1. With Playlist Link enabled, a missing, empty or unreadable ordinary source still fails closed and matches nothing.
 
 ## Does Playlist Link survive moving or renaming its source playlist?
 

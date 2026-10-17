@@ -1,6 +1,6 @@
 # GMMP 4.2.1 completion status — ACCEPTED
 
-**Final status (17 October 2026):** GMMP 4.2.1 is accepted/fixed on `fix/playlist-link-gmmp-4.2.1` after R72, the bundled maintainer device pass and the final native/performance/logging/localization audit. The chronology below is retained for provenance; older lines saying “pending” or “device re-acceptance required” describe their historical revision and are **not current blockers**. This branch is prepared for merge but is not merged/tagged/released by this status note.
+**Final status (17 October 2026):** GMMP 4.2.1 is accepted/fixed after R72, the bundled maintainer device pass and the final native/performance/logging/localization audit. The accepted fix is now integrated into `0.5.0-rc.1` together with Bluetooth Audio Profiles and Auto-DJ Providers. The chronology below is retained for provenance; older lines saying “pending” or “device re-acceptance required” describe their historical revision and are **not current blockers**.
 
 Current accepted Track Auto-DJ contracts: file-browser playable rows may have 9 or 10 visible native menu actions; 8 is the proven directory shape; 7/other shapes fail closed. `MusicService.I2(int)` identifies only the accepted natural next-source event and its integer argument is opaque. R71 preserves an independently verified absolute Current anchor on the natural I2 path; Queue-tail fallback retains its separate verified position-1 native-fill path.
 

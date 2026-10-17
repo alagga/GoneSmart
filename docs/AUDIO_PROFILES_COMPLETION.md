@@ -1,11 +1,11 @@
 # Bluetooth Audio Profiles completion audit
 
-**Feature branch:** `feature/bluetooth-audio-profiles`  
-**Accepted GMMP target:** `4.2.1`  
-**Device acceptance date:** 2026-10-17  
-**Target integration release:** `0.5.0` pre-release after the feature branches are combined
+**Feature branch:** `feature/bluetooth-audio-profiles`
+**Accepted GMMP target:** `4.2.1`
+**Device acceptance date:** 2026-10-17
+**Integrated release candidate:** `0.5.0-rc.1`
 
-This file records the feature-specific completion state required by `AGENTS.md`. It is intentionally separate from aggregate release notes because `feature/auto-dj-providers` and `fix/playlist-link-gmmp-4.2.1` still need to be integrated before the 0.5.0 pre-release is assembled.
+This file records the feature-specific completion state required by `AGENTS.md`. The accepted feature is now combined with Auto-DJ Providers and the GMMP 4.2.1 compatibility work in the `0.5.0-rc.1` release candidate.
 
 ## Acceptance result
 
@@ -160,34 +160,16 @@ Host tests cover:
 
 The accepted device rounds provide the runtime oracle for the Android/Xposed-only path that cannot be meaningfully reproduced in pure JVM tests.
 
-## Merge preparation for 0.5.0
+## 0.5.0 integration closeout
 
-All three current development branches started from the same current `main` base (`b52b5dc3d534c6befc7a346440ae75278db2fa52` at audit time), so the final integration can be done as a normal three-way merge rather than by transplanting isolated commits.
+Bluetooth Audio Profiles is integrated into the same `0.5.0-rc.1` tree as Auto-DJ Providers and the accepted GMMP 4.2.1 Playlist Link / Track Auto-DJ work. Shared integration surfaces were reconciled semantically rather than choosing one branch wholesale: the Xposed initializer retains all three required module entries, `MainActivity` retains both provider/settings and Audio Profiles UI, and the compatibility/audit rules preserve the union of accepted boundaries.
 
-Known shared integration surfaces:
+### Localization and support audit
 
-- `AGENTS.md` — changed by all active feature/fix work; preserve the union of standing rules rather than choosing one branch wholesale.
-- `MainActivity.kt` — Audio Profiles adds the companion UI entry point; the provider branch adds provider/settings UI. Preserve both.
-- `app/src/main/resources/META-INF/xposed/java_init.list` — the Audio Profiles branch intentionally adds the two audio modules. A conflict must keep `GoneSmartModule`, `GoneSmartAudioProfileApplyModule` and `GoneSmartAudioModule`.
-- `docs/GMMP_COMPATIBILITY_PLAYBOOK.md` — both playlist/Track-Auto-DJ compatibility work and audio acceptance contribute independent accepted boundaries; merge semantically.
-- `README.md`, `RELEASE_NOTES.md`, `docs/ROADMAP.md`, `docs/ARCHITECTURE.md` and forum copy — aggregate release documentation must be reconciled only after all feature branches are present so 0.5.0 describes the combined result once.
+Audio Profiles adds no new GMMP-facing wording. Its configuration UI is part of the intentionally English-only GoneSmart companion app; native mutation changes GMMP audio state without injecting an Audio Profiles menu into the player. No additional GMMP locale table is therefore required for this feature.
 
-The Audio Profiles branch deliberately does **not** bump the app version, tag, create a release or rewrite final 0.5.0 release/forum copy. Those are integration/release actions after all branches are combined and the merged tree passes CI.
+Normal release diagnostics remain event-driven and bounded. Detailed support Logcat uses `GoneSmartAudioProfiles` and `GoneSmartAudioApply`; the companion Logs/Help guidance includes those tags without exposing the debug-only `GoneSmartAudioProbe` path as a normal support filter.
 
-## Final branch checklist
+### Combined release gate
 
-Before declaring this feature branch merge-ready:
-
-- [x] Maintainer device acceptance on GMMP 4.2.1.
-- [x] Standard → Bluetooth → Standard behavior accepted.
-- [x] Effects native application accepted.
-- [x] Equalizer native application accepted.
-- [x] 2–10 band-count adaptation accepted.
-- [x] Native preset catalog accepted.
-- [x] Crash regression fixed and re-tested.
-- [x] Dead development helpers removed without removing live fallback logic.
-- [x] Dedicated feature contract updated to accepted behavior.
-- [x] Merge-conflict surfaces with the other two 0.5.0 branches identified.
-- [x] Normal Build green after audit cleanup; final closure commit must also pass exact-head CI before merge.
-
-After the closure commit's exact-head Build is green, this branch is ready for the combined 0.5.0 integration step.
+Feature-level device acceptance is complete. Promotion of this integrated candidate still requires the repository-wide exact-head release gate: generated forum copy current, normal Build green on the exact RC head, temporary integration helpers removed, merged `main` green, then prerelease publication and maintainer testing before stable `0.5.0`.
