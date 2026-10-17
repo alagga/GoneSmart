@@ -28,10 +28,14 @@ jobs:
           echo "e6e1f6c59495e946dfdf9b6c746dd5ae5b26c9f64c4cd864918bf2bb09b1ebd8  /tmp/gonesmart-050-rc1.patch" | sha256sum -c -
           git apply --check /tmp/gonesmart-050-rc1.patch
           git apply /tmp/gonesmart-050-rc1.patch
-          rm -rf .github/rc-patch
 
-          python3 -m py_compile scripts/generate_forum_posts.py
+          # Workflow-file changes require the GitHub connector's workflow permission,
+          # so release.yml is committed separately after this audited source patch.
+          git checkout -- .github/workflows/release.yml
+          rm -rf .github/rc-patch scripts/__pycache__
+
           python3 scripts/generate_forum_posts.py --check
+          rm -rf scripts/__pycache__
           test "$(grep -E 'versionName = "0\.5\.0-rc\.1"' app/build.gradle.kts | wc -l)" -eq 1
           test "$(grep -E 'versionCode = 48' app/build.gradle.kts | wc -l)" -eq 1
           test -z "$(git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' || true)"
