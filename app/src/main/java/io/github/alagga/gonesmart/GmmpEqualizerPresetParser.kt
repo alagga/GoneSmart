@@ -3,12 +3,14 @@ package io.github.alagga.gonesmart
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 
 /**
- * Strict parser for GMMP Equalizer preset files. It accepts several text
- * layouts used by settings/preset stores and the minimal raw 11-value float /
- * double layout, but never invents a missing PRE or band value.
+ * Strict parser for GMMP Equalizer preset files. It accepts the native GMMP
+ * line-oriented preset format plus several structured text layouts and the
+ * minimal raw 11-value float / double layout, but never invents a missing PRE
+ * or band value.
  */
 object GmmpEqualizerPresetParser {
     data class ParsedPreset(
@@ -18,6 +20,7 @@ object GmmpEqualizerPresetParser {
 
     private val frequencies = listOf(32, 64, 128, 256, 512, 1000, 2000, 4000, 8000, 16000)
     private val numberPattern = "[-+]?(?:\\d+(?:[.,]\\d*)?|[.,]\\d+)(?:[eE][-+]?\\d+)?"
+    private val strictNumberRegex = Regex("^$numberPattern$")
     private val explicitNameRegex = Regex(
         "(?i)(?:\\\"?preset_?name\\\"?\\s*[:=]\\s*\\\"([^\\\"\\r\\n]+)\\\"|" +
             "<preset[^>]*\\bname=\\\"([^\\\"]+)\\\"[^>]*>)"
@@ -37,6 +40,8 @@ object GmmpEqualizerPresetParser {
     }
 
     internal fun parseText(nameHint: String, text: String): ParsedPreset? {
+        parseNativeLinePreset(nameHint, text)?.let { return it }
+
         val name = extractName(text) ?: cleanName(nameHint)
         if (name.isBlank()) return null
 
@@ -87,6 +92,29 @@ object GmmpEqualizerPresetParser {
             return buildPreset(name, complete.first(), complete.drop(1))
         }
         return null
+    }
+
+    /**
+     * Current GMMP preset files use one preset-name line followed by PRE and
+     * one numeric line per band. Parse that exact shape first so the human name
+     * is not mistaken for curve metadata and the filename remains only a hint.
+     */
+    private fun parseNativeLinePreset(nameHint: String, text: String): ParsedPreset? {
+        val lines = text.lineSequence()
+            .map { it.trim().trimStart('\uFEFF') }
+            .filter { it.isNotEmpty() }
+            .toList()
+        if (lines.size != frequencies.size + 2) return null
+
+        val firstLine = lines.first()
+        if (firstLine.isBlank() || strictNumberRegex.matches(firstLine)) return null
+        val values = lines.drop(1).map { line ->
+            if (!strictNumberRegex.matches(line)) return null
+            line.toNumber() ?: return null
+        }
+        val complete = completeCurveNumbers(values) ?: return null
+        val name = firstLine.takeIf { it.isNotBlank() } ?: cleanName(nameHint)
+        return buildPreset(name, complete.first(), complete.drop(1))
     }
 
     private fun compactNumbers(text: String): List<Double>? {
@@ -167,7 +195,7 @@ object GmmpEqualizerPresetParser {
             shape[mapped.fieldId] = mapped.value
         }
         if (shape.keys.toSet() != GoneSmartAudioProfiles.equalizerShapeFieldIds.toSet()) return null
-        return ParsedPreset(name, shape)
+        return ParsedPreset(name.trim(), shape)
     }
 
     private fun extractName(text: String): String? {
@@ -182,12 +210,38 @@ object GmmpEqualizerPresetParser {
         .trim()
 
     private fun decodeText(bytes: ByteArray): String? {
+        fun decoded(charset: Charset, offset: Int = 0): String? = runCatching {
+            bytes.copyOfRange(offset.coerceAtMost(bytes.size), bytes.size).toString(charset)
+        }.getOrNull()?.takeIf { text -> text.count { it == '\uFFFD' } < 4 }
+
+        if (bytes.size >= 3 &&
+            bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()
+        ) {
+            return decoded(StandardCharsets.UTF_8, 3)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+            return decoded(StandardCharsets.UTF_16LE, 2)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+            return decoded(StandardCharsets.UTF_16BE, 2)
+        }
+
         val sample = bytes.take(256)
+        val pairs = sample.size / 2
+        if (pairs >= 4) {
+            val evenZeroRatio = (0 until pairs).count { sample[it * 2].toInt() == 0 }.toDouble() / pairs
+            val oddZeroRatio = (0 until pairs).count { sample[it * 2 + 1].toInt() == 0 }.toDouble() / pairs
+            if (oddZeroRatio >= 0.55 && evenZeroRatio <= 0.15) {
+                return decoded(StandardCharsets.UTF_16LE)
+            }
+            if (evenZeroRatio >= 0.55 && oddZeroRatio <= 0.15) {
+                return decoded(StandardCharsets.UTF_16BE)
+            }
+        }
+
         val zeroRatio = sample.count { it.toInt() == 0 }.toDouble() / sample.size.coerceAtLeast(1)
         if (zeroRatio > 0.15) return null
-        return runCatching { bytes.toString(Charset.forName("UTF-8")) }
-            .getOrNull()
-            ?.takeIf { text -> text.count { it == '\uFFFD' } < 4 }
+        return decoded(StandardCharsets.UTF_8)
     }
 
     private fun String.toNumber(): Double? =
