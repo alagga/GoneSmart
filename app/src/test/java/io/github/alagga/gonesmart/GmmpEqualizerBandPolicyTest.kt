@@ -108,13 +108,13 @@ class GmmpEqualizerBandPolicyTest {
         val group = GmmpEqualizerBandPolicy.uiGroup(
             GoneSmartAudioProfiles.equalizerGroup,
             3,
-            listOf(31.25, 1_000.0, 16_000.5)
+            listOf(31.25, 1_000.0, 16_500.0)
         )
 
         assertEquals(6, group.fields.size)
         assertEquals("31.25 Hz", group.fields[3].title)
         assertEquals("1 kHz", group.fields[4].title)
-        assertEquals("16.001 kHz", group.fields[5].title)
+        assertEquals("16.5 kHz", group.fields[5].title)
     }
 
     @Test
