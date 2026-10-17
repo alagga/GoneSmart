@@ -16,7 +16,7 @@ controller_path.write_text(controller.rstrip('\n') + '\n')
 policy_path = Path('app/src/main/java/io/github/alagga/gonesmart/TrackMixZeroPoolPolicy.kt')
 policy = policy_path.read_text()
 policy, removed_selector = re.subn(
-    r'''    fun selectNextSourceBoundary\(.*?(?=    /\*\*\n     \* R64 request-local proof)''',
+    r'''    fun selectNextSourceBoundary\(.*?(?=    data class VerifiedNextSourceBoundary\()''',
     '',
     policy,
     count=1,
