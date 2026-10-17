@@ -1,4 +1,4 @@
-name: RC Integration Helper
+name: RC Audit Snapshot
 
 on:
   push:
@@ -6,116 +6,56 @@ on:
     paths: ['.github/workflows/rc-integration-helper.yml']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  merge-auto-dj:
+  snapshot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout RC with history
+      - name: Checkout combined RC
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Merge Auto-DJ providers with audited resolutions
+      - name: Verify generated forum copy
+        run: python3 scripts/generate_forum_posts.py --check
+
+      - name: Basic merge hygiene
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "GoneSmart RC integration"
-          git config user.email "69852271+alagga@users.noreply.github.com"
-          git fetch origin feature/auto-dj-providers:refs/remotes/origin/feature/auto-dj-providers
-          git merge --no-commit --no-ff origin/feature/auto-dj-providers || true
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          marker = re.compile(
-              r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> origin/feature/auto-dj-providers\n?',
-              re.S,
-          )
-
-          def resolve(path, resolver):
-              p = Path(path)
-              text = p.read_text()
-              if not marker.search(text):
-                  raise SystemExit(f"Expected merge conflicts in {path}")
-              index = 0
-              def repl(match):
-                  nonlocal index
-                  ours, theirs = match.group(1), match.group(2)
-                  value = resolver(index, ours, theirs)
-                  index += 1
-                  return value.rstrip() + "\n"
-              resolved = marker.sub(repl, text)
-              if '<<<<<<<' in resolved or '>>>>>>>' in resolved:
-                  raise SystemExit(f"Conflict marker remains in {path}")
-              p.write_text(resolved)
-
-          def library_resolver(index, ours, theirs):
-              if index == 0:
-                  return ours.rstrip() + "\n\n" + theirs.rstrip()
-              if index == 1:
-                  return '''                val cachedAt = SystemClock.elapsedRealtime()
-                cacheCreatedAtElapsedMs = cachedAt
-                cacheValidatedAtElapsedMs = cachedAt
-                cachedRevision =
-                    readLibraryRevision(autoDjInstance)
-                        ?: revisionFromTracks(loaded)
-
-                Log.i(
-                    TAG,
-                    "GMMP library path index ready | tracks=${pathIndex.trackCount} | " +
-                        "paths=${pathIndex.idsByPath.size} | " +
-                        "ambiguous=${pathIndex.ambiguousPaths.size}"
-                )'''
-              if index == 2:
-                  return ours.rstrip() + "\n\n" + theirs.rstrip()
-              if index == 3:
-                  return ours.rstrip()
-              raise SystemExit(f"Unexpected GmmpLibraryReader conflict #{index}")
-
-          resolve(
-              'app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt',
-              library_resolver,
-          )
-
-          def agents_resolver(index, ours, theirs):
-              if index == 0:
-                  build_identity = ours.split('\n\nBroad class/method/recycler inventories', 1)[0].rstrip()
-                  return build_identity + "\n\n" + theirs.rstrip()
-              if index == 1:
-                  return ours.rstrip() + "\n\n" + theirs.rstrip()
-              raise SystemExit(f"Unexpected AGENTS conflict #{index}")
-
-          resolve('AGENTS.md', agents_resolver)
-          resolve(
-              'docs/GMMP_COMPATIBILITY_PLAYBOOK.md',
-              lambda index, ours, theirs: ours.rstrip() + "\n\n" + theirs.rstrip(),
-          )
-
-          readme = Path('README.md')
-          text = readme.read_text()
-          text = text.replace(
-              '**What happens if direct recommendations do not provide enough local tracks?**  \n',
-              '**What happens if direct recommendations do not provide enough local tracks?**\n',
-          )
-          readme.write_text(text)
-          PY
-
-          git checkout --ours docs/ROADMAP.md
-          git add AGENTS.md README.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
-
-          test -z "$(git diff --name-only --diff-filter=U)" || {
-            echo "Unresolved merge conflicts remain:" >&2
-            git diff --name-only --diff-filter=U >&2
+          test -z "$(git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' || true)" || {
+            echo "Conflict markers found" >&2
+            git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!docs/forum/*' >&2 || true
             exit 1
           }
-          if grep -R -n -E '^(<<<<<<<|>>>>>>>)' AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md; then
-            echo "Conflict markers remain after resolution" >&2
-            exit 1
-          fi
-          git diff --cached --check
+          git diff --check
           git status --short
-          git commit -m "merge: integrate Auto-DJ providers for 0.5.0 RC"
-          git push origin HEAD:release/0.5.0-rc.1
+
+      - name: Capture audit inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit-meta
+          git rev-parse HEAD > audit-meta/head.txt
+          git log -1 --format='%H%n%P%n%s' > audit-meta/commit.txt
+          git ls-files > audit-meta/files.txt
+          git grep -n -E 'TODO|FIXME|HACK|TEMPORARY|temporary probe|debug-only' -- '*.kt' '*.java' '*.md' > audit-meta/todos-and-temporary.txt || true
+          git grep -n -E 'getDeclared(Field|Method)|declaredFields|declaredMethods|Class\.forName|XposedHelpers|hook\(' -- 'app/src/main/**/*.kt' > audit-meta/reflection-and-hooks.txt || true
+          git grep -n -E 'Log\.(v|d|i|w|e)\(' -- 'app/src/main/**/*.kt' > audit-meta/log-sites.txt || true
+
+      - name: Upload combined source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoneSmart-0.5.0-rc.1-audit-source
+          path: |
+            AGENTS.md
+            README.md
+            RELEASE_NOTES.md
+            app/build.gradle.kts
+            app/src
+            docs
+            scripts
+            .github/workflows
+            audit-meta
+          retention-days: 1
