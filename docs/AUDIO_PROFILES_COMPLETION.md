@@ -15,9 +15,7 @@ The maintainer confirmed the final feature behavior after testing live profile e
 
 `9f4729065f34780b484c9049f1902dd2f1d0914d`
 
-Its normal Build workflow (#1388 / run `39058119200`) passed unit tests, debug APK, unsigned release smoke and debug artifact upload.
-
-The post-acceptance branch must still pass the same exact-head Build workflow after audit cleanup before it is considered merge-ready.
+Its normal Build workflow (#1388 / run `39047687150`) passed unit tests, debug APK, unsigned release smoke and debug artifact upload. The audited code/documentation state then passed the same normal Build workflow on commit `1952c4b91a7d7bc806c6892c57ead311468175f9` in Build #1395 / run `39060652936` before this closure-only documentation commit. The closure commit itself is required to pass exact-head CI before merge, preserving the repository's exact-head rule.
 
 ## Final device evidence
 
@@ -190,6 +188,6 @@ Before declaring this feature branch merge-ready:
 - [x] Dead development helpers removed without removing live fallback logic.
 - [x] Dedicated feature contract updated to accepted behavior.
 - [x] Merge-conflict surfaces with the other two 0.5.0 branches identified.
-- [ ] Exact-head normal Build green after audit cleanup.
+- [x] Normal Build green after audit cleanup; final closure commit must also pass exact-head CI before merge.
 
-Once the last box is green, this branch is ready for the combined 0.5.0 integration step.
+After the closure commit's exact-head Build is green, this branch is ready for the combined 0.5.0 integration step.
