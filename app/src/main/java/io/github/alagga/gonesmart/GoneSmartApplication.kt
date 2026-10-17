@@ -63,6 +63,7 @@ class GoneSmartApplication : Application(), XposedServiceHelper.OnServiceListene
     override fun onServiceBind(service: XposedService) {
         xposedService = service
         applyPendingTrackMixEnable()
+        GoneSmartAudioProfileRepository(this).synchronizeWithFramework()
     }
 
     override fun onServiceDied(service: XposedService) {
