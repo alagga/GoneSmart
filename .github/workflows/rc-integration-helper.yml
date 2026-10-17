@@ -93,10 +93,18 @@ jobs:
               'docs/GMMP_COMPATIBILITY_PLAYBOOK.md',
               lambda index, ours, theirs: ours.rstrip() + "\n\n" + theirs.rstrip(),
           )
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          text = text.replace(
+              '**What happens if direct recommendations do not provide enough local tracks?**  \n',
+              '**What happens if direct recommendations do not provide enough local tracks?**\n',
+          )
+          readme.write_text(text)
           PY
 
           git checkout --ours docs/ROADMAP.md
-          git add AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
+          git add AGENTS.md README.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
 
           test -z "$(git diff --name-only --diff-filter=U)" || {
             echo "Unresolved merge conflicts remain:" >&2
