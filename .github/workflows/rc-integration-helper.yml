@@ -96,6 +96,8 @@ jobs:
           PY
 
           git checkout --ours docs/ROADMAP.md
+          git add AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
+
           test -z "$(git diff --name-only --diff-filter=U)" || {
             echo "Unresolved merge conflicts remain:" >&2
             git diff --name-only --diff-filter=U >&2
@@ -105,8 +107,7 @@ jobs:
             echo "Conflict markers remain after resolution" >&2
             exit 1
           fi
-          git diff --check
-          git add AGENTS.md app/src/main/java/io/github/alagga/gonesmart/GmmpLibraryReader.kt docs/GMMP_COMPATIBILITY_PLAYBOOK.md docs/ROADMAP.md
+          git diff --cached --check
           git status --short
           git commit -m "merge: integrate Auto-DJ providers for 0.5.0 RC"
           git push origin HEAD:release/0.5.0-rc.1
