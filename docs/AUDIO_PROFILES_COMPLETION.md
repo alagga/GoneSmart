@@ -53,6 +53,7 @@ One `Skipped 59 frames` message occurs during the broad GMMP startup/library ini
 - Bluetooth observations cannot seed Standard.
 - A complete Standard baseline is required before Bluetooth mutation.
 - Standard can be restored from framework preferences or the local-route-only GMMP-private runtime mirror after an interrupted Bluetooth session.
+- `AudioProfileValueResolver` is retained because the live apply path uses it to normalize the framework Standard value first and then fall back to the host-local Standard mirror when the framework value is missing/invalid. Its JVM test covers that fallback and unknown-field fail-closed behavior.
 - Enabling an override seeds a complete group rather than creating a partial hidden override.
 
 ### Equalizer band layouts
@@ -96,11 +97,12 @@ One `Skipped 59 frames` message occurs during the broad GMMP startup/library ini
 
 ### Retired development code
 
-The final audit removed helpers that were left behind by superseded approaches:
+The final audit removed code left behind by superseded approaches:
 
 - `GoneSmartEqualizerBandLayoutModule` — duplicate standalone layout observer; the accepted layout observation lives inside the already-loaded apply module.
 - `AudioProfileMutationScope` — unused marker from an abandoned preference-write discrimination path.
-- `AudioProfileValueResolver` and its test — unused abstraction after the repository/application paths gained their final explicit Standard/native resolution rules.
+
+The audit initially also removed `AudioProfileValueResolver`, but the exact-head compiler check correctly exposed its live use in Standard framework→runtime fallback resolution. The helper and its test were restored immediately; this is precisely the kind of hidden dependency the exact-head CI gate is intended to catch.
 
 The Xposed initializer list remains intentionally limited to:
 
@@ -146,6 +148,7 @@ Host tests cover:
 - audio field/group contract and normalization;
 - override/control dependency policy;
 - Standard/Bluetooth runtime policy;
+- framework-first / runtime-fallback Standard value resolution;
 - semantic native observation and native mutation conversion;
 - Equalizer owner resolution and ambiguity rejection;
 - Equalizer DspManager layout resolution;
@@ -184,7 +187,7 @@ Before declaring this feature branch merge-ready:
 - [x] 2–10 band-count adaptation accepted.
 - [x] Native preset catalog accepted.
 - [x] Crash regression fixed and re-tested.
-- [x] Dead development helpers removed.
+- [x] Dead development helpers removed without removing live fallback logic.
 - [x] Dedicated feature contract updated to accepted behavior.
 - [x] Merge-conflict surfaces with the other two 0.5.0 branches identified.
 - [ ] Exact-head normal Build green after audit cleanup.
