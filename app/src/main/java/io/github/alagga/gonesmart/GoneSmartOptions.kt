@@ -14,6 +14,15 @@ data class GoneSmartOptions(
     val groupRootPlaylists: Boolean = true,
     val flipQueueEnabled: Boolean = false,
     val trackMixEnabled: Boolean = true,
+    val recommendationMode: RecommendationMode = RecommendationMode.SMART,
+    val listenBrainzProviderEnabled: Boolean = true,
+    val lastFmProviderEnabled: Boolean = true,
+    val localPlaylistProviderEnabled: Boolean = true,
+    val listenBrainzProviderWeight: Double = RecommendationProviderPolicy.SMART_LISTENBRAINZ_WEIGHT,
+    val lastFmProviderWeight: Double = RecommendationProviderPolicy.SMART_LASTFM_WEIGHT,
+    val localPlaylistProviderWeight: Double = RecommendationProviderPolicy.SMART_LOCAL_PLAYLIST_WEIGHT,
+    val playlistSizeWeighting: PlaylistSizeWeighting = PlaylistSizeWeighting.BALANCED,
+    val recommendationVariety: RecommendationVariety = RecommendationVariety.BALANCED,
     val preferHigherRatedMatches: Boolean = true,
     val minimumRatingStars: Double = 0.0,
     val smartRatingEnabled: Boolean = false,
@@ -23,6 +32,7 @@ data class GoneSmartOptions(
     val matchQueueEra: Boolean = true,
     val favorRecentlyAddedTracks: Boolean = true,
     val preventBaseVersionDuplicates: Boolean = true,
+    val preventRemixDuplicates: Boolean = false,
     val fallbackToNativeAutoDjWhenNoSuitableTracks: Boolean = true,
     val showStatusMessages: Boolean = true
 ) {
@@ -33,6 +43,14 @@ data class GoneSmartOptions(
             if (preferences == null) {
                 return GoneSmartOptions()
             }
+
+            fun providerWeight(key: String, default: Double): Double =
+                preferences.getFloat(key, default.toFloat())
+                    .toDouble()
+                    .coerceIn(
+                        RecommendationProviderPolicy.MIN_PROVIDER_WEIGHT,
+                        RecommendationProviderPolicy.MAX_PROVIDER_WEIGHT
+                    )
 
             return GoneSmartOptions(
                 enabled = preferences.getBoolean(
@@ -79,6 +97,48 @@ data class GoneSmartOptions(
                     GoneSmartSettingsKeys.KEY_TRACK_MIX,
                     true
                 ),
+                recommendationMode = RecommendationMode.fromPreference(
+                    preferences.getString(
+                        GoneSmartSettingsKeys.KEY_RECOMMENDATION_MODE,
+                        RecommendationMode.SMART.preferenceValue
+                    )
+                ),
+                listenBrainzProviderEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_ENABLED,
+                    true
+                ),
+                lastFmProviderEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_ENABLED,
+                    true
+                ),
+                localPlaylistProviderEnabled = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED,
+                    true
+                ),
+                listenBrainzProviderWeight = providerWeight(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LISTENBRAINZ_WEIGHT,
+                    RecommendationProviderPolicy.SMART_LISTENBRAINZ_WEIGHT
+                ),
+                lastFmProviderWeight = providerWeight(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LASTFM_WEIGHT,
+                    RecommendationProviderPolicy.SMART_LASTFM_WEIGHT
+                ),
+                localPlaylistProviderWeight = providerWeight(
+                    GoneSmartSettingsKeys.KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT,
+                    RecommendationProviderPolicy.SMART_LOCAL_PLAYLIST_WEIGHT
+                ),
+                playlistSizeWeighting = PlaylistSizeWeighting.fromPreference(
+                    preferences.getString(
+                        GoneSmartSettingsKeys.KEY_PLAYLIST_SIZE_WEIGHTING,
+                        PlaylistSizeWeighting.BALANCED.preferenceValue
+                    )
+                ),
+                recommendationVariety = RecommendationVariety.fromPreference(
+                    preferences.getString(
+                        GoneSmartSettingsKeys.KEY_RECOMMENDATION_VARIETY,
+                        RecommendationVariety.BALANCED.preferenceValue
+                    )
+                ),
                 preferHigherRatedMatches = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_PREFER_HIGHER_RATED,
                     true
@@ -119,6 +179,10 @@ data class GoneSmartOptions(
                 preventBaseVersionDuplicates = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_PREVENT_BASE_VERSION_DUPLICATES,
                     true
+                ),
+                preventRemixDuplicates = preferences.getBoolean(
+                    GoneSmartSettingsKeys.KEY_PREVENT_REMIX_DUPLICATES,
+                    false
                 ),
                 fallbackToNativeAutoDjWhenNoSuitableTracks = preferences.getBoolean(
                     GoneSmartSettingsKeys.KEY_FALLBACK_WHEN_NO_MATCHES,

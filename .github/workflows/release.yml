@@ -103,7 +103,13 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "apk=$APK_NAME" >> "$GITHUB_OUTPUT"
           echo "forum_thread=$FORUM_THREAD" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            VERSION_PRERELEASE=true
+          else
+            VERSION_PRERELEASE=false
+          fi
           echo "forum_reply=$FORUM_REPLY" >> "$GITHUB_OUTPUT"
+          echo "version_prerelease=$VERSION_PRERELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Create tag when started manually
         if: github.event_name == 'workflow_dispatch'
@@ -121,7 +127,8 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          MANUAL_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          VERSION_PRERELEASE: ${{ steps.meta.outputs.version_prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -130,6 +137,10 @@ jobs:
           FORUM_THREAD="${{ steps.meta.outputs.forum_thread }}"
           FORUM_REPLY="${{ steps.meta.outputs.forum_reply }}"
           TITLE="GoneSmart $TAG"
+          PRERELEASE=false
+          if [ "$MANUAL_PRERELEASE" = "true" ] || [ "$VERSION_PRERELEASE" = "true" ]; then
+            PRERELEASE=true
+          fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" "$FORUM_THREAD" "$FORUM_REPLY" --clobber

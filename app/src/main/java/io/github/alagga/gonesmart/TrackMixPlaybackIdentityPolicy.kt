@@ -13,6 +13,24 @@ internal object TrackMixPlaybackIdentityPolicy {
         val currentIndex: Int
     )
 
+    enum class InitialCandidateRole {
+        TARGET,
+        TRANSITION_ONLY,
+        IGNORE
+    }
+
+    fun classifyInitialCandidate(
+        expectedTrackId: Long?,
+        hasPlaybackEvidence: Boolean,
+        current: Identity
+    ): InitialCandidateRole {
+        if (!hasPlaybackEvidence) return InitialCandidateRole.IGNORE
+        if (expectedTrackId == null || current.trackId == expectedTrackId) {
+            return InitialCandidateRole.TARGET
+        }
+        return InitialCandidateRole.TRANSITION_ONLY
+    }
+
     fun changed(before: Identity?, current: Identity): Boolean =
         before == null ||
             current.queueEntryId != before.queueEntryId ||
@@ -35,6 +53,7 @@ internal object TrackMixPlaybackIdentityPolicy {
     fun acceptSameCurrentQueuePlay(
         source: String,
         nativePlayAccepted: Boolean,
+        nativePlaySignal: Boolean,
         before: Identity?,
         current: Identity,
         stableMs: Long,
@@ -42,6 +61,7 @@ internal object TrackMixPlaybackIdentityPolicy {
     ): Boolean =
         source == "menu_gm_context_queue" &&
             nativePlayAccepted &&
+            nativePlaySignal &&
             before != null &&
             sameCurrent(before, current) &&
             stableMs >= 350L &&

@@ -33,7 +33,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylistBridge"
 
         private const val COMPAT_PROBE_REVISION =
-            "gmmp421-r25"
+            "gmmp421-final-audit"
 
 
         // Broad reflection/recycler inventories were needed while 4.2.1
@@ -69,21 +69,19 @@ class GoneSmartModule : XposedModule() {
         private const val BROAD_LISTENBRAINZ_IDENTITIES_TO_USE =
             3
 
-        private const val MERGED_RESULTS_TO_LOG =
-            20
-
-        private const val LOCAL_RESULTS_TO_LOG =
-            20
+        private const val LISTENBRAINZ_ARTIST_FALLBACK_PENALTY =
+            0.72
 
         private const val SMART_PREPARE_TIMEOUT_SECONDS =
             60L
 
+        private const val TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS =
+            60L
+
         // Track Auto-DJ must never strand playback on the isolated seed while
-        // the network recommendation pipeline takes many seconds. Give the
-        // smart pool a short head start, then let native GMMP fill Initial
-        // Size immediately while the same pool preparation keeps running.
-        private const val TRACK_MIX_INITIAL_SMART_WAIT_MS =
-            1_500L
+        // the network recommendation pipeline takes many seconds. Once the
+        // seed is isolated, the native Initial Size refill is immediate;
+        // recommendation preparation may continue only in the background.
 
         private const val RECENT_DUPLICATE_HISTORY_LIMIT =
             8
@@ -107,9 +105,6 @@ class GoneSmartModule : XposedModule() {
 
         private const val MIN_POOL_LOCAL_MATCH_SCORE =
             0.90
-
-        private const val ENABLE_SMART_SELECTION_TEST =
-            true
 
         private val CUSTOM_NUMBERED_EDIT_SUFFIX_REGEX =
             Regex(
@@ -394,6 +389,12 @@ class GoneSmartModule : XposedModule() {
     private val gmmpLibraryReader =
         GmmpLibraryReader()
 
+    private val localPlaylistAffinityProvider =
+        LocalPlaylistAffinityProvider()
+
+    private val localArtistSignalExpander =
+        LocalArtistSignalExpander()
+
     private val localLibraryMatcher =
         LocalLibraryMatcher(
             metadataNormalizer =
@@ -454,14 +455,29 @@ class GoneSmartModule : XposedModule() {
     private val smartPlaylistSaveHookKeys =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    private val zeroPoolSourceBatchHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private val zeroPoolSourceBatchBindings =
+        java.util.Collections.synchronizedMap(
+            java.util.WeakHashMap<Any, GmmpQueueSourceBatchBinding>()
+        )
+
     private val nativePlaylistDestinationScope =
         NativePlaylistDestinationScope()
 
     private val playlistBridgeController =
-        PlaylistBridgeController()
+        PlaylistBridgeController(
+            libraryPathIndexProvider = {
+                gmmpLibraryReader.cachedPathIndexSnapshot()
+            }
+        )
 
     private val playlistBridgeSmartChooserTitleDepth =
         ThreadLocal.withInitial { 0 }
+
+    private val playlistBridgeRuleBindHookKeys =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val queueFlipController =
         QueueFlipController()
@@ -471,14 +487,161 @@ class GoneSmartModule : XposedModule() {
     // Smart DJ and uses GMMP's documented native Auto-DJ command.
     private val trackMixController = TrackMixController(
         enableSmartDj = { context -> enableSmartDjForTrackMix(context) },
-        requestNativeRefill = { count -> requestNativeTrackMixRefill(count) },
+        requestNativeRefill = { autoDj, count ->
+            requestNativeTrackMixRefill(autoDj, count)
+        },
         nativePositionWriterProvider = { autoDj ->
             queueFlipController.verifiedPositionWriter(autoDj)
+        },
+        nativeTrackMixPositionWriterProvider = { autoDj, currentQueuePosition ->
+            queueFlipController.trackMixPositionWriter(
+                autoDj,
+                currentQueuePosition
+            )
+        },
+        resolvePrePlayTarget = { autoDj, roots ->
+            resolveTrackMixPrePlayTarget(autoDj, roots)
+        },
+        preparePrePlaySmartPool = { autoDj, track, count ->
+            prepareTrackMixPrePlaySmartPool(autoDj, track, count)
+        },
+        ensureZeroPoolSourceBatchHooks = { autoDj ->
+            installZeroPoolSourceBatchHooks(autoDj)
+        },
+        resetRecommendationSession = { autoDj, selectedTrackId, selectedEntryId ->
+            resetTrackMixRecommendationSession(
+                autoDjInstance = autoDj,
+                selectedTrackId = selectedTrackId,
+                selectedEntryId = selectedEntryId
+            )
         }
     )
 
+    private fun resetTrackMixRecommendationSession(
+        autoDjInstance: Any,
+        selectedTrackId: Long,
+        selectedEntryId: Long
+    ): Boolean = runCatching {
+        val context = queueReader.read(
+            autoDjInstance,
+            currentQueueEntryIdHint = selectedEntryId
+        ) ?: error("Track Mix queue context unavailable for session reset")
+        val current = context.currentItem
+            ?: error("Track Mix Current unavailable for session reset")
+        check(
+            context.items.size == 1 &&
+                current.queueEntryId == selectedEntryId &&
+                current.track.id == selectedTrackId &&
+                current.queuePosition == 1 &&
+                context.currentQueuePosition == 1
+        ) {
+            "Track Mix session reset requires one verified position-1 Current seed"
+        }
+
+        val session = queueSessionTracker.forceNewSession(
+            context = context,
+            reason = "explicit Track Auto-DJ seed"
+        )
+        val settings = gmmpAutoDjSettingsReader.read()
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+        resetRecommendationPoolForSession(session, sizing)
+        Log.i(
+            TAG,
+            "TRACK MIX SESSION RESET | session=${session.sessionId} | " +
+                "seed=$selectedTrackId | entry=$selectedEntryId | " +
+                "anchors=${session.userAnchorTracks.map { it.id }} | verified=true"
+        )
+        true
+    }.onFailure {
+        Log.e(TAG, "TRACK MIX SESSION RESET | verified=false", it)
+    }.getOrDefault(false)
+
+    private fun installZeroPoolSourceBatchHooks(autoDj: Any): Boolean =
+        runCatching {
+            val binding = GmmpQueueMutationBridge(
+                autoDj = autoDj,
+                verifiedPositionWriter = queueFlipController.verifiedPositionWriter(autoDj)
+            ).sourceBatchBinding()
+            synchronized(zeroPoolSourceBatchBindings) {
+                zeroPoolSourceBatchBindings[binding.dao] = binding
+            }
+            val methods = GmmpReflectionPolicy.concreteMethods(binding.dao.javaClass)
+                .filter { method ->
+                    !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                        method.parameterCount == 1 &&
+                        method.returnType == Void.TYPE &&
+                        (java.util.List::class.java.isAssignableFrom(
+                            method.parameterTypes[0]
+                        ) || method.parameterTypes[0].isArray)
+                }
+                .distinctBy { method ->
+                    method.declaringClass.name + "|" + method.name + "|" +
+                        method.parameterTypes[0].name
+                }
+            check(methods.isNotEmpty()) {
+                "Verified Queue DAO exposes no concrete batch mutation methods"
+            }
+
+            methods.forEach { method ->
+                val key = method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes[0].name
+                if (zeroPoolSourceBatchHookKeys.add(key)) {
+                    method.isAccessible = true
+                    try {
+                        hook(method).intercept { chain ->
+                            val receiver = chain.getThisObject()
+                            val liveBinding = synchronized(zeroPoolSourceBatchBindings) {
+                                zeroPoolSourceBatchBindings.values.firstOrNull { candidate ->
+                                    candidate.dao === receiver
+                                }
+                            }
+                            if (liveBinding != null) {
+                                trackMixController.guardZeroPoolSourceBatchBeforeOriginal(
+                                    binding = liveBinding,
+                                    method = method,
+                                    payload = chain.getArg(0)
+                                )
+                            }
+                            chain.proceed()
+                        }
+                    } catch (failure: Throwable) {
+                        zeroPoolSourceBatchHookKeys.remove(key)
+                        throw failure
+                    }
+                }
+            }
+            Log.i(
+                "GoneSmartTrackMix",
+                "MIX ZERO-POOL SOURCE BATCH HOOKS | ready=true | dao=" +
+                    binding.dao.javaClass.name + " | methods=" +
+                    methods.joinToString(",") {
+                        it.declaringClass.name + "." + it.name +
+                            "(" + it.parameterTypes[0].name + ")"
+                    }
+            )
+            true
+        }.onFailure {
+            Log.e(
+                "GoneSmartTrackMix",
+                "MIX ZERO-POOL SOURCE BATCH HOOKS | ready=false; fail closed",
+                it
+            )
+        }.getOrDefault(false)
+
     @Volatile
     private var trackMixAutoDj: WeakReference<Any>? = null
+
+    private val trackMixPrePlayTargetResolver = TrackMixPrePlayTargetResolver()
+    private val trackMixBootstrapSessionIds = AtomicLong(-1_000_000L)
+
+    private data class TrackMixBootstrapSelectionWindow(
+        val sessionId: Long,
+        val trackIds: List<Long>,
+        val appliedTrackIds: MutableList<Long> = arrayListOf()
+    )
+
+    private val trackMixBootstrapSelectionWindow =
+        ThreadLocal<TrackMixBootstrapSelectionWindow?>()
 
     private val recommendationPool =
         SessionRecommendationPool()
@@ -487,13 +650,18 @@ class GoneSmartModule : XposedModule() {
         ThreadLocal<SelectionWindowContext?>()
 
     /*
-     * One provider pipeline at a time is intentional. Network
-     * requests and full recommendation aggregation are the
-     * expensive part; serializing them avoids duplicate work and
-     * keeps resource usage predictable.
+     * Keep one overall pool-fill pipeline per session so queue state and
+     * recommendation aggregation stay deterministic. Independent network
+     * providers are parallelized inside that pipeline; provider priority is a
+     * ranking weight, never an artificial request-order delay.
      */
     private val pipelineExecutor =
         Executors.newSingleThreadExecutor()
+
+    private val providerExecutor =
+        Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "GoneSmart-Provider").apply { isDaemon = true }
+        }
 
     private val startupExecutor =
         Executors.newSingleThreadExecutor()
@@ -581,6 +749,7 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartCompat",
             "GMMP COMPAT PROBE | revision=$COMPAT_PROBE_REVISION" +
                 " | moduleVersion=${BuildConfig.VERSION_NAME}" +
+                " | git=${BuildConfig.GIT_REVISION}" +
                 " | buildDebug=${BuildConfig.DEBUG}"
         )
         compatibilityExecutor.execute {
@@ -951,9 +1120,19 @@ class GoneSmartModule : XposedModule() {
         }.getOrDefault(false)
     }
 
-    private fun requestNativeTrackMixRefill(count: Int): Boolean {
+    private fun requestNativeTrackMixRefill(
+        manager: Any,
+        count: Int
+    ): Boolean {
         if (count <= 0) return true
-        val manager = trackMixAutoDj?.get() ?: return false
+        if (manager.javaClass.name != "qr") {
+            Log.e(
+                TAG,
+                "Track Mix native refill rejected non-Auto-DJ receiver: " +
+                    manager.javaClass.name
+            )
+            return false
+        }
         return runCatching {
             manager.javaClass.getDeclaredMethod(
                 "z", Int::class.javaPrimitiveType
@@ -961,7 +1140,7 @@ class GoneSmartModule : XposedModule() {
                 .invoke(manager, count)
             Log.i(
                 "GoneSmartTrackMix",
-                "MIX REQUEST REFILL | requested=$count"
+                "MIX REQUEST REFILL | receiver=qr | requested=$count"
             )
             true
         }.onFailure {
@@ -1200,10 +1379,10 @@ class GoneSmartModule : XposedModule() {
             }
         }
 
-        // r40: observe the real 4.2.1 playback-position boundary passively.
-        // r39 proved that the natural title transition bypasses the three
-        // one-Int MusicService commands and also disproved qr.t/ur.b as the
-        // current queue_position. Bundle service-event and Auto-DJ child
+        // Accepted 4.2.1 playback-position observation is passive: service
+        // events and Auto-DJ child writers are wrapped only when GMMP invokes
+        // them naturally. No candidate is invoked for discovery.
+        // Bundle service-event and Auto-DJ child
         // writer observation in one device pass. No candidate is invoked by
         // discovery; every hook only wraps a call GMMP makes naturally.
         runCatching {
@@ -1231,10 +1410,17 @@ class GoneSmartModule : XposedModule() {
             positionCandidates.forEach { method ->
                 method.isAccessible = true
                 hook(method).intercept { chain ->
-                    queueFlipController.aroundNativePositionCommand(
-                        service = chain.getThisObject(),
+                    val service = chain.getThisObject()
+                    val value = (chain.getArg(0) as? Number)?.toInt()
+                    trackMixController.observeNativePositionCommand(
+                        service = service,
                         method = method,
-                        value = (chain.getArg(0) as? Number)?.toInt()
+                        value = value
+                    )
+                    queueFlipController.aroundNativePositionCommand(
+                        service = service,
+                        method = method,
+                        value = value
                     ) {
                         chain.proceed()
                     }
@@ -1267,8 +1453,12 @@ class GoneSmartModule : XposedModule() {
             stateWriterCandidates.forEach { method ->
                 method.isAccessible = true
                 hook(method).intercept { chain ->
+                    val receiver = chain.getThisObject()
+                    // stateWriterCandidates are methods on Auto-DJ child/state hosts.
+                    // Their receiver is not the controller-owned Auto-DJ instance and must
+                    // never replace the independently captured refill/service owner.
                     queueFlipController.aroundNativeStatePositionCommand(
-                        receiver = chain.getThisObject(),
+                        receiver = receiver,
                         method = method,
                         value = (chain.getArg(0) as? Number)?.toInt()
                     ) {
@@ -1340,7 +1530,8 @@ class GoneSmartModule : XposedModule() {
                         action,
                         originalList
                     )
-                if (reversed == null) {
+                val replacementList: List<*>? = reversed?.tracks
+                if (replacementList == null) {
                     val result = chain.proceed()
                     trackMixController.onNativePlaybackMethodFinished(action)
                     result
@@ -1348,22 +1539,27 @@ class GoneSmartModule : XposedModule() {
                     val args = Array<Any?>(playListMethod.parameterCount) {
                         chain.getArg(it)
                     }
-                    args[listIndex] = reversed.tracks
-                    Log.i(
-                        "GoneSmartFlip",
-                        "FLIP SERVICE | method=" + playListMethod.name +
-                            " | action=" + action +
-                            " | originalCount=" + originalList?.size +
-                            " | reversedCount=" + reversed.tracks.size
-                    )
+                    args[listIndex] = replacementList
+                    if (reversed != null) {
+                        Log.i(
+                            "GoneSmartFlip",
+                            "FLIP SERVICE | method=" + playListMethod.name +
+                                " | action=" + action +
+                                " | originalCount=" + originalList?.size +
+                                " | reversedCount=" + reversed.tracks.size
+                        )
+                    }
                     val result = playListMethod.invoke(
                         chain.getThisObject(),
                         *args
                     )
-                    queueFlipController.verifyNativePlaylistPlayback(
-                        reversed.tracks,
-                        reversed.sourceKind
-                    )
+                    if (reversed != null) {
+                        queueFlipController.verifyNativePlaylistPlayback(
+                            reversed.tracks,
+                            reversed.sourceKind
+                        )
+                    }
+                    trackMixController.onNativePlaybackMethodFinished(action)
                     result
                 }
             }
@@ -1659,16 +1855,37 @@ class GoneSmartModule : XposedModule() {
         }
 
         checks["playlistLink"] = result {
-            val leaf = loader.loadClass("ft4")
-            require(leaf.declaredConstructors.any {
-                val p = it.parameterTypes
-                p.size == 4 &&
-                    p[0] == Integer.TYPE &&
-                    p[1] == Integer.TYPE &&
-                    p[2] == String::class.java &&
-                    p[3] == Integer.TYPE
-            })
-            "READY_LEGACY"
+            val resolver = PlaylistBridgeReflectionResolver
+            val playlistDao = resolver.loadClass(
+                loader = loader,
+                candidateNames = listOf("ho3", "ko3"),
+                description = "native Playlist DAO"
+            ) { type ->
+                resolver.matchesPlaylistDaoType(type)
+            }
+            val database = loader.loadClass(
+                "gonemad.gmmp.data.database.GMDatabase"
+            )
+            val daoAccessors = resolver.methods(database).filter { method ->
+                method.parameterCount == 0 &&
+                    playlistDao.isAssignableFrom(method.returnType)
+            }
+            require(
+                daoAccessors.count { it.name == "E" } == 1 ||
+                    daoAccessors.size == 1
+            )
+
+            val presenter = loader.loadClass("as4")
+            val baseRule = loader.loadClass("dt4")
+            val addRule = resolver.methods(presenter).filter { method ->
+                resolver.matchesDeclaredPresenterRuleAction(
+                    method = method,
+                    presenterClass = presenter,
+                    baseRuleClass = baseRule
+                )
+            }
+            require(addRule.size == 1)
+            "READY_STRUCTURAL"
         }
 
         checks["flipQueue"] = "OPEN_CURRENT_POSITION_WRITER"
@@ -3287,9 +3504,12 @@ class GoneSmartModule : XposedModule() {
         var installed = 0
         installed += installPlaylistBridgeEditorHooks(loader)
         installed += installPlaylistBridgeEvaluationHook(loader)
+        installed += installPlaylistBridgeRuleRowHooks(loader)
 
         playlistBridgeInfo(
-            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady"
+            "BRIDGE READY | hooks=$installed | bindings=$bindingsReady" +
+                " | enabled=${playlistBridgeController.isEnabled()}" +
+                " | git=${BuildConfig.GIT_REVISION}"
         )
         if (bindingsReady && playlistBridgeController.isEnabled()) {
             runtimeReporter.reportEvent(
@@ -3302,17 +3522,17 @@ class GoneSmartModule : XposedModule() {
     private fun installPlaylistBridgeEditorHooks(
         loader: ClassLoader
     ): Int {
+        val targets = playlistBridgeController.hookTargets() ?: run {
+            playlistBridgeWarn(
+                "Smart editor hook targets unavailable",
+                IllegalStateException("Playlist Bridge bindings missing")
+            )
+            return 0
+        }
         var installed = 0
 
         runCatching {
-            val presenterClass = loader.loadClass("ds4")
-            val constructor = presenterClass
-                .getDeclaredConstructor(
-                    android.content.Context::class.java,
-                    android.os.Bundle::class.java
-                )
-                .apply { isAccessible = true }
-            hook(constructor).intercept { chain ->
+            hook(targets.presenterConstructor).intercept { chain ->
                 val context = chain.getArg(0) as? android.content.Context
                 val result = chain.proceed()
                 playlistBridgeController.capturePresenter(
@@ -3327,47 +3547,76 @@ class GoneSmartModule : XposedModule() {
         }
 
         runCatching {
-            val presenterClass = loader.loadClass("ds4")
-            val method = presenterClass
-                .getDeclaredMethod("g2", java.lang.Boolean.TYPE)
+            val performClick = android.view.View::class.java
+                .getDeclaredMethod("performClick")
                 .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val edit = chain.getArg(0) as? Boolean == true
-                if (
-                    playlistBridgeController.interceptNativeLinkedEditor(
-                        chain.getThisObject(),
-                        edit
-                    )
-                ) {
-                    null
-                } else {
-                    chain.proceed()
-                }
+            hook(performClick).intercept { chain ->
+                playlistBridgeController.observeNativeToolbarLinkClick(
+                    chain.getThisObject() as? android.view.View
+                )
+                chain.proceed()
             }
             installed++
         }.onFailure {
-            playlistBridgeWarn("Smart link chooser hook unavailable", it)
+            playlistBridgeWarn("Smart editor menuLink click observer unavailable", it)
         }
 
-        runCatching {
-            val consumerClass = loader.loadClass("ds4\$g")
-            val method = consumerClass
-                .getDeclaredMethod("accept", Any::class.java)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val previous = playlistBridgeSmartChooserTitleDepth.get()
-                playlistBridgeSmartChooserTitleDepth.set(previous + 1)
-                try {
-                    chain.proceed()
-                } finally {
-                    playlistBridgeSmartChooserTitleDepth.set(previous)
+        targets.presenterLinkSmartPlaylist?.let { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    if (playlistBridgeController.shouldBypassNativeLinkHook()) {
+                        return@intercept chain.proceed()
+                    }
+                    val edit = chain.getArg(0) as? Boolean == true
+                    if (
+                        playlistBridgeController.interceptNativeLinkAction(
+                            chain.getThisObject(),
+                            edit
+                        )
+                    ) {
+                        null
+                    } else {
+                        chain.proceed()
+                    }
                 }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn("Smart link chooser hook unavailable", it)
             }
-            installed++
-        }.onFailure {
-            playlistBridgeWarn("Smart chooser title scope unavailable", it)
         }
 
+        targets.chooserConsumerAccept?.let { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    // GMMP 4.2.1: this exact callback is the passively proven
+                    // action boundary from the real native dialog stack.
+                    if (
+                        targets.presenterLinkSmartPlaylist == null &&
+                        !playlistBridgeController.shouldBypassNativeLinkHook() &&
+                        playlistBridgeController.interceptNativeChooserCallback(
+                            chain.getThisObject(),
+                            chain.getArg(0)
+                        )
+                    ) {
+                        return@intercept null
+                    }
+
+                    val previous = playlistBridgeSmartChooserTitleDepth.get()
+                    playlistBridgeSmartChooserTitleDepth.set(previous + 1)
+                    try {
+                        chain.proceed()
+                    } finally {
+                        playlistBridgeSmartChooserTitleDepth.set(previous)
+                    }
+                }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn("Smart chooser callback hook unavailable", it)
+            }
+        }
+
+        // This native resource accessor is stable outside the remapped Smart
+        // editor family. Keep it optional: title polish must never gate Link.
         runCatching {
             val basePresenterClass = loader.loadClass("bx")
             val method = basePresenterClass
@@ -3397,44 +3646,125 @@ class GoneSmartModule : XposedModule() {
             playlistBridgeWarn("Smart chooser title hook unavailable", it)
         }
 
-        runCatching {
-            val metadataTextClass = loader.loadClass("os2")
-            val baseRuleClass = loader.loadClass("gt4")
-            val method = metadataTextClass
-                .getDeclaredMethod("U", baseRuleClass)
-                .apply { isAccessible = true }
-            hook(method).intercept { chain ->
-                val original = chain.proceed() as? String
-                playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
-                    chain.getArg(0),
-                    original
+        targets.ruleLabelFormatters.forEach { method ->
+            runCatching {
+                hook(method).intercept { chain ->
+                    val original = chain.proceed() as? String
+                    val rewritten =
+                        playlistBridgeController.rewriteNativeSmartPlaylistRuleLabel(
+                            chain.getArg(0),
+                            original
+                        )
+                    if (rewritten != original) {
+                        playlistBridgeInfo(
+                            "BRIDGE RULE LABEL | formatter=" +
+                                method.declaringClass.name + "." + method.name +
+                                " | original=" + original +
+                                " | rewritten=" + rewritten
+                        )
+                    }
+                    rewritten
+                }
+                installed++
+            }.onFailure {
+                playlistBridgeWarn(
+                    "Smart rule label hook unavailable: " +
+                        method.declaringClass.name + "." + method.name,
+                    it
                 )
             }
-            installed++
-        }.onFailure {
-            playlistBridgeWarn("Smart rule label hook unavailable", it)
         }
 
         return installed
     }
 
+
+    private fun installPlaylistBridgeRuleRowHooks(loader: ClassLoader): Int {
+        return runCatching {
+            val recycler = loader.loadClass("androidx.recyclerview.widget.RecyclerView")
+            val setAdapter = recycler.declaredMethods.firstOrNull {
+                it.name == "setAdapter" && it.parameterCount == 1
+            } ?: throw NoSuchMethodException("RecyclerView.setAdapter")
+            setAdapter.isAccessible = true
+            hook(setAdapter).intercept { chain ->
+                val result = chain.proceed()
+                val list = chain.getThisObject() as? android.view.View
+                val adapter = chain.getArg(0)
+                if (list != null && adapter != null &&
+                    compatibilityResourceName(list) == "smartRuleListRecyclerView"
+                ) {
+                    installPlaylistBridgeConcreteRuleBindHooks(adapter)
+                }
+                result
+            }
+            playlistBridgeInfo(
+                "BRIDGE RULE ROW | smartRuleListRecyclerView adapter observer ready"
+            )
+            1
+        }.getOrElse {
+            playlistBridgeWarn("Smart rule RecyclerView observer unavailable", it)
+            0
+        }
+    }
+
+    private fun installPlaylistBridgeConcreteRuleBindHooks(adapter: Any) {
+        val methods = GmmpReflectionPolicy.callableMethods(adapter.javaClass)
+            .filter { method ->
+                !java.lang.reflect.Modifier.isStatic(method.modifiers) &&
+                    method.name == "onBindViewHolder" &&
+                    method.returnType == Void.TYPE &&
+                    method.parameterCount in 2..3 &&
+                    method.parameterTypes.getOrNull(1) == Integer.TYPE
+            }
+            .distinctBy { method ->
+                method.declaringClass.name + "|" + method.name + "|" +
+                    method.parameterTypes.joinToString(",") { it.name }
+            }
+        methods.forEach { method ->
+            val key = method.declaringClass.name + "|" + method.name + "|" +
+                method.parameterTypes.joinToString(",") { it.name }
+            if (!playlistBridgeRuleBindHookKeys.add(key)) return@forEach
+            runCatching {
+                method.isAccessible = true
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    val holder = chain.getArg(0)
+                    val position = (chain.getArg(1) as? Number)?.toInt() ?: -1
+                    val changed = runCatching {
+                        playlistBridgeController.rewriteBoundNativeSmartRuleLabel(
+                            chain.getThisObject(),
+                            holder,
+                            position
+                        )
+                    }.onFailure {
+                        playlistBridgeWarn("Smart rule row label rewrite failed", it)
+                    }.getOrDefault(false)
+                    if (changed) {
+                        playlistBridgeInfo(
+                            "BRIDGE RULE ROW LABEL | adapter=" +
+                                adapter.javaClass.name +
+                                " | position=$position | rewritten=true"
+                        )
+                    }
+                    result
+                }
+                playlistBridgeInfo(
+                    "BRIDGE RULE ROW HOOK | adapter=" + adapter.javaClass.name +
+                        " | method=" + method.declaringClass.name + "." + method.name
+                )
+            }.onFailure {
+                playlistBridgeRuleBindHookKeys.remove(key)
+                playlistBridgeWarn("Smart rule row bind hook unavailable", it)
+            }
+        }
+    }
+
     private fun installPlaylistBridgeEvaluationHook(
         loader: ClassLoader
     ): Int {
+        val method = playlistBridgeController.hookTargets()?.evaluationMethod
+            ?: return 0
         return runCatching {
-            val smartRuleClass = loader.loadClass("ft4")
-            val whereClass = loader.loadClass("ww3")
-            val method = smartRuleClass
-                .getDeclaredMethod(
-                    "z",
-                    java.util.LinkedHashSet::class.java,
-                    java.lang.Integer::class.java
-                )
-                .apply { isAccessible = true }
-            require(method.returnType == whereClass) {
-                "Unexpected ft4.z return type " + method.returnType.name
-            }
-
             hook(method).intercept { chain ->
                 val rule = chain.getThisObject()
                 if (!playlistBridgeController.isBridgeRule(rule) ||
@@ -4400,7 +4730,7 @@ class GoneSmartModule : XposedModule() {
         autoDjInstance: Any
     ) {
         if (!options.enabled) return
-        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) return
+        // Local Playlist Affinity can prewarm a useful pool without network.
 
         startupExecutor.execute {
             val startedAt = SystemClock.elapsedRealtime()
@@ -4572,17 +4902,89 @@ class GoneSmartModule : XposedModule() {
                         instance = trackDaoField.get(autoDjInstance)
                     )
                 }
-                if (trackMixController.shouldSuppressNativeRefill()) {
-                    // GMMP may start a refill as soon as native Play
-                    // seeks to the selected queue row. That older refill
-                    // races CLEAR_QUEUE and caused intermittent failures.
-                    // Track Mix will explicitly enable native Auto-DJ
-                    // after it confirms that only the new seed remains.
-                    return@intercept null
+                val zeroPoolBoundary =
+                    trackMixController.prepareZeroPoolAtNativeRefill(
+                        autoDj = autoDjInstance,
+                        requestedTracks = requestedTracks
+                    )
+                if (zeroPoolBoundary != null) {
+                    val zeroPoolResult = chain.proceed()
+                    val completed = trackMixController.completeZeroPoolAtNativeRefill(
+                        autoDj = autoDjInstance,
+                        boundary = zeroPoolBoundary
+                    )
+                    if (!completed) {
+                        Log.e(
+                            "GoneSmartTrackMix",
+                            "MIX ZERO-POOL REFILL BOUNDARY | completion failed after native qr.z"
+                        )
+                    }
+                    return@intercept zeroPoolResult
                 }
-                trackMixController.onNativeAutoDjRefillRequested(
-                    requestedTracks
-                )
+
+                val trackMixBootstrap =
+                    trackMixController.bootstrapSelectionForNativeRefill(
+                        autoDj = autoDjInstance,
+                        requested = requestedTracks
+                    )
+                if (trackMixBootstrap != null) {
+                    val beforeBootstrap = readQueueContext(autoDjInstance)
+                    beforeBootstrap?.let { queueSessionTracker.observe(it) }
+                    val bootstrapWindow = TrackMixBootstrapSelectionWindow(
+                        sessionId = trackMixBootstrap.sessionId,
+                        trackIds = trackMixBootstrap.trackIds
+                    )
+                    trackMixBootstrapSelectionWindow.set(bootstrapWindow)
+                    val bootstrapResult = try {
+                        chain.proceed()
+                    } finally {
+                        trackMixBootstrapSelectionWindow.remove()
+                    }
+                    val applied = bootstrapWindow.appliedTrackIds.toList()
+                    trackMixController.onBootstrapNativeRefillFinished(applied)
+                    val afterBootstrap = readQueueContext(autoDjInstance)
+                    if (beforeBootstrap != null && afterBootstrap != null) {
+                        queueSessionTracker.commitGeneratedAdditions(
+                            beforeContext = beforeBootstrap,
+                            afterContext = afterBootstrap,
+                            origin = if (applied.isNotEmpty()) {
+                                QueueEntryOrigin.GONESMART
+                            } else {
+                                QueueEntryOrigin.NATIVE_AUTO_DJ
+                            }
+                        )
+                    }
+                    Log.i(
+                        "GoneSmartTrackMix",
+                        "MIX PREPLAY NATIVE REFILL | requested=$requestedTracks | " +
+                            "smartApplied=${applied.size} | nativeRemainder=" +
+                            (requestedTracks - applied.size).coerceAtLeast(0)
+                    )
+                    return@intercept bootstrapResult
+                }
+
+                when (trackMixController.nativeRefillAction()) {
+                    TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE -> {
+                        // Before 4.2.1 seed isolation, GMMP still owns playback
+                        // continuity. Do not route this natural refill through
+                        // GoneSmart recommendation preparation and do not hold it:
+                        // GMMP can query next/current+1 within tens of ms.
+                        Log.i(
+                            "GoneSmartTrackMix",
+                            "MIX AUTO-DJ CONTINUITY | stage=WAIT_PLAY | " +
+                                "native refill pass-through | requested=$requestedTracks"
+                        )
+                        return@intercept chain.proceed()
+                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS -> {
+                        return@intercept null
+                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> {
+                        trackMixController.onNativeAutoDjRefillRequested(
+                            requestedTracks
+                        )
+                    }
+                }
             }
 
             Log.i(
@@ -4755,7 +5157,8 @@ class GoneSmartModule : XposedModule() {
                     "upcoming=${gmmpSettings.upcomingTrackCount} | " +
                     "source=${gmmpSettings.source} | " +
                     "poolTarget=${poolSizing.targetSize} | " +
-                    "lowWater=${poolSizing.lowWaterMark}"
+                    "lowWater=${poolSizing.lowWaterMark} | " +
+                    "rescueTarget=${poolSizing.rescueCandidateTarget}"
             )
 
             val queueTrackIds =
@@ -4779,7 +5182,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -4789,70 +5192,9 @@ class GoneSmartModule : XposedModule() {
                 appendRuntimeEvent = false
             )
 
-            if (
-                !poolAlreadyReady &&
-                networkState ==
-                GoneSmartNetworkState.OFFLINE
-            ) {
-
-                Log.i(
-                    TAG,
-                    "SMART DJ OFFLINE FALLBACK | " +
-                        "current session has no usable cached tracks - " +
-                        "using native GMMP Auto-DJ"
-                )
-
-                showSessionNoticeOnce(
-                    sessionId = session.sessionId,
-                    noticeKey = "offline-native-fallback",
-                    message = "GoneSmart is offline. Using GMMP Auto-DJ fallback."
-                )
-
-                autoDjSelectionWindow.set(
-                    null
-                )
-
-                playerBadgeController
-                    .setMode(
-                        PlayerAutoDjBadgeController.Mode.FALLBACK
-                    )
-
-                runtimeReporter.report(
-                    mode = GoneSmartRuntimeContract.MODE_FALLBACK,
-                    message = "Offline: using GMMP Auto-DJ fallback for the current queue.",
-                    appendEvent = true
-                )
-
-                val result =
-                    proceedNativeRefill(autoDjInstance) { chain.proceed() }
-
-                val afterContext =
-                    readQueueContext(autoDjInstance)
-
-                if (
-                    afterContext != null
-                ) {
-
-                    queueSessionTracker
-                        .commitGeneratedAdditions(
-                            beforeContext = beforeContext,
-                            afterContext = afterContext,
-                            origin = QueueEntryOrigin.NATIVE_AUTO_DJ
-                        )
-
-                    logAddedTracks(
-                        beforeContext = beforeContext,
-                        afterContext = afterContext
-                    )
-                }
-
-                Log.i(
-                    TAG,
-                    "========================================"
-                )
-
-                return@intercept result
-            }
+            // Offline no longer means immediate native fallback: give the
+            // local Playlist Affinity provider one bounded background-pipeline
+            // attempt first. The later failure branch still falls back natively.
 
             val seeds =
                 seedSelector
@@ -5236,11 +5578,66 @@ class GoneSmartModule : XposedModule() {
             val nativeResult =
                 chain.proceed()
 
+            val bootstrapWindow = trackMixBootstrapSelectionWindow.get()
+            if (bootstrapWindow != null) {
+                val bootstrapRows = nativeResult as? List<*>
+                if (bootstrapRows.isNullOrEmpty()) {
+                    Log.w(
+                        "GoneSmartTrackMix",
+                        "SMART DJ TRACK MIX BOOTSTRAP | native selection returned no rows"
+                    )
+                    return@intercept nativeResult
+                }
+                val desired = if (requestedTracks > 0) {
+                    minOf(requestedTracks, bootstrapRows.size)
+                } else {
+                    bootstrapRows.size
+                }
+                val ids = bootstrapWindow.trackIds.take(desired)
+                var applied = 0
+                ids.forEachIndexed { index, trackId ->
+                    val row = bootstrapRows[index] ?: return@forEachIndexed
+                    runCatching {
+                        setAutoDjTrackId(row, trackId)
+                    }.onSuccess {
+                        bootstrapWindow.appliedTrackIds += trackId
+                        applied++
+                    }.onFailure { error ->
+                        Log.e(
+                            "GoneSmartTrackMix",
+                            "SMART DJ TRACK MIX BOOTSTRAP | slot=${index + 1} failed",
+                            error
+                        )
+                    }
+                }
+                if (applied > 0) {
+                    recommendationPool.commitSelected(
+                        expectedSessionId = bootstrapWindow.sessionId,
+                        selectedTrackIds = bootstrapWindow.appliedTrackIds
+                    )
+                }
+                if (desired > 0 && applied == desired) {
+                    playerBadgeController.setMode(
+                        PlayerAutoDjBadgeController.Mode.SMART
+                    )
+                    runtimeReporter.report(
+                        mode = GoneSmartRuntimeContract.MODE_SMART,
+                        message = "GoneSmart Track Mix is using prepared smart recommendations.",
+                        appendEvent = false
+                    )
+                }
+                Log.i(
+                    "GoneSmartTrackMix",
+                    "SMART DJ TRACK MIX BOOTSTRAP | applied=$applied/$desired | " +
+                        "nativeRemainder=${(desired - applied).coerceAtLeast(0)}"
+                )
+                return@intercept nativeResult
+            }
+
             val selectionContext =
                 autoDjSelectionWindow.get()
 
             if (
-                !ENABLE_SMART_SELECTION_TEST ||
                 selectionContext == null
             ) {
 
@@ -5291,15 +5688,13 @@ class GoneSmartModule : XposedModule() {
                     )
 
             if (
-                smartTrackIds.size <
-                desiredCount
+                smartTrackIds.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
                     "SMART DJ SUPPRESSED | " +
-                        "needed=$desiredCount | " +
-                        "poolAvailable=${smartTrackIds.size}"
+                        "needed=$desiredCount | poolAvailable=0"
                 )
 
                 playerBadgeController
@@ -5310,16 +5705,17 @@ class GoneSmartModule : XposedModule() {
                 return@intercept ArrayList<Any>()
             }
 
-            var appliedCount =
-                0
+            val appliedRows =
+                ArrayList<Any>()
+
+            val appliedTrackIds =
+                mutableListOf<Long>()
 
             smartTrackIds
                 .forEachIndexed { index, trackId ->
 
                     val row =
-                        rows[
-                            index
-                        ]
+                        rows.getOrNull(index)
                             ?: return@forEachIndexed
 
                     try {
@@ -5329,8 +5725,11 @@ class GoneSmartModule : XposedModule() {
                             trackId = trackId
                         )
 
-                        appliedCount +=
-                            1
+                        appliedRows +=
+                            row
+
+                        appliedTrackIds +=
+                            trackId
 
                         Log.i(
                             TAG,
@@ -5351,15 +5750,12 @@ class GoneSmartModule : XposedModule() {
                 }
 
             if (
-                appliedCount !=
-                desiredCount
+                appliedRows.isEmpty()
             ) {
 
                 Log.w(
                     TAG,
-                    "SMART DJ SUPPRESSED | " +
-                        "replacement incomplete " +
-                        "($appliedCount/$desiredCount)"
+                    "SMART DJ SUPPRESSED | no native row could be replaced"
                 )
 
                 playerBadgeController
@@ -5373,13 +5769,38 @@ class GoneSmartModule : XposedModule() {
             recommendationPool
                 .commitSelected(
                     expectedSessionId = selectionContext.sessionId,
-                    selectedTrackIds = smartTrackIds
+                    selectedTrackIds = appliedTrackIds
                 )
+
+            if (
+                appliedRows.size <
+                desiredCount
+            ) {
+
+                Log.i(
+                    TAG,
+                    "SMART DJ PARTIAL | " +
+                        "requested=$desiredCount | " +
+                        "applied=${appliedRows.size} | " +
+                        "deferred=${desiredCount - appliedRows.size} | " +
+                        "nativePadding=false"
+                )
+
+                if (
+                    options.showStatusMessages &&
+                    desiredCount > 1 &&
+                    appliedRows.isNotEmpty()
+                ) {
+                    statusNotifier.show(
+                        "Only ${appliedRows.size} of $desiredCount suitable tracks found"
+                    )
+                }
+            }
 
             Log.i(
                 TAG,
                 "SMART DJ APPLIED | " +
-                    "$appliedCount/$desiredCount track(s) replaced | " +
+                    "${appliedRows.size}/$desiredCount track(s) replaced | " +
                     recommendationPool.describe(
                         selectionContext.sessionId
                     )
@@ -5392,11 +5813,13 @@ class GoneSmartModule : XposedModule() {
 
             runtimeReporter.report(
                 mode = GoneSmartRuntimeContract.MODE_SMART,
-                message = "GoneSmart selected $appliedCount track(s) from the current session pool.",
-                appendEvent = true
+                message = "GoneSmart selected ${appliedRows.size} track(s) from the current session pool.",
+                // Keep current Smart-DJ status fresh without adding one Logs-row
+                // for every routine pool delivery.
+                appendEvent = false
             )
 
-            nativeResult
+            appliedRows
         }
 
         Log.i(
@@ -5499,6 +5922,112 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
+    private fun resolveTrackMixPrePlayTarget(
+        autoDjInstance: Any,
+        roots: List<Any>
+    ): TrackMixPrePlayTargetResolution? {
+        val library = gmmpLibraryReader.read(autoDjInstance)
+            .map { it.track }
+        return trackMixPrePlayTargetResolver.resolve(roots, library)
+    }
+
+    private fun prepareTrackMixPrePlaySmartPool(
+        autoDjInstance: Any,
+        selectedTrack: TrackInfo,
+        requestedTracks: Int
+    ): TrackMixPreparedInitialPool {
+        if (requestedTracks <= 0) return TrackMixPreparedInitialPool.EMPTY
+        val sessionId = trackMixBootstrapSessionIds.decrementAndGet()
+        val syntheticEntryId = sessionId
+        val selected = QueueItemInfo(
+            orderIndex = 0,
+            queuePosition = 1,
+            shufflePosition = 1,
+            queueEntryId = syntheticEntryId,
+            track = selectedTrack,
+            state = QueueItemState.CURRENT
+        )
+        val queueContext = QueueContext(
+            currentQueuePosition = 1,
+            items = listOf(selected)
+        )
+        val session = QueueSessionSnapshot(
+            sessionId = sessionId,
+            isNewSession = false,
+            reason = "track-mix pre-play bootstrap",
+            currentItem = selected,
+            pastItems = emptyList(),
+            upcomingItems = emptyList(),
+            manualUpcomingItems = emptyList(),
+            sessionItems = listOf(selected),
+            userAnchorTracks = listOf(selectedTrack),
+            recentGeneratedTracks = emptyList(),
+            originsByEntryId = mapOf(syntheticEntryId to QueueEntryOrigin.USER_QUEUE)
+        )
+        val settings = gmmpAutoDjSettingsReader.read()
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
+        resetRecommendationPoolForSession(session, sizing)
+        val seeds = listOf(
+            RecommendationSeed(
+                track = selectedTrack,
+                type = SeedType.CURRENT,
+                recency = 0,
+                weightMultiplier = 1.0
+            )
+        )
+        Log.i(
+            TAG,
+            "SMART DJ TRACK MIX PREPLAY | start | session=$sessionId | " +
+                "selected=${selectedTrack.id} | requested=$requestedTracks"
+        )
+        val future = startPoolFill(
+            seeds = seeds,
+            autoDjInstance = autoDjInstance,
+            queueContext = queueContext,
+            session = session,
+            sizing = sizing,
+            background = false
+        )
+        try {
+            future.get(TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: TimeoutException) {
+            Log.w(
+                TAG,
+                "SMART DJ TRACK MIX PREPLAY | bounded wait timed out | " +
+                    "poolFill=continuing"
+            )
+        } catch (failure: Throwable) {
+            Log.w(TAG, "SMART DJ TRACK MIX PREPLAY | pool preparation failed", failure)
+        }
+        val preparedIds = recommendationPool.peek(
+            expectedSessionId = sessionId,
+            count = requestedTracks,
+            excludedTrackIds = setOf(selectedTrack.id)
+        )
+        Log.i(
+            TAG,
+            "SMART DJ TRACK MIX PREPLAY | complete | requested=$requestedTracks | " +
+                "prepared=${preparedIds.size} | " + recommendationPool.describe(sessionId)
+        )
+        if (preparedIds.isEmpty()) {
+            // Keep v0.3.2/4.2.0 semantics: zero GoneSmart matches are not a
+            // successful smart pool. r44 incorrectly promoted native random
+            // candidates to a prepared Track Mix pool, which made the badge
+            // green and enabled post-materialization queue retargeting.
+            playerBadgeController.setMode(
+                PlayerAutoDjBadgeController.Mode.FALLBACK
+            )
+            runtimeReporter.report(
+                mode = GoneSmartRuntimeContract.MODE_FALLBACK,
+                message =
+                    "No suitable GoneSmart match for Track Mix. " +
+                        "Using GMMP Auto-DJ fallback.",
+                appendEvent = true
+            )
+        }
+        return TrackMixPreparedInitialPool(sessionId, preparedIds)
+    }
+
     private fun ensureRecommendationPoolReady(
         seeds: List<RecommendationSeed>,
         autoDjInstance: Any,
@@ -5538,18 +6067,34 @@ class GoneSmartModule : XposedModule() {
                 background = false
             )
 
+        val waitForSmartPool =
+            TrackMixInitialFillPolicy.shouldWaitForSmartPoolAfterSeedIsolation(
+                explicitInitialRefill = trackMixController.isExplicitInitialRefill()
+            )
+
+        if (!waitForSmartPool) {
+            // The queue now contains only the selected Track Mix seed.
+            // GMMP may request queue_position=2 immediately for its
+            // next/gapless decoder. Never block that native Initial Size
+            // refill on the network recommendation pipeline. The already
+            // started pool fill deliberately keeps running for later
+            // ordinary Auto-DJ refills.
+            Log.i(
+                TAG,
+                "SMART DJ INITIAL CONTINUITY | native refill immediately" +
+                    " | poolFill=continuing"
+            )
+            return false
+        }
+
         Log.i(
             TAG,
             "SMART DJ WAIT | " +
                 "pool empty/insufficient - preparing session pool"
         )
 
-        val fastInitialWait = trackMixController.isExplicitInitialRefill()
-        val waitTimeoutMs = if (fastInitialWait) {
-            TRACK_MIX_INITIAL_SMART_WAIT_MS
-        } else {
+        val waitTimeoutMs =
             TimeUnit.SECONDS.toMillis(SMART_PREPARE_TIMEOUT_SECONDS)
-        }
 
         return try {
             future.get(
@@ -5561,7 +6106,7 @@ class GoneSmartModule : XposedModule() {
                 recommendationPool
                     .hasEnough(
                         expectedSessionId = session.sessionId,
-                        count = requestedTracks,
+                        count = 1,
                         excludedTrackIds = queueTrackIds
                     )
 
@@ -5576,19 +6121,6 @@ class GoneSmartModule : XposedModule() {
             ready
 
         } catch (timeoutException: TimeoutException) {
-
-            if (fastInitialWait) {
-                // Do not cancel or invalidate this fill: it becomes the warm
-                // pool for ordinary upcoming refills after native GMMP has
-                // made Next available immediately.
-                Log.i(
-                    TAG,
-                    "SMART DJ INITIAL FAST FALLBACK | waitedMs=" +
-                        TRACK_MIX_INITIAL_SMART_WAIT_MS +
-                        " | poolFill=continuing"
-                )
-                return false
-            }
 
             pipelineGeneration
                 .incrementAndGet()
@@ -5624,14 +6156,9 @@ class GoneSmartModule : XposedModule() {
         sizing: SmartPoolSizing
     ) {
 
-        if (
-            networkStateReader
-                .getState() !=
-            GoneSmartNetworkState.ONLINE
-        ) {
-
-            return
-        }
+        // Do not gate background refill on connectivity: the local
+        // Playlist Affinity provider remains productive offline. Network
+        // providers are gated inside collectSeedContributions().
 
         if (
             !recommendationPool
@@ -5716,7 +6243,9 @@ class GoneSmartModule : XposedModule() {
                                 queueContext = queueContext,
                                 session = session,
                                 generation = generation,
-                                targetPoolSize = sizing.targetSize
+                                targetPoolSize = sizing.targetSize,
+                                rescueCandidateTarget =
+                                    sizing.rescueCandidateTarget
                             )
 
                         if (
@@ -5775,7 +6304,8 @@ class GoneSmartModule : XposedModule() {
         queueContext: QueueContext,
         session: QueueSessionSnapshot,
         generation: Long,
-        targetPoolSize: Int
+        targetPoolSize: Int,
+        rescueCandidateTarget: Int
     ): List<Long> {
 
         return try {
@@ -5789,8 +6319,65 @@ class GoneSmartModule : XposedModule() {
                 "========== GONESMART AGGREGATION START =========="
             )
 
+            val library =
+                gmmpLibraryReader
+                    .read(autoDjInstance)
+
+            Log.i(TAG, "LOCAL LIBRARY TRACK COUNT = ${library.size}")
+
+            if (library.isEmpty()) {
+                return emptyList()
+            }
+
+            val providerPolicy =
+                RecommendationProviderPolicy.from(options)
+
+            Log.i(
+                TAG,
+                "SMART DJ PROVIDER POLICY | mode=${providerPolicy.mode} | " +
+                    "enabled=${providerPolicy.enabledProviders.sortedBy { it.name }} | " +
+                    "weights=LB:${formatScore(providerPolicy.weight(RecommendationProvider.LISTENBRAINZ))}," +
+                    "LASTFM:${formatScore(providerPolicy.weight(RecommendationProvider.LASTFM))}," +
+                    "PLAYLIST:${formatScore(providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST))} | " +
+                    "playlistSize=${providerPolicy.playlistSizeWeighting}"
+            )
+
+            val playlistAffinityBatch =
+                if (providerPolicy.isEnabled(RecommendationProvider.LOCAL_PLAYLIST)) {
+                    localPlaylistAffinityProvider.collect(
+                        autoDjInstance = autoDjInstance,
+                        seeds = seeds,
+                        library = library,
+                        playlistSizeWeighting = providerPolicy.playlistSizeWeighting,
+                        maxResultsPerSeed = (targetPoolSize * 3).coerceAtLeast(24)
+                    )
+                } else {
+                    PlaylistAffinityBatch(emptyList(), PlaylistAffinityMetrics())
+                }
+
             val rawContributions =
                 mutableListOf<RawRecommendationContribution>()
+
+            rawContributions +=
+                playlistAffinityBatch.signals.mapNotNull { signal ->
+                    val artist = signal.libraryTrack.track.artist?.trim().orEmpty()
+                    val title = signal.libraryTrack.track.title?.trim().orEmpty()
+                    if (artist.isBlank() || title.isBlank()) {
+                        null
+                    } else {
+                        RawRecommendationContribution(
+                            provider = RecommendationProvider.LOCAL_PLAYLIST,
+                            seed = signal.seed,
+                            artist = artist,
+                            title = title,
+                            mbid = null,
+                            providerSimilarity = signal.score,
+                            seedWeight = seedWeight(signal.seed),
+                            identityConfidence = 1.0,
+                            providerWeight = providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST)
+                        )
+                    }
+                }
 
             seeds.forEachIndexed { seedIndex, seed ->
 
@@ -5842,7 +6429,9 @@ class GoneSmartModule : XposedModule() {
                     collectSeedContributions(
                         seedNumber = seedNumber,
                         seed = seed,
-                        metadata = metadata
+                        metadata = metadata,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -5882,7 +6471,9 @@ class GoneSmartModule : XposedModule() {
                                 collectSeedContributions(
                                     seedNumber = seedNumber,
                                     seed = seed,
-                                    metadata = fallbackMetadata
+                                    metadata = fallbackMetadata,
+                                    library = library,
+                                    providerPolicy = providerPolicy
                                 )
                         }
                     }
@@ -5909,8 +6500,10 @@ class GoneSmartModule : XposedModule() {
                         rawContributions
                     )
 
-            logMergedRecommendations(
-                merged
+            logProviderBlendMetrics(
+                rawContributions = rawContributions,
+                merged = merged,
+                playlistMetrics = playlistAffinityBatch.metrics
             )
 
             if (
@@ -5920,7 +6513,7 @@ class GoneSmartModule : XposedModule() {
                 Log.i(
                     TAG,
                     "SMART DJ BROAD SEARCH START | " +
-                        "reason=no-external-recommendations | " +
+                        "reason=no-provider-recommendations | " +
                         "seeds=${seeds.size}"
                 )
 
@@ -5929,7 +6522,9 @@ class GoneSmartModule : XposedModule() {
 
                 val broadContributions =
                     collectBroadSeedContributions(
-                        seeds = seeds
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -5952,10 +6547,6 @@ class GoneSmartModule : XposedModule() {
                         "broadContributions=${broadContributions.size} | " +
                         "merged=${merged.size}"
                 )
-
-                logMergedRecommendations(
-                    merged
-                )
             }
 
             if (
@@ -5964,27 +6555,8 @@ class GoneSmartModule : XposedModule() {
 
                 Log.w(
                     TAG,
-                    "SMART DJ PIPELINE | no external recommendations after broad search"
+                    "SMART DJ PIPELINE | no provider recommendations after broad search"
                 )
-
-                return emptyList()
-            }
-
-            val library =
-                gmmpLibraryReader
-                    .read(
-                        autoDjInstance
-                    )
-
-            Log.i(
-                TAG,
-                "LOCAL LIBRARY TRACK COUNT = " +
-                    library.size
-            )
-
-            if (
-                library.isEmpty()
-            ) {
 
                 return emptyList()
             }
@@ -6021,6 +6593,91 @@ class GoneSmartModule : XposedModule() {
                         library = library,
                         excludedTrackIds = excludedTrackIds
                     )
+
+            var directLocalTrackCount =
+                directLocalMatches
+                    .map { it.track.id }
+                    .distinct()
+                    .size
+
+            val shouldRunArtistRescue =
+                !broadSearchPerformed &&
+                    networkStateReader.getState() ==
+                        GoneSmartNetworkState.ONLINE &&
+                    directLocalTrackCount <
+                        rescueCandidateTarget
+
+            Log.i(
+                TAG,
+                "SMART DJ ARTIST RESCUE GATE | " +
+                    "localDirect=$directLocalTrackCount | " +
+                    "target=$rescueCandidateTarget | " +
+                    "action=${if (shouldRunArtistRescue) "run" else "skip"}"
+            )
+
+            if (
+                shouldRunArtistRescue
+            ) {
+
+                val rescueContributions =
+                    collectArtistRescueContributions(
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
+                    )
+
+                if (
+                    generation !=
+                    pipelineGeneration.get()
+                ) {
+
+                    return emptyList()
+                }
+
+                if (
+                    rescueContributions.isNotEmpty()
+                ) {
+
+                    rawContributions +=
+                        rescueContributions
+
+                    val rescueMerged =
+                        recommendationAggregator
+                            .aggregate(
+                                rawContributions
+                            )
+
+                    if (
+                        rescueMerged.isNotEmpty()
+                    ) {
+
+                        activeRecommendations =
+                            rescueMerged
+
+                        directLocalMatches =
+                            localLibraryMatcher
+                                .match(
+                                    recommendations = activeRecommendations,
+                                    library = library,
+                                    excludedTrackIds = excludedTrackIds
+                                )
+
+                        directLocalTrackCount =
+                            directLocalMatches
+                                .map { it.track.id }
+                                .distinct()
+                                .size
+                    }
+                }
+
+                Log.i(
+                    TAG,
+                    "SMART DJ ARTIST RESCUE END | " +
+                        "contributions=${rescueContributions.size} | " +
+                        "localDirect=$directLocalTrackCount | " +
+                        "target=$rescueCandidateTarget"
+                )
+            }
 
             /*
              * External services recommend tracks globally, but the user can
@@ -6097,7 +6754,9 @@ class GoneSmartModule : XposedModule() {
 
                 val broadContributions =
                     collectBroadSeedContributions(
-                        seeds = seeds
+                        seeds = seeds,
+                        library = library,
+                        providerPolicy = providerPolicy
                     )
 
                 if (
@@ -6281,10 +6940,6 @@ class GoneSmartModule : XposedModule() {
                 }
             }
 
-            logLocalRecommendations(
-                qualityMatches
-            )
-
             if (
                 generation !=
                 pipelineGeneration.get()
@@ -6462,60 +7117,97 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy,
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
 
-        val result =
-            mutableListOf<RawRecommendationContribution>()
+        val startedNs = System.nanoTime()
+        val tasks = mutableListOf<Pair<RecommendationProvider, Future<List<RawRecommendationContribution>>>>()
 
-        result +=
-            collectListenBrainzContributions(
-                seedNumber = seedNumber,
-                seed = seed,
-                metadata = metadata,
-                broadSearch = broadSearch
-            )
+        if (providerPolicy.isEnabled(RecommendationProvider.LISTENBRAINZ)) {
+            tasks += RecommendationProvider.LISTENBRAINZ to
+                providerExecutor.submit<List<RawRecommendationContribution>> {
+                    collectListenBrainzContributions(
+                        seedNumber = seedNumber,
+                        seed = seed,
+                        metadata = metadata,
+                        library = library,
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
+                    )
+                }
+        }
+        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM)) {
+            tasks += RecommendationProvider.LASTFM to
+                providerExecutor.submit<List<RawRecommendationContribution>> {
+                    collectLastFmContributions(
+                        seedNumber = seedNumber,
+                        seed = seed,
+                        metadata = metadata,
+                        broadSearch = broadSearch,
+                        allowArtistFallback = allowArtistFallback,
+                        artistFallbackOnly = artistFallbackOnly
+                    )
+                }
+        }
 
-        result +=
-            collectLastFmContributions(
-                seedNumber = seedNumber,
-                seed = seed,
-                metadata = metadata,
-                broadSearch = broadSearch
-            )
+        if (tasks.isEmpty()) return emptyList()
 
+        val result = mutableListOf<RawRecommendationContribution>()
+        for ((provider, future) in tasks) {
+            val contributions = try {
+                future.get()
+            } catch (interrupted: InterruptedException) {
+                tasks.forEach { it.second.cancel(true) }
+                Thread.currentThread().interrupt()
+                return emptyList()
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "$provider contribution task failed for seed $seedNumber", throwable)
+                emptyList()
+            }
+
+            val providerWeight = providerPolicy.weight(provider)
+            result += contributions.map { it.copy(providerWeight = providerWeight) }
+        }
+
+        Log.i(
+            TAG,
+            "SMART DJ PROVIDER ROUND | seed=$seedNumber | " +
+                "stage=${when {
+                    artistFallbackOnly -> "artist-rescue"
+                    broadSearch -> "broad"
+                    else -> "direct"
+                }} | " +
+                "enabled=${tasks.map { it.first }} | contributions=${result.size} | " +
+                "elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000L}"
+        )
         return result
     }
 
-    private fun collectBroadSeedContributions(
-        seeds: List<RecommendationSeed>
+    private fun collectArtistRescueContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy
     ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
 
         val result =
             mutableListOf<RawRecommendationContribution>()
 
         seeds.forEachIndexed { seedIndex, seed ->
-
-            val seedNumber =
-                seedIndex + 1
-
-            val resolvedInput =
-                trackInputResolver
-                    .resolve(
-                        seed.track
-                    )
-
-            val metadata =
-                metadataNormalizer
-                    .normalize(
-                        resolvedInput.track
-                    )
-
-            if (
-                metadata.searchArtist.isBlank() ||
-                metadata.searchTitle.isBlank()
-            ) {
-
+            val seedNumber = seedIndex + 1
+            val resolvedInput = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolvedInput.track)
+            if (metadata.searchArtist.isBlank() || metadata.searchTitle.isBlank()) {
                 return@forEachIndexed
             }
 
@@ -6524,41 +7216,39 @@ class GoneSmartModule : XposedModule() {
                     seedNumber = seedNumber,
                     seed = seed,
                     metadata = metadata,
-                    broadSearch = true
+                    library = library,
+                    providerPolicy = providerPolicy,
+                    allowArtistFallback = true,
+                    artistFallbackOnly = true
                 )
 
             if (
                 contributions.isEmpty() &&
-                resolvedInput.source !=
-                TrackInputSource.TAGS
+                resolvedInput.source != TrackInputSource.TAGS
             ) {
-
-                val providerFallbackTrack =
+                val fallbackTrack =
                     buildProviderFallbackTrack(
                         resolvedInput.track
                     )
-
-                if (
-                    providerFallbackTrack != null
-                ) {
-
+                if (fallbackTrack != null) {
                     val fallbackMetadata =
                         metadataNormalizer
                             .normalize(
-                                providerFallbackTrack
+                                fallbackTrack
                             )
-
                     if (
                         fallbackMetadata.searchArtist.isNotBlank() &&
                         fallbackMetadata.searchTitle.isNotBlank()
                     ) {
-
                         contributions =
                             collectSeedContributions(
                                 seedNumber = seedNumber,
                                 seed = seed,
                                 metadata = fallbackMetadata,
-                                broadSearch = true
+                                library = library,
+                                providerPolicy = providerPolicy,
+                                allowArtistFallback = true,
+                                artistFallbackOnly = true
                             )
                     }
                 }
@@ -6568,6 +7258,57 @@ class GoneSmartModule : XposedModule() {
                 contributions
         }
 
+        return result
+    }
+
+    private fun collectBroadSeedContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        providerPolicy: RecommendationProviderPolicy
+    ): List<RawRecommendationContribution> {
+        if (networkStateReader.getState() != GoneSmartNetworkState.ONLINE) {
+            return emptyList()
+        }
+
+        val result = mutableListOf<RawRecommendationContribution>()
+        seeds.forEachIndexed { seedIndex, seed ->
+            val seedNumber = seedIndex + 1
+            val resolvedInput = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolvedInput.track)
+            if (metadata.searchArtist.isBlank() || metadata.searchTitle.isBlank()) {
+                return@forEachIndexed
+            }
+
+            var contributions = collectSeedContributions(
+                seedNumber = seedNumber,
+                seed = seed,
+                metadata = metadata,
+                library = library,
+                providerPolicy = providerPolicy,
+                broadSearch = true,
+                allowArtistFallback = true
+            )
+
+            if (contributions.isEmpty() && resolvedInput.source != TrackInputSource.TAGS) {
+                val fallbackTrack = buildProviderFallbackTrack(resolvedInput.track)
+                if (fallbackTrack != null) {
+                    val fallbackMetadata = metadataNormalizer.normalize(fallbackTrack)
+                    if (fallbackMetadata.searchArtist.isNotBlank() &&
+                        fallbackMetadata.searchTitle.isNotBlank()
+                    ) {
+                        contributions = collectSeedContributions(
+                            seedNumber = seedNumber,
+                            seed = seed,
+                            metadata = fallbackMetadata,
+                            library = library,
+                            providerPolicy = providerPolicy,
+                            broadSearch = true
+                        )
+                    }
+                }
+            }
+            result += contributions
+        }
         return result
     }
 
@@ -6613,201 +7354,180 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        library: List<GmmpLibraryTrack>,
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
-
-        val broadListenBrainzContributions =
-            mutableListOf<RawRecommendationContribution>()
-
-        var broadListenBrainzIdentityCount =
-            0
+        val broadContributions = mutableListOf<RawRecommendationContribution>()
+        var identitiesUsed = 0
 
         try {
+            val matches = listenBrainzClient.searchRecording(
+                artist = metadata.searchArtist,
+                title = metadata.searchTitle
+            )
+            val evaluations = matchSelector.evaluateAll(metadata, matches)
+                .filter { it.accepted }
+                .take(
+                    if (broadSearch) BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES
+                    else MAX_RECORDING_MATCHES_TO_TRY
+                )
 
-            val matches =
-                listenBrainzClient
-                    .searchRecording(
-                        artist = metadata.searchArtist,
-                        title = metadata.searchTitle
-                    )
-
-            val evaluations =
-                matchSelector
-                    .evaluateAll(
-                        localMetadata = metadata,
-                        matches = matches
-                    )
-                    .filter {
-                        it.accepted
-                    }
-                    .take(
-                        if (
-                            broadSearch
-                        ) {
-
-                            BROAD_LISTENBRAINZ_MAX_RECORDING_MATCHES
-
-                        } else {
-
-                            MAX_RECORDING_MATCHES_TO_TRY
-                        }
-                    )
-
-            for (
-                evaluation in
-                evaluations
-            ) {
-
-                val similar =
-                    try {
-
-                        listenBrainzClient
-                            .getSimilarRecordings(
-                                evaluation
-                                    .match
-                                    .recordingMbid
-                            )
-
-                    } catch (t: Throwable) {
-
-                        emptyList()
-                    }
-
-                if (
-                    similar.isEmpty()
-                ) {
-
-                    continue
+            if (!artistFallbackOnly) {
+                for (evaluation in evaluations) {
+                    val similar = try {
+                    listenBrainzClient.getSimilarRecordings(evaluation.match.recordingMbid)
+                } catch (_: Throwable) {
+                    emptyList()
                 }
+                if (similar.isEmpty()) continue
 
-                val highestScore =
-                    similar
-                        .maxOfOrNull {
-                            it.score
-                        }
-                        ?.takeIf {
-                            it > 0.0
-                        }
-                        ?: 1.0
-
-                val seedWeight =
-                    seedWeight(
-                        seed
+                val highest = similar.maxOfOrNull { it.score }
+                    ?.takeIf { it > 0.0 } ?: 1.0
+                val mapped = similar.map { item ->
+                    RawRecommendationContribution(
+                        provider = RecommendationProvider.LISTENBRAINZ,
+                        seed = seed,
+                        artist = item.artistName,
+                        title = item.recordingName,
+                        mbid = item.recordingMbid,
+                        providerSimilarity = (item.score / highest).coerceIn(0.0, 1.0),
+                        seedWeight = seedWeight(seed),
+                        identityConfidence = evaluation.totalScore.coerceIn(0.0, 1.0)
                     )
+                }
 
                 Log.i(
                     TAG,
-                    (
-                        if (
-                            broadSearch
-                        ) {
-
-                            "LB BROAD CONTRIBUTIONS seed=$seedNumber | "
-
-                        } else {
-
-                            "LB CONTRIBUTIONS seed=$seedNumber | "
-                        }
-                    ) +
-                        "results=${similar.size} | " +
-                        "identityConfidence=" +
-                        formatScore(
-                            evaluation.totalScore
-                        )
+                    (if (broadSearch) "LB BROAD" else "LB") +
+                        " TRACK CONTRIBUTIONS seed=$seedNumber | results=${mapped.size} | " +
+                        "identityConfidence=${formatScore(evaluation.totalScore)}"
                 )
 
-                val mapped =
-                    similar
-                        .map { item ->
-
-                            val normalizedSimilarity =
-                                (
-                                    item.score /
-                                        highestScore
-                                    )
-                                    .coerceIn(
-                                        0.0,
-                                        1.0
-                                    )
-
-                            RawRecommendationContribution(
-                                provider =
-                                    RecommendationProvider
-                                        .LISTENBRAINZ,
-
-                                seed = seed,
-
-                                artist =
-                                    item.artistName,
-
-                                title =
-                                    item.recordingName,
-
-                                mbid =
-                                    item.recordingMbid,
-
-                                providerSimilarity =
-                                    normalizedSimilarity,
-
-                                seedWeight =
-                                    seedWeight,
-
-                                identityConfidence =
-                                    evaluation.totalScore
-                                        .coerceIn(
-                                            0.0,
-                                            1.0
-                                        )
-                            )
-                        }
-
-                if (
-                    !broadSearch
-                ) {
-
-                    return mapped
+                if (!broadSearch) return mapped
+                broadContributions += mapped
+                identitiesUsed++
+                    if (identitiesUsed >= BROAD_LISTENBRAINZ_IDENTITIES_TO_USE) break
                 }
 
-                broadListenBrainzContributions +=
-                    mapped
-
-                broadListenBrainzIdentityCount +=
-                    1
-
-                if (
-                    broadListenBrainzIdentityCount >=
-                    BROAD_LISTENBRAINZ_IDENTITIES_TO_USE
-                ) {
-
-                    break
-                }
-            }
-
-            if (
-                broadSearch &&
-                broadListenBrainzContributions.isNotEmpty()
-            ) {
-
-                return broadListenBrainzContributions
-                    .distinctBy { contribution ->
-                        Triple(
-                            contribution.artist,
-                            contribution.title,
-                            contribution.mbid
-                        )
+                if (broadContributions.isNotEmpty()) {
+                    return broadContributions.distinctBy {
+                        Triple(it.artist, it.title, it.mbid)
                     }
+                }
             }
 
+            if (!allowArtistFallback) {
+                return emptyList()
+            }
+
+            // Recording graph exhausted: use ListenBrainz's official
+            // similar-artists dataset as a lower-confidence signal and expand
+            // it only to tracks that are already in the local GMMP library.
+            // A sparse/new track may have no accepted recording identity even
+            // though recording search still returned a reliable artist MBID.
+            // Recover only that artist identity; never treat the rejected
+            // recording row itself as a track recommendation.
+            val fallbackEvaluation = evaluations.firstOrNull {
+                it.match.artistMbids.isNotEmpty()
+            }
+            val acceptedArtistMbid =
+                fallbackEvaluation?.match?.artistMbids?.firstOrNull()
+            val recoveredArtistIdentity =
+                if (acceptedArtistMbid.isNullOrBlank()) {
+                    ListenBrainzArtistIdentityPolicy.select(
+                        metadata = metadata,
+                        matches = matches,
+                        comparisonKey = metadataNormalizer::comparisonKey,
+                        artistMbidsForRecording = { match ->
+                            if (match.artistMbids.isNotEmpty()) {
+                                match.artistMbids
+                            } else {
+                                try {
+                                    listenBrainzClient.getArtistMbidsForRecording(
+                                        match.recordingMbid
+                                    )
+                                } catch (t: Throwable) {
+                                    Log.w(
+                                        TAG,
+                                        "LB ARTIST ID LOOKUP FAILED seed=$seedNumber | " +
+                                            "recording=${match.recordingMbid} | " +
+                                            "${t.javaClass.simpleName}: ${t.message}"
+                                    )
+                                    emptyList()
+                                }
+                            }
+                        }
+                    )
+                } else {
+                    null
+                }
+            val artistMbid = acceptedArtistMbid ?: recoveredArtistIdentity?.artistMbid
+            val fallbackConfidence =
+                fallbackEvaluation?.totalScore?.coerceIn(0.0, 1.0)
+                    ?: recoveredArtistIdentity?.confidence?.coerceIn(0.0, 1.0)
+                    ?: 0.0
+
+            if (recoveredArtistIdentity != null) {
+                Log.i(
+                    TAG,
+                    "LB ARTIST IDENTITY FALLBACK seed=$seedNumber | " +
+                        "artist=${recoveredArtistIdentity.artistName} | " +
+                        "confidence=${formatScore(recoveredArtistIdentity.confidence)}"
+                )
+            } else if (acceptedArtistMbid.isNullOrBlank()) {
+                Log.i(
+                    TAG,
+                    "LB ARTIST FALLBACK UNAVAILABLE seed=$seedNumber | " +
+                        "recordingMatches=${matches.size}"
+                )
+            }
+
+            if (!artistMbid.isNullOrBlank() && fallbackConfidence > 0.0) {
+                val artists = try {
+                    listenBrainzClient.getSimilarArtists(
+                        artistMbid = artistMbid,
+                        limit = if (broadSearch) 20 else 12
+                    )
+                } catch (_: Throwable) {
+                    emptyList()
+                }
+                val expanded = localArtistSignalExpander.expand(
+                    artists = artists,
+                    library = library,
+                    excludedTrackIds = setOf(seed.track.id),
+                    maxArtists = if (broadSearch) 20 else 12,
+                    maxTracksPerArtist = 3
+                )
+                if (expanded.isNotEmpty()) {
+                    Log.i(
+                        TAG,
+                        "LB ARTIST FALLBACK seed=$seedNumber | artists=${artists.size} | " +
+                            "localTracks=${expanded.size} | identityConfidence=${formatScore(fallbackConfidence)}"
+                    )
+                    return expanded.mapNotNull { item ->
+                        val artist = item.libraryTrack.track.artist?.trim().orEmpty()
+                        val title = item.libraryTrack.track.title?.trim().orEmpty()
+                        if (artist.isBlank() || title.isBlank()) null else
+                            RawRecommendationContribution(
+                                provider = RecommendationProvider.LISTENBRAINZ,
+                                seed = seed,
+                                artist = artist,
+                                title = title,
+                                mbid = null,
+                                providerSimilarity = (
+                                    item.providerScore * LISTENBRAINZ_ARTIST_FALLBACK_PENALTY
+                                ).coerceIn(0.0, 1.0),
+                                seedWeight = seedWeight(seed),
+                                identityConfidence = fallbackConfidence
+                            )
+                    }
+                }
+            }
         } catch (t: Throwable) {
-
-            Log.w(
-                TAG,
-                "ListenBrainz contribution collection failed " +
-                    "for seed $seedNumber",
-                t
-            )
+            Log.w(TAG, "ListenBrainz contribution collection failed for seed $seedNumber", t)
         }
-
         return emptyList()
     }
 
@@ -6815,162 +7535,98 @@ class GoneSmartModule : XposedModule() {
         seedNumber: Int,
         seed: RecommendationSeed,
         metadata: NormalizedTrackMetadata,
-        broadSearch: Boolean = false
+        broadSearch: Boolean = false,
+        allowArtistFallback: Boolean = false,
+        artistFallbackOnly: Boolean = false
     ): List<RawRecommendationContribution> {
+        if (!lastFmClient.isConfigured()) return emptyList()
 
-        if (
-            !lastFmClient.isConfigured()
-        ) {
+        val queryCandidates = buildLastFmQueryCandidates(metadata)
+        val testedIdentityKeys = mutableSetOf<String>()
+        var fallbackIdentity: LastFmTrackIdentity? = null
+        var fallbackConfidence = 0.0
 
-            return emptyList()
-        }
+        for (candidate in queryCandidates) {
+            val identity = try {
+                lastFmClient.resolveTrack(candidate.artist, candidate.title)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
 
-        val queryCandidates =
-            buildLastFmQueryCandidates(
-                metadata
-            )
+            val identityKey = buildLastFmIdentityKey(identity)
+            if (!testedIdentityKeys.add(identityKey)) continue
 
-        val testedIdentityKeys =
-            mutableSetOf<String>()
+            val identityConfidence = lastFmIdentityConfidence(metadata, candidate)
+            if (identityConfidence > fallbackConfidence) {
+                fallbackIdentity = identity
+                fallbackConfidence = identityConfidence
+            }
 
-        for (
-            candidate in
-            queryCandidates
-        ) {
-
-            val identity =
-                try {
-
-                    lastFmClient
-                        .resolveTrack(
-                            artist = candidate.artist,
-                            title = candidate.title
-                        )
-
-                } catch (t: Throwable) {
-
-                    null
-                }
-                    ?: continue
-
-            val identityKey =
-                buildLastFmIdentityKey(
-                    identity
-                )
-
-            if (
-                identityKey in
-                testedIdentityKeys
-            ) {
-
+            if (artistFallbackOnly) {
                 continue
             }
 
-            testedIdentityKeys +=
-                identityKey
-
-            val similar =
-                try {
-
-                    lastFmClient
-                        .getSimilarTracks(
-                            identity = identity,
-                            limit =
-                                if (
-                                    broadSearch
-                                ) {
-
-                                    BROAD_LASTFM_RESULT_LIMIT
-
-                                } else {
-
-                                    LASTFM_RESULT_LIMIT
-                                }
-                        )
-
-                } catch (t: Throwable) {
-
-                    emptyList()
-                }
-
-            if (
-                similar.isEmpty()
-            ) {
-
-                continue
+            val similar = try {
+                lastFmClient.getSimilarTracksDirect(
+                    identity = identity,
+                    limit = if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+                )
+            } catch (_: Throwable) {
+                emptyList()
             }
-
-            val identityConfidence =
-                lastFmIdentityConfidence(
-                    metadata = metadata,
-                    candidate = candidate
-                )
-
-            val seedWeight =
-                seedWeight(
-                    seed
-                )
+            if (similar.isEmpty()) continue
 
             Log.i(
                 TAG,
-                (
-                    if (
-                        broadSearch
-                    ) {
-
-                        "LASTFM BROAD CONTRIBUTIONS seed=$seedNumber | "
-
-                    } else {
-
-                        "LASTFM CONTRIBUTIONS seed=$seedNumber | "
-                    }
-                ) +
-                    "results=${similar.size} | " +
-                    "identityConfidence=" +
-                    formatScore(
-                        identityConfidence
-                    ) +
-                    " | source=${candidate.artist} - " +
-                    candidate.title
+                (if (broadSearch) "LASTFM BROAD" else "LASTFM") +
+                    " TRACK CONTRIBUTIONS seed=$seedNumber | results=${similar.size} | " +
+                    "identityConfidence=${formatScore(identityConfidence)} | " +
+                    "source=${candidate.artist} - ${candidate.title}"
             )
-
-            return similar
-                .map { item ->
-
-                    RawRecommendationContribution(
-                        provider =
-                            RecommendationProvider
-                                .LASTFM,
-
-                        seed = seed,
-
-                        artist =
-                            item.artistName,
-
-                        title =
-                            item.trackName,
-
-                        mbid =
-                            item.mbid,
-
-                        providerSimilarity =
-                            item.match
-                                .coerceIn(
-                                    0.0,
-                                    1.0
-                                ),
-
-                        seedWeight =
-                            seedWeight,
-
-                        identityConfidence =
-                            identityConfidence
-                    )
-                }
+            return mapLastFmContributions(similar, seed, identityConfidence)
         }
 
-        return emptyList()
+        if (!allowArtistFallback) {
+            return emptyList()
+        }
+
+        val identity = fallbackIdentity ?: return emptyList()
+        val fallback = try {
+            lastFmClient.getArtistFallbackTracks(
+                artist = identity.artistName,
+                limit = if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+            )
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        if (fallback.isEmpty()) return emptyList()
+
+        Log.i(
+            TAG,
+            (if (broadSearch) "LASTFM BROAD" else "LASTFM") +
+                " ARTIST FALLBACK seed=$seedNumber | results=${fallback.size} | " +
+                "artist=${identity.artistName}"
+        )
+        return mapLastFmContributions(fallback, seed, fallbackConfidence)
     }
+
+    private fun mapLastFmContributions(
+        tracks: List<LastFmSimilarTrack>,
+        seed: RecommendationSeed,
+        identityConfidence: Double
+    ): List<RawRecommendationContribution> =
+        tracks.map { item ->
+            RawRecommendationContribution(
+                provider = RecommendationProvider.LASTFM,
+                seed = seed,
+                artist = item.artistName,
+                title = item.trackName,
+                mbid = item.mbid,
+                providerSimilarity = item.match.coerceIn(0.0, 1.0),
+                seedWeight = seedWeight(seed),
+                identityConfidence = identityConfidence.coerceIn(0.0, 1.0)
+            )
+        }
 
     private fun seedWeight(
         seed: RecommendationSeed
@@ -7232,106 +7888,25 @@ class GoneSmartModule : XposedModule() {
         )
     }
 
-    private fun logMergedRecommendations(
-        candidates: List<RecommendationCandidate>
+    private fun logProviderBlendMetrics(
+        rawContributions: List<RawRecommendationContribution>,
+        merged: List<RecommendationCandidate>,
+        playlistMetrics: PlaylistAffinityMetrics
     ) {
-
+        val counts = rawContributions
+            .groupingBy { it.provider }
+            .eachCount()
+        val corroborated = merged.count { candidate ->
+            candidate.contributions.map { it.provider }.distinct().size >= 2
+        }
         Log.i(
             TAG,
-            "========== MERGED RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "MERGED CANDIDATE COUNT = " +
-                candidates.size
-        )
-
-        candidates
-            .take(
-                MERGED_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, candidate ->
-
-                val providers =
-                    candidate
-                        .contributions
-                        .map {
-                            it.provider
-                        }
-                        .distinct()
-
-                val seeds =
-                    candidate
-                        .contributions
-                        .map {
-                            it.seed.track.id
-                        }
-                        .distinct()
-
-                Log.i(
-                    TAG,
-                    "MERGED ${index + 1} | " +
-                        "score=${formatScore(candidate.totalScore)} | " +
-                        "artist=${candidate.artist} | " +
-                        "title=${candidate.title} | " +
-                        "providers=$providers | " +
-                        "seedIds=$seeds | " +
-                        "contributions=" +
-                        candidate.contributions.size
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== MERGED RECOMMENDATIONS END =========="
-        )
-    }
-
-    private fun logLocalRecommendations(
-        matches: List<LocalRecommendationMatch>
-    ) {
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS START =========="
-        )
-
-        Log.i(
-            TAG,
-            "LOCAL MATCH COUNT = " +
-                matches.size
-        )
-
-        matches
-            .take(
-                LOCAL_RESULTS_TO_LOG
-            )
-            .forEachIndexed { index, match ->
-
-                Log.i(
-                    TAG,
-                    "LOCAL ${index + 1} | " +
-                        "rankingScore=${formatScore(match.rankingScore)} | " +
-                        "baseScore=${formatScore(match.finalScore)} | " +
-                        "matchScore=${formatScore(match.matchScore)} | " +
-                        "titleScore=${formatScore(match.titleScore)} | " +
-                        "artistScore=${formatScore(match.artistScore)} | " +
-                        "versionScore=${formatScore(match.versionScore)} | " +
-                        "preferenceMultiplier=${formatScore(match.preferenceMultiplier)} | " +
-                        "rating=${match.ratingStars ?: "unrated"} | " +
-                        "year=${match.libraryTrack.year} | " +
-                        "trackId=${match.track.id} | " +
-                        "localArtist=${match.track.artist} | " +
-                        "localTitle=${match.track.title} | " +
-                        "candidateArtist=${match.recommendation.artist} | " +
-                        "candidateTitle=${match.recommendation.title}"
-                )
-            }
-
-        Log.i(
-            TAG,
-            "========== LOCAL RECOMMENDATIONS END =========="
+            "SMART DJ PROVIDER METRICS | contributions=$counts | " +
+                "merged=${merged.size} | multiProvider=$corroborated | " +
+                "playlistUsable=${playlistMetrics.usablePlaylists} | " +
+                "playlistMemberships=${playlistMetrics.memberships} | " +
+                "playlistSeedHits=${playlistMetrics.seedsMatched} | " +
+                "playlistSignals=${playlistMetrics.signals}"
         )
     }
 
@@ -7460,7 +8035,12 @@ class GoneSmartModule : XposedModule() {
             // an in-player Toast must use installed GMMP vocabulary.
             Log.i(TAG, "SMART DJ NOTICE | key=" + noticeKey +
                 " | companionDetail=" + message)
-            statusNotifier.showNative(noticeKey)
+            val routedThroughTrackMix =
+                noticeKey == "no-matches-native-fallback" &&
+                    trackMixController.showOwnedStatusNotice(noticeKey)
+            if (!routedThroughTrackMix) {
+                statusNotifier.showNative(noticeKey)
+            }
         }
     }
 

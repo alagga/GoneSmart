@@ -5,6 +5,11 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
+internal data class GmmpQueueTrackLocation(
+    val queuePosition: Int,
+    val queueEntryId: Long
+)
+
 /**
  * Read-only GMMP queue adapter.
  *
@@ -19,6 +24,9 @@ class GmmpQueueReader {
 
     companion object {
         private const val TAG = "GoneSmart"
+        private val reportedCursorBindings =
+            java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
         private const val CURSOR_QUERY =
             """
             SELECT queue_table.queue_position AS queue_position,
@@ -55,15 +63,74 @@ class GmmpQueueReader {
         val source: String
     )
 
-    private val reportedCursorBindings =
-        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     fun read(
         autoDjInstance: Any,
-        currentQueuePositionHint: Int? = null
+        currentQueuePositionHint: Int? = null,
+        currentQueueEntryIdHint: Long? = null,
+        currentTrackPathHint: String? = null
     ): QueueContext? {
         readLegacy(autoDjInstance)?.let { return it }
-        return readThroughCursor(autoDjInstance, currentQueuePositionHint)
+        return readThroughCursor(
+            autoDjInstance,
+            currentQueuePositionHint,
+            currentQueueEntryIdHint,
+            currentTrackPathHint
+        )
+    }
+
+    internal fun locateUniqueTrackRow(
+        autoDjInstance: Any,
+        trackId: Long
+    ): GmmpQueueTrackLocation? {
+        if (trackId <= 0L) return null
+        return runCatching {
+            val rows = GmmpReadOnlySql.query(
+                autoDjInstance = autoDjInstance,
+                sql = """
+                    SELECT queue_position AS queue_position,
+                           queue_id AS queue_id,
+                           queue_track_id AS queue_track_id
+                      FROM queue_table
+                     ORDER BY queue_position
+                """.trimIndent()
+            ) { cursor ->
+                val positionColumn = cursor.getColumnIndex("queue_position")
+                val entryColumn = cursor.getColumnIndex("queue_id")
+                val trackColumn = cursor.getColumnIndex("queue_track_id")
+                require(
+                    positionColumn >= 0 &&
+                        entryColumn >= 0 &&
+                        trackColumn >= 0
+                ) {
+                    "GMMP queue Track locator columns unavailable"
+                }
+                buildList {
+                    while (cursor.moveToNext()) {
+                        if (cursor.getLong(trackColumn) != trackId) continue
+                        add(
+                            GmmpQueueTrackLocation(
+                                queuePosition = cursor.getInt(positionColumn),
+                                queueEntryId = cursor.getLong(entryColumn)
+                            )
+                        )
+                    }
+                }
+            }
+            if (rows.size != 1) {
+                Log.w(
+                    TAG,
+                    "GMMP QUEUE TRACK LOCATION | track=$trackId | " +
+                        "matches=${rows.size} | unique=false"
+                )
+                return@runCatching null
+            }
+            rows.single().takeIf { row ->
+                row.queuePosition > 0 && row.queueEntryId > 0L
+            }
+        }.onFailure {
+            Log.w(TAG, "GMMP queue Track locator unavailable", it)
+        }.getOrNull()
     }
 
     private fun readLegacy(autoDjInstance: Any): QueueContext? =
@@ -132,7 +199,9 @@ class GmmpQueueReader {
 
     private fun readThroughCursor(
         autoDjInstance: Any,
-        currentQueuePositionHint: Int?
+        currentQueuePositionHint: Int?,
+        currentQueueEntryIdHint: Long?,
+        currentTrackPathHint: String?
     ): QueueContext? =
         runCatching {
             val rows = GmmpReadOnlySql.query(
@@ -184,7 +253,9 @@ class GmmpQueueReader {
             val marker = resolveCurrentMarker(
                 autoDjInstance,
                 rows,
-                currentQueuePositionHint
+                currentQueuePositionHint,
+                currentQueueEntryIdHint,
+                currentTrackPathHint
             ) ?: return@runCatching null
             val useShuffle =
                 marker.orderKind == OrderKind.SHUFFLE &&
@@ -218,7 +289,6 @@ class GmmpQueueReader {
             val currentQueuePosition = ordered[currentIndex].queuePosition
             val key =
                 autoDjInstance.javaClass.name + "|" +
-                    marker.source + "|" +
                     if (useShuffle) "shuffle" else "queue"
             if (reportedCursorBindings.add(key)) {
                 Log.i(
@@ -232,7 +302,8 @@ class GmmpQueueReader {
             }
             QueueContext(
                 currentQueuePosition = currentQueuePosition,
-                items = items
+                items = items,
+                currentResolutionSource = marker.source
             )
         }.onFailure {
             Log.w(
@@ -245,8 +316,57 @@ class GmmpQueueReader {
     private fun resolveCurrentMarker(
         autoDjInstance: Any,
         rows: List<CursorRow>,
-        currentQueuePositionHint: Int?
+        currentQueuePositionHint: Int?,
+        currentQueueEntryIdHint: Long?,
+        currentTrackPathHint: String?
     ): CurrentMarker? {
+        currentQueueEntryIdHint?.let { entryId ->
+            val matches = rows.indices.filter { index ->
+                rows[index].queueEntryId == entryId
+            }
+            if (matches.size == 1) {
+                return CurrentMarker(
+                    rowIndex = matches.single(),
+                    orderKind = OrderKind.QUEUE,
+                    source = "track-mix-entry-hint"
+                )
+            }
+            if (matches.isEmpty() && currentTrackPathHint != null) {
+                val resolution = TrackMixCurrentPathRebindPolicy.resolve(
+                    queuePaths = rows.map { it.track.path },
+                    expectedPath = currentTrackPathHint
+                )
+                resolution.index?.let { index ->
+                    val rebound = rows[index]
+                    Log.i(
+                        TAG,
+                        "GMMP QUEUE CURRENT | track-mix path rebind" +
+                            " | oldEntry=" + entryId +
+                            " | newEntry=" + rebound.queueEntryId +
+                            " | index=" + index +
+                            " | exact=true"
+                    )
+                    return CurrentMarker(
+                        rowIndex = index,
+                        orderKind = OrderKind.QUEUE,
+                        source = "track-mix-path-rebind"
+                    )
+                }
+                Log.w(
+                    TAG,
+                    "GMMP QUEUE CURRENT | track-mix path rebind rejected" +
+                        " | oldEntry=" + entryId +
+                        " | matches=" + resolution.matchCount
+                )
+            }
+            Log.w(
+                TAG,
+                "GMMP QUEUE CURRENT | queue entry hint rejected" +
+                    " | entryId=" + entryId +
+                    " | matches=" + matches.size
+            )
+        }
+
         currentQueuePositionHint?.let { position ->
             val matches = rows.indices.filter { index ->
                 rows[index].queuePosition == position

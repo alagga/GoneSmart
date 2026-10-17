@@ -2,22 +2,37 @@
 
 This roadmap describes the current direction for upcoming GoneSmart releases. Planned items may change as development and GMMP compatibility work progresses.
 
-## Ideas for 0.5.0
+## 0.5.0 release candidate
 
-### More recommendation providers
+`0.5.0-rc.1` combines the three completed 0.5.0 workstreams in one release tree:
 
-Explore additional recommendation sources for Smart Auto-DJ. Possible directions include services such as Spotify, YouTube and YouTube Music, but these names are examples rather than committed providers. The exact services, available APIs and practical feasibility still need to be evaluated before implementation is decided.
+### Bluetooth Audio Profiles
 
-Any future provider would be used as an additional **recommendation source**, not as a way to stream its catalog through GoneSmart. The goal is to improve recommendation coverage and give users more choice while GoneSmart continues to resolve playable tracks against the local GMMP library.
+Per-output GMMP Equalizer and Effects profiles are implemented and device-accepted on GMMP 4.2.1. GoneSmart remembers the normal no-Bluetooth state as Standard, applies enabled Bluetooth overrides automatically, imports compatible GMMP Equalizer presets and adapts stored curves across supported 2–10-band layouts.
 
-### Bluetooth device audio profiles
+See `docs/AUDIO_PROFILES.md` and `docs/AUDIO_PROFILES_COMPLETION.md`.
 
-Add per-device audio profiles for Bluetooth playback devices.
+### Smarter recommendation blend
 
-GoneSmart should be able to automatically use different GMMP equalizer and effects settings depending on which Bluetooth headphones, speakers, car audio system or other device is currently connected.
+Smart Auto-DJ combines Local Playlist Affinity, ListenBrainz and Last.fm with Smart/Custom provider policy, optional per-provider weights, bounded corroboration, controlled near-tie variety, staged artist rescue and cached large-library/playlist reads. The final playable result must still exist in the local GMMP library.
 
-For example, connecting one pair of headphones could activate one EQ/effects profile, while connecting a car stereo could automatically switch to another.
+See `docs/AUTO_DJ_PROVIDERS.md` and `docs/PROVIDERS.md`.
+
+### GMMP 4.2.1 compatibility
+
+The accepted Playlist Link and Track Auto-DJ compatibility work is part of the same candidate. Native GMMP behavior remains authoritative, dynamic semantic/structural resolution is preferred over obfuscated names, and ambiguous state-changing boundaries fail closed.
+
+Stable `0.5.0` follows after the combined release candidate has passed prerelease testing.
+
+## 0.6.0 outlook
+
+- Evaluate **SoundCloud** as an additional online recommendation source if a safe distributed-client authentication model is available.
+- Evaluate **Smart Playlists** as an optional, deliberately weaker local affinity signal.
+- Revalidate Equalizer compatibility data when support moves beyond GMMP 4.2.1.
+- Continue replacing version-specific compatibility fast paths with cached semantic bindings where that can be proven safely.
 
 ## Later ideas
 
-Additional smart-library, playback and GMMP workflow extensions can be considered after the 0.5.0 work is stable.
+- Distinguish remembered Bluetooth devices that expose the same product name without reintroducing unstable route-ID fragmentation.
+- Consider caller-authenticated IPC for the GMMP-to-companion audio-observation fallback where Android package visibility prevents the preferred provider transport.
+- Additional smart-library, playback and GMMP workflow extensions after 0.5.0 is stable.

@@ -25,7 +25,7 @@ class QueuePositionNormalizationPolicyTest {
     }
 
     @Test
-    fun `current row is moved to its corresponding normalized position`() {
+    fun `normalization preserves the verified absolute current position`() {
         val plan = QueuePositionNormalizationPolicy.plan(
             rows = listOf(
                 QueuePositionNormalizationPolicy.Row(20L, 5908),
@@ -35,8 +35,61 @@ class QueuePositionNormalizationPolicyTest {
             currentQueueId = 21L
         )!!
 
-        assertEquals(listOf(1, 2, 3), plan.normalizedPositions)
-        assertEquals(2, plan.currentNewPosition)
+        assertEquals(listOf(5911, 5912, 5913), plan.normalizedPositions)
+        assertEquals(5912, plan.currentNewPosition)
+    }
+
+    @Test
+    fun `first Track Mix seed can stay at position five while refill gaps close`() {
+        val plan = QueuePositionNormalizationPolicy.plan(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(50L, 5),
+                QueuePositionNormalizationPolicy.Row(51L, 11),
+                QueuePositionNormalizationPolicy.Row(52L, 12),
+                QueuePositionNormalizationPolicy.Row(53L, 13),
+                QueuePositionNormalizationPolicy.Row(54L, 14)
+            ),
+            currentQueueId = 50L
+        )!!
+
+        assertEquals(listOf(5, 6, 7, 8, 9), plan.normalizedPositions)
+        assertEquals(5, plan.currentNewPosition)
+    }
+
+    @Test
+    fun `verified full Track Mix queue rebases to one through current identity`() {
+        val plan = QueuePositionNormalizationPolicy.rebaseToOne(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(50L, 8),
+                QueuePositionNormalizationPolicy.Row(51L, 9),
+                QueuePositionNormalizationPolicy.Row(52L, 10),
+                QueuePositionNormalizationPolicy.Row(53L, 11),
+                QueuePositionNormalizationPolicy.Row(54L, 12)
+            ),
+            currentQueueId = 50L
+        )!!
+
+        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)
+        assertEquals(1, plan.currentNewPosition)
+        assertEquals(50L, plan.currentQueueId)
+    }
+
+    @Test
+    fun `final rebase keeps a middle current entry by identity`() {
+        val plan = QueuePositionNormalizationPolicy.rebaseToOne(
+            rows = listOf(
+                QueuePositionNormalizationPolicy.Row(60L, 8),
+                QueuePositionNormalizationPolicy.Row(61L, 9),
+                QueuePositionNormalizationPolicy.Row(62L, 10),
+                QueuePositionNormalizationPolicy.Row(63L, 11),
+                QueuePositionNormalizationPolicy.Row(64L, 12)
+            ),
+            currentQueueId = 62L
+        )!!
+
+        assertEquals(listOf(1, 2, 3, 4, 5), plan.normalizedPositions)
+        assertEquals(3, plan.currentNewPosition)
+        assertEquals(62L, plan.currentQueueId)
     }
 
     @Test

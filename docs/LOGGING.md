@@ -29,13 +29,16 @@ native callbacks/queue verification confirm the actual result. An initial
 Flip click, playlist dispatch and successful reverse are different stages.
 Don't add repeated menu inflation, individual track IDs, full playlist
 paths or internal reflective class names to the user-facing log.
-Use `GoneSmart`, `GoneSmartPlaylist`, `GoneSmartSmartFolders`,
-`GoneSmartPlaylistBridge`, `GoneSmartFlip` or `GoneSmartTrackMix`
-in Android Logcat for those details.
+Use `GoneSmart`, `GoneSmartCompat`, `GoneSmartPlaylist`, `GoneSmartSmartFolders`,
+`GoneSmartPlaylistBridge`, `GoneSmartFlip`, `GoneSmartTrackMix`,
+`GoneSmartAudioProfiles` or `GoneSmartAudioApply` in Android Logcat for those details.
+`GoneSmartAudioProbe` is development-only and is not a normal support filter.
 
 **Summary counters:** the Logs header counts **Smart DJ**, **Playlists**, **Flip**, **Track Auto-DJ**, **UI**, and **System** separately. Only legacy/unknown categories remain under **Other**. Stored category name `[Track Mix]` remains stable for backwards compatibility; the companion renders it as **Track Auto-DJ**.
 
 **Playlist Link:** the user-facing log records high-level System readiness while enabled and one `[UI]` event when its companion switch changes. Detailed Bridge evaluation belongs in Logcat under `GoneSmartPlaylistBridge`; no playlist name, source path or track content is needed in Companion Logs. Internal path diagnostics use privacy-safe hash/extension/length output.
+
+**Audio Profiles:** normal route/profile application is event-driven and uses detailed Logcat rather than adding a companion-history row for every output or band mutation. Support diagnostics use `GoneSmartAudioProfiles` and `GoneSmartAudioApply`; only a future user-relevant terminal failure/state category should be promoted into the persistent event timeline.
 
 **Storage:** `GoneSmartEventStore` retains the most recent 400
 timestamped lines in the companion application's existing
@@ -59,6 +62,11 @@ older or UI/System lines in **Other**.
    remain a bounded compatibility diagnostic with a documented purpose.
 6. Update unit tests for `GoneSmartLogSummary`, and perform the relevant
    Android device smoke test before release.
+7. After compatibility acceptance, a successful structural binding/mapping is
+   logged at most once per stable runtime shape. Do not key success diagnostics
+   by changing queue size/current position or recreate their de-duplication set
+   per reader instance. New/ambiguous/failing runtime shapes may still emit the
+   bounded rich diagnostics needed for the next compatibility investigation.
 
 The Flip-specific native queue/order checks and on-device results are
 documented in [QUEUE_FLIP_TESTING.md](QUEUE_FLIP_TESTING.md).

@@ -38,7 +38,7 @@ internal object TrackMixPlan {
         return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
     }
 
-    /** Prefer GMMP `started`; otherwise use a readable GoneSmart fallback. */
+    /** Prefer GMMP `started`; otherwise keep the native action label and a language-neutral checkmark. */
     @Suppress("UNUSED_PARAMETER")
     fun localizedStartedMessage(
         language: String,
@@ -46,7 +46,7 @@ internal object TrackMixPlan {
         gmmpStarted: String?
     ): String {
         val native = gmmpStarted?.trim()?.takeIf(String::isNotBlank)
-        return "$menuLabel ${native ?: "started"}"
+        return "$menuLabel ${native ?: "✓"}"
     }
 
     data class NativeQueueEntry(
@@ -90,6 +90,71 @@ internal object TrackMixPlan {
             removeEntryIds = entries.filter {
                 it.queueId != current.queueId
             }.map { it.queueId }
+        )
+    }
+
+    data class NativeRetargetPlan(
+        val currentEntryId: Long,
+        val keptUpcomingEntryIds: List<Long>,
+        val rewriteTrackIds: Map<Long, Long>,
+        val removeEntryIds: List<Long>,
+        val expectedTrackIds: List<Long>
+    )
+
+    fun planNativeRetarget(
+        entries: List<NativeQueueEntry>,
+        currentPosition: Int,
+        selectedTrackId: Long,
+        targetQueueSize: Int,
+        smartTrackIds: List<Long>
+    ): NativeRetargetPlan {
+        require(targetQueueSize > 0) { "Target queue size must be positive" }
+        require(entries.isNotEmpty()) { "Native queue is empty" }
+        require(entries.map { it.queueId }.distinct().size == entries.size) {
+            "Native queue IDs are not unique"
+        }
+        require(entries.map { it.position }.distinct().size == entries.size) {
+            "Native queue positions are not unique"
+        }
+        require(smartTrackIds.size <= targetQueueSize - 1) {
+            "Too many Smart tracks for target queue"
+        }
+        val current = entries.singleOrNull { it.position == currentPosition }
+            ?: error("Native current queue entry unavailable")
+        require(current.trackId == selectedTrackId) {
+            "The current native song changed before retarget"
+        }
+        val neededUpcoming = targetQueueSize - 1
+        val upcoming = entries
+            .filter { it.position > currentPosition }
+            .sortedBy { it.position }
+        require(upcoming.size >= neededUpcoming) {
+            "Not enough native upcoming slots for Track Mix"
+        }
+        val kept = upcoming.take(neededUpcoming)
+        kept.forEachIndexed { index, row ->
+            require(row.position == currentPosition + index + 1) {
+                "Native upcoming queue positions are not contiguous"
+            }
+        }
+        val rewrites = linkedMapOf<Long, Long>()
+        smartTrackIds.forEachIndexed { index, trackId ->
+            require(trackId > 0L) { "Smart Track ID must be positive" }
+            rewrites[kept[index].queueId] = trackId
+        }
+        val keepIds = buildSet {
+            add(current.queueId)
+            addAll(kept.map { it.queueId })
+        }
+        val expectedUpcoming = kept.mapIndexed { index, row ->
+            smartTrackIds.getOrNull(index) ?: row.trackId
+        }
+        return NativeRetargetPlan(
+            currentEntryId = current.queueId,
+            keptUpcomingEntryIds = kept.map { it.queueId },
+            rewriteTrackIds = rewrites,
+            removeEntryIds = entries.filter { it.queueId !in keepIds }.map { it.queueId },
+            expectedTrackIds = listOf(selectedTrackId) + expectedUpcoming
         )
     }
 

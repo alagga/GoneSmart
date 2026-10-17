@@ -86,7 +86,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "Track Auto-DJ started",
+            "Track Auto-DJ ✓",
             TrackMixPlan.localizedStartedMessage(
                 "en", "Track Auto-DJ", null
             )
@@ -98,7 +98,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "トラック オートDJ started",
+            "トラック オートDJ ✓",
             TrackMixPlan.localizedStartedMessage(
                 "ja", "トラック オートDJ", null
             )
@@ -149,6 +149,36 @@ class TrackMixPlanTest {
                 listOf(entries[0], entries[0].copy(position = 2)),
                 1, 101
             )
+        }
+    }
+
+    @Test fun nativeRetargetKeepsCurrentAndContiguousFutureSlots() {
+        val entries = listOf(
+            TrackMixPlan.NativeQueueEntry(10, 100, 1),
+            TrackMixPlan.NativeQueueEntry(11, 101, 2),
+            TrackMixPlan.NativeQueueEntry(12, 102, 3),
+            TrackMixPlan.NativeQueueEntry(13, 103, 4),
+            TrackMixPlan.NativeQueueEntry(14, 104, 5),
+            TrackMixPlan.NativeQueueEntry(15, 105, 6)
+        )
+        val plan = TrackMixPlan.planNativeRetarget(
+            entries, 2, 101, 4, listOf(901, 902)
+        )
+        assertEquals(11L, plan.currentEntryId)
+        assertEquals(listOf(12L, 13L, 14L), plan.keptUpcomingEntryIds)
+        assertEquals(mapOf(12L to 901L, 13L to 902L), plan.rewriteTrackIds)
+        assertEquals(listOf(10L, 15L), plan.removeEntryIds)
+        assertEquals(listOf(101L, 901L, 902L, 104L), plan.expectedTrackIds)
+    }
+
+    @Test fun nativeRetargetRejectsMissingCurrentPlusOneGap() {
+        val entries = listOf(
+            TrackMixPlan.NativeQueueEntry(11, 101, 2),
+            TrackMixPlan.NativeQueueEntry(12, 102, 4),
+            TrackMixPlan.NativeQueueEntry(13, 103, 5)
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            TrackMixPlan.planNativeRetarget(entries, 2, 101, 3, listOf(901))
         }
     }
 

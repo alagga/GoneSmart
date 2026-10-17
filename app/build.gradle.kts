@@ -56,6 +56,31 @@ val releaseSigningConfigured =
         !releaseKeyAlias.isNullOrBlank() &&
         !releaseKeyPassword.isNullOrBlank()
 
+fun gitOutput(vararg args: String): String? =
+    runCatching {
+        val process = ProcessBuilder(listOf("git", *args))
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream
+            .bufferedReader()
+            .use { it.readText() }
+            .trim()
+        if (process.waitFor() == 0) output else null
+    }.getOrNull()
+
+val gitHead =
+    gitOutput("rev-parse", "--short=12", "HEAD")
+        ?.takeUnless(String::isBlank)
+        ?: "unknown"
+
+val gitDirty =
+    gitOutput("status", "--porcelain")
+        ?.isNotBlank() == true
+
+val buildRevision =
+    if (gitDirty) "$gitHead-dirty" else gitHead
+
 android {
     namespace = "io.github.alagga.gonesmart"
 
@@ -67,8 +92,8 @@ android {
         applicationId = "io.github.alagga.gonesmart"
         minSdk = 26
         targetSdk = 37
-        versionCode = 47
-        versionName = "0.4.1"
+        versionCode = 48
+        versionName = "0.5.0-rc.1"
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
@@ -77,6 +102,11 @@ android {
             "String",
             "LASTFM_API_KEY",
             "\"$lastFmApiKey\""
+        )
+        buildConfigField(
+            "String",
+            "GIT_REVISION",
+            "\"$buildRevision\""
         )
     }
 
@@ -122,9 +152,9 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
-    // Match the exact AndroidX RecyclerView version packaged by GMMP 4.2.0.
-    // Both playlist ItemAnimator and Files quickNav EdgeEffectFactory run
-    // on GMMP's host-process RecyclerView implementation at runtime.
+    // Keep RecyclerView aligned with the version used by the accepted GMMP
+    // host runtime. Playlist ItemAnimator and Files quickNav EdgeEffectFactory
+    // execute on GMMP's host-process RecyclerView implementation at runtime.
     implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     implementation(

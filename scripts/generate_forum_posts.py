@@ -118,9 +118,12 @@ def render() -> tuple[str, str]:
 
     notes = (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8")
     body = markdown_release_to_bbcode(notes)
-    reply = f"""[b]GoneSmart v{version} released[/b]
+    is_prerelease = "-" in version
+    release_label = "pre-release" if is_prerelease else "released"
+    availability = "The new pre-release is now available for testing." if is_prerelease else "The new release is now available."
+    reply = f"""[b]GoneSmart v{version} {release_label}[/b]
 
-The new release is now available. I've updated the first post with the current compatibility information as well.
+{availability} I've updated the first post with the current compatibility information as well.
 
 [b]GitHub release / APK:[/b]
 [url={release_url}]{release_url}[/url]

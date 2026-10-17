@@ -1,6 +1,6 @@
 # Playlist Link
 
-**Current status (30 September 2026): feature-complete on the maintainer's tested GMMP 4.2.0 setup and enabled in both debug and release build variants of the v0.4 development branch.** This is branch acceptance, not a published v0.4 release or a compatibility claim for other GMMP versions.
+**Current status (17 October 2026): Playlist Link is re-accepted on GMMP 4.2.1 and integrated into `0.5.0-rc.1`. The 4.2.1 repair replaces stale 4.2.0-only obfuscation assumptions with shape-validated runtime resolution and preserves native/fail-closed behavior.**
 
 Playlist Link lets a GMMP Smart-Playlist use the **current contents of an ordinary playlist** as a native Smart-rule membership source. It is independently controlled by **UI → Smart-Playlists → Playlist Link**, which defaults to enabled to preserve existing behavior. It extends GMMP's existing Link action; it does not create a copied Smart-Playlist or persist a static track snapshot.
 
@@ -15,7 +15,7 @@ A saved Playlist Link rule appears as a normal playlist-style rule in the editor
 
 ## Runtime architecture
 
-The implementation intentionally reuses GMMP's original 4.2.0 internals rather than building a parallel Smart-Playlist evaluator:
+The implementation intentionally reuses GMMP's native internals rather than building a parallel Smart-Playlist evaluator. From the 4.2.1 repair onward, obfuscated names are only fast paths and every required editor/rule/parser/query/DAO/writer boundary is validated by runtime shape before use:
 
 1. Ordinary choices come from GMMP's native Playlist DAO.
 2. The selected playlist is parsed through GMMP's original M3U/PLS/WPL reader.
@@ -79,7 +79,7 @@ The old development-only hooks that traced native reader pages, generic Smart-ru
 
 ## Device verification already completed
 
-On the maintainer's GMMP 4.2.0 device, the following have been accepted:
+The original end-to-end behavior was accepted on GMMP 4.2.0. The repaired flow has since been re-accepted on the maintainer's GMMP 4.2.1 setup. The verified behavior includes:
 
 - Link popup and ordinary playlist choice.
 - Add/save/reopen/edit of a Playlist Link rule.
@@ -92,10 +92,14 @@ These accepted tests should not be repeated merely because documentation was cle
 
 ## Known release boundaries
 
-- GMMP **4.2.0** is the tested target; obfuscated internals are version-sensitive.
+- GMMP **4.2.1** is the current accepted compatibility target. The older GMMP 4.2.0 path remains historical baseline evidence, not the release target.
 - Very large ordinary playlists rely on the current verified URI-IN chunking behavior.
 - A missing source intentionally matches nothing while GoneSmart is active.
 - Moving/renaming a Playlist Link source is not guessed from its display name.
 - The compatibility contract is verified on the tested GMMP runtime, not promised for unknown future Smart-rule serializers/evaluators.
 
 See also [Smart-Playlist folders](SMART_PLAYLIST_FOLDERS.md), [native GMMP audit](NATIVE_GMMP_AUDIT.md), [architecture](ARCHITECTURE.md), and [persistent coding rules](../AGENTS.md).
+
+
+### GMMP 4.2.1 editor labels (r33)
+The rule row keeps native GMMP vocabulary but distinguishes reference type: a native Smart-Playlist reference is displayed as `Smart Playlist: <name>` (localized host text), while a GoneSmart link to an ordinary playlist remains `Playlist: <name>`. This is a presentation-only change at the exact Smart-rule RecyclerView bind; serialized rule values are not modified.

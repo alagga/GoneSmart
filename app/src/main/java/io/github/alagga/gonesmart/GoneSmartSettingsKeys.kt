@@ -16,6 +16,17 @@ object GoneSmartSettingsKeys {
     const val KEY_FLIP_QUEUE = "flip_queue"
     const val KEY_TRACK_MIX = "track_mix_enabled"
 
+    const val KEY_RECOMMENDATION_MODE = "recommendation_mode"
+    const val KEY_PROVIDER_LISTENBRAINZ_ENABLED = "provider_listenbrainz_enabled"
+    const val KEY_PROVIDER_LASTFM_ENABLED = "provider_lastfm_enabled"
+    const val KEY_PROVIDER_LOCAL_PLAYLIST_ENABLED = "provider_local_playlist_enabled"
+    const val KEY_PROVIDER_LISTENBRAINZ_WEIGHT = "provider_listenbrainz_weight"
+    const val KEY_PROVIDER_LASTFM_WEIGHT = "provider_lastfm_weight"
+    const val KEY_PROVIDER_LOCAL_PLAYLIST_WEIGHT = "provider_local_playlist_weight"
+    const val KEY_PLAYLIST_SIZE_WEIGHTING = "playlist_size_weighting"
+    // Custom-mode near-tie rotation; Smart mode deliberately owns its balanced default.
+    const val KEY_RECOMMENDATION_VARIETY = "recommendation_variety"
+
     const val KEY_PREFER_HIGHER_RATED = "prefer_higher_rated"
     const val KEY_MINIMUM_RATING = "minimum_rating"
     const val KEY_SMART_RATING = "smart_rating"
@@ -26,6 +37,7 @@ object GoneSmartSettingsKeys {
     const val KEY_MATCH_QUEUE_ERA = "match_queue_era"
     const val KEY_FAVOR_RECENTLY_ADDED = "favor_recently_added"
     const val KEY_PREVENT_BASE_VERSION_DUPLICATES = "prevent_base_version_duplicates"
+    const val KEY_PREVENT_REMIX_DUPLICATES = "prevent_remix_duplicates"
     const val KEY_FALLBACK_WHEN_NO_MATCHES = "fallback_when_no_matches"
     const val KEY_SHOW_STATUS_MESSAGES = "show_status_messages"
 }

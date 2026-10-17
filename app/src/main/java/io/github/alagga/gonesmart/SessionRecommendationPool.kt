@@ -34,6 +34,9 @@ class SessionRecommendationPool {
     private var lastUnproductiveFillElapsedMs =
         Long.MIN_VALUE
 
+    private var lastFillWasScarce =
+        false
+
     @Synchronized
     fun reset(
         newSessionId: Long,
@@ -57,6 +60,9 @@ class SessionRecommendationPool {
 
         lastUnproductiveFillElapsedMs =
             Long.MIN_VALUE
+
+        lastFillWasScarce =
+            false
     }
 
     @Synchronized
@@ -339,13 +345,23 @@ class SessionRecommendationPool {
             return false
         }
 
+        if (
+            lastFillWasScarce
+        ) {
+            // A partial successful fill means the current provider evidence was
+            // exhausted. Keep low-water background top-up disabled even after
+            // those tracks are consumed. The next real GMMP refill request can
+            // still start a foreground pool fill through ensureRecommendationPoolReady().
+            return false
+        }
+
         val now =
             SystemClock.elapsedRealtime()
 
         // Back off only when the previous provider pass produced nothing.
-        // A successful pool that is being consumed quickly is precisely the
-        // case where we want an early asynchronous top-up rather than making
-        // the next native Auto-DJ request wait for network work.
+        // A successful full pool that is being consumed quickly is precisely
+        // the case where we want an early asynchronous top-up rather than
+        // making the next native Auto-DJ request wait for network work.
         if (
             lastUnproductiveFillElapsedMs !=
             Long.MIN_VALUE &&
@@ -374,12 +390,23 @@ class SessionRecommendationPool {
             return
         }
 
-        lastUnproductiveFillElapsedMs =
-            if (addedCount > 0) {
+        if (
+            addedCount > 0
+        ) {
+            lastUnproductiveFillElapsedMs =
                 Long.MIN_VALUE
-            } else {
+
+            lastFillWasScarce =
+                pendingTrackIds.size <
+                    targetSize
+
+        } else {
+            lastUnproductiveFillElapsedMs =
                 SystemClock.elapsedRealtime()
-            }
+
+            lastFillWasScarce =
+                pendingTrackIds.isNotEmpty()
+        }
     }
 
     @Synchronized
@@ -398,7 +425,8 @@ class SessionRecommendationPool {
         return "pending=${pendingTrackIds.size} | " +
             "used=${usedTrackIds.size} | " +
             "target=$targetSize | " +
-            "consumedSinceFill=$consumedSinceLastSuccessfulFill"
+            "consumedSinceFill=$consumedSinceLastSuccessfulFill | " +
+            "scarcityLimited=$lastFillWasScarce"
     }
 
     private fun pruneExcluded(

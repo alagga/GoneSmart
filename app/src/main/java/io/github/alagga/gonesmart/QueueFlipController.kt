@@ -100,6 +100,12 @@ internal class QueueFlipController {
     fun verifiedPositionWriter(autoDj: Any): NativeQueuePositionWriter? =
         positionWriterObserver.binding(autoDj)
 
+    fun trackMixPositionWriter(
+        autoDj: Any,
+        currentQueuePosition: Int
+    ): NativeQueuePositionWriter? =
+        positionWriterObserver.trackMixBinding(autoDj, currentQueuePosition)
+
     private fun notifyTrackMixNaturalPosition(autoDj: Any?) {
         val instance = autoDj ?: return
         val position = runCatching {
@@ -189,6 +195,12 @@ internal class QueueFlipController {
             proceed = proceed
         )
         notifyTrackMixNaturalPosition(autoDj)
+        if (autoDj != null && value != null) {
+            TrackMixController.onNaturalStatePositionCandidate(
+                autoDj = autoDj,
+                observedArgument = value
+            )
+        }
         return result
     }
 

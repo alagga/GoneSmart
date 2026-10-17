@@ -6,6 +6,20 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Date
 
+internal data class GmmpLibraryPathIndexSnapshot(
+    val trackCount: Int,
+    val idsByPath: Map<String, Long>,
+    val ambiguousPaths: Set<String>
+)
+
+private data class LibraryRevision(
+    val trackCount: Long,
+    val maxSongId: Long,
+    val maxDateAdded: Long,
+    val maxDateUpdated: Long,
+    val ratingSum: Long
+)
+
 data class GmmpLibraryTrack(
     val track: TrackInfo,
     val year: Int,
@@ -42,17 +56,29 @@ class GmmpLibraryReader {
             "GoneSmart"
 
         /*
-         * The in-memory library cache is refreshed
-         * periodically so newly scanned, deleted or
-         * retagged files become visible without a GMMP
-         * restart.
-         *
-         * LocalLibraryMatcher uses a content fingerprint
-         * afterwards and only rebuilds its index if the
-         * relevant library data actually changed.
+         * Full-library reads are expensive on large libraries. Revalidate the
+         * cache cheaply every two minutes from aggregate track-table revision
+         * signals and rebuild only when those signals changed. A hard refresh
+         * remains as a bounded safety net for metadata changes not reflected in
+         * the revision columns.
          */
-        private const val CACHE_MAX_AGE_MS =
+        private const val CACHE_REVALIDATE_AGE_MS =
             2L * 60L * 1000L
+
+        private const val CACHE_HARD_MAX_AGE_MS =
+            30L * 60L * 1000L
+
+        private const val LIBRARY_REVISION_QUERY =
+            """
+            SELECT
+                COUNT(*) AS track_count,
+                COALESCE(MAX(song_id), 0) AS max_song_id,
+                COALESCE(MAX(track_date_added), 0) AS max_date_added,
+                COALESCE(MAX(track_date_updated), 0) AS max_date_updated,
+                COALESCE(SUM(song_rating), 0) AS rating_sum
+            FROM tracks
+            WHERE track_placeholder = 0
+            """
 
         private const val LIBRARY_QUERY =
             """
@@ -164,13 +190,32 @@ class GmmpLibraryReader {
         null
 
     @Volatile
+    private var cachedPathIndex: GmmpLibraryPathIndexSnapshot? = null
+
+    @Volatile
     private var cacheCreatedAtElapsedMs:
             Long =
         0L
 
     @Volatile
+    private var cacheValidatedAtElapsedMs:
+            Long =
+        0L
+
+    @Volatile
+    private var cachedRevision:
+            LibraryRevision? =
+        null
+
+    @Volatile
     private var deterministicMappingFailure =
         false
+
+    @Volatile
+    private var acceptedCursorAutoDjType: Class<*>? = null
+
+    private val reportedLibraryAccessBindings =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     fun hasDeterministicMappingFailure(): Boolean =
         deterministicMappingFailure
@@ -191,7 +236,10 @@ class GmmpLibraryReader {
             currentCache != null &&
             now -
             cacheCreatedAtElapsedMs <
-            CACHE_MAX_AGE_MS
+            CACHE_HARD_MAX_AGE_MS &&
+            now -
+            cacheValidatedAtElapsedMs <
+            CACHE_REVALIDATE_AGE_MS
         ) {
 
             return currentCache
@@ -212,10 +260,29 @@ class GmmpLibraryReader {
                 synchronizedCache != null &&
                 synchronizedNow -
                 cacheCreatedAtElapsedMs <
-                CACHE_MAX_AGE_MS
+                CACHE_HARD_MAX_AGE_MS &&
+                synchronizedNow -
+                cacheValidatedAtElapsedMs <
+                CACHE_REVALIDATE_AGE_MS
             ) {
 
                 return synchronizedCache
+            }
+
+            if (
+                !forceRefresh &&
+                synchronizedCache != null &&
+                synchronizedNow - cacheCreatedAtElapsedMs < CACHE_HARD_MAX_AGE_MS
+            ) {
+                val revision = readLibraryRevision(autoDjInstance)
+                if (revision != null && revision == cachedRevision) {
+                    cacheValidatedAtElapsedMs = synchronizedNow
+                    Log.i(
+                        TAG,
+                        "GMMP library cache revalidated | tracks=${synchronizedCache.size}"
+                    )
+                    return synchronizedCache
+                }
             }
 
             val loaded =
@@ -241,16 +308,32 @@ class GmmpLibraryReader {
                 loaded.isNotEmpty()
             ) {
 
+                val pathIndex = buildPathIndex(loaded)
+                cachedPathIndex = pathIndex
                 cachedTracks =
                     loaded
 
-                cacheCreatedAtElapsedMs =
-                    SystemClock.elapsedRealtime()
+                val cachedAt = SystemClock.elapsedRealtime()
+      cacheCreatedAtElapsedMs = cachedAt
+      cacheValidatedAtElapsedMs = cachedAt
+      cachedRevision =
+          readLibraryRevision(autoDjInstance)
+              ?: revisionFromTracks(loaded)
+
+      Log.i(
+          TAG,
+          "GMMP library path index ready | tracks=${pathIndex.trackCount} | " +
+              "paths=${pathIndex.idsByPath.size} | " +
+              "ambiguous=${pathIndex.ambiguousPaths.size}"
+      )
             }
 
             return loaded
         }
     }
+
+    internal fun cachedPathIndexSnapshot(): GmmpLibraryPathIndexSnapshot? =
+        cachedPathIndex
 
     fun hasFreshCache(): Boolean {
 
@@ -265,9 +348,9 @@ class GmmpLibraryReader {
             return false
         }
 
-        return SystemClock.elapsedRealtime() -
-                cacheCreatedAtElapsedMs <
-                CACHE_MAX_AGE_MS
+        val now = SystemClock.elapsedRealtime()
+        return now - cacheCreatedAtElapsedMs < CACHE_HARD_MAX_AGE_MS &&
+            now - cacheValidatedAtElapsedMs < CACHE_REVALIDATE_AGE_MS
     }
 
     fun clearCache() {
@@ -279,10 +362,81 @@ class GmmpLibraryReader {
             cachedTracks =
                 null
 
+            cachedPathIndex =
+                null
+
             cacheCreatedAtElapsedMs =
                 0L
+
+            cacheValidatedAtElapsedMs =
+                0L
+
+            cachedRevision =
+                null
         }
     }
+
+    private fun buildPathIndex(
+        tracks: List<GmmpLibraryTrack>
+    ): GmmpLibraryPathIndexSnapshot {
+        val idsByPath = linkedMapOf<String, Long>()
+        val ambiguous = linkedSetOf<String>()
+        tracks.forEach { libraryTrack ->
+            val trackId = libraryTrack.track.id
+            pathKeys(libraryTrack.track.path).forEach { key ->
+                if (key in ambiguous) return@forEach
+                val previous = idsByPath[key]
+                if (previous == null || previous == trackId) {
+                    idsByPath[key] = trackId
+                } else {
+                    idsByPath.remove(key)
+                    ambiguous += key
+                }
+            }
+        }
+        return GmmpLibraryPathIndexSnapshot(
+            trackCount = tracks.size,
+            idsByPath = idsByPath,
+            ambiguousPaths = ambiguous
+        )
+    }
+
+    private fun pathKeys(path: String?): List<String> {
+        val raw = path?.trim()?.takeUnless(String::isBlank) ?: return emptyList()
+        if (!raw.startsWith("file://", ignoreCase = true)) return listOf(raw)
+        val stripped = raw.substring(7)
+        val decoded = runCatching { android.net.Uri.parse(raw).path }.getOrNull()
+        return listOfNotNull(raw, stripped, decoded)
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+
+    private fun readLibraryRevision(autoDjInstance: Any): LibraryRevision? {
+        return runCatching {
+            GmmpReadOnlySql.query(
+                autoDjInstance = autoDjInstance,
+                sql = LIBRARY_REVISION_QUERY.trimIndent()
+            ) { cursor ->
+                if (!cursor.moveToFirst()) return@query null
+                LibraryRevision(
+                    trackCount = cursor.getLong(cursor.getColumnIndexOrThrow("track_count")),
+                    maxSongId = cursor.getLong(cursor.getColumnIndexOrThrow("max_song_id")),
+                    maxDateAdded = cursor.getLong(cursor.getColumnIndexOrThrow("max_date_added")),
+                    maxDateUpdated = cursor.getLong(cursor.getColumnIndexOrThrow("max_date_updated")),
+                    ratingSum = cursor.getLong(cursor.getColumnIndexOrThrow("rating_sum"))
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun revisionFromTracks(tracks: List<GmmpLibraryTrack>): LibraryRevision =
+        LibraryRevision(
+            trackCount = tracks.size.toLong(),
+            maxSongId = tracks.maxOfOrNull { it.track.id } ?: 0L,
+            maxDateAdded = tracks.maxOfOrNull { it.dateAddedEpochMs ?: 0L } ?: 0L,
+            maxDateUpdated = tracks.maxOfOrNull { it.dateUpdatedEpochMs ?: 0L } ?: 0L,
+            ratingSum = tracks.sumOf { it.ratingRaw.toLong() }
+        )
 
     private fun loadLibrary(
         autoDjInstance: Any
@@ -291,11 +445,27 @@ class GmmpLibraryReader {
         val startTime =
             System.nanoTime()
 
-        val trackDaoField =
-            findField(
-                type = autoDjInstance.javaClass,
-                name = "r"
+        if (acceptedCursorAutoDjType == autoDjInstance.javaClass) {
+            return loadLibraryThroughCursor(
+                autoDjInstance,
+                startTime
             )
+        }
+
+        val trackDaoField =
+            runCatching {
+                findField(
+                    type = autoDjInstance.javaClass,
+                    name = "r"
+                )
+            }.getOrElse { nativeMappingError ->
+                return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = null,
+                    nativeMappingError = nativeMappingError
+                )
+            }
 
         trackDaoField.isAccessible =
             true
@@ -304,8 +474,13 @@ class GmmpLibraryReader {
             trackDaoField.get(
                 autoDjInstance
             )
-                ?: throw IllegalStateException(
-                    "qr.r / TrackDao is null"
+                ?: return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = null,
+                    nativeMappingError = IllegalStateException(
+                        "GMMP TrackDao field is null"
+                    )
                 )
 
         val queryMethod =
@@ -317,12 +492,12 @@ class GmmpLibraryReader {
                 ) {
                     throw mappingError
                 }
-                val tracks = loadLibraryThroughCursor(
-                    autoDjInstance,
-                    startTime
+                return loadLibraryThroughCursorFallback(
+                    autoDjInstance = autoDjInstance,
+                    startTime = startTime,
+                    trackDao = trackDao,
+                    nativeMappingError = mappingError
                 )
-                deterministicMappingFailure = false
-                return tracks
             }
 
         queryMethod.isAccessible =
@@ -411,6 +586,45 @@ class GmmpLibraryReader {
         )
 
         return tracks
+    }
+
+    private fun loadLibraryThroughCursorFallback(
+        autoDjInstance: Any,
+        startTime: Long,
+        trackDao: Any?,
+        nativeMappingError: Throwable
+    ): List<GmmpLibraryTrack> {
+        return try {
+            val tracks = loadLibraryThroughCursor(
+                autoDjInstance,
+                startTime
+            )
+            acceptedCursorAutoDjType = autoDjInstance.javaClass
+            deterministicMappingFailure = false
+            val key = "cursor|" + autoDjInstance.javaClass.name
+            if (reportedLibraryAccessBindings.add(key)) {
+                Log.i(
+                    TAG,
+                    "GMMP library access bound | mode=read-only-cursor" +
+                        " | runtime=" + autoDjInstance.javaClass.name +
+                        " | discovery=retired"
+                )
+            }
+            tracks
+        } catch (cursorFailure: Throwable) {
+            deterministicMappingFailure = true
+            Log.w(
+                TAG,
+                "GMMP LIBRARY MAPPING | native query unavailable and " +
+                    "read-only Cursor fallback failed" +
+                    " | runtime=" + autoDjInstance.javaClass.name +
+                    " | dao=" + (trackDao?.javaClass?.name ?: "unavailable"),
+                cursorFailure
+            )
+            trackDao?.let(::diagnoseTrackDaoStructure)
+            cursorFailure.addSuppressed(nativeMappingError)
+            throw cursorFailure
+        }
     }
 
     private fun loadLibraryThroughCursor(
@@ -935,29 +1149,6 @@ class GmmpLibraryReader {
             )
             return resolved
         }
-
-        deterministicMappingFailure = true
-
-        Log.w(
-            TAG,
-            "GMMP LIBRARY MAPPING | expected=" + type.name + ".g2/1 unavailable" +
-                " | concreteRawQuery=" +
-                concreteRawQueryMethods.take(8).joinToString(",") {
-                    signature(it)
-                }.ifBlank { "none" } +
-                " | abstractContracts=" +
-                abstractListContracts.take(8).joinToString(",") {
-                    signature(it)
-                }.ifBlank { "none" } +
-                " | listCandidates=" +
-                listCandidates.take(12).joinToString(",") { signature(it) }
-                    .ifBlank { "none" } +
-                " | oneArgMethodCount=" + oneArgMethods.size
-        )
-
-        diagnoseTrackDaoStructure(
-            trackDao
-        )
 
         throw NoSuchMethodException(
             type.name + ".g2/1 is unavailable; GMMP library mapping is unverified"

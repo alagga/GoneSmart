@@ -25,7 +25,8 @@ data class QueueItemInfo(
 
 data class QueueContext(
     val currentQueuePosition: Int,
-    val items: List<QueueItemInfo>
+    val items: List<QueueItemInfo>,
+    val currentResolutionSource: String? = null
 ) {
     val pastItems: List<QueueItemInfo>
         get() = items.filter {

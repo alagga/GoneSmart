@@ -11,11 +11,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal interface NativeQueuePositionWriter {
     val description: String
     fun read(): Int?
     fun write(position: Int): Boolean
+
+    /**
+     * Re-dispatch the already verified native position writer even when the
+     * requested position is already Current. This is deliberately separate
+     * from write(): ordinary queue mutation keeps its no-op optimization,
+     * while Track Mix may use the native notification boundary once after a
+     * CLEAR_QUEUE/refill cycle to rebuild GMMP's current/next AudioSources.
+     */
+    fun refreshCurrent(position: Int): Boolean
 }
 
 /**
@@ -43,7 +54,8 @@ internal class NativeQueuePositionWriterObserver(
 ) {
     companion object {
         private const val TAG = "GoneSmartFlip"
-        private const val WRITE_TIMEOUT_MS = 1500L
+        private const val WRITE_DISPATCH_TIMEOUT_MS = 4_000L
+        private const val WRITE_READBACK_TIMEOUT_MS = 1_500L
         private val DELAYED_SIGNAL_CHECKS_MS = longArrayOf(40L, 120L, 280L)
     }
 
@@ -56,7 +68,22 @@ internal class NativeQueuePositionWriterObserver(
         val sameHostReader: NativeQueueObservedStateBinding.Reader?
     )
 
+    private data class PassiveTrackMixCandidate(
+        val receiver: WeakReference<Any>,
+        val autoDj: WeakReference<Any>,
+        val method: Method,
+        val looper: Looper?,
+        val lastArgument: Int,
+        val observedAt: Long
+    )
+
     private val controlledWrite = ThreadLocal<Boolean>()
+
+    @Volatile
+    private var passiveTrackMixCandidate: PassiveTrackMixCandidate? = null
+
+    @Volatile
+    private var passiveTrackMixAmbiguous = false
     private val stateWriterSignatures = ConcurrentHashMap<Class<*>, Set<String>>()
     private val broadFallbackAttempted = ConcurrentHashMap.newKeySet<String>()
 
@@ -107,6 +134,17 @@ internal class NativeQueuePositionWriterObserver(
                 sameHostReader = null
             )
             return result
+        }
+
+        if (stateWriter) {
+            recordPassiveTrackMixCandidate(
+                receiver = service,
+                autoDj = autoDj,
+                method = method,
+                looper = invocationLooper,
+                argument = argument,
+                observedAt = SystemClock.elapsedRealtime()
+            )
         }
 
         if (!stateWriter) return result
@@ -172,7 +210,18 @@ internal class NativeQueuePositionWriterObserver(
                 if (before == position) {
                     return isUniqueQueuePosition(autoDj, position)
                 }
+                return invokeAndVerify(position, "WRITE")
+            }
 
+            override fun refreshCurrent(position: Int): Boolean {
+                val before = read() ?: return false
+                if (before != position || !isUniqueQueuePosition(autoDj, position)) {
+                    return false
+                }
+                return invokeAndVerify(position, "REFRESH")
+            }
+
+            private fun invokeAndVerify(position: Int, operation: String): Boolean {
                 val invoked = invokeControlled(
                     proof = proof,
                     receiver = receiver,
@@ -181,18 +230,26 @@ internal class NativeQueuePositionWriterObserver(
                 )
                 if (!invoked) return false
 
-                val deadline = SystemClock.elapsedRealtime() + WRITE_TIMEOUT_MS
+                val deadline = SystemClock.elapsedRealtime() + WRITE_READBACK_TIMEOUT_MS
                 do {
                     val nativePosition = read()
-                    if (nativePosition == position) {
-                        return isUniqueQueuePosition(autoDj, position)
+                    if (nativePosition == position &&
+                        isUniqueQueuePosition(autoDj, position)
+                    ) {
+                        Log.i(
+                            TAG,
+                            "QUEUE POSITION $operation VERIFIED | writer=" +
+                                proof.method.declaringClass.name + "." +
+                                proof.method.name + " | position=" + position
+                        )
+                        return true
                     }
                     Thread.sleep(20L)
                 } while (SystemClock.elapsedRealtime() < deadline)
 
                 Log.e(
                     TAG,
-                    "QUEUE POSITION WRITE REJECTED | writer=" +
+                    "QUEUE POSITION $operation REJECTED | writer=" +
                         proof.method.declaringClass.name + "." +
                         proof.method.name + " | requested=" + position +
                         " | nativeRead=" + (read()?.toString() ?: "unavailable")
@@ -200,6 +257,158 @@ internal class NativeQueuePositionWriterObserver(
                 return false
             }
         }
+    }
+
+    /**
+     * Track Mix may need to move the exact CURRENT row from a Smart-source
+     * absolute queue_position to 1. r36 device evidence showed the naturally
+     * observed state method may use a zero-based coordinate (for example a
+     * natural argument 4 while GMMP owns queue_position 5). Keep this mapping
+     * request-local: correlate the latest naturally observed structural state
+     * writer and native read signal with the already pinned CURRENT, accepting
+     * only exact offsets 0 or 1. Never promote this weaker mapping to Queue
+     * Flip's global writer proof.
+     */
+    fun trackMixBinding(
+        autoDj: Any,
+        currentQueuePosition: Int
+    ): NativeQueuePositionWriter? {
+        binding(autoDj)?.let { absolute ->
+            if (runCatching { absolute.read() }.getOrNull() == currentQueuePosition) {
+                return absolute
+            }
+        }
+        if (passiveTrackMixAmbiguous) return null
+        val candidate = passiveTrackMixCandidate ?: return null
+        if (candidate.autoDj.get() !== autoDj) return null
+        val receiver = candidate.receiver.get() ?: return null
+        val reading = readSignal(autoDj) ?: return null
+        val mapping = TrackMixZeroPoolPolicy.resolveStateWriterMapping(
+            currentQueuePosition = currentQueuePosition,
+            observedArgument = candidate.lastArgument,
+            signalValue = reading.value,
+            ageMs = SystemClock.elapsedRealtime() - candidate.observedAt
+        ) ?: return null
+        val provisional = Verified(
+            receiver = candidate.receiver,
+            autoDj = candidate.autoDj,
+            method = candidate.method,
+            looper = candidate.looper,
+            signalSource = reading.source,
+            sameHostReader = null
+        )
+
+        Log.i(
+            TAG,
+            "QUEUE POSITION TRACK MIX MAPPING | writer=" +
+                candidate.method.declaringClass.name + "." + candidate.method.name +
+                "(int) | queuePosition=" + currentQueuePosition +
+                " | naturalArg=" + candidate.lastArgument +
+                " | signal=" + reading.value +
+                " | argumentOffset=" + mapping.argumentOffset +
+                " | signalOffset=" + mapping.signalOffset +
+                " | requestScoped=true"
+        )
+
+        return object : NativeQueuePositionWriter {
+            override val description: String =
+                candidate.method.declaringClass.name + "." + candidate.method.name +
+                    "(int) via track-mix-offset(arg=" + mapping.argumentOffset +
+                    ",signal=" + mapping.signalOffset + ")"
+
+            override fun read(): Int? =
+                readSignal(autoDj)?.value?.let { nativeValue ->
+                    nativeValue + mapping.signalOffset
+                }?.takeIf { it > 0 }
+
+            override fun write(position: Int): Boolean {
+                if (position <= 0) return false
+                val nativeArgument = position - mapping.argumentOffset
+                if (nativeArgument < 0) return false
+                if (!invokeControlled(
+                        proof = provisional,
+                        receiver = receiver,
+                        autoDj = autoDj,
+                        position = nativeArgument
+                    )
+                ) return false
+
+                val deadline = SystemClock.elapsedRealtime() + WRITE_READBACK_TIMEOUT_MS
+                do {
+                    val mappedPosition = read()
+                    if (mappedPosition == position &&
+                        isUniqueQueuePosition(autoDj, position)
+                    ) {
+                        Log.i(
+                            TAG,
+                            "QUEUE POSITION TRACK MIX WRITE VERIFIED | writer=" +
+                                candidate.method.declaringClass.name + "." +
+                                candidate.method.name +
+                                " | queuePosition=" + position +
+                                " | nativeArgument=" + nativeArgument +
+                                " | requestScoped=true"
+                        )
+                        return true
+                    }
+                    Thread.sleep(20L)
+                } while (SystemClock.elapsedRealtime() < deadline)
+                return false
+            }
+
+            override fun refreshCurrent(position: Int): Boolean = false
+        }
+    }
+
+    @Synchronized
+    private fun recordPassiveTrackMixCandidate(
+        receiver: Any,
+        autoDj: Any,
+        method: Method,
+        looper: Looper?,
+        argument: Int,
+        observedAt: Long
+    ) {
+        val existing = passiveTrackMixCandidate
+        if (existing != null && existing.autoDj.get() !== autoDj) {
+            passiveTrackMixCandidate = null
+            passiveTrackMixAmbiguous = false
+        }
+        val current = passiveTrackMixCandidate
+        if (current == null) {
+            method.isAccessible = true
+            passiveTrackMixCandidate = PassiveTrackMixCandidate(
+                receiver = WeakReference(receiver),
+                autoDj = WeakReference(autoDj),
+                method = method,
+                looper = looper,
+                lastArgument = argument,
+                observedAt = observedAt
+            )
+            Log.i(
+                TAG,
+                "QUEUE POSITION TRACK MIX CANDIDATE | writer=" +
+                    method.declaringClass.name + "." + method.name +
+                    "(int) | natural=true"
+            )
+            return
+        }
+        if (current.receiver.get() === receiver &&
+            current.autoDj.get() === autoDj &&
+            sameMethod(current.method, method)
+        ) {
+            passiveTrackMixCandidate = current.copy(
+                looper = looper,
+                lastArgument = argument,
+                observedAt = observedAt
+            )
+            return
+        }
+
+        passiveTrackMixAmbiguous = true
+        Log.w(
+            TAG,
+            "QUEUE POSITION TRACK MIX AMBIGUOUS | zero-pool rebase disabled"
+        )
     }
 
     private fun invokeControlled(
@@ -223,20 +432,80 @@ internal class NativeQueuePositionWriterObserver(
         if (proof.looper != null) {
             if (Looper.myLooper() == proof.looper) return invoke()
             val done = CountDownLatch(1)
+            val started = AtomicBoolean(false)
             var ok = false
-            Handler(proof.looper).post {
-                ok = invoke()
-                done.countDown()
+            val handler = Handler(proof.looper)
+            val task = Runnable {
+                started.set(true)
+                try {
+                    ok = invoke()
+                } finally {
+                    done.countDown()
+                }
             }
-            return done.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok
+            if (!handler.post(task)) return false
+            if (done.await(WRITE_DISPATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                return ok
+            }
+            if (!started.get()) {
+                handler.removeCallbacks(task)
+                Log.w(
+                    TAG,
+                    "QUEUE POSITION DISPATCH TIMEOUT | writer=" +
+                        proof.method.declaringClass.name + "." + proof.method.name +
+                        " | route=looper | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                        " | started=false | cancelled=true"
+                )
+                return false
+            }
+            val finishedInGrace =
+                done.await(WRITE_READBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            Log.w(
+                TAG,
+                "QUEUE POSITION DISPATCH DELAY | writer=" +
+                    proof.method.declaringClass.name + "." + proof.method.name +
+                    " | route=looper | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                    " | started=true | finishedInGrace=$finishedInGrace"
+            )
+            return finishedInGrace && ok
         }
 
         val executor = nativeExecutor(autoDj)
         if (executor != null) {
-            return runCatching {
-                executor.submit<Boolean> { invoke() }
-                    .get(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            }.getOrDefault(false)
+            val started = AtomicBoolean(false)
+            val future = executor.submit<Boolean> {
+                started.set(true)
+                invoke()
+            }
+            return try {
+                future.get(WRITE_DISPATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                if (!started.get()) {
+                    val cancelled = future.cancel(false)
+                    Log.w(
+                        TAG,
+                        "QUEUE POSITION DISPATCH TIMEOUT | writer=" +
+                            proof.method.declaringClass.name + "." + proof.method.name +
+                            " | route=executor | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                            " | started=false | cancelled=$cancelled"
+                    )
+                    false
+                } else {
+                    val finished = runCatching {
+                        future.get(WRITE_READBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    }.getOrNull()
+                    Log.w(
+                        TAG,
+                        "QUEUE POSITION DISPATCH DELAY | writer=" +
+                            proof.method.declaringClass.name + "." + proof.method.name +
+                            " | route=executor | timeoutMs=$WRITE_DISPATCH_TIMEOUT_MS" +
+                            " | started=true | finishedInGrace=${finished != null}"
+                    )
+                    finished ?: false
+                }
+            } catch (_: Throwable) {
+                false
+            }
         }
         return invoke()
     }
