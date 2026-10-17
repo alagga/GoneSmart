@@ -24,7 +24,11 @@ object AudioProfileCompanionBridge {
     const val METHOD_ROUTE = "route_observed"
     const val METHOD_NATIVE_VALUE = "native_value_observed"
     const val METHOD_NATIVE_PRESET = "native_preset_observed"
+    const val METHOD_EQ_BAND_FREQUENCIES = "eq_band_frequencies_observed"
     const val EXTRA_OK = "ok"
+    const val EXTRA_GMMP_VERSION = "gmmp_version"
+    const val EXTRA_EQ_BAND_COUNT = "eq_band_count"
+    const val EXTRA_EQ_BAND_FREQUENCIES = "eq_band_frequencies_hz"
 
     @Volatile
     private var providerAvailable: Boolean? = null
@@ -134,6 +138,17 @@ class AudioProfileBridgeProvider : ContentProvider() {
                 if (ids.size != values.size || ids.isEmpty()) return result(false)
                 repository.setNativePresetShape(preset, ids.zip(values).toMap())
                 result(repository.isNativePresetAvailable(preset))
+            }
+
+            AudioProfileCompanionBridge.METHOD_EQ_BAND_FREQUENCIES -> {
+                val version = payload.getString(AudioProfileCompanionBridge.EXTRA_GMMP_VERSION)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return result(false)
+                val count = payload.getInt(AudioProfileCompanionBridge.EXTRA_EQ_BAND_COUNT, 0)
+                val frequencies = payload.getDoubleArray(AudioProfileCompanionBridge.EXTRA_EQ_BAND_FREQUENCIES)
+                    ?.toList()
+                    ?: return result(false)
+                result(GmmpEqualizerBandRuntimeMetadata.update(appContext, version, count, frequencies))
             }
 
             else -> super.call(method, arg, extras) ?: result(false)

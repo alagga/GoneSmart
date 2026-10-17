@@ -4,25 +4,28 @@ import kotlin.math.ceil
 import kotlin.math.floor
 
 /**
- * Keeps Equalizer profiles stable while GMMP changes its configured band count.
- *
- * GoneSmart persists the existing ten-point curve as its canonical shape. A live
- * GMMP Equalizer with 2..10 bands is a deterministic projection of that curve.
- * Linear interpolation in canonical band-index space is equivalent to a simple
- * interpolation over the logarithmically spaced ten-band frequency axis and is
- * deliberately preferred over inventing GMMP's undocumented intermediate
- * center-frequency formula.
+ * Keeps the persisted profile format stable at ten points while following
+ * GMMP's live selectable 2..10-band Equalizer layout.
  */
 object GmmpEqualizerBandPolicy {
     const val MIN_BANDS = 2
     const val MAX_BANDS = 10
     const val BAND_COUNT_FIELD_ID = "eq.band_count"
 
+    private const val MIN_PLAUSIBLE_FREQUENCY_HZ = 15.0
+    private const val MAX_PLAUSIBLE_FREQUENCY_HZ = 100_000.0
+
     fun isSupported(count: Int): Boolean = count in MIN_BANDS..MAX_BANDS
 
     fun normalizedOrDefault(count: Int?, defaultCount: Int = MAX_BANDS): Int =
         count?.takeIf(::isSupported) ?: defaultCount.coerceIn(MIN_BANDS, MAX_BANDS)
 
+    /**
+     * Linearly resample one ordered graphic-EQ curve onto another point count.
+     * The persisted ten points are logarithmically ordered frequency anchors,
+     * so index-space interpolation is the safe fallback when GMMP's exact live
+     * center frequencies have not yet been passively verified.
+     */
     fun project(values: List<Double>, targetCount: Int): List<Double>? {
         if (!isSupported(values.size) || !isSupported(targetCount)) return null
         if (values.any { !it.isFinite() }) return null
@@ -43,14 +46,46 @@ object GmmpEqualizerBandPolicy {
         }
     }
 
-    fun uiGroup(base: AudioProfileGroup, bandCount: Int): AudioProfileGroup {
+    /**
+     * Accept only a complete, ordered audio-frequency vector for the active
+     * GMMP layout. This is deliberately stricter than merely accepting N
+     * doubles so unrelated indexed getters cannot become user-facing labels.
+     */
+    fun validatedFrequencies(values: List<Double>?, bandCount: Int): List<Double>? {
+        if (!isSupported(bandCount) || values == null || values.size != bandCount) return null
+        if (values.any { !it.isFinite() || it < MIN_PLAUSIBLE_FREQUENCY_HZ || it > MAX_PLAUSIBLE_FREQUENCY_HZ }) {
+            return null
+        }
+        if (values.zipWithNext().any { (left, right) -> right <= left }) return null
+        return values.toList()
+    }
+
+    fun frequencyTitle(hz: Double): String =
+        "${AudioProfileField.formatNumber(hz)} Hz"
+
+    fun uiGroup(
+        base: AudioProfileGroup,
+        bandCount: Int,
+        verifiedFrequencies: List<Double>? = null
+    ): AudioProfileGroup {
         val count = normalizedOrDefault(bandCount)
+        val frequencies = validatedFrequencies(
+            verifiedFrequencies ?: GmmpEqualizerBandRuntimeMetadata.frequenciesFor(count),
+            count
+        )
         val fixedFields = base.fields.take(3)
         val sourceBandFields = base.fields.drop(3)
-        val bandFields = if (count == MAX_BANDS) {
-            sourceBandFields
-        } else {
-            sourceBandFields.take(count).mapIndexed { index, field ->
+        val bandFields = when {
+            frequencies != null -> sourceBandFields.take(count).mapIndexed { index, field ->
+                field.copy(
+                    title = frequencyTitle(frequencies[index]),
+                    subtitle = "GMMP band ${index + 1} center frequency and gain."
+                )
+            }
+
+            count == MAX_BANDS -> sourceBandFields
+
+            else -> sourceBandFields.take(count).mapIndexed { index, field ->
                 field.copy(
                     title = "Band ${index + 1}",
                     subtitle = "GMMP band ${index + 1} gain in $count-band mode."

@@ -63,9 +63,38 @@ class GmmpEqualizerBandPolicyTest {
     }
 
     @Test
+    fun validatesOnlyCompleteIncreasingFrequencyVectors() {
+        val valid = listOf(31.25, 125.0, 500.0, 2_000.0, 8_000.0)
+
+        assertEquals(valid, GmmpEqualizerBandPolicy.validatedFrequencies(valid, 5))
+        assertNull(GmmpEqualizerBandPolicy.validatedFrequencies(valid, 4))
+        assertNull(GmmpEqualizerBandPolicy.validatedFrequencies(listOf(31.25, 125.0, 120.0), 3))
+        assertNull(GmmpEqualizerBandPolicy.validatedFrequencies(listOf(12.0, 1_000.0), 2))
+        assertNull(GmmpEqualizerBandPolicy.validatedFrequencies(listOf(31.25, Double.NaN), 2))
+    }
+
+    @Test
+    fun verifiedNativeFrequenciesBecomeBandLabels() {
+        val group = GmmpEqualizerBandPolicy.uiGroup(
+            GoneSmartAudioProfiles.equalizerGroup,
+            3,
+            listOf(31.25, 1_000.0, 16_000.5)
+        )
+
+        assertEquals(6, group.fields.size)
+        assertEquals("31.25 Hz", group.fields[3].title)
+        assertEquals("1000 Hz", group.fields[4].title)
+        assertEquals("16000.5 Hz", group.fields[5].title)
+    }
+
+    @Test
     fun uiGroupShowsExactlyEveryActiveGmmpBandCount() {
         for (count in GmmpEqualizerBandPolicy.MIN_BANDS..GmmpEqualizerBandPolicy.MAX_BANDS) {
-            val group = GmmpEqualizerBandPolicy.uiGroup(GoneSmartAudioProfiles.equalizerGroup, count)
+            val group = GmmpEqualizerBandPolicy.uiGroup(
+                GoneSmartAudioProfiles.equalizerGroup,
+                count,
+                verifiedFrequencies = null
+            )
 
             assertEquals("enabled + preset + PRE + $count bands", 3 + count, group.fields.size)
             if (count == 10) {
@@ -80,8 +109,16 @@ class GmmpEqualizerBandPolicyTest {
 
     @Test
     fun uiGroupShowsOnlyActiveBandCount() {
-        val fiveBand = GmmpEqualizerBandPolicy.uiGroup(GoneSmartAudioProfiles.equalizerGroup, 5)
-        val tenBand = GmmpEqualizerBandPolicy.uiGroup(GoneSmartAudioProfiles.equalizerGroup, 10)
+        val fiveBand = GmmpEqualizerBandPolicy.uiGroup(
+            GoneSmartAudioProfiles.equalizerGroup,
+            5,
+            verifiedFrequencies = null
+        )
+        val tenBand = GmmpEqualizerBandPolicy.uiGroup(
+            GoneSmartAudioProfiles.equalizerGroup,
+            10,
+            verifiedFrequencies = null
+        )
 
         assertEquals(8, fiveBand.fields.size)
         assertEquals("Band 1", fiveBand.fields[3].title)

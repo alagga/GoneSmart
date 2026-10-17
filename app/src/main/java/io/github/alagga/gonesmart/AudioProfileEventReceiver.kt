@@ -10,6 +10,8 @@ class AudioProfileEventReceiver : BroadcastReceiver() {
         const val ACTION_ROUTE_OBSERVED = "io.github.alagga.gonesmart.action.AUDIO_ROUTE_OBSERVED"
         const val ACTION_NATIVE_VALUE_OBSERVED = "io.github.alagga.gonesmart.action.AUDIO_NATIVE_VALUE_OBSERVED"
         const val ACTION_NATIVE_PRESET_OBSERVED = "io.github.alagga.gonesmart.action.AUDIO_NATIVE_PRESET_OBSERVED"
+        const val ACTION_EQ_BAND_FREQUENCIES_OBSERVED =
+            "io.github.alagga.gonesmart.action.AUDIO_EQ_BAND_FREQUENCIES_OBSERVED"
 
         const val EXTRA_ROUTE_ID = "route_id"
         const val EXTRA_ROUTE_LABEL = "route_label"
@@ -24,6 +26,18 @@ class AudioProfileEventReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_EQ_BAND_FREQUENCIES_OBSERVED) {
+            val version = intent.getStringExtra(AudioProfileCompanionBridge.EXTRA_GMMP_VERSION)
+                ?.takeIf { it.isNotBlank() }
+                ?: return
+            val count = intent.getIntExtra(AudioProfileCompanionBridge.EXTRA_EQ_BAND_COUNT, 0)
+            val frequencies = intent.getDoubleArrayExtra(AudioProfileCompanionBridge.EXTRA_EQ_BAND_FREQUENCIES)
+                ?.toList()
+                ?: return
+            GmmpEqualizerBandRuntimeMetadata.update(context, version, count, frequencies)
+            return
+        }
+
         val repository = GoneSmartAudioProfileRepository(context)
         when (intent.action) {
             ACTION_ROUTE_OBSERVED -> {
