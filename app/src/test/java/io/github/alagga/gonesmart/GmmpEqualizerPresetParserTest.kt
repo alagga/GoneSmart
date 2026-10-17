@@ -34,28 +34,101 @@ class GmmpEqualizerPresetParserTest {
     }
 
     @Test
-    fun parsesNativeNameThenPreAndTenBandLines() {
+    fun parsesActualNativeFlatPresetFormat() {
         val text = """
-            Bass & Treble
-            -2.0
-            5.0
-            4.0
-            2.0
+            Flat
             0.0
-            -1.0
-            -1.0
+            10
             0.0
-            2.0
-            4.0
-            5.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
         """.trimIndent()
 
-        val parsed = GmmpEqualizerPresetParser.parse("ignored.eq", text.toByteArray())!!
-        assertEquals("Bass & Treble", parsed.name)
-        assertEquals("-2", parsed.shape["eq.pre_db"])
-        assertEquals("5", parsed.shape["eq.band_32_db"])
-        assertEquals("5", parsed.shape["eq.band_16000_db"])
+        val parsed = GmmpEqualizerPresetParser.parse("Flat.eq", text.toByteArray())!!
+        assertEquals("Flat", parsed.name)
+        assertEquals("0", parsed.shape["eq.pre_db"])
         assertEquals(11, parsed.shape.size)
+        assertTrue(parsed.shape.values.all { it == "0" })
+    }
+
+    @Test
+    fun parsesActualNativeDancePresetFormat() {
+        val text = """
+            Dance
+            -3.0
+            10
+            6.0
+            6.0
+            4.0
+            1.5
+            0.0
+            0.0
+            -4.0
+            -5.0
+            -5.5
+            0.0
+        """.trimIndent()
+
+        val parsed = GmmpEqualizerPresetParser.parse("Dance.eq", text.toByteArray())!!
+        assertEquals("Dance", parsed.name)
+        assertEquals("-3", parsed.shape["eq.pre_db"])
+        assertEquals("6", parsed.shape["eq.band_32_db"])
+        assertEquals("-5.5", parsed.shape["eq.band_8000_db"])
+        assertEquals("0", parsed.shape["eq.band_16000_db"])
+    }
+
+    @Test
+    fun parsesActualNativeCustomPresetFormat() {
+        val text = """
+            Neues Preset
+            -2.0
+            10
+            12.0
+            12.0
+            0.0
+            0.0
+            0.0
+            -12.0
+            -12.0
+            -12.0
+            -12.0
+            12.0
+        """.trimIndent()
+
+        val parsed = GmmpEqualizerPresetParser.parse("Neues Preset.eq", text.toByteArray())!!
+        assertEquals("Neues Preset", parsed.name)
+        assertEquals("-2", parsed.shape["eq.pre_db"])
+        assertEquals("12", parsed.shape["eq.band_32_db"])
+        assertEquals("-12", parsed.shape["eq.band_1000_db"])
+        assertEquals("12", parsed.shape["eq.band_16000_db"])
+    }
+
+    @Test
+    fun nativePresetRejectsDifferentBandCountInsteadOfGuessing() {
+        val text = """
+            Five Band
+            0.0
+            5
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+            0.0
+        """.trimIndent()
+
+        assertNull(GmmpEqualizerPresetParser.parse("Five Band.eq", text.toByteArray()))
     }
 
     @Test
@@ -63,6 +136,7 @@ class GmmpEqualizerPresetParserTest {
         val text = """
             Club
             0
+            10
             1
             2
             3
@@ -98,7 +172,20 @@ class GmmpEqualizerPresetParserTest {
     }
 
     @Test
-    fun parsesBandCountPrefixedTenBandPreset() {
+    fun parsesNativeOrderedBandCountPrefixedNumericCurve() {
+        val parsed = GmmpEqualizerPresetParser.parse(
+            "Rock.eq",
+            "0\n10\n1\n2\n3\n4\n5\n4\n3\n2\n1\n0".toByteArray()
+        )!!
+
+        assertEquals("Rock", parsed.name)
+        assertEquals("0", parsed.shape["eq.pre_db"])
+        assertEquals("5", parsed.shape["eq.band_512_db"])
+        assertEquals(11, parsed.shape.size)
+    }
+
+    @Test
+    fun keepsCompatibilityWithLeadingBandCountNumericCurve() {
         val parsed = GmmpEqualizerPresetParser.parse(
             "Rock.eq",
             "10\n0\n1\n2\n3\n4\n5\n4\n3\n2\n1\n0".toByteArray()
@@ -107,7 +194,6 @@ class GmmpEqualizerPresetParserTest {
         assertEquals("Rock", parsed.name)
         assertEquals("0", parsed.shape["eq.pre_db"])
         assertEquals("5", parsed.shape["eq.band_512_db"])
-        assertEquals(11, parsed.shape.size)
     }
 
     @Test
