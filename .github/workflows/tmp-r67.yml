@@ -23,9 +23,11 @@ jobs:
       - name: Apply R67 patch
         run: python3 scripts/tmp_r67_patch.py
 
+      - name: R67 whitespace check
+        run: git diff --check
+
       - name: Verify R67 scope
         run: |
-          git diff --check
           python3 - <<'PY'
           import subprocess
           allowed = {
