@@ -24,6 +24,8 @@ jobs:
         shell: bash
         run: |
           set -u
+          git config user.name "GoneSmart RC integration"
+          git config user.email "69852271+alagga@users.noreply.github.com"
           rm -rf integration-artifact
           mkdir -p integration-artifact/{base,ours,theirs,merged}
           git merge --no-commit --no-ff origin/feature/auto-dj-providers || true
