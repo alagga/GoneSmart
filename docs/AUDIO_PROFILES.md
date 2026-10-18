@@ -15,7 +15,7 @@ GoneSmart keeps one **Standard** state and optional per-Bluetooth-output overrid
 - Direct GMMP edits while a Bluetooth output is active are temporary session edits only. They do not silently rewrite Standard or the saved Bluetooth profile.
 - Switching output reconstructs the destination from Standard plus that output's enabled overrides.
 
-Disabling an override keeps its dormant values so it can be enabled again later. Resetting a Bluetooth profile removes its saved overrides.
+Disabling an override keeps its dormant values so it can be enabled again later. Resetting a Bluetooth profile removes its saved overrides but keeps the entry in the output list. **Delete saved Bluetooth profile** removes a disconnected output's metadata and all its stored Equalizer/Effects overrides from GoneSmart (with a confirmation dialog); it does not unpair it in Android or modify Standard. The active route cannot be deleted until disconnected, to avoid immediate rediscovery. Reconnecting a forgotten device creates a new default profile.
 
 ## Managed controls
 
