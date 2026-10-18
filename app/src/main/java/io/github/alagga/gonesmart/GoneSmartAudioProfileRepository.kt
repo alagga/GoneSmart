@@ -82,12 +82,10 @@ class GoneSmartAudioProfileRepository(context: Context) {
             ?: GoneSmartAudioProfiles.LOCAL_ROUTE_ID
 
     fun recordObservedRoute(route: AudioRouteProfile) {
+        // The audio observer already resolved the physical output identity.
+        // Never collapse its address-derived ID back to a product-name hash.
         val id = if (route.bluetooth) {
-            GoneSmartAudioProfiles.bluetoothRouteId(
-                type = 0,
-                address = null,
-                label = route.label
-            )
+            route.id.takeIf { it.startsWith("bt_") && it.length > 3 } ?: return
         } else {
             GoneSmartAudioProfiles.LOCAL_ROUTE_ID
         }
