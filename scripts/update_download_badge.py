@@ -53,7 +53,7 @@ def main() -> None:
     total = fetch_apk_downloads()
     badge = {
         "schemaVersion": 1,
-        "label": "APK downloads",
+        "label": "Downloads",
         "message": str(total),
         "color": "5f57b8",
     }
