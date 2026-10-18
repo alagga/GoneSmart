@@ -431,11 +431,16 @@ object GoneSmartAudioProfiles {
             ?.lowercase(Locale.US)
             .orEmpty()
         val normalizedAddress = address?.trim()?.lowercase(Locale.US).orEmpty()
-        // AudioDeviceInfo can expose the same physical Bluetooth device through
-        // multiple output types and can inconsistently expose its address. The
-        // user-visible product name is stable in the observed GMMP route flow,
-        // so prefer it to keep one profile per physical output.
-        val identity = normalizedLabel.ifBlank { "type=$type|address=$normalizedAddress" }
+        // A product name is not a physical-device identifier: two paired
+        // receivers may advertise the same model name. Prefer the address,
+        // independent of transport/type (A2DP, LE, etc.) for the same device.
+        // Where Android hides the address, retain the legacy fallback instead
+        // of inventing an unstable identifier from AudioDeviceInfo.id.
+        val identity = if (normalizedAddress.isNotBlank()) {
+            "address=$normalizedAddress"
+        } else {
+            normalizedLabel.ifBlank { "type=$type|address=unknown" }
+        }
         return "bt_" + sha256Token(identity)
     }
 
