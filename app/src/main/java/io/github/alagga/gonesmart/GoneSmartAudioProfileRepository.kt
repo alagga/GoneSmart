@@ -429,6 +429,34 @@ class GoneSmartAudioProfileRepository(context: Context) {
         synchronizeWithFramework()
     }
 
+    /**
+     * Forget an inactive Bluetooth profile, including its overrides and
+     * metadata, without touching the Android pairing or Standard baseline.
+     * Active outputs cannot be deleted: the live route observer would
+     * immediately recreate their metadata.
+     */
+    fun deleteSavedRoute(routeId: String): Boolean {
+        if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return false
+        synchronizeWithFramework()
+        if (routeId == activeRouteId()) return false
+
+        val keys = GoneSmartAudioProfiles.keysForRouteDeletion(routeId, local.all.keys)
+        if (keys.isEmpty()) return false
+
+        val editor = local.edit()
+        keys.forEach(editor::remove)
+        if (!editor.commit()) {
+            Log.w(TAG, "Could not delete audio profile locally")
+            return false
+        }
+
+        // Removed values become pending tombstones; a temporarily unavailable
+        // framework store cannot resurrect the deleted profile on next sync.
+        markPending(keys)
+        synchronizeWithFramework()
+        return true
+    }
+
     fun overrideCount(routeId: String): Int {
         if (AudioProfileRuntimePolicy.isStandardRoute(routeId)) return 0
         val prefix = GoneSmartAudioProfiles.overrideKey(routeId, "")
