@@ -624,7 +624,7 @@ class AudioProfilesActivity : AppCompatActivity() {
                     "Cards with an Enabled switch keep their dependent controls disabled while the effect is off. " +
                     "Equalizer is one complete override; turning it off disables preset, PRE and all band controls. " +
                     "GoneSmart follows GMMP's active 2–10 band layout and automatically remaps the saved curve if the band count changes. " +
-                    "The preset list is read from GMMP's own complete preset curves; moving PRE or a band changes the profile to Custom.\\n\\n" +
+                    "The preset list is read from GMMP's own complete preset curves; moving PRE or a band changes the profile to Custom.\n\n" +
                     "To remove an old output from the list, select it and tap Delete saved Bluetooth profile. " +
                     "Disconnect an active output before deleting it. Standard can never be deleted, and deleting a profile does not unpair Bluetooth."
             )
