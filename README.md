@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/alagga/GoneSmart/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/alagga/GoneSmart?style=for-the-badge&logo=github&color=5f57b8&labelColor=151419"/></a>
     <a href="https://github.com/alagga/GoneSmart/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/alagga/GoneSmart/build.yml?branch=main&style=for-the-badge&logo=githubactions&label=build&color=5f57b8&labelColor=151419"/></a>
-    <a href="https://github.com/alagga/GoneSmart/releases"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Falagga%2FGoneSmart%2Fmain%2Fassets%2Fbadges%2Fdownloads.json&style=for-the-badge&logo=github&labelColor=151419"/></a>
+    <a href="https://github.com/alagga/GoneSmart/releases"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Falagga%2FGoneSmart%2Fmain%2Fassets%2Fbadges%2Fdownloads.json&style=for-the-badge&logo=github&labelColor=151419&label=Downloads"/></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/alagga/GoneSmart?style=for-the-badge&color=5f57b8&labelColor=151419"/></a>
     <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fadd%3Furl%3Dhttps%253A%252F%252Fgithub.com%252Falagga%252FGoneSmart"><img alt="Add to Obtainium" src="https://img.shields.io/badge/Add_to-Obtainium-5f57b8?style=for-the-badge&logo=android&logoColor=white&labelColor=151419"/></a>
   </p>
