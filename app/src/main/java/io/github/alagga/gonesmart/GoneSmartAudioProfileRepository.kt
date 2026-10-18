@@ -443,16 +443,16 @@ class GoneSmartAudioProfileRepository(context: Context) {
         val keys = GoneSmartAudioProfiles.keysForRouteDeletion(routeId, local.all.keys)
         if (keys.isEmpty()) return false
 
+        // Write removals and pending tombstones atomically so an interrupted
+        // app cannot resurrect a deleted route from stale remote preferences.
         val editor = local.edit()
         keys.forEach(editor::remove)
+        editor.putStringSet(KEY_PENDING, pendingKeys() + keys)
         if (!editor.commit()) {
             Log.w(TAG, "Could not delete audio profile locally")
             return false
         }
 
-        // Removed values become pending tombstones; a temporarily unavailable
-        // framework store cannot resurrect the deleted profile on next sync.
-        markPending(keys)
         synchronizeWithFramework()
         return true
     }
