@@ -424,6 +424,25 @@ object GoneSmartAudioProfiles {
         if (suffixIndex <= 0) null else remainder.substring(0, suffixIndex)
     }.toSet()
 
+    /**
+     * Remove only the persisted keys owned by a single Bluetooth profile.
+     * The active route marker, Standard baseline and native GMMP snapshots
+     * are intentionally not part of an individual profile.
+     */
+    fun keysForRouteDeletion(routeId: String, keys: Set<String>): Set<String> {
+        if (!routeId.startsWith("bt_") || routeId.length <= 3) return emptySet()
+        val metadata = setOf(
+            routeLabelKey(routeId),
+            routeBluetoothKey(routeId),
+            routeLastSeenKey(routeId)
+        )
+        val overrides = overrideKey(routeId, "")
+        val values = valueKey(routeId, "")
+        return keys.filterTo(mutableSetOf()) { key ->
+            key in metadata || key.startsWith(overrides) || key.startsWith(values)
+        }
+    }
+
     fun bluetoothRouteId(type: Int, address: String?, label: String?): String {
         val normalizedLabel = label
             ?.trim()
