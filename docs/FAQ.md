@@ -125,7 +125,11 @@ Audio Profiles let GoneSmart remember optional GMMP Equalizer and Effects overri
 
 ## What happens when I connect, disconnect or switch Bluetooth outputs?
 
-GoneSmart rebuilds the effective audio state from Standard plus the enabled overrides for the active remembered output. Disconnecting restores Standard; switching to another remembered output applies that output's overrides. The normal one-active-Bluetooth-output case is the accepted path. Two different devices that expose exactly the same product name currently share one profile identity.
+GoneSmart rebuilds the effective audio state from Standard plus the enabled overrides for the active remembered output. Disconnecting restores Standard; switching to another remembered output applies that output's overrides. The normal one-active-Bluetooth-output case is the accepted path. Devices with the same model name have separate profiles when Android exposes their distinct Bluetooth addresses. If Android hides the address, an identical product name still falls back to a shared identity.
+
+## How can I remove an old or duplicate Bluetooth profile?
+
+In **Audio Profiles**, select the saved output and choose **Delete saved Bluetooth profile** at the bottom. Confirm to remove that output and its saved Equalizer/Effects overrides from GoneSmart. Disconnect an active output before deleting it. This does not unpair the Bluetooth device or change Standard. A device reconnected later gets a new default profile.
 
 ## What happens if I change the Equalizer band count in GMMP?
 
