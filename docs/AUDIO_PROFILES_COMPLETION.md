@@ -125,7 +125,14 @@ Unavailable auxiliary observation does not disable unrelated GoneSmart features.
 
 ### Same-name Bluetooth devices
 
-A follow-up 0.5.0 RC fix makes the exposed Android Bluetooth address the first-choice route identity, so two same-name devices can have separate profiles; a hidden address retains the name-based fallback. The companion route selection and repository persistence retain the observer's ID rather than regenerating a name hash. The maintainer device-tested and confirmed that the two Esinkin adapters are now recognized separately. Previously saved name-based entries remain to protect user overrides. A subsequent RC fix adds explicit deletion for **disconnected** saved Bluetooth routes, including route metadata and overrides, with Standard and current active route protected. Deletion is synchronized to framework preferences through atomic local tombstones and has JVM regression coverage; device re-acceptance for that deletion UI is pending.
+A follow-up 0.5.0 RC fix makes the exposed Android Bluetooth address the first-choice route identity, so two same-name devices can have separate profiles; a hidden address retains the name-based fallback. The companion route selection and repository persistence retain the observer's ID rather than regenerating a name hash. The maintainer device-tested and confirmed that the two Esinkin adapters are now recognized separately. Previously saved name-based entries remain to protect user overrides. A subsequent RC fix adds explicit deletion for **disconnected** saved Bluetooth routes, including route metadata and overrides, with Standard and current active route protected. Deletion is synchronized to framework preferences through atomic local tombstones and has JVM regression coverage. **Device acceptance confirmed by the maintainer on 2026-10-18:** the separate Esinkin identities and the saved-profile deletion/duplicate cleanup work correctly on the device. Both follow-up fixes are accepted; no further device fixes are currently known for this feature.
+
+### 2026-10-18 follow-up regression acceptance
+
+- **Status:** PASS — maintainer tested separate same-name Esinkin Bluetooth receivers and removal of legacy/duplicate profiles; confirmed both fixes work.
+- **Accepted feature branch:** `fix/audio-profiles-device-identity` (implementation/documentation head `6aa7a92d24be49aeb4759e2df0d901db160711db` before this acceptance-only update).
+- **Exact implementation-head CI:** [Build #1426](https://github.com/alagga/GoneSmart/actions/runs/39139257967) succeeded: generated forum copy, JVM unit tests, Debug APK, unsigned Release APK smoke test and Debug APK upload.
+- **Release handling:** Device acceptance does not itself merge the fix branch into `main` or publish a new pre-release; carry it into the next planned `0.5.0-rc.2` integration.
 
 ### Multiple simultaneous Bluetooth sinks
 
