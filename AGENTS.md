@@ -4,6 +4,8 @@
 
 **Last consolidated:** 2026-10-17. **Release line:** 0.5.0 (release candidate `0.5.0-rc.1`). **Accepted GMMP target:** 4.2.1. **0.5.0 integration status:** Bluetooth Audio Profiles, Auto-DJ Providers and the GMMP 4.2.1 compatibility work are combined; release still requires exact-head RC CI, merged-main CI and prerelease publication.
 
+**2026-10-18 Bluetooth Audio Profiles RC follow-up:** The maintainer device-accepted address-backed identification of two same-name Esinkin receivers and explicit deletion of saved/legacy duplicate Bluetooth profiles on `fix/audio-profiles-device-identity`. The implementation head `6aa7a92` passed Build #1426. Treat these fixes as working and preserve their semantics; the fix branch has not yet been merged or released. See `docs/AUDIO_PROFILES_COMPLETION.md` for evidence and acceptance details.
+
 ## 1. Collaboration and repository discipline
 
 - Current explicit maintainer instructions override this file.
