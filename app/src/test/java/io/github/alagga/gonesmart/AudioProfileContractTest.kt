@@ -100,6 +100,55 @@ class AudioProfileContractTest {
     }
 
     @Test
+    fun deletingProfileOnlySelectsKeysOwnedByThatBluetoothRoute() {
+        val first = "bt_first"
+        val second = "bt_second"
+        val all = setOf(
+            GoneSmartAudioProfiles.routeLabelKey(first),
+            GoneSmartAudioProfiles.routeBluetoothKey(first),
+            GoneSmartAudioProfiles.routeLastSeenKey(first),
+            GoneSmartAudioProfiles.overrideKey(first, "equalizer"),
+            GoneSmartAudioProfiles.valueKey(first, "eq.preset"),
+            GoneSmartAudioProfiles.overrideKey(second, "equalizer"),
+            GoneSmartAudioProfiles.valueKey(second, "eq.preset"),
+            GoneSmartAudioProfiles.routeLabelKey(second),
+            GoneSmartAudioProfiles.routeLabelKey(GoneSmartAudioProfiles.LOCAL_ROUTE_ID),
+            GoneSmartAudioProfiles.KEY_ACTIVE_ROUTE,
+            "standard.eq.preset",
+            "native.eq.preset",
+            "local.pending_keys"
+        )
+        val deleted = GoneSmartAudioProfiles.keysForRouteDeletion(first, all)
+
+        assertEquals(
+            setOf(
+                GoneSmartAudioProfiles.routeLabelKey(first),
+                GoneSmartAudioProfiles.routeBluetoothKey(first),
+                GoneSmartAudioProfiles.routeLastSeenKey(first),
+                GoneSmartAudioProfiles.overrideKey(first, "equalizer"),
+                GoneSmartAudioProfiles.valueKey(first, "eq.preset")
+            ),
+            deleted
+        )
+        assertTrue(GoneSmartAudioProfiles.keysForRouteDeletion("local", all).isEmpty())
+        assertTrue(GoneSmartAudioProfiles.keysForRouteDeletion("bt_missing", all).isEmpty())
+    }
+
+    @Test
+    fun deletionDoesNotTouchKeysFromRouteIdWithSharedPrefix() {
+        val keys = setOf(
+            GoneSmartAudioProfiles.routeLabelKey("bt_a"),
+            GoneSmartAudioProfiles.routeLabelKey("bt_a_extra"),
+            GoneSmartAudioProfiles.overrideKey("bt_a_extra", "equalizer"),
+            GoneSmartAudioProfiles.valueKey("bt_a_extra", "eq.preset")
+        )
+        assertEquals(
+            setOf(GoneSmartAudioProfiles.routeLabelKey("bt_a")),
+            GoneSmartAudioProfiles.keysForRouteDeletion("bt_a", keys)
+        )
+    }
+
+    @Test
     fun routeMetadataParserIgnoresActiveRouteMarker() {
         val ids = GoneSmartAudioProfiles.routeIdsFromKeys(
             setOf(
