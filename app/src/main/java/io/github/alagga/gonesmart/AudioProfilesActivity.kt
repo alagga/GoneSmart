@@ -105,11 +105,8 @@ class AudioProfilesActivity : AppCompatActivity() {
         if (routeObserver != null) return
         routeObserver = AudioRouteObserver(this) { observed ->
             repository.recordObservedRoute(observed)
-            selectedRouteId = if (observed.bluetooth) {
-                GoneSmartAudioProfiles.bluetoothRouteId(0, null, observed.label)
-            } else {
-                GoneSmartAudioProfiles.LOCAL_ROUTE_ID
-            }
+            // Keep the observer's address-backed identity, not a new name hash.
+            selectedRouteId = observed.id
             runOnUiThread { refreshAll() }
         }.also { it.start() }
     }
@@ -260,6 +257,15 @@ class AudioProfilesActivity : AppCompatActivity() {
         if (!standard) {
             body.addView(verticalGap(18))
             body.addView(resetButton(route))
+            body.addView(verticalGap(10))
+            body.addView(deleteProfileButton(route))
+            if (route.active) {
+                body.addView(textView(
+                    "Disconnect this Bluetooth output before deleting its saved profile.",
+                    11.5f,
+                    COLOR_MUTED
+                ).apply { setPadding(dp(4), dp(6), dp(4), 0) })
+            }
         }
 
         val scrollView = ScrollView(this).apply {
@@ -618,7 +624,9 @@ class AudioProfilesActivity : AppCompatActivity() {
                     "Cards with an Enabled switch keep their dependent controls disabled while the effect is off. " +
                     "Equalizer is one complete override; turning it off disables preset, PRE and all band controls. " +
                     "GoneSmart follows GMMP's active 2–10 band layout and automatically remaps the saved curve if the band count changes. " +
-                    "The preset list is read from GMMP's own complete preset curves; moving PRE or a band changes the profile to Custom."
+                    "The preset list is read from GMMP's own complete preset curves; moving PRE or a band changes the profile to Custom.\\n\\n" +
+                    "To remove an old output from the list, select it and tap Delete saved Bluetooth profile. " +
+                    "Disconnect an active output before deleting it. Standard can never be deleted, and deleting a profile does not unpair Bluetooth."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -701,6 +709,47 @@ class AudioProfilesActivity : AppCompatActivity() {
                     .setPositiveButton("Reset") { _, _ ->
                         repository.clearRouteOverrides(route.id)
                         refreshAll()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
+        }
+
+    private fun deleteProfileButton(route: AudioRouteProfile): MaterialButton =
+        MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = "Delete saved Bluetooth profile"
+            textSize = 14f
+            setTextColor(COLOR_RED)
+            strokeColor = ColorStateList.valueOf(withAlpha(COLOR_RED, 0.65f))
+            strokeWidth = dp(1)
+            cornerRadius = dp(20)
+            backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+            insetTop = 0
+            insetBottom = 0
+            isEnabled = !route.active
+            alpha = if (isEnabled) 1f else 0.45f
+            setOnClickListener {
+                AlertDialog.Builder(this@AudioProfilesActivity)
+                    .setTitle("Delete saved profile?")
+                    .setMessage(
+                        "Remove ${route.label} and all of its saved Equalizer and Effects overrides from GoneSmart? " +
+                            "This does not unpair the Bluetooth device or change Standard. " +
+                            "Connecting this device again will create a fresh profile."
+                    )
+                    .setPositiveButton("Delete") { _, _ ->
+                        if (repository.deleteSavedRoute(route.id)) {
+                            selectedRouteId = repository.activeRouteId()
+                            renderedContentKey = null
+                            refreshAll()
+                        } else {
+                            Snackbar.make(
+                                contentHost,
+                                "Could not delete this profile. Disconnect it first if active.",
+                                Snackbar.LENGTH_LONG
+                            ).show()
+                            refreshAll()
+                        }
                     }
                     .setNegativeButton("Cancel", null)
                     .show()
