@@ -69,14 +69,24 @@ class AudioProfileContractTest {
     }
 
     @Test
-    fun bluetoothRouteIdentityCollapsesMultipleAudioTypesForSameNamedDevice() {
-        val a2dp = GoneSmartAudioProfiles.bluetoothRouteId(8, "00:11:22:33:44:55", "SOUNDPEATS Air3 Deluxe HS")
-        val alternateType = GoneSmartAudioProfiles.bluetoothRouteId(26, "", "SOUNDPEATS Air3 Deluxe HS")
-        val other = GoneSmartAudioProfiles.bluetoothRouteId(8, "66:77:88:99:AA:BB", "Car Audio")
+    fun bluetoothRouteIdentityUsesAddressRatherThanSharedModelName() {
+        val first = GoneSmartAudioProfiles.bluetoothRouteId(8, "00:11:22:33:44:55", "Esinkin BT Adapter")
+        val second = GoneSmartAudioProfiles.bluetoothRouteId(8, "66:77:88:99:AA:BB", "Esinkin BT Adapter")
+        val otherAudioType = GoneSmartAudioProfiles.bluetoothRouteId(26, "00:11:22:33:44:55", "Renamed receiver")
 
-        assertEquals(a2dp, alternateType)
-        assertNotEquals(a2dp, other)
-        assertTrue(a2dp.startsWith("bt_"))
+        assertNotEquals(first, second)
+        assertEquals(first, otherAudioType)
+        assertTrue(first.startsWith("bt_"))
+    }
+
+    @Test
+    fun bluetoothRouteIdentityUsesLegacyLabelOnlyWhenAddressIsHidden() {
+        val fallback = GoneSmartAudioProfiles.bluetoothRouteId(8, "", "Esinkin BT Adapter")
+        val sameName = GoneSmartAudioProfiles.bluetoothRouteId(26, null, "esinkin bt adapter")
+        val knownAddress = GoneSmartAudioProfiles.bluetoothRouteId(8, "00:11:22:33:44:55", "Esinkin BT Adapter")
+
+        assertEquals(fallback, sameName)
+        assertNotEquals(fallback, knownAddress)
     }
 
     @Test
