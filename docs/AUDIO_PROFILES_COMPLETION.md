@@ -125,7 +125,7 @@ Unavailable auxiliary observation does not disable unrelated GoneSmart features.
 
 ### Same-name Bluetooth devices
 
-Route identity is stabilized primarily by normalized product name. Two distinct devices exposing exactly the same product name currently share one GoneSmart audio-profile identity.
+A follow-up 0.5.0 RC fix makes the exposed Android Bluetooth address the first-choice route identity, so two same-name devices can have separate profiles; a hidden address retains the name-based fallback. The companion route selection and repository persistence retain the observer's ID rather than regenerating a name hash. The maintainer device-tested and confirmed that the two Esinkin adapters are now recognized separately. Previously saved name-based entries remain to protect user overrides. A subsequent RC fix adds explicit deletion for **disconnected** saved Bluetooth routes, including route metadata and overrides, with Standard and current active route protected. Deletion is synchronized to framework preferences through atomic local tombstones and has JVM regression coverage; device re-acceptance for that deletion UI is pending.
 
 ### Multiple simultaneous Bluetooth sinks
 
