@@ -143,9 +143,9 @@ Natural preset actions remain a fallback/validation source. They do not overwrit
 
 GoneSmart observes Bluetooth outputs through Android audio-device APIs in both the GMMP host and the companion screen.
 
-Route identity is intentionally stabilized primarily by normalized product name, with type/address only as fallback when no usable name exists. This avoids one physical device fragmenting into several profiles when Android exposes inconsistent addresses/types.
+Route identity prefers the available Android Bluetooth output address independently of device type or display name. This separates identical receiver models and keeps renamed outputs stable. The observed address-based identity is preserved unchanged when profiles are saved. When Android hides the address, the previous name-based fallback remains; a transient AudioDeviceInfo.id is never used as a persistent identity.
 
-Known limitation: two different Bluetooth devices with exactly the same product name currently share one profile identity. If several Bluetooth outputs are simultaneously exposed as sinks, Android's output-device enumeration does not provide a perfect active-media-route oracle on every API level; GoneSmart therefore uses the most recently added matching Bluetooth output and otherwise the final Bluetooth sink in the current list. The common one-active-output case is device-accepted.
+Known limitation: if Android hides the address for both identical devices, they cannot be distinguished reliably with the current audio-device API. Existing shared name-based profiles are retained rather than guessing which adapter should inherit their saved overrides. Users can configure separate overrides once distinct address-based outputs are observed. If several Bluetooth outputs are simultaneously exposed as sinks, Android's output-device enumeration does not provide a perfect active-media-route oracle on every API level; GoneSmart therefore uses the most recently added matching Bluetooth output and otherwise the final Bluetooth sink in the current list. The common one-active-output case is device-accepted.
 
 ## UI contract
 
