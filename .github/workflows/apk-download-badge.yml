@@ -1,0 +1,38 @@
+name: Refresh APK download badge
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '21 4 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-apk-download-badge
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'alagga/GoneSmart'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Collect GitHub APK download counts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/update_download_badge.py
+
+      - name: Commit updated badge data (only if count changed)
+        run: |
+          git add assets/badges/downloads.json
+          if git diff --cached --quiet; then
+            echo "APK download count unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: refresh APK downloads badge [skip ci]"
+          git push origin HEAD:main
