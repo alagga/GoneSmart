@@ -30,8 +30,6 @@ object GoneSmartDiagnosticCapture {
     private const val PREFS = "gonesmart_diagnostics"
     private const val RECORDING_ENABLED = "recording_enabled"
     private const val MAX_EXPORTS = 5
-    private const val MAX_SNAPSHOT_BYTES = 8_000_000
-    private const val MAX_SNAPSHOT_LINES = 30_000
     const val ROLLING_FILES = 4
     const val ROLLING_FILE_BYTES = 1_500_000L
 
@@ -82,7 +80,7 @@ object GoneSmartDiagnosticCapture {
                         while (true) {
                             val line = reader.readLine() ?: break
                             val buffer = (line + "\n").toByteArray(Charsets.UTF_8)
-                            if (lines >= MAX_SNAPSHOT_LINES || bytes + buffer.size > MAX_SNAPSHOT_BYTES) {
+                            if (DiagnosticCapturePolicy.shouldTruncate(lines, bytes, buffer.size)) {
                                 truncated = true
                                 break
                             }
@@ -162,7 +160,7 @@ object GoneSmartDiagnosticCapture {
 
     private fun permittedUids(context: Context): String {
         val gmmpUid = context.packageManager.getApplicationInfo(GMMP_PACKAGE, 0).uid
-        return listOf(context.applicationInfo.uid, gmmpUid).distinct().joinToString(",")
+        return DiagnosticCapturePolicy.uidFilter(context.applicationInfo.uid, gmmpUid)
     }
 
     private fun info(context: Context, mode: String): String = buildString {
