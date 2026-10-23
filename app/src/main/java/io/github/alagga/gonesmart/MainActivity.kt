@@ -6,6 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
+import androidx.core.content.ContextCompat
+import java.io.File
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
@@ -80,6 +85,9 @@ class MainActivity : AppCompatActivity() {
     private var updateCheckRunning = false
     private lateinit var logTextView: TextView
     private lateinit var logCountText: TextView
+    private var diagnosticStatusText: TextView? = null
+    private var diagnosticRecordingButton: MaterialButton? = null
+    private var diagnosticCaptureBusy = false
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
     private var ratingFallbackRow: LinearLayout? = null
@@ -804,6 +812,33 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
         container.addView(actions)
 
+        container.addView(verticalGap(20))
+        container.addView(sectionTitle("DEBUG CAPTURE"))
+        diagnosticStatusText = textView("", 13f, COLOR_TEXT_SECONDARY)
+        container.addView(diagnosticStatusText)
+        container.addView(verticalGap(8))
+        container.addView(actionButton("Save last 5 minutes") {
+            saveDiagnosticSnapshot()
+        })
+        container.addView(verticalGap(8))
+        diagnosticRecordingButton = outlineButton("Start recording") {
+            toggleDiagnosticRecording()
+        }
+        container.addView(diagnosticRecordingButton)
+        container.addView(verticalGap(8))
+        container.addView(outlineButton("Share recorded log") {
+            shareDiagnosticRecording()
+        })
+        container.addView(verticalGap(8))
+        container.addView(textView(
+            "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
+                "The last-5-minutes button works without starting a recording, as long as Android still has those logs. " +
+                "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
+                "One-time ADB setup is required. Logs may contain track names and local paths.",
+            12.5f,
+            COLOR_MUTED
+        ))
+
         logCountText = textView("0 lines", 14f, COLOR_TEXT_SECONDARY).apply {
             setPadding(0, dp(14), 0, dp(8))
         }
@@ -820,7 +855,7 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "Shows high-signal GoneSmart activity such as verified actions, state changes, fallbacks and failures. For deeper diagnostics, capture Android Logcat and filter by GoneSmart, GoneSmartCompat, GoneSmartPlaylist, GoneSmartPlaylistBridge, GoneSmartFlip, GoneSmartTrackMix, GoneSmartAudioProfiles or GoneSmartAudioApply. When reporting a problem, copy this Logs view first and attach filtered Logcat when detailed diagnosis is needed.",
+            "The activity history above is a concise summary. For sporadic playback bugs use Save last 5 minutes or start a bounded diagnostic recording before listening. Exported ZIPs contain detailed GMMP/GoneSmart Logcat and can be attached to a bug report.",
             13f,
             COLOR_MUTED
         ))
@@ -1365,6 +1400,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshLogs() {
         if (!::logTextView.isInitialized) return
+        val access = GoneSmartDiagnosticCapture.hasLogAccess(this)
+        val recording = GoneSmartDiagnosticCapture.recordingRequested(this)
+        diagnosticStatusText?.text = when {
+            !access -> "Logcat permission required • tap a capture button for one-time ADB setup"
+            recording -> "Continuous recording enabled • use notification to stop"
+            else -> "Ready • use Save last 5 minutes after a bug"
+        }
+        diagnosticRecordingButton?.text = if (recording) "Stop recording" else "Start recording"
         val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
@@ -1376,6 +1419,106 @@ class MainActivity : AppCompatActivity() {
         } else {
             lines.joinToString("\n")
         }
+    }
+
+    private fun requireDiagnosticAccess(): Boolean {
+        if (GoneSmartDiagnosticCapture.hasLogAccess(this)) return true
+        AlertDialog.Builder(this)
+            .setTitle("Enable detailed GMMP logs")
+            .setMessage(
+                "Android blocks apps from reading another app's Logcat by default. " +
+                    "To enable the GMMP/GoneSmart diagnostic buttons, connect your phone to ADB once and run:\\n\\n" +
+                    GoneSmartDiagnosticCapture.ADB_COMMAND +
+                    "\\n\\nThis grants access to system logs, which can include personal information. " +
+                    "GoneSmart exports only the GMMP and GoneSmart UIDs. " +
+                    "You can revoke access with 'adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS'."
+            )
+            .setPositiveButton("Copy command") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(
+                    ClipData.newPlainText("GoneSmart ADB setup", GoneSmartDiagnosticCapture.ADB_COMMAND)
+                )
+                Toast.makeText(this, "ADB command copied", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+        return false
+    }
+
+    private fun saveDiagnosticSnapshot() {
+        if (!requireDiagnosticAccess() || diagnosticCaptureBusy) return
+        diagnosticCaptureBusy = true
+        diagnosticStatusText?.text = "Collecting last 5 minutes…"
+        Thread({
+            val result = runCatching { GoneSmartDiagnosticCapture.snapshot(applicationContext) }
+            runOnUiThread {
+                diagnosticCaptureBusy = false
+                result.onSuccess { shareDiagnosticZip(it) }
+                    .onFailure { showDiagnosticError(it) }
+                refreshLogs()
+            }
+        }, "GoneSmartSnapshotExport").start()
+    }
+
+    private fun toggleDiagnosticRecording() {
+        if (GoneSmartDiagnosticCapture.recordingRequested(this)) {
+            GoneSmartDiagnosticCapture.setRecordingRequested(this, false)
+            stopService(Intent(this, GoneSmartLogCaptureService::class.java))
+            refreshLogs()
+            return
+        }
+        if (!requireDiagnosticAccess()) return
+        val launched = runCatching {
+            GoneSmartDiagnosticCapture.setRecordingRequested(this, true)
+            ContextCompat.startForegroundService(
+                this, Intent(this, GoneSmartLogCaptureService::class.java)
+                    .setAction(GoneSmartLogCaptureService.ACTION_START)
+            )
+        }
+        launched.onFailure {
+            GoneSmartDiagnosticCapture.setRecordingRequested(this, false)
+            showDiagnosticError(it)
+        }
+        refreshLogs()
+    }
+
+    private fun shareDiagnosticRecording() {
+        if (diagnosticCaptureBusy) return
+        diagnosticCaptureBusy = true
+        diagnosticStatusText?.text = "Preparing recorded trace…"
+        Thread({
+            val result = runCatching {
+                GoneSmartDiagnosticCapture.exportRecording(applicationContext)
+            }
+            runOnUiThread {
+                diagnosticCaptureBusy = false
+                result.onSuccess { shareDiagnosticZip(it) }
+                    .onFailure { showDiagnosticError(it) }
+                refreshLogs()
+            }
+        }, "GoneSmartRecordingExport").start()
+    }
+
+    private fun shareDiagnosticZip(file: File) {
+        runCatching {
+            val uri = GoneSmartDiagnosticCapture.shareUri(this, file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newUri(contentResolver, "GoneSmart diagnostics", uri)
+            }
+            startActivity(Intent.createChooser(intent, "Share GoneSmart diagnostic logs"))
+        }.onFailure(::showDiagnosticError)
+    }
+
+    private fun showDiagnosticError(error: Throwable) {
+        Log.w("GoneSmartDiagnostics", "Diagnostic action failed", error)
+        AlertDialog.Builder(this)
+            .setTitle("Diagnostic capture unavailable")
+            .setMessage(error.message ?: "Unable to capture logs. Please check ADB permission and try again.")
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun showGmmpUpdateWarningIfNeeded() {
