@@ -218,6 +218,9 @@ internal class GoneSmartRollingLogWriter(private val directory: File) : java.io.
     private fun rotate() {
         writer?.flush()
         writer?.close()
+        // Mark the completed segment as newest before choosing an old one.
+        // Otherwise a long-running current segment could replace itself.
+        segment?.setLastModified(System.currentTimeMillis())
         val files = (0 until GoneSmartDiagnosticCapture.ROLLING_FILES).map {
             File(directory, "segment-$it.txt")
         }
