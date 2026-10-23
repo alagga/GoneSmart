@@ -47,6 +47,25 @@ as-is until they age out or the user clears the log. Copy exports all
 current lines. The Logs tab shows category totals and puts uncategorized
 older or UI/System lines in **Other**.
 
+## On-device detailed diagnostics (opt-in)
+
+The companion **Logs → Debug Capture** section now offers:
+
+- **Save last 5 minutes:** captures the surviving Android Logcat ring-buffer entries for GoneSmart and GMMP without requiring the recorder to have been running beforehand, then opens Android's standard ZIP sharing chooser. This is best for sporadic issues noticed immediately after they occur; Android may have overwritten some or all of the requested window.
+- **Start recording / Stop recording:** starts an explicitly opted-in, visible foreground diagnostic service. Its logcat stream is filtered to the two Linux UIDs, and it rotates four 1.5 MB files under app-private storage (approximately 6 MB maximum). This remains enabled across GMMP restarts while Android allows the service to run. It is not enabled automatically on app installation or boot.
+- **Share recorded log:** exports the retained segments as a ZIP through a narrowly scoped FileProvider. Cache exports are limited to the five newest ZIPs.
+- **Copy:** still copies only the concise persistent event history, independent of detailed Logcat collection.
+
+Android does not normally allow an ordinary app to read GMMP's logs. This feature requires the user's explicit **one-time ADB setup** after installing a build with `android.permission.READ_LOGS` declared:
+
+```bash
+adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS
+```
+
+To revoke: `adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS`.
+
+The system-wide log reading capability is powerful; even though GoneSmart restricts captured output to GMMP and GoneSmart UIDs, the resulting logs may contain song names, local paths or other personal information. Users must review exported files before distributing them. No logs are sent automatically. If permission or logcat is unavailable, diagnostics fail with a user-facing explanation; they must not falsely claim that a valid GMMP trace was collected. This is a device-test-pending RC diagnostic tool, not a regression-tested alternative to full `adb logcat` capture on every Android ROM.
+
 ## Regression checklist for any new feature
 
 1. Identify an unambiguous category in `GoneSmartRuntimeContract`.
