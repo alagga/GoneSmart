@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.io.File
@@ -100,6 +102,23 @@ class MainActivity : AppCompatActivity() {
     private val tabButtons = linkedMapOf<Tab, LinearLayout>()
     private val tabIconBackgrounds = linkedMapOf<Tab, FrameLayout>()
     private val tabLabels = linkedMapOf<Tab, TextView>()
+
+    private val diagnosticNotificationRequest =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startDiagnosticRecording()
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("Notification required")
+                    .setMessage(
+                        "Continuous recording needs a visible Android notification so you can see " +
+                            "when logging is active and stop it. Allow notifications for GoneSmart to use this mode. " +
+                            "The Save last 5 minutes button remains available."
+                    )
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
 
     private val handler = Handler(Looper.getMainLooper())
     private var activeTab = Tab.HOME
@@ -1466,6 +1485,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!requireDiagnosticAccess()) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            diagnosticNotificationRequest.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        startDiagnosticRecording()
+    }
+
+    private fun startDiagnosticRecording() {
         val launched = runCatching {
             GoneSmartDiagnosticCapture.setRecordingRequested(this, true)
             ContextCompat.startForegroundService(
