@@ -119,6 +119,18 @@ GoneSmart's companion app remains English: its UI, Logs and Help always call the
 The companion app checks the latest published stable GitHub Release at launch and shows the result on **Home → Updates**, without downloading APKs. **Add to Obtainium** opens GoneSmart's GitHub repository in Obtainium; Obtainium then handles notifications, downloads and future APK installation. Prerelease and locally built versions may display as development builds or not compare with stable releases.
 
 
+## How do I capture a sporadic bug without keeping a PC connected?
+
+Open **GoneSmart → Logs → Debug Capture** and tap **Save last 5 minutes** as soon as the bug occurs. The app exports GMMP/GoneSmart Logcat as a ZIP and opens Android's share sheet. Android may already have discarded older logs. For intermittent bugs over a longer period, tap **Start recording** while testing, then **Share recorded log**; this records up to approximately 6 MB with a visible notification, and you can stop it at any time.
+
+Both modes need a one-time ADB permission grant, which the Logs tab explains and offers to copy:
+
+```bash
+adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS
+```
+
+The original **Copy** button still copies only GoneSmart's concise event history. Logs may include private file paths and track names; inspect them before sharing. Background recording is explicitly user-initiated, not an automatic all-day logger that silently starts when GMMP launches.
+
 ## What are Audio Profiles?
 
 Audio Profiles let GoneSmart remember optional GMMP Equalizer and Effects overrides for Bluetooth outputs. **Standard** is the normal no-Bluetooth GMMP state and remains GMMP-owned. A Bluetooth profile only replaces the groups you explicitly enable; everything else continues to inherit Standard.
