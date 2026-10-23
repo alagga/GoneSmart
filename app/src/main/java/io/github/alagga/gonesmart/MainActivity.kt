@@ -6,8 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
-import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.io.File
@@ -1427,9 +1425,9 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Enable detailed GMMP logs")
             .setMessage(
                 "Android blocks apps from reading another app's Logcat by default. " +
-                    "To enable the GMMP/GoneSmart diagnostic buttons, connect your phone to ADB once and run:\\n\\n" +
+                    "To enable the GMMP/GoneSmart diagnostic buttons, connect your phone to ADB once and run:\n\n" +
                     GoneSmartDiagnosticCapture.ADB_COMMAND +
-                    "\\n\\nThis grants access to system logs, which can include personal information. " +
+                    "\n\nThis grants access to system logs, which can include personal information. " +
                     "GoneSmart exports only the GMMP and GoneSmart UIDs. " +
                     "You can revoke access with 'adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS'."
             )
