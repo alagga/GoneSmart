@@ -99,6 +99,11 @@ class GoneSmartLogCaptureService : Service() {
                 val command = GoneSmartDiagnosticCapture.liveLogcatCommand(this)
                 val process = ProcessBuilder(command).redirectErrorStream(true).start()
                 logcatProcess = process
+                if (!running) {
+                    // Stop may race with process creation on a fast UI toggle.
+                    process.destroy()
+                    return@Thread
+                }
                 GoneSmartRollingLogWriter(GoneSmartDiagnosticCapture.rollingDir(this)).use { writer ->
                     process.inputStream.bufferedReader().useLines { lines ->
                         for (line in lines) {
