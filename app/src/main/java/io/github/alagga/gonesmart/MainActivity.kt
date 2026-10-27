@@ -88,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     private var diagnosticStatusText: TextView? = null
     private var diagnosticRecordingButton: MaterialButton? = null
     private var diagnosticCaptureBusy = false
+    private var diagnosticGrantBusy = false
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
     private var ratingFallbackRow: LinearLayout? = null
@@ -851,7 +852,8 @@ class MainActivity : AppCompatActivity() {
             "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
                 "The last-5-minutes button works without starting a recording, as long as Android still has those logs. " +
                 "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
-                "One-time ADB setup is required. Logs may contain track names and local paths.",
+                "Log access can be enabled with Root, on-device Shizuku + aShell, or PC ADB. " +
+                "Logs may contain track names and local paths.",
             12.5f,
             COLOR_MUTED
         ))
@@ -1420,7 +1422,7 @@ class MainActivity : AppCompatActivity() {
         val access = GoneSmartDiagnosticCapture.hasLogAccess(this)
         val recording = GoneSmartDiagnosticCapture.recordingRequested(this)
         diagnosticStatusText?.text = when {
-            !access -> "Logcat permission required • tap a capture button for one-time ADB setup"
+            !access -> "Logcat permission required • tap a capture button to choose Root, Shizuku or ADB"
             recording -> "Continuous recording enabled • use notification to stop"
             else -> "Ready • use Save last 5 minutes after a bug"
         }
@@ -1443,23 +1445,88 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Enable detailed GMMP logs")
             .setMessage(
-                "Android blocks apps from reading another app's Logcat by default. " +
-                    "To enable the GMMP/GoneSmart diagnostic buttons, connect your phone to ADB once and run:\n\n" +
-                    GoneSmartDiagnosticCapture.ADB_COMMAND +
-                    "\n\nThis grants access to system logs, which can include personal information. " +
-                    "GoneSmart exports only the GMMP and GoneSmart UIDs. " +
-                    "You can revoke access with 'adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS'."
+                "Android restricts access to other apps' Logcat data. Choose how to grant " +
+                    "GoneSmart the READ_LOGS permission.\n\n" +
+                    "Root: approve one Magisk/SuperSU prompt; no PC needed.\n\n" +
+                    "Without root: use Shizuku + aShell on your phone, or a computer with ADB.\n\n" +
+                    "Logs can contain private information; only enable this on a device you control."
             )
-            .setPositiveButton("Copy command") { _, _ ->
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(
-                    ClipData.newPlainText("GoneSmart ADB setup", GoneSmartDiagnosticCapture.ADB_COMMAND)
-                )
-                Toast.makeText(this, "ADB command copied", Toast.LENGTH_SHORT).show()
+            .setPositiveButton("Grant via root") { _, _ ->
+                confirmRootDiagnosticGrant()
+            }
+            .setNeutralButton("Without root") { _, _ ->
+                showNonRootDiagnosticSetup()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+        return false
+    }
+
+    private fun confirmRootDiagnosticGrant() {
+        if (diagnosticGrantBusy) return
+        AlertDialog.Builder(this)
+            .setTitle("Allow system log access?")
+            .setMessage(
+                "GoneSmart will ask your root manager to run only:\n\n" +
+                    DiagnosticPermissionCommands.LOCAL_SHELL_GRANT +
+                    "\n\nThis permission can expose sensitive system logs to GoneSmart. " +
+                    "The app filters its exports to GMMP and GoneSmart and never uploads them. " +
+                    "Magisk or your root manager will still ask you to approve root access."
+            )
+            .setPositiveButton("Request root") { _, _ -> grantDiagnosticViaRoot() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun grantDiagnosticViaRoot() {
+        if (diagnosticGrantBusy) return
+        diagnosticGrantBusy = true
+        diagnosticStatusText?.text = "Waiting for root approval (Magisk)…"
+        Thread({
+            val result = runCatching {
+                GoneSmartLogPermissionSetup.grantViaRoot(applicationContext)
+            }
+            runOnUiThread {
+                diagnosticGrantBusy = false
+                result.onSuccess {
+                    Toast.makeText(
+                        this, "Logcat access granted. You can now capture logs.", Toast.LENGTH_LONG
+                    ).show()
+                }.onFailure(::showDiagnosticError)
+                refreshLogs()
+            }
+        }, "GoneSmartRootLogGrant").start()
+    }
+
+    private fun showNonRootDiagnosticSetup() {
+        AlertDialog.Builder(this)
+            .setTitle("Enable logs without root")
+            .setMessage(
+                "No PC (Android 11+): Install Shizuku and start it through Android's " +
+                    "Wireless debugging developer option, then use aShell with Shizuku " +
+                    "access. In aShell run:\n\n" +
+                    DiagnosticPermissionCommands.LOCAL_SHELL_GRANT +
+                    "\n\nShizuku setup: https://shizuku.rikka.app/guide/setup/\n\n" +
+                    "Alternatively, on a PC with USB debugging run:\n\n" +
+                    DiagnosticPermissionCommands.ADB_GRANT +
+                    "\n\nA normal Android app cannot directly approve READ_LOGS without " +
+                    "root, shell/ADB or a privileged service. Once granted, return here and " +
+                    "use Save last 5 minutes or Start recording."
+            )
+            .setPositiveButton("Copy phone command") { _, _ ->
+                copyDiagnosticCommand(DiagnosticPermissionCommands.LOCAL_SHELL_GRANT)
+            }
+            .setNeutralButton("Copy PC command") { _, _ ->
+                copyDiagnosticCommand(DiagnosticPermissionCommands.ADB_GRANT)
             }
             .setNegativeButton("Close", null)
             .show()
-        return false
+    }
+
+    private fun copyDiagnosticCommand(command: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("GoneSmart Logcat access", command))
+        Toast.makeText(this, "Permission command copied", Toast.LENGTH_SHORT).show()
     }
 
     private fun saveDiagnosticSnapshot() {
