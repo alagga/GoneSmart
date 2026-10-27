@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logCountText: TextView
     private var diagnosticStatusText: TextView? = null
     private var diagnosticRecordingButton: MaterialButton? = null
+    private var diagnosticRootButton: MaterialButton? = null
     private var diagnosticCaptureBusy = false
     private var diagnosticGrantBusy = false
     private var minimumRatingSlider: Slider? = null
@@ -848,11 +849,17 @@ class MainActivity : AppCompatActivity() {
             shareDiagnosticRecording()
         })
         container.addView(verticalGap(8))
+        diagnosticRootButton = outlineButton("Use root for long recordings") {
+            toggleRootDiagnosticCapture()
+        }
+        container.addView(diagnosticRootButton)
+        container.addView(verticalGap(8))
         container.addView(textView(
             "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
                 "The last-5-minutes button works without starting a recording, as long as Android still has those logs. " +
                 "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
                 "Log access can be enabled with Root, on-device Shizuku + aShell, or PC ADB. " +
+                "Android 13+ limits background Logcat without Root; optionally enable the root recorder for longer captures. " +
                 "Logs may contain track names and local paths.",
             12.5f,
             COLOR_MUTED
@@ -1421,12 +1428,18 @@ class MainActivity : AppCompatActivity() {
         if (!::logTextView.isInitialized) return
         val access = GoneSmartDiagnosticCapture.hasLogAccess(this)
         val recording = GoneSmartDiagnosticCapture.recordingRequested(this)
+        val root = GoneSmartDiagnosticCapture.rootCaptureApproved(this)
         diagnosticStatusText?.text = when {
             !access -> "Logcat permission required • tap a capture button to choose Root, Shizuku or ADB"
-            recording -> "Continuous recording enabled • use notification to stop"
+            recording -> "Recording enabled (${if (root) "Root" else "READ_LOGS"}) • use notification to stop"
+            root -> "Ready • root Logcat enabled • save the last 5 minutes after a bug"
             else -> "Ready • use Save last 5 minutes after a bug"
         }
         diagnosticRecordingButton?.text = if (recording) "Stop recording" else "Start recording"
+        diagnosticRootButton?.visibility =
+            if (Build.VERSION.SDK_INT >= 33 && access) View.VISIBLE else View.GONE
+        diagnosticRootButton?.text =
+            if (root) "Disable root recorder" else "Use root for long recordings"
         val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
@@ -1462,16 +1475,32 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    private fun toggleRootDiagnosticCapture() {
+        if (GoneSmartDiagnosticCapture.rootCaptureApproved(this)) {
+            if (GoneSmartDiagnosticCapture.recordingRequested(this)) {
+                Toast.makeText(this, "Stop recording before changing the capture mode.", Toast.LENGTH_LONG).show()
+                return
+            }
+            GoneSmartDiagnosticCapture.setRootCaptureApproved(this, false)
+            refreshLogs()
+        } else {
+            confirmRootDiagnosticGrant()
+        }
+    }
+
     private fun confirmRootDiagnosticGrant() {
         if (diagnosticGrantBusy) return
         AlertDialog.Builder(this)
-            .setTitle("Allow system log access?")
+            .setTitle("Enable privileged diagnostic logging?")
             .setMessage(
-                "GoneSmart will ask your root manager to run only:\n\n" +
+                "GoneSmart will ask Magisk/SuperSU for root access. It will verify the root identity " +
+                    "and, if necessary, grant:\n\n" +
                     DiagnosticPermissionCommands.LOCAL_SHELL_GRANT +
-                    "\n\nThis permission can expose sensitive system logs to GoneSmart. " +
-                    "The app filters its exports to GMMP and GoneSmart and never uploads them. " +
-                    "Magisk or your root manager will still ask you to approve root access."
+                    "\n\nAfter approval, GoneSmart will also run UID-filtered Logcat under root " +
+                    "when you explicitly save logs or start a recording. This avoids Android 13+ " +
+                    "background restrictions. Only GMMP and GoneSmart UIDs are requested, " +
+                    "exports stay local until you share them, and recording can be stopped. " +
+                    "System logs can still contain private information."
             )
             .setPositiveButton("Request root") { _, _ -> grantDiagnosticViaRoot() }
             .setNegativeButton("Cancel", null)
