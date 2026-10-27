@@ -121,15 +121,17 @@ The companion app checks the latest published stable GitHub Release at launch an
 
 ## How do I capture a sporadic bug without keeping a PC connected?
 
-Open **GoneSmart → Logs → Debug Capture** and tap **Save last 5 minutes** as soon as the bug occurs. The app exports GMMP/GoneSmart Logcat as a ZIP and opens Android's share sheet. Android may already have discarded older logs. For intermittent bugs over a longer period, tap **Start recording** while testing, then **Share recorded log**; this records up to approximately 6 MB with a visible notification, and you can stop it at any time.
+Open **GoneSmart → Logs → Debug Capture** and tap **Save last 5 minutes** as soon as the bug occurs. The app exports the GMMP/GoneSmart Logcat messages that remain in Android's circular buffer as a ZIP and opens the share sheet. For intermittent bugs over a longer period, tap **Start recording** and later **Share recorded log**; that opt-in recorder keeps up to approximately 6 MB of trace data, with a visible notification and a Stop action.
 
-Both modes need a one-time ADB permission grant, which the Logs tab explains and offers to copy:
+When you first try to capture logs, choose an explicit permission-setup method:
 
-```bash
-adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS
-```
+- **Grant via root:** rooted devices (e.g. Magisk) can grant `READ_LOGS` directly after confirmation. This also enables an explicitly approved, GMMP/GoneSmart-UID-filtered root Logcat backend for longer recordings. The root backend can be disabled independently in the Logs tab.
+- **Without root or PC:** on Android 11+, configure **Shizuku** with Wireless debugging and use **aShell** to run the copied `pm grant io.github.alagga.gonesmart android.permission.READ_LOGS` command. This needs those other apps but no computer.
+- **With a computer:** use `adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS`.
 
-The original **Copy** button still copies only GoneSmart's concise event history. Logs may include private file paths and track names; inspect them before sharing. Background recording is explicitly user-initiated, not an automatic all-day logger that silently starts when GMMP launches.
+On **Android 13+**, a non-root READ_LOGS recorder can require additional one-time Android access approval and cannot reliably keep reading after the app goes into the background. For long recordings, explicitly authorized root Logcat is more reliable. Behavior on individual ROMs must still be tested.
+
+The existing **Copy** button copies only GoneSmart's concise event history. Logs may include private file paths and track names; inspect them before sharing. Recording never starts automatically and traces are not uploaded without user action.
 
 ## What are Audio Profiles?
 
