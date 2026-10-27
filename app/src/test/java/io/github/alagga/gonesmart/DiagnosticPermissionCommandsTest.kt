@@ -1,6 +1,7 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class DiagnosticPermissionCommandsTest {
@@ -9,10 +10,30 @@ class DiagnosticPermissionCommandsTest {
         assertEquals(
             listOf(
                 "su", "-c",
-                "pm grant io.github.alagga.gonesmart android.permission.READ_LOGS"
+                "id -u && pm grant io.github.alagga.gonesmart android.permission.READ_LOGS"
             ),
             DiagnosticPermissionCommands.rootGrantProcessArguments()
         )
+        assertEquals(
+            listOf("su", "-c", "id -u"),
+            DiagnosticPermissionCommands.rootGrantProcessArguments(permissionAlreadyGranted = true)
+        )
+    }
+
+    @Test
+    fun privilegedCapturePreservesOnlyUidFilteredLogcatArguments() {
+        assertEquals(
+            listOf(
+                "su", "-c",
+                "'logcat' '-d' '--uid=10100,10101' '-T' '10-27 15:20:00.000'"
+            ),
+            DiagnosticPermissionCommands.wrapLogcatInRoot(
+                listOf("logcat", "-d", "--uid=10100,10101", "-T", "10-27 15:20:00.000")
+            )
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            DiagnosticPermissionCommands.wrapLogcatInRoot(listOf("pm", "clear", "gonemad.gmmp"))
+        }
     }
 
     @Test
