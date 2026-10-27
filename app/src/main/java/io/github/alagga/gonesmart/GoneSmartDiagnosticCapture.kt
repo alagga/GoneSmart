@@ -29,6 +29,7 @@ object GoneSmartDiagnosticCapture {
     private const val ROLLING_DIR = "diagnostic-capture"
     private const val PREFS = "gonesmart_diagnostics"
     private const val RECORDING_ENABLED = "recording_enabled"
+    private const val ROOT_CAPTURE_APPROVED = "root_capture_approved"
     private const val MAX_EXPORTS = 5
     const val ROLLING_FILES = 4
     const val ROLLING_FILE_BYTES = 1_500_000L
@@ -41,6 +42,19 @@ object GoneSmartDiagnosticCapture {
     fun recordingRequested(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(RECORDING_ENABLED, false)
+
+    /**
+     * Opt-in persisted only after a successful explicit root verification.
+     * A plain ADB READ_LOGS grant never opts the user into running su.
+     */
+    fun rootCaptureApproved(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(ROOT_CAPTURE_APPROVED, false)
+
+    fun setRootCaptureApproved(context: Context, approved: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(ROOT_CAPTURE_APPROVED, approved).apply()
+    }
 
     fun setRecordingRequested(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -59,10 +73,10 @@ object GoneSmartDiagnosticCapture {
         val uids = permittedUids(context)
         val stamp = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
             .format(Date(System.currentTimeMillis() - minutes * 60_000L))
-        val command = listOf(
+        val command = chooseBackend(context, listOf(
             "logcat", "-d", "-b", "main,system,crash",
             "-v", "threadtime", "--uid=$uids", "-T", stamp
-        )
+        ))
         val file = newExportFile(context, "last-${minutes}min")
         try {
             ZipOutputStream(FileOutputStream(file)).use { zip ->
@@ -151,12 +165,18 @@ object GoneSmartDiagnosticCapture {
         File(context.filesDir, ROLLING_DIR).apply { mkdirs() }
 
     /** No shell interpolation; every command argument is its own token. */
-    fun liveLogcatCommand(context: Context): List<String> = listOf(
-        "logcat", "-b", "main,system,crash",
-        "-v", "threadtime", "--uid=${permittedUids(context)}",
-        "-T", SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
-            .format(Date(System.currentTimeMillis() - 1_000L))
+    fun liveLogcatCommand(context: Context): List<String> = chooseBackend(
+        context, listOf(
+            "logcat", "-b", "main,system,crash",
+            "-v", "threadtime", "--uid=${permittedUids(context)}",
+            "-T", SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+                .format(Date(System.currentTimeMillis() - 1_000L))
+        )
     )
+
+    private fun chooseBackend(context: Context, command: List<String>): List<String> =
+        if (rootCaptureApproved(context)) DiagnosticPermissionCommands.wrapLogcatInRoot(command)
+        else command
 
     private fun permittedUids(context: Context): String {
         val gmmpUid = context.packageManager.getApplicationInfo(GMMP_PACKAGE, 0).uid
@@ -170,6 +190,7 @@ object GoneSmartDiagnosticCapture {
         appendLine("GoneSmart: ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_REVISION})")
         appendLine("Android: ${Build.VERSION.SDK_INT}")
         appendLine("Source: Android logcat main/system/crash, limited to GMMP and GoneSmart UIDs")
+        appendLine("Capture backend: ${if (rootCaptureApproved(context)) "Root (explicitly approved)" else "App / READ_LOGS"}")
         appendLine("CAUTION: logs can contain local file names and other personal information.")
         appendLine("The logcat circular buffer may not retain the full requested period.")
         appendLine("GMMP UID: ${runCatching { context.packageManager.getApplicationInfo(GMMP_PACKAGE, 0).uid }.getOrNull()}")
