@@ -11,11 +11,9 @@ internal object GoneSmartLogPermissionSetup {
     private const val MAX_GRANT_WAIT_SECONDS = 35L
 
     fun grantViaRoot(context: Context) {
-        check(!GoneSmartDiagnosticCapture.hasLogAccess(context)) {
-            "Detailed logging permission is already granted."
-        }
+        val hasAccess = GoneSmartDiagnosticCapture.hasLogAccess(context)
         val process = try {
-            ProcessBuilder(DiagnosticPermissionCommands.rootGrantProcessArguments())
+            ProcessBuilder(DiagnosticPermissionCommands.rootGrantProcessArguments(hasAccess))
                 .redirectErrorStream(true)
                 .start()
         } catch (e: Exception) {
@@ -39,12 +37,18 @@ internal object GoneSmartLogPermissionSetup {
                         if (diagnostic.isBlank()) "" else " $diagnostic"
                 )
             }
+            if (!diagnostic.lineSequence().any { it.trim() == "0" }) {
+                throw IllegalStateException("Superuser command did not run as root.")
+            }
             if (!GoneSmartDiagnosticCapture.hasLogAccess(context)) {
                 throw IllegalStateException(
                     "Root command finished, but Android did not grant READ_LOGS. " +
                         "Your ROM may restrict this permission; use ADB or a device bug report."
                 )
             }
+            // The user explicitly approved both a root grant and a privileged,
+            // UID-filtered recorder in the preceding confirmation dialog.
+            GoneSmartDiagnosticCapture.setRootCaptureApproved(context, true)
         } finally {
             process.destroy()
         }
