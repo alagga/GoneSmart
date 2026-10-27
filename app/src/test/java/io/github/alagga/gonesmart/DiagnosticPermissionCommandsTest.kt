@@ -25,7 +25,7 @@ class DiagnosticPermissionCommandsTest {
         assertEquals(
             listOf(
                 "su", "-c",
-                "'logcat' '-d' '--uid=10100,10101' '-T' '10-27 15:20:00.000'"
+                "exec 'logcat' '-d' '--uid=10100,10101' '-T' '10-27 15:20:00.000'"
             ),
             DiagnosticPermissionCommands.wrapLogcatInRoot(
                 listOf("logcat", "-d", "--uid=10100,10101", "-T", "10-27 15:20:00.000")
