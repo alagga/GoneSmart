@@ -1476,11 +1476,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleRootDiagnosticCapture() {
+        if (GoneSmartDiagnosticCapture.recordingRequested(this)) {
+            Toast.makeText(
+                this, "Stop recording before changing the capture mode.", Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         if (GoneSmartDiagnosticCapture.rootCaptureApproved(this)) {
-            if (GoneSmartDiagnosticCapture.recordingRequested(this)) {
-                Toast.makeText(this, "Stop recording before changing the capture mode.", Toast.LENGTH_LONG).show()
-                return
-            }
             GoneSmartDiagnosticCapture.setRootCaptureApproved(this, false)
             refreshLogs()
         } else {
