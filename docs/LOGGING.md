@@ -52,17 +52,19 @@ older or UI/System lines in **Other**.
 The companion **Logs → Debug Capture** section now offers:
 
 - **Save last 5 minutes:** captures the surviving Android Logcat ring-buffer entries for GoneSmart and GMMP without requiring the recorder to have been running beforehand, then opens Android's standard ZIP sharing chooser. This is best for sporadic issues noticed immediately after they occur; Android may have overwritten some or all of the requested window.
-- **Start recording / Stop recording:** starts an explicitly opted-in, visible foreground diagnostic service. Its logcat stream is filtered to the two Linux UIDs, and it rotates four 1.5 MB files under app-private storage (approximately 6 MB maximum). This remains enabled across GMMP restarts while Android allows the service to run. It is not enabled automatically on app installation or boot.
+- **Start recording / Stop recording:** starts an explicitly opted-in, visible foreground diagnostic service. Its logcat stream is filtered to the two Linux UIDs, and it rotates four 1.5 MB files under app-private storage (approximately 6 MB maximum). This remains enabled across GMMP restarts while Android allows the service to run (subject to Android 13+ access restrictions described below). It is not enabled automatically on app installation or boot.
 - **Share recorded log:** exports the retained segments as a ZIP through a narrowly scoped FileProvider. Cache exports are limited to the five newest ZIPs.
 - **Copy:** still copies only the concise persistent event history, independent of detailed Logcat collection.
 
-Android does not normally allow an ordinary app to read GMMP's logs. This feature requires the user's explicit **one-time ADB setup** after installing a build with `android.permission.READ_LOGS` declared:
+Android does not normally allow an ordinary app to read GMMP's logs. GoneSmart exposes three explicit setup choices when READ_LOGS is absent:
 
-```bash
-adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS
-```
+1. **Grant via root:** after a confirmation explaining the privileged operations, the companion asks Magisk/SuperSU to run a fixed, scoped `pm grant io.github.alagga.gonesmart android.permission.READ_LOGS` command, verifies that `id -u` returned root UID 0, and confirms the permission was actually granted. No privileged work is run until the user chooses this option. It also opts into a **root-backed Logcat reader** on later explicitly requested snapshot/recording operations; those processes still filter to GMMP and GoneSmart UIDs. The Logs tab offers **Disable root recorder** (stopping an active recording first), which resets this capture backend preference but does not revoke the Android permission or Magisk grant.
+2. **Without root, without a computer:** Android 11+ users can start **Shizuku** with Android developer settings' Wireless debugging and run the in-app copied local shell command via **aShell** with Shizuku permission. A normal app cannot perform this privileged grant itself. Shizuku setup: https://shizuku.rikka.app/guide/setup/.
+3. **ADB via computer:** copy/run `adb shell pm grant io.github.alagga.gonesmart android.permission.READ_LOGS`.
 
-To revoke: `adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS`.
+To revoke Android's actual permission: `adb shell pm revoke io.github.alagga.gonesmart android.permission.READ_LOGS` (or use an equivalent user-authorized elevated shell). Disabling the root recorder in GoneSmart does **not** revoke the Android permission, and revoking the Android permission does **not** revoke Magisk's broader superuser policy: those are separate controls.
+
+**Android 13+ caveat:** A normal `READ_LOGS` app can be asked by Android to approve access temporarily while foregrounded, and background accesses can be denied even with the development permission. Therefore long-running `READ_LOGS` captures without root are **best-effort only**, despite the foreground-service notification; the continuous mode is reliable across GMMP restarts only to the extent Android keeps its access. Explicitly opted-in root capture bypasses this app-process restriction by running narrowly filtered `logcat` as root. Neither option is guaranteed on modified/OEM ROMs until on-device tests.
 
 The system-wide log reading capability is powerful; even though GoneSmart restricts captured output to GMMP and GoneSmart UIDs, the resulting logs may contain song names, local paths or other personal information. Users must review exported files before distributing them. No logs are sent automatically. If permission or logcat is unavailable, diagnostics fail with a user-facing explanation; they must not falsely claim that a valid GMMP trace was collected. This is a device-test-pending RC diagnostic tool, not a regression-tested alternative to full `adb logcat` capture on every Android ROM.
 
