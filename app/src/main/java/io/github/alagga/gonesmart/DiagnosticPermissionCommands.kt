@@ -27,6 +27,7 @@ internal object DiagnosticPermissionCommands {
         val safelyQuoted = command.joinToString(" ") { arg ->
             "'" + arg.replace("'", "'\\''") + "'"
         }
-        return listOf("su", "-c", safelyQuoted)
+        // exec avoids leaving a detached shell around when capture is stopped.
+        return listOf("su", "-c", "exec $safelyQuoted")
     }
 }
