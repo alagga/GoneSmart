@@ -121,7 +121,7 @@ The companion app checks the latest published stable GitHub Release at launch an
 
 ## How do I capture a sporadic bug without keeping a PC connected?
 
-Open **GoneSmart → Logs → Debug Capture** and tap **Save last 5 minutes** as soon as the bug occurs. The app exports the GMMP/GoneSmart Logcat messages that remain in Android's circular buffer as a ZIP and opens the share sheet. For intermittent bugs over a longer period, tap **Start recording** and later **Share recorded log**; that opt-in recorder keeps up to approximately 6 MB of trace data, with a visible notification and a Stop action.
+Open **GoneSmart → Logs → Debug Capture** and tap **Save available Logcat (up to 5 min)** as soon as the bug occurs. The ZIP reports the earliest/latest included Logcat timestamps, so you can see whether the intended period actually survived Android's ring buffer. It also includes the separately retained GoneSmart Logs timeline, which may contain older events. A snapshot cannot retrieve overwritten messages. For intermittent bugs, tap **Start recording** *before* listening and later **Share recorded log**; that opt-in recorder keeps up to approximately 6 MB of trace data, with a visible notification and a Stop action.
 
 When you first try to capture logs, choose an explicit permission-setup method:
 

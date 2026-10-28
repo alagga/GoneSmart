@@ -4,6 +4,11 @@ package io.github.alagga.gonesmart
 internal object DiagnosticCapturePolicy {
     const val MAX_SNAPSHOT_BYTES = 8_000_000
     const val MAX_SNAPSHOT_LINES = 30_000
+    private val THREADTIME_PREFIX = Regex("^(\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s")
+
+    /** Only timestamps actually present in the exported lines are evidence. */
+    fun threadtimeStamp(line: String): String? =
+        THREADTIME_PREFIX.find(line)?.groupValues?.get(1)
 
     fun uidFilter(goneSmartUid: Int, gmmpUid: Int): String {
         require(goneSmartUid > 0 && gmmpUid > 0) {

@@ -23,4 +23,16 @@ class DiagnosticCapturePolicyTest {
         assertTrue(DiagnosticCapturePolicy.shouldTruncate(10, 7_999_999, 2))
         assertTrue(DiagnosticCapturePolicy.shouldTruncate(10, 0, 8_000_001))
     }
+
+    @Test
+    fun onlyRealThreadtimeEntriesContributeToSnapshotCoverage() {
+        assertEquals(
+            "10-28 15:28:48.333",
+            DiagnosticCapturePolicy.threadtimeStamp(
+                "10-28 15:28:48.333  6792  6792 I GoneSmart: SMART DJ"
+            )
+        )
+        assertEquals(null, DiagnosticCapturePolicy.threadtimeStamp("--------- beginning of main"))
+        assertEquals(null, DiagnosticCapturePolicy.threadtimeStamp("Logcat failed: permission denied"))
+    }
 }

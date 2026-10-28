@@ -4953,6 +4953,11 @@ class GoneSmartModule : XposedModule() {
                                 QueueEntryOrigin.NATIVE_AUTO_DJ
                             }
                         )
+                        logNewAutoDjQueueDuplicates(
+                            beforeBootstrap, afterBootstrap,
+                            if (applied.isNotEmpty()) QueueEntryOrigin.GONESMART
+                            else QueueEntryOrigin.NATIVE_AUTO_DJ
+                        )
                     }
                     Log.i(
                         "GoneSmartTrackMix",
@@ -5352,7 +5357,8 @@ class GoneSmartModule : XposedModule() {
 
                         logAddedTracks(
                             beforeContext = beforeContext,
-                            afterContext = afterContext
+                            afterContext = afterContext,
+                            origin = QueueEntryOrigin.NATIVE_AUTO_DJ
                         )
                     }
 
@@ -5433,7 +5439,8 @@ class GoneSmartModule : XposedModule() {
 
                 logAddedTracks(
                     beforeContext = beforeContext,
-                    afterContext = afterContext
+                    afterContext = afterContext,
+                    origin = QueueEntryOrigin.GONESMART
                 )
 
                 val updatedSession =
@@ -5593,6 +5600,15 @@ class GoneSmartModule : XposedModule() {
                 } else {
                     bootstrapRows.size
                 }
+                if (AutoDjSelectionIdentityPolicy.uniqueRows(bootstrapRows.take(desired)).size != desired) {
+                    // This path must return GMMP's original list. Mutating an
+                    // aliased object would corrupt more than one native slot.
+                    Log.w(
+                        "GoneSmartTrackMix",
+                        "SMART DJ TRACK MIX BOOTSTRAP | aliased native rows; skipping smart retarget"
+                    )
+                    return@intercept nativeResult
+                }
                 val ids = bootstrapWindow.trackIds.take(desired)
                 var applied = 0
                 ids.forEachIndexed { index, trackId ->
@@ -5679,11 +5695,21 @@ class GoneSmartModule : XposedModule() {
                     rows.size
                 }
 
+            val uniqueNativeRows =
+                AutoDjSelectionIdentityPolicy.uniqueRows(rows.take(desiredCount))
+            if (uniqueNativeRows.size != desiredCount) {
+                Log.w(
+                    TAG,
+                    "SMART DJ NATIVE ROW ALIAS | requested=$desiredCount | " +
+                        "distinct=${uniqueNativeRows.size} | avoiding repeated Track-ID mutation"
+                )
+            }
+
             val smartTrackIds =
                 recommendationPool
                     .peek(
                         expectedSessionId = selectionContext.sessionId,
-                        count = desiredCount,
+                        count = uniqueNativeRows.size,
                         excludedTrackIds = selectionContext.excludedTrackIds
                     )
 
@@ -5715,7 +5741,7 @@ class GoneSmartModule : XposedModule() {
                 .forEachIndexed { index, trackId ->
 
                     val row =
-                        rows.getOrNull(index)
+                        uniqueNativeRows.getOrNull(index)
                             ?: return@forEachIndexed
 
                     try {
@@ -7972,8 +7998,11 @@ class GoneSmartModule : XposedModule() {
 
     private fun logAddedTracks(
         beforeContext: QueueContext,
-        afterContext: QueueContext
+        afterContext: QueueContext,
+        origin: QueueEntryOrigin
     ) {
+
+        logNewAutoDjQueueDuplicates(beforeContext, afterContext, origin)
 
         val previousEntryIds =
             beforeContext
@@ -8005,6 +8034,30 @@ class GoneSmartModule : XposedModule() {
                     "trackId=${item.track.id} | " +
                     "artist=${item.track.artist} | " +
                     "title=${item.track.title}"
+            )
+        }
+    }
+
+    private fun logNewAutoDjQueueDuplicates(
+        beforeContext: QueueContext,
+        afterContext: QueueContext,
+        origin: QueueEntryOrigin
+    ) {
+        val duplicates = AutoDjQueueDuplicatePolicy.newDuplicateTrackIds(
+            beforeContext, afterContext
+        )
+        if (duplicates.isEmpty()) return
+        for (trackId in duplicates) {
+            val matching = afterContext.items.filter { it.track.id == trackId }
+            Log.w(
+                TAG,
+                "SMART DJ QUEUE DUPLICATE | origin=$origin | trackId=$trackId | " +
+                    "entries=${matching.joinToString(",") { it.queueEntryId.toString() }} | " +
+                    "positions=${matching.joinToString(",") { it.queuePosition.toString() }}"
+            )
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                "Auto-DJ appended a repeated Track ID $trackId ($origin)."
             )
         }
     }

@@ -836,7 +836,7 @@ class MainActivity : AppCompatActivity() {
         diagnosticStatusText = textView("", 13f, COLOR_TEXT_SECONDARY)
         container.addView(diagnosticStatusText)
         container.addView(verticalGap(8))
-        container.addView(actionButton("Save last 5 minutes") {
+        container.addView(actionButton("Save available Logcat (up to 5 min)") {
             saveDiagnosticSnapshot()
         })
         container.addView(verticalGap(8))
@@ -856,7 +856,8 @@ class MainActivity : AppCompatActivity() {
         container.addView(verticalGap(8))
         container.addView(textView(
             "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
-                "The last-5-minutes button works without starting a recording, as long as Android still has those logs. " +
+                "A snapshot requests the previous five minutes but Android may retain only seconds of them. " +
+                "The ZIP reports the earliest/latest captured entries and includes the companion event history. " +
                 "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
                 "Log access can be enabled with Root, on-device Shizuku + aShell, or PC ADB. " +
                 "Android 13+ limits background Logcat without Root; optionally enable the root recorder for longer captures. " +
@@ -881,7 +882,7 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(verticalGap(14))
         container.addView(textView(
-            "The activity history above is a concise summary. For sporadic playback bugs use Save last 5 minutes or start a bounded diagnostic recording before listening. Exported ZIPs contain detailed GMMP/GoneSmart Logcat and can be attached to a bug report.",
+            "The activity history above is a concise summary. For sporadic playback bugs, start a bounded diagnostic recording before listening. Snapshots are best effort: Android may have already overwritten older Logcat. Exported ZIPs can be attached to a bug report.",
             13f,
             COLOR_MUTED
         ))
@@ -1432,8 +1433,8 @@ class MainActivity : AppCompatActivity() {
         diagnosticStatusText?.text = when {
             !access -> "Logcat permission required • tap a capture button to choose Root, Shizuku or ADB"
             recording -> "Recording enabled (${if (root) "Root" else "READ_LOGS"}) • use notification to stop"
-            root -> "Ready • root Logcat enabled • save the last 5 minutes after a bug"
-            else -> "Ready • use Save last 5 minutes after a bug"
+            root -> "Ready • root Logcat enabled • recent snapshots depend on Android retention"
+            else -> "Ready • recent snapshots depend on Android retention"
         }
         diagnosticRecordingButton?.text = if (recording) "Stop recording" else "Start recording"
         diagnosticRootButton?.visibility =
@@ -1563,7 +1564,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveDiagnosticSnapshot() {
         if (!requireDiagnosticAccess() || diagnosticCaptureBusy) return
         diagnosticCaptureBusy = true
-        diagnosticStatusText?.text = "Collecting last 5 minutes…"
+        diagnosticStatusText?.text = "Collecting available Logcat (up to 5 minutes)…"
         Thread({
             val result = runCatching { GoneSmartDiagnosticCapture.snapshot(applicationContext) }
             runOnUiThread {

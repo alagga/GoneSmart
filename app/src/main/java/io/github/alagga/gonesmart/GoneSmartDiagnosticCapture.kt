@@ -63,9 +63,9 @@ object GoneSmartDiagnosticCapture {
     }
 
     /**
-     * A snapshot does not require the recording service to have been running.
-     * Android's circular logcat buffers may have already overwritten older
-     * entries. The exported ZIP is kept inside the companion app until shared.
+     * A snapshot requests a time window; it cannot recover messages already
+     * evicted from Android's circular buffers. Include the separately retained
+     * companion event history so an unexpectedly short Logcat is still useful.
      */
     fun snapshot(context: Context, minutes: Int = 5): File {
         require(minutes in 1..30)
@@ -80,15 +80,13 @@ object GoneSmartDiagnosticCapture {
         val file = newExportFile(context, "last-${minutes}min")
         try {
             ZipOutputStream(FileOutputStream(file)).use { zip ->
-                zip.putNextEntry(ZipEntry("capture-info.txt"))
-                zip.write(info(context, "Logcat snapshot, last $minutes minutes (as available)").toByteArray())
-                zip.closeEntry()
-
                 zip.putNextEntry(ZipEntry("gmmp-gonesmart-logcat.txt"))
                 val process = ProcessBuilder(command).redirectErrorStream(true).start()
                 var lines = 0
                 var bytes = 0
                 var truncated = false
+                var firstCaptured: String? = null
+                var lastCaptured: String? = null
                 try {
                     process.inputStream.bufferedReader().use { reader ->
                         while (true) {
@@ -99,6 +97,10 @@ object GoneSmartDiagnosticCapture {
                                 break
                             }
                             zip.write(buffer)
+                            DiagnosticCapturePolicy.threadtimeStamp(line)?.let { timestamp ->
+                                if (firstCaptured == null) firstCaptured = timestamp
+                                lastCaptured = timestamp
+                            }
                             lines++
                             bytes += buffer.size
                         }
@@ -114,12 +116,37 @@ object GoneSmartDiagnosticCapture {
                     if (!truncated && process.exitValue() != 0) {
                         throw IllegalStateException("Logcat failed (exit ${process.exitValue()}); check ADB permission.")
                     }
-                    if (lines == 0) {
-                        throw IllegalStateException("No GMMP/GoneSmart lines remain in the Android log buffer.")
-                    }
                 } finally {
                     process.destroy()
                 }
+                if (lines == 0) {
+                    zip.write(
+                        "[GoneSmart: no matching Logcat messages remain in the requested window]\n"
+                            .toByteArray(Charsets.UTF_8)
+                    )
+                }
+                zip.closeEntry()
+
+                val companionEvents = GoneSmartEventStore.logText(context)
+                zip.putNextEntry(ZipEntry("gonesmart-companion-events.txt"))
+                zip.write(
+                    companionEvents.ifBlank { "No companion events have been recorded.\n" }
+                        .toByteArray(Charsets.UTF_8)
+                )
+                zip.closeEntry()
+
+                zip.putNextEntry(ZipEntry("capture-info.txt"))
+                zip.write((
+                    info(context, "Logcat snapshot, up to $minutes minutes") +
+                        "Requested start: $stamp\n" +
+                        "First captured Logcat entry: ${firstCaptured ?: "none"}\n" +
+                        "Last captured Logcat entry: ${lastCaptured ?: "none"}\n" +
+                        "Exported Logcat lines: $lines ($bytes bytes)\n" +
+                        "Snapshot truncated by GoneSmart: $truncated\n" +
+                        "The first entry is not proof of Android buffer coverage; " +
+                        "earlier matching messages may be absent or overwritten.\n" +
+                        "For reliable intermittent-bug traces, start recording before the issue.\n"
+                    ).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
             pruneExports(context)
@@ -192,7 +219,7 @@ object GoneSmartDiagnosticCapture {
         appendLine("Source: Android logcat main/system/crash, limited to GMMP and GoneSmart UIDs")
         appendLine("Capture backend: ${if (rootCaptureApproved(context)) "Root (explicitly approved)" else "App / READ_LOGS"}")
         appendLine("CAUTION: logs can contain local file names and other personal information.")
-        appendLine("The logcat circular buffer may not retain the full requested period.")
+        appendLine("A Logcat snapshot is limited to messages still retained by Android; it cannot guarantee the requested time window.")
         appendLine("GMMP UID: ${runCatching { context.packageManager.getApplicationInfo(GMMP_PACKAGE, 0).uid }.getOrNull()}")
     }
 

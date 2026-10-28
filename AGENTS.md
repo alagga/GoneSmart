@@ -150,6 +150,7 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 - Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
+- GMMP Auto-DJ selection objects are mutable native rows. If returned list slots alias the same object, never assign separate smart Track IDs to those slots; a later write can silently turn both into the same Track ID. Fail closed for Track Mix bootstrap, or return only identity-distinct successfully selected rows in an ordinary partial smart refill. Detect confirmed new duplicate Track IDs from queue-entry readback rather than guessing from a repeated song title.
 - Latency diagnostics distinguish queue-read-before, pool hit/fill, provider rounds/playlist affinity, native refill, queue-read-after and total time.
 - Reuse the already passively proved current-position hint for queue snapshots; do not restart broad getter discovery on transient CURRENT ambiguity.
 - Pre-action Queue/Room race barriers run off GMMP's main thread.
@@ -162,6 +163,7 @@ Every device-debug build exposes the exact local Git revision through `BuildConf
 
 - **Companion Logs tab:** bounded, copyable, high-signal support history. Record meaningful state changes, verified user actions, fallbacks/degraded states, feature-unavailable conditions and failures with enough context to identify the broad failure class. Routine per-track/per-refill success, candidate lists, reflection inventories and other hot-path detail do not belong here. Keep categories, duplicate suppression, retention, Copy/Clear behavior, Help copy and the displayed Logcat-filter guidance current as features evolve.
 - **Android Logcat:** detailed developer diagnostics. Normal logs record meaningful runtime decisions, resolver success/failure, verified mutation/rollback, Track Auto-DJ phases, provider/fallback decisions and useful latency summaries. Accepted-version normal logs use compact summaries rather than per-candidate recommendation/result dumps. Stable GoneSmart-family tags should make feature-specific filtering practical; whenever tags are added/renamed/retired, update the companion Logs/Help guidance in the same change.
+- A "last five minutes" snapshot only requests that range from Android's bounded Logcat ring. Exports must state first/last actually observed timestamps and not claim complete coverage. Keep optional continuous recording user-initiated; retain the separate companion event timeline as a useful fallback when old Logcat messages were evicted.
 
 Broad class/method/recycler inventories and detailed candidate/result dumps are gated to unknown/failing compatibility or explicit debug boundaries. Do not hide native GMMP tags such as `w6`; remove GoneSmart-caused unnecessary work instead.
 
