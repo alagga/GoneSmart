@@ -30,4 +30,36 @@ class LogcatBufferPolicyTest {
         assertFalse(LogcatBufferPolicy.restorable(128L * 1024 * 1024))
         assertTrue(LogcatBufferPolicy.restorable(512L * 1024))
     }
+
+    @Test
+    fun acceptsAnOemClampedIncreaseAndVerifiesTheActualAppliedSize() {
+        val original = 128L * 1024
+        val actual = 5L * 1024 * 1024
+        assertTrue(LogcatBufferPolicy.acceptedIncrease(original, actual))
+        assertFalse(LogcatBufferPolicy.acceptedIncrease(original, original))
+        assertFalse(LogcatBufferPolicy.acceptedIncrease(actual, original))
+        assertFalse(LogcatBufferPolicy.acceptedIncrease(original, 16L * 1024 * 1024))
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.VERIFIED_APPLIED_SIZE,
+            LogcatBufferPolicy.restoreState(original, actual, actual)
+        )
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.CHANGED_EXTERNALLY,
+            LogcatBufferPolicy.restoreState(original, actual, 4L * 1024 * 1024)
+        )
+    }
+
+    @Test
+    fun previousBuildCanRestoreOnlyAfterSeparateLegacyConfirmation() {
+        val original = 128L * 1024
+        val actual = 5L * 1024 * 1024
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.LEGACY_APPLIED_SIZE_UNKNOWN,
+            LogcatBufferPolicy.restoreState(original, null, actual)
+        )
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.ALREADY_ORIGINAL,
+            LogcatBufferPolicy.restoreState(original, null, original)
+        )
+    }
 }

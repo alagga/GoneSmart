@@ -8,6 +8,13 @@ internal object LogcatBufferPolicy {
 
     data class Buffer(val name: String, val sizeBytes: Long)
 
+    enum class RestoreState {
+        ALREADY_ORIGINAL,
+        VERIFIED_APPLIED_SIZE,
+        LEGACY_APPLIED_SIZE_UNKNOWN,
+        CHANGED_EXTERNALLY
+    }
+
     private val bufferLine = Regex(
         "(?m)^\\s*(main|system|crash):\\s*ring buffer is\\s+(\\d+)\\s+(B|KiB|MiB|GiB)\\b"
     )
@@ -28,6 +35,18 @@ internal object LogcatBufferPolicy {
 
     fun restorable(bytes: Long): Boolean =
         bytes in MIN_RESTORABLE_BYTES..MAX_RESTORABLE_BYTES && bytes % 1024 == 0L
+
+    fun acceptedIncrease(before: Long, after: Long): Boolean =
+        restorable(before) && restorable(after) && after > before &&
+            after <= TARGET_MAIN_BYTES
+
+    /** Legacy releases saved the original size but did not save an OEM-clamped result. */
+    fun restoreState(previous: Long, applied: Long?, current: Long): RestoreState = when {
+        current == previous -> RestoreState.ALREADY_ORIGINAL
+        applied == null -> RestoreState.LEGACY_APPLIED_SIZE_UNKNOWN
+        current == applied -> RestoreState.VERIFIED_APPLIED_SIZE
+        else -> RestoreState.CHANGED_EXTERNALLY
+    }
 
     fun format(bytes: Long): String = when {
         bytes % (1024 * 1024) == 0L -> "${bytes / (1024 * 1024)} MiB"

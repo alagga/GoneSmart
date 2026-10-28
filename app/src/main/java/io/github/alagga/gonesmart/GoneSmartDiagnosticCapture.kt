@@ -31,6 +31,7 @@ object GoneSmartDiagnosticCapture {
     private const val RECORDING_ENABLED = "recording_enabled"
     private const val ROOT_CAPTURE_APPROVED = "root_capture_approved"
     private const val PREVIOUS_MAIN_BUFFER_BYTES = "previous_main_buffer_bytes"
+    private const val APPLIED_MAIN_BUFFER_BYTES = "applied_main_buffer_bytes"
     private const val MAX_EXPORTS = 5
     const val ROLLING_FILES = 4
     const val ROLLING_FILE_BYTES = 1_500_000L
@@ -80,6 +81,11 @@ object GoneSmartDiagnosticCapture {
             .getLong(PREVIOUS_MAIN_BUFFER_BYTES, -1L)
             .takeIf(LogcatBufferPolicy::restorable)
 
+    fun appliedMainBufferBytes(context: Context): Long? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(APPLIED_MAIN_BUFFER_BYTES, -1L)
+            .takeIf(LogcatBufferPolicy::restorable)
+
     /** Called only after a separate, explicit in-app confirmation. */
     fun enlargeMainBuffer(context: Context): Pair<Long, Long> {
         require(rootCaptureApproved(context)) { "Enable diagnostic root access first." }
@@ -102,9 +108,17 @@ object GoneSmartDiagnosticCapture {
                 DiagnosticPermissionCommands.resizeMainLogcatBuffer(LogcatBufferPolicy.TARGET_MAIN_BYTES)
             )
             val after = inspectLogcatBuffers(context).getValue("main").sizeBytes
-            check(after == LogcatBufferPolicy.TARGET_MAIN_BYTES) {
-                "Android reported ${LogcatBufferPolicy.format(after)} instead of 8 MiB. " +
-                    "The previous size is saved for restoration."
+            if (after == before) {
+                clearPreviousMainBuffer(context)
+                return before to after
+            }
+            check(LogcatBufferPolicy.acceptedIncrease(before, after)) {
+                "Android reported an unexpected main buffer size: " +
+                    "${LogcatBufferPolicy.format(after)}. The previous size is saved."
+            }
+            check(preferences.edit().putLong(APPLIED_MAIN_BUFFER_BYTES, after).commit()) {
+                "The buffer increased to ${LogcatBufferPolicy.format(after)}, but GoneSmart " +
+                    "could not save the actual size. The original is still saved for restoration."
             }
             return before to after
         } catch (error: Exception) {
@@ -112,26 +126,40 @@ object GoneSmartDiagnosticCapture {
             val current = runCatching {
                 inspectLogcatBuffers(context).getValue("main").sizeBytes
             }.getOrNull()
-            if (current == before) preferences.edit().remove(PREVIOUS_MAIN_BUFFER_BYTES).commit()
+            if (current == before) clearPreviousMainBuffer(context)
             throw error
         }
     }
 
-    /** Never overwrite a buffer size that another actor changed in the meantime. */
-    fun restoreMainBuffer(context: Context): String {
+    /** Restore exactly the size confirmed in the UI; never overwrite a later external change. */
+    fun restoreMainBuffer(
+        context: Context,
+        confirmedCurrentBytes: Long,
+        allowLegacyUnverified: Boolean
+    ): String {
         require(rootCaptureApproved(context)) { "Enable diagnostic root access first." }
         val previous = previousMainBufferBytes(context)
             ?: throw IllegalStateException("No previously changed buffer size is saved.")
         val current = inspectLogcatBuffers(context).getValue("main").sizeBytes
-        if (current != LogcatBufferPolicy.TARGET_MAIN_BYTES) {
-            if (current == previous) {
+        check(current == confirmedCurrentBytes) {
+            "Android's main buffer size changed after confirmation. No change was made."
+        }
+        when (LogcatBufferPolicy.restoreState(previous, appliedMainBufferBytes(context), current)) {
+            LogcatBufferPolicy.RestoreState.ALREADY_ORIGINAL -> {
                 clearPreviousMainBuffer(context)
                 return "Main Logcat buffer is already back at ${LogcatBufferPolicy.format(previous)}."
             }
-            throw IllegalStateException(
-                "Main Logcat buffer is now ${LogcatBufferPolicy.format(current)}, not 8 MiB. " +
-                    "Another setting may have changed it; GoneSmart did not overwrite it."
-            )
+            LogcatBufferPolicy.RestoreState.LEGACY_APPLIED_SIZE_UNKNOWN ->
+                check(allowLegacyUnverified) {
+                    "The older build did not save the applied size. Confirm legacy restoration first."
+                }
+            LogcatBufferPolicy.RestoreState.CHANGED_EXTERNALLY ->
+                throw IllegalStateException(
+                    "Android now reports ${LogcatBufferPolicy.format(current)}, not the " +
+                        "${LogcatBufferPolicy.format(appliedMainBufferBytes(context)!!)} " +
+                        "previously applied by GoneSmart. No change was made."
+                )
+            LogcatBufferPolicy.RestoreState.VERIFIED_APPLIED_SIZE -> Unit
         }
         runControlCommand(DiagnosticPermissionCommands.resizeMainLogcatBuffer(previous))
         val restored = inspectLogcatBuffers(context).getValue("main").sizeBytes
@@ -145,7 +173,8 @@ object GoneSmartDiagnosticCapture {
 
     private fun clearPreviousMainBuffer(context: Context) {
         check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().remove(PREVIOUS_MAIN_BUFFER_BYTES).commit()) {
+            .edit().remove(PREVIOUS_MAIN_BUFFER_BYTES)
+            .remove(APPLIED_MAIN_BUFFER_BYTES).commit()) {
             "Buffer size changed but the restore preference could not be cleared."
         }
     }

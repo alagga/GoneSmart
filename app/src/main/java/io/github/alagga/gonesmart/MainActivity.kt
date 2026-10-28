@@ -1545,16 +1545,7 @@ class MainActivity : AppCompatActivity() {
         }
         val previous = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
         if (previous != null) {
-            AlertDialog.Builder(this)
-                .setTitle("Restore main Logcat buffer?")
-                .setMessage(
-                    "GoneSmart saved the original size (${LogcatBufferPolicy.format(previous)}). " +
-                        "It will only restore that size if Android still reports the 8 MiB " +
-                        "buffer selected here. Other buffers will remain untouched."
-                )
-                .setPositiveButton("Restore") { _, _ -> executeDiagnosticBufferChange(restore = true) }
-                .setNegativeButton("Cancel", null)
-                .show()
+            confirmDiagnosticBufferRestore(previous)
             return
         }
 
@@ -1608,7 +1599,78 @@ class MainActivity : AppCompatActivity() {
         }, "GoneSmartLogcatBufferPrecheck").start()
     }
 
-    private fun executeDiagnosticBufferChange(restore: Boolean) {
+    private fun confirmDiagnosticBufferRestore(previous: Long) {
+        if (diagnosticBufferBusy) return
+        diagnosticBufferBusy = true
+        diagnosticBufferStatusText?.text = "Checking current buffer size before restoration…"
+        Thread({
+            val result = runCatching {
+                GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
+            }
+            runOnUiThread {
+                diagnosticBufferBusy = false
+                result.onSuccess { buffers ->
+                    diagnosticBufferStatusText?.text = LogcatBufferPolicy.display(buffers)
+                    val current = buffers.getValue("main").sizeBytes
+                    val applied = GoneSmartDiagnosticCapture.appliedMainBufferBytes(this)
+                    val state = LogcatBufferPolicy.restoreState(previous, applied, current)
+                    if (state == LogcatBufferPolicy.RestoreState.CHANGED_EXTERNALLY) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Main buffer changed elsewhere")
+                            .setMessage(
+                                "GoneSmart last applied ${LogcatBufferPolicy.format(applied!!)}, " +
+                                    "but Android now reports ${LogcatBufferPolicy.format(current)}. " +
+                                    "To avoid overwriting another setting, no restoration " +
+                                    "will be attempted."
+                            )
+                            .setPositiveButton("OK", null)
+                            .show()
+                        return@onSuccess
+                    }
+                    val legacy = state ==
+                        LogcatBufferPolicy.RestoreState.LEGACY_APPLIED_SIZE_UNKNOWN
+                    val explanation = when {
+                        state == LogcatBufferPolicy.RestoreState.ALREADY_ORIGINAL ->
+                            "Android already reports the saved original size " +
+                                "(${LogcatBufferPolicy.format(previous)}). " +
+                                "GoneSmart will only clear the saved restore state."
+                        legacy ->
+                            "The older GoneSmart build saved the original main buffer size " +
+                                "(${LogcatBufferPolicy.format(previous)}), but not the size " +
+                                "Android actually accepted. Android now reports " +
+                                "${LogcatBufferPolicy.format(current)}.\n\n" +
+                                "Restoring will replace that current size with the saved " +
+                                "original. If you changed the buffer manually afterward, " +
+                                "that newer setting will also be overwritten."
+                        else ->
+                            "GoneSmart previously changed main to " +
+                                "${LogcatBufferPolicy.format(current)}. " +
+                                "Restore the saved original " +
+                                "${LogcatBufferPolicy.format(previous)}?"
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle(if (legacy) "Restore size saved by older build?"
+                            else "Restore main Logcat buffer?")
+                        .setMessage("$explanation\n\nSystem/crash buffers will remain unchanged.")
+                        .setPositiveButton("Restore") { _, _ ->
+                            executeDiagnosticBufferChange(
+                                restore = true,
+                                confirmedCurrentBytes = current,
+                                allowLegacyUnverified = legacy
+                            )
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }.onFailure(::showDiagnosticError)
+            }
+        }, "GoneSmartLogcatBufferRestorePrecheck").start()
+    }
+
+    private fun executeDiagnosticBufferChange(
+        restore: Boolean,
+        confirmedCurrentBytes: Long? = null,
+        allowLegacyUnverified: Boolean = false
+    ) {
         if (diagnosticBufferBusy) return
         diagnosticBufferBusy = true
         diagnosticBufferStatusText?.text =
@@ -1616,12 +1678,19 @@ class MainActivity : AppCompatActivity() {
         Thread({
             val result = runCatching {
                 val message = if (restore) {
-                    GoneSmartDiagnosticCapture.restoreMainBuffer(applicationContext)
+                    GoneSmartDiagnosticCapture.restoreMainBuffer(
+                        applicationContext,
+                        requireNotNull(confirmedCurrentBytes),
+                        allowLegacyUnverified
+                    )
                 } else {
                     val (before, after) = GoneSmartDiagnosticCapture.enlargeMainBuffer(applicationContext)
                     if (before == after) "Already at ${LogcatBufferPolicy.format(after)}; unchanged."
                     else "Main Logcat buffer: ${LogcatBufferPolicy.format(before)} → " +
-                        "${LogcatBufferPolicy.format(after)} (restore available)."
+                        "${LogcatBufferPolicy.format(after)}" +
+                        (if (after < LogcatBufferPolicy.TARGET_MAIN_BYTES) {
+                            " (Android accepted less than the requested 8 MiB; restore available)."
+                        } else " (restore available).")
                 }
                 val sizes = LogcatBufferPolicy.display(
                     GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
