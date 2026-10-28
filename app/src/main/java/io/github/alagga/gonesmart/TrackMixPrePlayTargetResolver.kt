@@ -65,7 +65,9 @@ internal class TrackMixPrePlayTargetResolver(
             if (scalars.strings.isNotEmpty() || scalars.numbers.isNotEmpty()) {
                 // Every strong match must contain an exact path, an ID or a title.
                 // Artist/filename alone and a bare ID still fail in score().
-                val candidates = linkedSetOf<Int>()
+                // Retain the original library order if multiple library rows happen
+                // to share a Track ID and produce identical evidence.
+                val candidates = sortedSetOf<Int>()
                 scalars.strings.forEach { value ->
                     byPath[value]?.let(candidates::addAll)
                     byTitle[value]?.let(candidates::addAll)

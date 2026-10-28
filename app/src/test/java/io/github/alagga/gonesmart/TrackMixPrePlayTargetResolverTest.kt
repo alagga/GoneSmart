@@ -84,6 +84,17 @@ class TrackMixPrePlayTargetResolverTest {
         assertTrue(result?.evidence?.contains("id+artist") == true)
     }
 
+    @Test fun repeatedLibraryIdRetainsFirstEquallyScoredMetadata() {
+        data class MultipleTitles(val secondTitle: String, val firstTitle: String, val artist: String)
+        val first = levels.copy(id = 4242L, title = "First", path = "/music/first.mp3")
+        val second = levels.copy(id = 4242L, title = "Second", path = "/music/second.mp3")
+        val result = TrackMixPrePlayTargetResolver().resolve(
+            listOf(MultipleTitles("Second", "First", "Avicii")),
+            listOf(first, second)
+        )
+        assertEquals("First", result?.track?.title)
+    }
+
     @Test fun selectedTrackRemainsResolvableAmongLargeLibraryAndContextGraph() {
         val library = (1L..18_797L).map { index ->
             TrackInfo(
