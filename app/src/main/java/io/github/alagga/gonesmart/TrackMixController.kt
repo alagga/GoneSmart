@@ -182,6 +182,7 @@ internal class TrackMixController(
         @Volatile var zeroPoolNextSourceGuardAttempted = false
         @Volatile var zeroPoolNextSourceGuardApplied = false
         @Volatile var zeroPoolSourceBatchGuardApplied = false
+        val preparedNextSourceGate = TrackMixPreparedNextSourceGate()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -501,6 +502,7 @@ internal class TrackMixController(
         method: java.lang.reflect.Method,
         value: Int?
     ) {
+        awaitPreparedQueueBeforeNextSource(service, method, value)
         val request = pending ?: return
         if (request.stage != "WAIT_PLAY") return
         if (request.prePlayPrepared.trackIds.isNotEmpty()) return
@@ -594,6 +596,67 @@ internal class TrackMixController(
             request = request,
             method = method
         )
+    }
+
+    private fun awaitPreparedQueueBeforeNextSource(
+        service: Any?,
+        method: java.lang.reflect.Method,
+        value: Int?
+    ) {
+        val request = pending ?: return
+        if (!TrackMixPreparedNextSourceGate.shouldWait(
+                source = request.source,
+                nativePlayAccepted = request.nativePlayAccepted,
+                preparedCount = request.prePlayPrepared.trackIds.size,
+                initialSize = request.prePlayInitialSize,
+                stage = request.stage
+            ) || service == null || value == null
+        ) return
+        if (!TrackMixZeroPoolPolicy.isAcceptedGmmp421NextSourceCommand(
+                declaringClassName = method.declaringClass.name,
+                methodName = method.name,
+                parameterTypeName = method.parameterTypes.singleOrNull()?.name,
+                returnTypeName = method.returnType.name
+            )
+        ) return
+        val nativeService = generateSequence<Class<*>>(service.javaClass) {
+            it.superclass
+        }.any { it.name == "gonemad.gmmp.playback.service.MusicService" }
+        if (!nativeService) return
+        if (Looper.myLooper() == Looper.getMainLooper() ||
+            Thread.currentThread().name == "GoneSmartTrackMix"
+        ) {
+            Log.w(
+                TAG,
+                "MIX PREPARED NEXT SOURCE | verified=false | original=proceed | " +
+                    "reason=unsafe-wait-thread | stage=${request.stage}"
+            )
+            return
+        }
+
+        // Do not replay I2 or change its opaque argument. On 4.2.1 the
+        // original I2 queried the old Queue-tail Current+1 (position 11)
+        // while the prepared worker was still normalizing the selected seed
+        // to position 1. Let that same original call proceed only after the
+        // exact native Initial Size has been independently verified.
+        val enteredStage = request.stage
+        val startedAt = SystemClock.elapsedRealtime()
+        val verified = request.preparedNextSourceGate.awaitVerifiedQueue()
+        val elapsedMs = SystemClock.elapsedRealtime() - startedAt
+        if (verified) {
+            Log.i(
+                TAG,
+                "MIX PREPARED NEXT SOURCE | verified=true | waitedMs=$elapsedMs | " +
+                    "stage=$enteredStage | original=proceed | request=${request.token}"
+            )
+        } else {
+            Log.w(
+                TAG,
+                "MIX PREPARED NEXT SOURCE | verified=false | waitedMs=$elapsedMs | " +
+                    "stage=$enteredStage | original=proceed | request=${request.token} | " +
+                    "reason=bounded-wait-expired-or-aborted"
+            )
+        }
     }
 
     private fun guardZeroPoolNaturalNextSource(
@@ -1553,6 +1616,12 @@ internal class TrackMixController(
                     return
                 }
 
+                // A queue-row postcondition alone did not previously protect
+                // GMMP's eager I2(next-source) read: it could run ~0.5s before
+                // the prepared rows existed and cache a null AudioSource.
+                // Release that one native call only after this exact proof.
+                request.preparedNextSourceGate.verifiedQueueReady()
+
                 if (managedAutoDj?.get() == null) {
                     armManagedAutoDjSession()
                 }
@@ -1764,6 +1833,7 @@ internal class TrackMixController(
             Log.e(TAG, "Track Mix failed", failure)
             fail("Could not complete ${request.menuLabel}.", request.context)
         } finally {
+            request.preparedNextSourceGate.abort()
             refillHold.set(false)
             request.stage = "DONE"
             if (pending === request) pending = null
