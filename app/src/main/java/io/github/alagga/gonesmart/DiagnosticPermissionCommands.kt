@@ -30,4 +30,16 @@ internal object DiagnosticPermissionCommands {
         // exec avoids leaving a detached shell around when capture is stopped.
         return listOf("su", "-c", "exec $safelyQuoted")
     }
+
+    /** Read-only: logd capacity metadata, never log messages. */
+    fun inspectLogcatBuffers(rootApproved: Boolean): List<String> {
+        val command = listOf("logcat", "-b", "main,system,crash", "-g")
+        return if (rootApproved) wrapLogcatInRoot(command) else command
+    }
+
+    /** Only the main ring is writable; the numeric size is bounded and validated. */
+    fun resizeMainLogcatBuffer(bytes: Long): List<String> {
+        require(LogcatBufferPolicy.restorable(bytes)) { "Unsupported Logcat buffer size." }
+        return wrapLogcatInRoot(listOf("logcat", "-b", "main", "-G", bytes.toString()))
+    }
 }

@@ -90,6 +90,9 @@ class MainActivity : AppCompatActivity() {
     private var diagnosticRootButton: MaterialButton? = null
     private var diagnosticCaptureBusy = false
     private var diagnosticGrantBusy = false
+    private var diagnosticBufferBusy = false
+    private var diagnosticBufferStatusText: TextView? = null
+    private var diagnosticBufferChangeButton: MaterialButton? = null
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
     private var ratingFallbackRow: LinearLayout? = null
@@ -849,10 +852,28 @@ class MainActivity : AppCompatActivity() {
             shareDiagnosticRecording()
         })
         container.addView(verticalGap(8))
-        diagnosticRootButton = outlineButton("Use root for long recordings") {
+        diagnosticRootButton = outlineButton("Use root for diagnostics") {
             toggleRootDiagnosticCapture()
         }
         container.addView(diagnosticRootButton)
+        container.addView(verticalGap(16))
+        container.addView(textView(
+            "ANDROID LOGCAT BUFFER (OPTIONAL)", 12.5f, COLOR_TEXT_SECONDARY
+        ))
+        diagnosticBufferStatusText = textView(
+            "Not checked on this device. Checking does not change Android settings.",
+            13f, COLOR_TEXT_SECONDARY
+        )
+        container.addView(diagnosticBufferStatusText)
+        container.addView(verticalGap(8))
+        container.addView(outlineButton("Check current buffer sizes") {
+            inspectDiagnosticBuffers()
+        })
+        container.addView(verticalGap(8))
+        diagnosticBufferChangeButton = outlineButton("Increase main buffer to 8 MiB") {
+            confirmDiagnosticBufferChange()
+        }
+        container.addView(diagnosticBufferChangeButton)
         container.addView(verticalGap(8))
         container.addView(textView(
             "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
@@ -861,6 +882,9 @@ class MainActivity : AppCompatActivity() {
                 "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
                 "Log access can be enabled with Root, on-device Shizuku + aShell, or PC ADB. " +
                 "Android 13+ limits background Logcat without Root; optionally enable the root recorder for longer captures. " +
+                "Buffer size checking is one-shot. Increasing the system-wide main ring buffer requires " +
+                "root and separate confirmation, uses additional RAM until restored or reset, and does not " +
+                "start a recording. It can extend history but cannot guarantee five minutes. " +
                 "Logs may contain track names and local paths.",
             12.5f,
             COLOR_MUTED
@@ -1440,7 +1464,13 @@ class MainActivity : AppCompatActivity() {
         diagnosticRootButton?.visibility =
             if (Build.VERSION.SDK_INT >= 33 && access) View.VISIBLE else View.GONE
         diagnosticRootButton?.text =
-            if (root) "Disable root recorder" else "Use root for long recordings"
+            if (root) "Disable root diagnostics" else "Use root for diagnostics"
+        diagnosticBufferChangeButton?.text =
+            if (GoneSmartDiagnosticCapture.previousMainBufferBytes(this) != null) {
+                "Restore previous main buffer size"
+            } else {
+                "Increase main buffer to 8 MiB"
+            }
         val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
@@ -1476,6 +1506,141 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    private fun inspectDiagnosticBuffers() {
+        if (diagnosticBufferBusy) return
+        diagnosticBufferBusy = true
+        diagnosticBufferStatusText?.text = "Checking Android Logcat buffer capacities…"
+        Thread({
+            val result = runCatching {
+                LogcatBufferPolicy.display(
+                    GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
+                )
+            }
+            runOnUiThread {
+                diagnosticBufferBusy = false
+                result.onSuccess { diagnosticBufferStatusText?.text = it }
+                    .onFailure {
+                        diagnosticBufferStatusText?.text =
+                            "Could not read sizes. Root or ADB log access may be required."
+                        showDiagnosticError(it)
+                    }
+            }
+        }, "GoneSmartLogcatBufferInspect").start()
+    }
+
+    private fun confirmDiagnosticBufferChange() {
+        if (diagnosticBufferBusy) return
+        if (!GoneSmartDiagnosticCapture.rootCaptureApproved(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Root access required")
+                .setMessage(
+                    "Changing Android's system-wide Logcat buffer requires root. " +
+                        "Enable diagnostic root access first, then return to this button. " +
+                        "No buffer settings will change during permission setup."
+                )
+                .setPositiveButton("Enable root access") { _, _ -> confirmRootDiagnosticGrant() }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+        val previous = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
+        if (previous != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Restore main Logcat buffer?")
+                .setMessage(
+                    "GoneSmart saved the original size (${LogcatBufferPolicy.format(previous)}). " +
+                        "It will only restore that size if Android still reports the 8 MiB " +
+                        "buffer selected here. Other buffers will remain untouched."
+                )
+                .setPositiveButton("Restore") { _, _ -> executeDiagnosticBufferChange(restore = true) }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+
+        diagnosticBufferBusy = true
+        diagnosticBufferStatusText?.text = "Checking the current size before offering a change…"
+        Thread({
+            val result = runCatching {
+                GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
+            }
+            runOnUiThread {
+                diagnosticBufferBusy = false
+                result.onSuccess { buffers ->
+                    diagnosticBufferStatusText?.text = LogcatBufferPolicy.display(buffers)
+                    val main = buffers.getValue("main").sizeBytes
+                    if (main >= LogcatBufferPolicy.TARGET_MAIN_BYTES) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Already at least 8 MiB")
+                            .setMessage(
+                                "Android already uses ${LogcatBufferPolicy.format(main)} for " +
+                                    "the main Logcat buffer. GoneSmart has not changed it."
+                            )
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else if (!LogcatBufferPolicy.restorable(main)) {
+                        showDiagnosticError(IllegalStateException(
+                            "The original size cannot be safely saved for restoration."
+                        ))
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("Increase Android main Logcat buffer?")
+                            .setMessage(
+                                "Current main buffer: ${LogcatBufferPolicy.format(main)}.\n" +
+                                    "Proposed: 8 MiB (only main; system/crash unchanged).\n\n" +
+                                    "This system-wide setting may use up to " +
+                                    "${LogcatBufferPolicy.format(LogcatBufferPolicy.TARGET_MAIN_BYTES - main)} " +
+                                    "additional RAM while active. No recording service will run. " +
+                                    "This helps retain future logs, but does not guarantee five " +
+                                    "minutes or recover already overwritten messages.\n\n" +
+                                    "GoneSmart will remember the previous size and provide a " +
+                                    "Restore button. A reboot or other system setting may also " +
+                                    "reset it."
+                            )
+                            .setPositiveButton("Increase to 8 MiB") { _, _ ->
+                                executeDiagnosticBufferChange(restore = false)
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                }.onFailure(::showDiagnosticError)
+            }
+        }, "GoneSmartLogcatBufferPrecheck").start()
+    }
+
+    private fun executeDiagnosticBufferChange(restore: Boolean) {
+        if (diagnosticBufferBusy) return
+        diagnosticBufferBusy = true
+        diagnosticBufferStatusText?.text =
+            if (restore) "Restoring main Logcat buffer…" else "Setting main Logcat buffer…"
+        Thread({
+            val result = runCatching {
+                val message = if (restore) {
+                    GoneSmartDiagnosticCapture.restoreMainBuffer(applicationContext)
+                } else {
+                    val (before, after) = GoneSmartDiagnosticCapture.enlargeMainBuffer(applicationContext)
+                    if (before == after) "Already at ${LogcatBufferPolicy.format(after)}; unchanged."
+                    else "Main Logcat buffer: ${LogcatBufferPolicy.format(before)} → " +
+                        "${LogcatBufferPolicy.format(after)} (restore available)."
+                }
+                val sizes = LogcatBufferPolicy.display(
+                    GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
+                )
+                "$message\n$sizes"
+            }
+            runOnUiThread {
+                diagnosticBufferBusy = false
+                result.onSuccess { diagnosticBufferStatusText?.text = it }
+                    .onFailure {
+                        diagnosticBufferStatusText?.text =
+                            "Could not verify the buffer change; check sizes before retrying."
+                        showDiagnosticError(it)
+                    }
+                refreshLogs()
+            }
+        }, "GoneSmartLogcatBufferChange").start()
+    }
+
     private fun toggleRootDiagnosticCapture() {
         if (GoneSmartDiagnosticCapture.recordingRequested(this)) {
             Toast.makeText(
@@ -1484,8 +1649,26 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (GoneSmartDiagnosticCapture.rootCaptureApproved(this)) {
-            GoneSmartDiagnosticCapture.setRootCaptureApproved(this, false)
-            refreshLogs()
+            val previous = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
+            if (previous != null) {
+                AlertDialog.Builder(this)
+                    .setTitle("Leave the enlarged Logcat buffer active?")
+                    .setMessage(
+                        "Disabling diagnostic root access will not undo the system-wide " +
+                            "main Logcat buffer change. Restore the saved previous size " +
+                            "(${LogcatBufferPolicy.format(previous)}) first if you want " +
+                            "to release that extra buffer capacity."
+                    )
+                    .setPositiveButton("Disable root anyway") { _, _ ->
+                        GoneSmartDiagnosticCapture.setRootCaptureApproved(this, false)
+                        refreshLogs()
+                    }
+                    .setNegativeButton("Keep root access", null)
+                    .show()
+            } else {
+                GoneSmartDiagnosticCapture.setRootCaptureApproved(this, false)
+                refreshLogs()
+            }
         } else {
             confirmRootDiagnosticGrant()
         }
@@ -1503,6 +1686,8 @@ class MainActivity : AppCompatActivity() {
                     "when you explicitly save logs or start a recording. This avoids Android 13+ " +
                     "background restrictions. Only GMMP and GoneSmart UIDs are requested, " +
                     "exports stay local until you share them, and recording can be stopped. " +
+                    "A separate, explicitly confirmed button can also change the system-wide " +
+                    "main Logcat buffer size; granting root alone never changes it. " +
                     "System logs can still contain private information."
             )
             .setPositiveButton("Request root") { _, _ -> grantDiagnosticViaRoot() }

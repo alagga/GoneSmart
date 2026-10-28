@@ -30,6 +30,7 @@ object GoneSmartDiagnosticCapture {
     private const val PREFS = "gonesmart_diagnostics"
     private const val RECORDING_ENABLED = "recording_enabled"
     private const val ROOT_CAPTURE_APPROVED = "root_capture_approved"
+    private const val PREVIOUS_MAIN_BUFFER_BYTES = "previous_main_buffer_bytes"
     private const val MAX_EXPORTS = 5
     const val ROLLING_FILES = 4
     const val ROLLING_FILE_BYTES = 1_500_000L
@@ -63,6 +64,110 @@ object GoneSmartDiagnosticCapture {
     }
 
     /**
+     * A one-shot logd metadata query. Unlike the recorder, this starts no
+     * persistent process and reads no messages from other apps.
+     */
+    internal fun inspectLogcatBuffers(context: Context): Map<String, LogcatBufferPolicy.Buffer> {
+        val output = runControlCommand(
+            DiagnosticPermissionCommands.inspectLogcatBuffers(rootCaptureApproved(context))
+        )
+        return LogcatBufferPolicy.parse(output).takeIf { it.containsKey("main") }
+            ?: throw IllegalStateException("Android did not report the main Logcat buffer size.")
+    }
+
+    fun previousMainBufferBytes(context: Context): Long? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(PREVIOUS_MAIN_BUFFER_BYTES, -1L)
+            .takeIf(LogcatBufferPolicy::restorable)
+
+    /** Called only after a separate, explicit in-app confirmation. */
+    fun enlargeMainBuffer(context: Context): Pair<Long, Long> {
+        require(rootCaptureApproved(context)) { "Enable diagnostic root access first." }
+        require(previousMainBufferBytes(context) == null) {
+            "GoneSmart already remembers a previous main buffer size; restore it first."
+        }
+        val before = inspectLogcatBuffers(context).getValue("main").sizeBytes
+        if (before >= LogcatBufferPolicy.TARGET_MAIN_BYTES) return before to before
+        require(LogcatBufferPolicy.restorable(before)) {
+            "Cannot safely remember Android's original main buffer size."
+        }
+
+        // Persist before changing logd, so an app crash cannot lose the restore size.
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        check(preferences.edit().putLong(PREVIOUS_MAIN_BUFFER_BYTES, before).commit()) {
+            "Could not save the previous Logcat buffer size. No change was made."
+        }
+        try {
+            runControlCommand(
+                DiagnosticPermissionCommands.resizeMainLogcatBuffer(LogcatBufferPolicy.TARGET_MAIN_BYTES)
+            )
+            val after = inspectLogcatBuffers(context).getValue("main").sizeBytes
+            check(after == LogcatBufferPolicy.TARGET_MAIN_BYTES) {
+                "Android reported ${LogcatBufferPolicy.format(after)} instead of 8 MiB. " +
+                    "The previous size is saved for restoration."
+            }
+            return before to after
+        } catch (error: Exception) {
+            // If Android rejected the change, don't show a spurious restore option.
+            val current = runCatching {
+                inspectLogcatBuffers(context).getValue("main").sizeBytes
+            }.getOrNull()
+            if (current == before) preferences.edit().remove(PREVIOUS_MAIN_BUFFER_BYTES).commit()
+            throw error
+        }
+    }
+
+    /** Never overwrite a buffer size that another actor changed in the meantime. */
+    fun restoreMainBuffer(context: Context): String {
+        require(rootCaptureApproved(context)) { "Enable diagnostic root access first." }
+        val previous = previousMainBufferBytes(context)
+            ?: throw IllegalStateException("No previously changed buffer size is saved.")
+        val current = inspectLogcatBuffers(context).getValue("main").sizeBytes
+        if (current != LogcatBufferPolicy.TARGET_MAIN_BYTES) {
+            if (current == previous) {
+                clearPreviousMainBuffer(context)
+                return "Main Logcat buffer is already back at ${LogcatBufferPolicy.format(previous)}."
+            }
+            throw IllegalStateException(
+                "Main Logcat buffer is now ${LogcatBufferPolicy.format(current)}, not 8 MiB. " +
+                    "Another setting may have changed it; GoneSmart did not overwrite it."
+            )
+        }
+        runControlCommand(DiagnosticPermissionCommands.resizeMainLogcatBuffer(previous))
+        val restored = inspectLogcatBuffers(context).getValue("main").sizeBytes
+        check(restored == previous) {
+            "Android now reports ${LogcatBufferPolicy.format(restored)}; expected " +
+                "${LogcatBufferPolicy.format(previous)}."
+        }
+        clearPreviousMainBuffer(context)
+        return "Main Logcat buffer restored to ${LogcatBufferPolicy.format(previous)}."
+    }
+
+    private fun clearPreviousMainBuffer(context: Context) {
+        check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().remove(PREVIOUS_MAIN_BUFFER_BYTES).commit()) {
+            "Buffer size changed but the restore preference could not be cleared."
+        }
+    }
+
+    private fun runControlCommand(arguments: List<String>): String {
+        val process = ProcessBuilder(arguments).redirectErrorStream(true).start()
+        try {
+            if (!process.waitFor(8, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                throw IllegalStateException("Android Logcat control command timed out.")
+            }
+            val output = process.inputStream.bufferedReader().use { it.readText().take(4096) }
+            check(process.exitValue() == 0) {
+                "Logcat command failed: ${output.trim().take(240)}"
+            }
+            return output
+        } finally {
+            process.destroy()
+        }
+    }
+
+    /**
      * A snapshot requests a time window; it cannot recover messages already
      * evicted from Android's circular buffers. Include the separately retained
      * companion event history so an unexpectedly short Logcat is still useful.
@@ -77,6 +182,9 @@ object GoneSmartDiagnosticCapture {
             "logcat", "-d", "-b", "main,system,crash",
             "-v", "threadtime", "--uid=$uids", "-T", stamp
         ))
+        val bufferSizes = runCatching {
+            LogcatBufferPolicy.display(inspectLogcatBuffers(context))
+        }.getOrElse { "unavailable (${it.javaClass.simpleName})" }
         val file = newExportFile(context, "last-${minutes}min")
         try {
             ZipOutputStream(FileOutputStream(file)).use { zip ->
@@ -143,6 +251,7 @@ object GoneSmartDiagnosticCapture {
                         "Last captured Logcat entry: ${lastCaptured ?: "none"}\n" +
                         "Exported Logcat lines: $lines ($bytes bytes)\n" +
                         "Snapshot truncated by GoneSmart: $truncated\n" +
+                        "Logcat ring buffer sizes at export: $bufferSizes\n" +
                         "The first entry is not proof of Android buffer coverage; " +
                         "earlier matching messages may be absent or overwritten.\n" +
                         "For reliable intermittent-bug traces, start recording before the issue.\n"

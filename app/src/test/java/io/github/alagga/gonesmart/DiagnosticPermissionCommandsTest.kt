@@ -47,4 +47,23 @@ class DiagnosticPermissionCommandsTest {
             DiagnosticPermissionCommands.ADB_GRANT
         )
     }
+
+    @Test
+    fun inspectIsReadOnlyAndResizeTargetsOnlyMainUnderRoot() {
+        assertEquals(
+            listOf("logcat", "-b", "main,system,crash", "-g"),
+            DiagnosticPermissionCommands.inspectLogcatBuffers(rootApproved = false)
+        )
+        assertEquals(
+            listOf("su", "-c", "exec 'logcat' '-b' 'main,system,crash' '-g'"),
+            DiagnosticPermissionCommands.inspectLogcatBuffers(rootApproved = true)
+        )
+        assertEquals(
+            listOf("su", "-c", "exec 'logcat' '-b' 'main' '-G' '8388608'"),
+            DiagnosticPermissionCommands.resizeMainLogcatBuffer(LogcatBufferPolicy.TARGET_MAIN_BYTES)
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            DiagnosticPermissionCommands.resizeMainLogcatBuffer(0)
+        }
+    }
 }
