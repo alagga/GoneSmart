@@ -63,6 +63,54 @@ class TrackMixPrePlayTargetResolverTest {
         )
     }
 
+    @Test fun duplicateExactPathsRemainAmbiguousEvenWithIndexedLookup() {
+        data class PathOnly(val value: String)
+        val duplicate = fade.copy(path = levels.path)
+        assertNull(
+            TrackMixPrePlayTargetResolver().resolve(
+                listOf(PathOnly(levels.path!!)),
+                listOf(levels, duplicate)
+            )
+        )
+    }
+
+    @Test fun idNeedsCorroborationAndCanUseArtistWithoutTitle() {
+        data class IdAndArtist(val number: Long, val text: String)
+        val result = TrackMixPrePlayTargetResolver().resolve(
+            listOf(IdAndArtist(levels.id, "Avicii")),
+            listOf(levels, fade)
+        )
+        assertEquals(levels.id, result?.track?.id)
+        assertTrue(result?.evidence?.contains("id+artist") == true)
+    }
+
+    @Test fun selectedTrackRemainsResolvableAmongLargeLibraryAndContextGraph() {
+        val library = (1L..18_797L).map { index ->
+            TrackInfo(
+                index,
+                "Song $index",
+                "Artist ${index % 101}",
+                null,
+                "/music/$index.mp3"
+            )
+        }
+        val selected = library[13_938]
+        val manyOtherRows = Outer(library.take(48).map { track ->
+            NativeTrack(track.id, track.title!!, track.artist!!, track.path!!)
+        })
+        val result = TrackMixPrePlayTargetResolver().resolve(
+            listOf(
+                Listener(
+                    NativeTrack(selected.id, selected.title!!, selected.artist!!, selected.path!!),
+                    manyOtherRows
+                )
+            ),
+            library
+        )
+        assertEquals(selected.id, result?.track?.id)
+        assertTrue((result?.inspectedObjects ?: 0) > 48)
+    }
+
     @Test fun cyclicObjectGraphIsBoundedAndStillFindsStrongTarget() {
         val first = Cycle()
         val second = Cycle(selected = NativeTrack(3737L, "Levels", "Avicii", levels.path!!))

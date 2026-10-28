@@ -35,6 +35,21 @@ internal class TrackMixPrePlayTargetResolver(
         library: List<TrackInfo>
     ): TrackMixPrePlayTargetResolution? {
         if (roots.isEmpty() || library.isEmpty()) return null
+        // Build the lookup only for this explicit Track Mix start. Matching a context-menu
+        // graph must not rescan and normalize the whole GMMP library for every node,
+        // especially when Android schedules the worker in the background.
+        val byPath = hashMapOf<String, MutableList<Int>>()
+        val byTitle = hashMapOf<String, MutableList<Int>>()
+        val byId = hashMapOf<Long, MutableList<Int>>()
+        library.forEachIndexed { index, track ->
+            normalize(track.path).takeIf { it.isNotEmpty() }?.let { path ->
+                byPath.getOrPut(path) { arrayListOf() }.add(index)
+            }
+            normalize(track.title).takeIf { it.isNotEmpty() }?.let { title ->
+                byTitle.getOrPut(title) { arrayListOf() }.add(index)
+            }
+            if (track.id > 0L) byId.getOrPut(track.id) { arrayListOf() }.add(index)
+        }
         val queue = ArrayDeque<Node>()
         roots.filterNotNull().forEach { queue.add(Node(it, 0)) }
         val visited = IdentityHashMap<Any, Boolean>()
@@ -48,7 +63,18 @@ internal class TrackMixPrePlayTargetResolver(
 
             val scalars = directScalars(node.value)
             if (scalars.strings.isNotEmpty() || scalars.numbers.isNotEmpty()) {
-                library.forEach { track ->
+                // Every strong match must contain an exact path, an ID or a title.
+                // Artist/filename alone and a bare ID still fail in score().
+                val candidates = linkedSetOf<Int>()
+                scalars.strings.forEach { value ->
+                    byPath[value]?.let(candidates::addAll)
+                    byTitle[value]?.let(candidates::addAll)
+                }
+                scalars.numbers.forEach { value ->
+                    byId[value]?.let(candidates::addAll)
+                }
+                candidates.forEach { index ->
+                    val track = library[index]
                     score(track, scalars, node.depth)?.let { candidate ->
                         val previous = bestByTrack[track.id]
                         if (previous == null || candidate.score > previous.score ||

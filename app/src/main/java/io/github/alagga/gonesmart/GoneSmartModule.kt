@@ -5952,9 +5952,19 @@ class GoneSmartModule : XposedModule() {
         autoDjInstance: Any,
         roots: List<Any>
     ): TrackMixPrePlayTargetResolution? {
+        val startedAt = SystemClock.elapsedRealtime()
         val library = gmmpLibraryReader.read(autoDjInstance)
             .map { it.track }
-        return trackMixPrePlayTargetResolver.resolve(roots, library)
+        val libraryMs = SystemClock.elapsedRealtime() - startedAt
+        val result = trackMixPrePlayTargetResolver.resolve(roots, library)
+        Log.i(
+            TAG,
+            "SMART DJ TRACK MIX TARGET | library=${library.size} | " +
+                "libraryMs=$libraryMs | " +
+                "resolverMs=${SystemClock.elapsedRealtime() - startedAt - libraryMs} | " +
+                "resolved=${result != null}"
+        )
+        return result
     }
 
     private fun prepareTrackMixPrePlaySmartPool(
