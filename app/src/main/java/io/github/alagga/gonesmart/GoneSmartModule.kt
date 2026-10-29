@@ -649,6 +649,9 @@ class GoneSmartModule : XposedModule() {
     private val autoDjSelectionWindow =
         ThreadLocal<SelectionWindowContext?>()
 
+    private val autoDjRefillSingleFlight =
+        AutoDjRefillSingleFlight()
+
     /*
      * Keep one overall pool-fill pipeline per session so queue state and
      * recommendation aggregation stay deterministic. Independent network
@@ -4984,13 +4987,28 @@ class GoneSmartModule : XposedModule() {
                     TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS -> {
                         return@intercept null
                     }
-                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> {
-                        trackMixController.onNativeAutoDjRefillRequested(
-                            requestedTracks
-                        )
-                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> Unit
                 }
             }
+
+            // Two independent GMMP callers may reach qr.z() before the first
+            // pool fill completes. Without a single-flight lease both select
+            // the same pending Track ID and each native call appends it.
+            // Preserve the special Track Mix continuity/bootstrap paths above.
+            val guardSmartRefill = autoDjInstance != null && options.enabled
+            if (guardSmartRefill && !autoDjRefillSingleFlight.tryEnter()) {
+                Log.i(
+                    TAG,
+                    "SMART DJ REFILL COALESCED | requested=$requestedTracks | " +
+                        "another native refill already pending"
+                )
+                return@intercept null
+            }
+
+            try {
+                if (guardSmartRefill) {
+                    trackMixController.onNativeAutoDjRefillRequested(requestedTracks)
+                }
 
             Log.i(
                 TAG,
@@ -5471,7 +5489,12 @@ class GoneSmartModule : XposedModule() {
                 "========================================"
             )
 
-            result
+                result
+            } finally {
+                if (guardSmartRefill) {
+                    autoDjRefillSingleFlight.leave()
+                }
+            }
         }
 
         Log.i(
