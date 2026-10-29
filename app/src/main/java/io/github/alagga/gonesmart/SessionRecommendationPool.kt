@@ -65,6 +65,20 @@ class SessionRecommendationPool {
             false
     }
 
+    /** Retain the full pre-Play ranked candidates after GMMP confirms Current. */
+    @Synchronized
+    fun rebindPreparedSession(
+        expectedSessionId: Long,
+        newSessionId: Long,
+        newTargetSize: Int
+    ): Boolean {
+        if (sessionId != expectedSessionId || newSessionId <= 0L) return false
+        sessionId = newSessionId
+        targetSize = newTargetSize.coerceAtLeast(1)
+        trimToTarget()
+        return true
+    }
+
     @Synchronized
     fun configureTarget(
         expectedSessionId: Long,

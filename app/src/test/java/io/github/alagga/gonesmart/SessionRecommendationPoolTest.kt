@@ -1,6 +1,8 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionRecommendationPoolTest {
@@ -48,5 +50,18 @@ class SessionRecommendationPoolTest {
         pool.commitSelected(expectedSessionId = 8L, selectedTrackIds = candidates)
 
         assertFalse(pool.shouldRefill(expectedSessionId = 8L, sizing = sizing))
+    }
+
+    @Test
+    fun preparedRecommendationsCarryIntoVerifiedNativeFileSession() {
+        val pool = SessionRecommendationPool()
+        pool.reset(newSessionId = -100L, newTargetSize = 20)
+        pool.mergeCandidates(-100L, listOf(11L, 22L, 33L), 20)
+        assertFalse(pool.rebindPreparedSession(-99L, 9L, 20))
+        assertTrue(pool.rebindPreparedSession(-100L, 9L, 20))
+        assertFalse(pool.isForSession(-100L))
+        assertEquals(listOf(11L, 22L, 33L), pool.peek(9L, 3, emptySet()))
+        pool.commitSelected(9L, listOf(11L, 22L))
+        assertEquals(listOf(33L), pool.peek(9L, 3, emptySet()))
     }
 }

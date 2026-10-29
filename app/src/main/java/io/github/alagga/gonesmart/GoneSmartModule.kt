@@ -505,6 +505,18 @@ class GoneSmartModule : XposedModule() {
         preparePrePlaySmartPool = { autoDj, track, count ->
             prepareTrackMixPrePlaySmartPool(autoDj, track, count)
         },
+        resolveNativeEnqueuePaths = { autoDj, trackIds ->
+            resolveTrackMixNativeEnqueuePaths(autoDj, trackIds)
+        },
+        adoptNativeEnqueueSession = { autoDj, preparedSession, seedId, entryId ->
+            adoptTrackMixNativeEnqueueSession(autoDj, preparedSession, seedId, entryId)
+        },
+        commitNativeEnqueue = { autoDj, sessionId, selectedIds, selectedEntries ->
+            commitTrackMixNativeEnqueue(autoDj, sessionId, selectedIds, selectedEntries)
+        },
+        allowNativeFallback = {
+            options.fallbackToNativeAutoDjWhenNoSuitableTracks
+        },
         ensureZeroPoolSourceBatchHooks = { autoDj ->
             installZeroPoolSourceBatchHooks(autoDj)
         },
@@ -516,6 +528,78 @@ class GoneSmartModule : XposedModule() {
             )
         }
     )
+
+    private fun resolveTrackMixNativeEnqueuePaths(
+        autoDj: Any,
+        trackIds: List<Long>
+    ): List<String>? {
+        if (trackIds.isEmpty() || trackIds.distinct().size != trackIds.size) return null
+        val tracksById = gmmpLibraryReader.read(autoDj).groupBy { it.track.id }
+        return trackIds.map { id ->
+            val match = tracksById[id]?.singleOrNull()?.track ?: return null
+            match.path?.takeIf { it.startsWith('/') && it.isNotBlank() }
+                ?: return null
+        }
+    }
+
+    private fun adoptTrackMixNativeEnqueueSession(
+        autoDj: Any,
+        preparedSessionId: Long,
+        seedTrackId: Long,
+        seedEntryId: Long
+    ): Long? = runCatching {
+        val context = queueReader.read(autoDj)
+            ?: error("Native file Track Mix has no verified queue")
+        check(context.items.any { it.track.id == seedTrackId &&
+            it.queueEntryId == seedEntryId }) {
+            "Native file Track Mix lost its original queue entry"
+        }
+        val session = queueSessionTracker.forceNewSession(
+            context, "native-file Track Mix seed"
+        )
+        val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(
+            gmmpAutoDjSettingsReader.read()
+        )
+        check(recommendationPool.rebindPreparedSession(
+            expectedSessionId = preparedSessionId,
+            newSessionId = session.sessionId,
+            newTargetSize = sizing.targetSize
+        )) { "Native file Track Mix prepared recommendation pool changed" }
+        Log.i(TAG, "MIX NATIVE FILE SESSION | prepared=$preparedSessionId | " +
+            "session=${session.sessionId} | retained=true")
+        session.sessionId
+    }.onFailure {
+        Log.e(TAG, "MIX NATIVE FILE SESSION | verified=false", it)
+    }.getOrNull()
+
+    private fun commitTrackMixNativeEnqueue(
+        autoDj: Any,
+        sessionId: Long,
+        addedTrackIds: List<Long>,
+        addedEntryIds: List<Long>
+    ): Boolean = runCatching {
+        check(recommendationPool.isForSession(sessionId)) {
+            "Native file Track Mix recommendation session changed"
+        }
+        val after = queueReader.read(autoDj)
+            ?: error("Native file Track Mix final queue unavailable")
+        check(addedTrackIds.isNotEmpty() && addedTrackIds.size == addedEntryIds.size &&
+            addedEntryIds.distinct().size == addedEntryIds.size &&
+            addedEntryIds.zip(addedTrackIds).all { (entryId, trackId) ->
+                after.items.any { it.queueEntryId == entryId && it.track.id == trackId }
+            }
+        ) { "Native file Track Mix generated rows changed" }
+        val added = addedEntryIds.toSet()
+        queueSessionTracker.commitGeneratedAdditions(
+            beforeContext = after.copy(items = after.items.filter { it.queueEntryId !in added }),
+            afterContext = after,
+            origin = QueueEntryOrigin.GONESMART
+        )
+        recommendationPool.commitSelected(sessionId, addedTrackIds)
+        true
+    }.onFailure {
+        Log.e(TAG, "MIX NATIVE FILE COMMIT | verified=false", it)
+    }.getOrDefault(false)
 
     private fun resetTrackMixRecommendationSession(
         autoDjInstance: Any,
