@@ -34,7 +34,14 @@ AudioSource replay or parallel player is introduced.
   writer is available. Both pool-to-session adoption and final generated-row
   commit now use the same position-hinted read as the Track Mix worker. This
   prevents false aborts after manual appends and false failures after four
-  successfully materialized recommendations. Await device re-acceptance.
+  successfully materialized recommendations. Device log 2026-10-30
+  (`090f432`) confirms two four-track commits with the verified writer hint;
+  a newly started playback correctly aborted the intermediate search.
+- Native `AUTO_DJ` can post a delayed GMMP status Toast after the async
+  worker has completed. The short post-command suppression grace is now kept
+  for this path too; GoneSmart's own confirmation remains visible. Missing
+  GMMP `started` string now falls back to readable `Started` instead of `✓`.
+  Both UI changes await device verification.
 - A new playback source normally replaces GMMP's native queue and removes the
   original seed entry. Missing original entry, duplicate/ambiguous enqueue
   identity or noncontiguous queue positions aborts remaining insertions.

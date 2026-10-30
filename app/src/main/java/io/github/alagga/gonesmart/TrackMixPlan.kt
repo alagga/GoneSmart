@@ -38,7 +38,7 @@ internal object TrackMixPlan {
         return if (track.isNotEmpty() && dj.isNotEmpty()) "$track $dj" else ""
     }
 
-    /** Prefer GMMP `started`; otherwise keep the native action label and a language-neutral checkmark. */
+    /** Prefer GMMP's localized `started`; use the maintainer-requested text instead of a glyph. */
     @Suppress("UNUSED_PARAMETER")
     fun localizedStartedMessage(
         language: String,
@@ -46,7 +46,7 @@ internal object TrackMixPlan {
         gmmpStarted: String?
     ): String {
         val native = gmmpStarted?.trim()?.takeIf(String::isNotBlank)
-        return "$menuLabel ${native ?: "✓"}"
+        return "$menuLabel ${native ?: "Started"}"
     }
 
     data class NativeQueueEntry(

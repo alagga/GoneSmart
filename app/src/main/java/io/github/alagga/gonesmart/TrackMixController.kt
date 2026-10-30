@@ -1591,6 +1591,10 @@ internal class TrackMixController(
                 if (allowNativeFallback()) {
                     armManagedAutoDjSession()
                     sendCommand(request.context, COMMAND_AUTO_DJ)
+                    // The native status Toast can arrive asynchronously after
+                    // this request has already left its pending stage.
+                    nativeToastSuppressionUntilMs =
+                        SystemClock.elapsedRealtime() + 3_000L
                     managedSessionReady = true
                 }
                 Log.i(TAG, "MIX NATIVE FILE EMPTY | nativeFallback=$managedSessionReady")
@@ -1649,6 +1653,12 @@ internal class TrackMixController(
             armManagedAutoDjSession()
             refillHold.set(false)
             sendCommand(request.context, COMMAND_AUTO_DJ)
+            // The file-command path finishes immediately after AUTO_DJ.
+            // Keep the same short native-toast grace used by the original
+            // Track Mix path, otherwise GMMP's delayed "rules changed" Toast
+            // can appear right after our own confirmation.
+            nativeToastSuppressionUntilMs =
+                SystemClock.elapsedRealtime() + 3_000L
             managedSessionReady = true
             Log.i(TAG, "MIX NATIVE FILE VERIFIED | currentSeed=${target.id} | " +
                 "enqueued=${selectedIds.size} | owner=GMMP-ENQUEUE_FILE | " +

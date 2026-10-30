@@ -78,7 +78,7 @@ class TrackMixPlanTest {
         )
     }
 
-    @Test fun confirmsWithNativeStartedWhenPresentAndSafeFallbackOtherwise() {
+    @Test fun confirmsWithNativeStartedWhenPresentAndReadableFallbackOtherwise() {
         assertEquals(
             "Titel Auto-DJ gestartet",
             TrackMixPlan.localizedStartedMessage(
@@ -86,7 +86,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "Track Auto-DJ ✓",
+            "Track Auto-DJ Started",
             TrackMixPlan.localizedStartedMessage(
                 "en", "Track Auto-DJ", null
             )
@@ -98,7 +98,7 @@ class TrackMixPlanTest {
             )
         )
         assertEquals(
-            "トラック オートDJ ✓",
+            "トラック オートDJ Started",
             TrackMixPlan.localizedStartedMessage(
                 "ja", "トラック オートDJ", null
             )
