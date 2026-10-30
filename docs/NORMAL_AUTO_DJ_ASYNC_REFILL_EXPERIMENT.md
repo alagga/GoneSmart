@@ -53,6 +53,25 @@ New playback, missing native additions, missing/ambiguous Current and failed
 advance cancel the remaining requests. Manual queue additions still remain
 at their native position ahead of later generated rows.
 
+### End-of-queue continuation on a cold pool (2026-10-30)
+
+The `b8bebcc29445` device snapshot recorded `End of queue reached` at
+20:08:32 and a deferred native `qr.z(4)` in ~31 ms. At 20:08:46, after
+14.75 seconds of full-quality recommendation preparation, GMMP inserted
+four correctly selected rows, but playback had already ended and did not
+start the new queue position 2. This is a playback-continuation race, not
+a failure to find or insert recommendations.
+
+The worker may now emit **one** public GMMP `NEXT` only for a refill that
+began with no upcoming queue entry and inactive audio, then still has the
+same exact Current queue entry, unchanged recommendation session, verified
+new native queue rows and an upcoming song after refill. A 250 ms grace
+period allows GMMP to resume normally; any new active audio, changed Current,
+missing host Context, new session or separately recorded manual Next cancels
+the synthetic continuation. No native decoder, Current writer or SQL writer
+is called. AudioManager's audio-inactive signal is only a conservative guard;
+paused playback and external output routes need device validation.
+
 **Acceptance limitation:** the exact resource ID of the player's Next view
 has not yet been observed on a test device. Only recognized visible GMMP
 player buttons are covered; Bluetooth/headset/notification Next and unknown
@@ -77,6 +96,10 @@ device log must confirm `SMART DJ DEFERRED NEXT | queued=...` then `replay=...`.
    (old recommendations and pending Next presses discarded).
 5. Confirm fallback enabled/disabled, offline, repeated refill requests and
    Track Mix regression behavior. Verify hardware/headset Next remains native.
+6. Let a cold final song end naturally, then verify the `SMART DJ DEFERRED EOF`
+   candidate/resume/currentAdvanced/audioActive markers and actual decoder.
+   Pause the final track, start new playback, enqueue manually, and re-test
+   screen-off behavior: none may cause a spurious automatic skip.
 
 ## Audit
 

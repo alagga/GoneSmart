@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.media.AudioManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -749,6 +750,9 @@ class GoneSmartModule : XposedModule() {
     private val autoDjRefillSingleFlight =
         AutoDjRefillSingleFlight()
 
+    // A missing host Context always disables synthetic playback continuation.
+    @Volatile private var gmmpAppContext: Context? = null
+
     /*
      * Keep one overall pool-fill pipeline per session so queue state and
      * recommendation aggregation stay deterministic. Independent network
@@ -775,6 +779,7 @@ class GoneSmartModule : XposedModule() {
         var waiter: Future<*>? = null,
         var replayNextPresses: Int = 0,
         var nextCommandContext: Context? = null,
+        val endedQueueCurrentEntryId: Long? = null,
         var nativeRefillStarted: Boolean = false
     )
 
@@ -4613,6 +4618,7 @@ class GoneSmartModule : XposedModule() {
                 activity != null
             ) {
 
+                gmmpAppContext = activity.applicationContext
                 statusNotifier.attachHostActivity(activity)
                 playerBadgeController
                     .attach(
@@ -4951,6 +4957,12 @@ class GoneSmartModule : XposedModule() {
             ?.read()
         return queueReader.read(autoDjInstance, verifiedPosition)
     }
+
+    private fun isAudioInactive(context: Context): Boolean? = runCatching {
+        (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+            ?.isMusicActive
+            ?.not()
+    }.getOrNull()
 
     private fun proceedNativeRefill(
         autoDjInstance: Any,
@@ -6309,6 +6321,14 @@ class GoneSmartModule : XposedModule() {
         val originalIds = queueContext.items.map { it.queueEntryId }.toSet()
         if (originalIds.isEmpty()) return false
 
+        // Only an already-inactive final track can require continuation:
+        // an actively playing last song must never be skipped by an async fill.
+        val appContext = gmmpAppContext
+        val idleTailCurrentId = queueContext.currentItem
+            ?.takeIf { queueContext.upcomingItems.isEmpty() &&
+                appContext != null && isAudioInactive(appContext) == true }
+            ?.queueEntryId
+
         return synchronized(deferredAutoDjLock) {
             val pending = pendingDeferredAutoDjRefill
             if (pending != null && pending.autoDj === autoDjInstance &&
@@ -6331,8 +6351,19 @@ class GoneSmartModule : XposedModule() {
                     originalEntryIds = originalIds,
                     poolFill = poolFill,
                     scheduledAt = SystemClock.elapsedRealtime(),
-                    requestedTracks = requestedTracks
+                    requestedTracks = requestedTracks,
+                    nextCommandContext = if (idleTailCurrentId != null) appContext else null,
+                    endedQueueCurrentEntryId = idleTailCurrentId
                 )
+                if (idleTailCurrentId != null) {
+                    Log.i(TAG, "SMART DJ DEFERRED EOF | candidate=true | " +
+                        "session=${session.sessionId} | current=$idleTailCurrentId")
+                } else if (queueContext.upcomingItems.isEmpty()) {
+                    Log.i(TAG, "SMART DJ DEFERRED EOF | candidate=false | " +
+                        "context=${appContext != null} | " +
+                        "audioInactive=${appContext?.let(::isAudioInactive)} | " +
+                        "current=${queueContext.currentItem?.queueEntryId}")
+                }
                 pendingDeferredAutoDjRefill = refill
                 refill.waiter = deferredAutoDjExecutor.submit {
                     resumeDeferredAutoDjRefill(refill)
@@ -6409,6 +6440,41 @@ class GoneSmartModule : XposedModule() {
                     count = replayRequest.second,
                     beforeNativeEntryIds = beforeNativeEntryIds
                 )
+            } else if (refill.endedQueueCurrentEntryId != null &&
+                replayRequest != null
+            ) {
+                // Allow GMMP a short grace period to resume on its own.
+                SystemClock.sleep(250L)
+                val liveQueue = readQueueContext(refill.autoDj)
+                val audioInactive = isAudioInactive(replayRequest.first) == true
+                if (DeferredAutoDjNextPolicy.shouldResumeEndedQueue(
+                        hadNoUpcoming = true,
+                        audioInactiveAtRequest = true,
+                        audioInactiveAfterRefill = audioInactive,
+                        originalCurrentEntryId = refill.endedQueueCurrentEntryId,
+                        liveCurrentEntryId = liveQueue?.currentItem?.queueEntryId,
+                        pendingManualNextPresses = replayRequest.second
+                    )
+                ) {
+                    Log.i(TAG, "SMART DJ DEFERRED EOF | resume=one-native-next | " +
+                        "session=${refill.sessionId}")
+                    replayDeferredAutoDjNext(
+                        refill = refill,
+                        context = replayRequest.first,
+                        count = 1,
+                        beforeNativeEntryIds = beforeNativeEntryIds
+                    )
+                    // Observe native acknowledgement; never replay twice.
+                    SystemClock.sleep(800L)
+                    val observedCurrent = readQueueContext(refill.autoDj)
+                        ?.currentItem?.queueEntryId
+                    Log.i(TAG, "SMART DJ DEFERRED EOF | " +
+                        "currentAdvanced=${observedCurrent != null &&
+                            observedCurrent != refill.endedQueueCurrentEntryId} | " +
+                        "audioActive=${isAudioInactive(replayRequest.first) == false}")
+                } else {
+                    Log.i(TAG, "SMART DJ DEFERRED EOF | cancelled=playback-or-current-changed")
+                }
             }
         } catch (failure: Throwable) {
             Log.e(TAG, "SMART DJ DEFERRED REFILL | native retry failed", failure)

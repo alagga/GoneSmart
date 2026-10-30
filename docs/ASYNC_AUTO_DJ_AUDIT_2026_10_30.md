@@ -54,3 +54,17 @@ new input-observer path.
 - **No new GMMP-facing translations required**: this adjusts only the
   English-language companion UI. Exact-head CI and on-device nested-scrolling
   validation remain required.
+
+## Deferred natural end-of-queue follow-up
+
+- On `b8bebcc29445`, native GMMP reached EOF before a cold deferred refill;
+  four correct tracks were appended 14.75 seconds later without playback
+  continuation. Native insertion and full-quality matching worked.
+- One-time GMMP public NEXT can now resume only for the inactive tail after
+  new native rows exist and the same Current/session survive. An active audio
+  route, manual Next, changed Current, unavailable host Context or missing
+  queue additions fail closed; no additional writer, decoder hook or poller.
+- JVM tests cover idle/current/manual-click guard cases. Logcat adds bounded
+  `SMART DJ DEFERRED EOF` markers under the existing tag; **no new translations
+  required**. Exact-head CI and device testing of natural EOF, pause, headset,
+  manual edits and screen-off still required before release acceptance.

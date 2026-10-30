@@ -150,6 +150,9 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 - Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
+- A cold normal Auto-DJ refill at an already-ended queue tail may send one
+  public GMMP NEXT only after native insertion, retained session/Current
+  identity, audio-inactive and upcoming-entry checks. Never skip active audio.
 - Cold normal Auto-DJ refills may finish asynchronously after GMMP advances to
   the last song. Any deliberately deferred extra Next action is replayed only
   through GMMP's public command after verified native additions, same-session

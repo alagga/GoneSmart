@@ -23,6 +23,19 @@ internal object DeferredAutoDjNextPolicy {
         currentEntryIds: Set<Long>
     ): Boolean = currentEntryIds.any { it !in beforeNativeEntryIds }
 
+    /** A native refill may complete after GMMP has already ended playback. */
+    fun shouldResumeEndedQueue(
+        hadNoUpcoming: Boolean,
+        audioInactiveAtRequest: Boolean,
+        audioInactiveAfterRefill: Boolean,
+        originalCurrentEntryId: Long?,
+        liveCurrentEntryId: Long?,
+        pendingManualNextPresses: Int
+    ): Boolean = hadNoUpcoming && audioInactiveAtRequest &&
+        audioInactiveAfterRefill && pendingManualNextPresses == 0 &&
+        originalCurrentEntryId != null &&
+        originalCurrentEntryId == liveCurrentEntryId
+
     fun canReplay(
         initialSessionId: Long,
         liveSessionId: Long,

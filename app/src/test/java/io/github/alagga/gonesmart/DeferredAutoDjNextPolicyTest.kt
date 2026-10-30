@@ -35,4 +35,26 @@ class DeferredAutoDjNextPolicyTest {
         assertTrue(DeferredAutoDjNextPolicy.hasNativeQueueAddition(before, setOf(12L, 13L, 14L)))
         assertFalse(DeferredAutoDjNextPolicy.hasNativeQueueAddition(before, setOf(13L)))
     }
+
+    @Test fun `ended queue continuation needs the same inactive Current and no extra click`() {
+        fun eligible(
+            noUpcoming: Boolean = true,
+            inactiveBefore: Boolean = true,
+            inactiveAfter: Boolean = true,
+            originalCurrent: Long? = 31L,
+            liveCurrent: Long? = 31L,
+            manualNext: Int = 0
+        ) = DeferredAutoDjNextPolicy.shouldResumeEndedQueue(
+            noUpcoming, inactiveBefore, inactiveAfter,
+            originalCurrent, liveCurrent, manualNext
+        )
+        assertTrue(eligible())
+        assertFalse(eligible(noUpcoming = false))
+        assertFalse(eligible(inactiveBefore = false))
+        assertFalse(eligible(inactiveAfter = false))
+        assertFalse(eligible(originalCurrent = null))
+        assertFalse(eligible(liveCurrent = null))
+        assertFalse(eligible(liveCurrent = 32L))
+        assertFalse(eligible(manualNext = 1))
+    }
 }
