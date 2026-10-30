@@ -20,6 +20,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
@@ -834,7 +835,58 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
         container.addView(actions)
 
-        container.addView(verticalGap(20))
+        // Keep the copyable companion event history above the optional
+        // diagnostic recorder. Its own scroll area prevents long histories
+        // from stretching the entire Logs page.
+        logCountText = textView("0 lines", 14f, COLOR_TEXT_SECONDARY).apply {
+            setPadding(0, dp(14), 0, dp(8))
+        }
+        container.addView(logCountText)
+
+        val logCard = card().apply { setContentPadding(dp(18), dp(18), dp(18), dp(18)) }
+        logTextView = textView("No runtime events yet.", 13f, COLOR_TEXT_SECONDARY).apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setLineSpacing(0f, 1.14f)
+        }
+        val logScroll = object : ScrollView(this) {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        // Only reserve the gesture for the inner history when
+                        // there is actually something to scroll inside it.
+                        if (canScrollVertically(1) || canScrollVertically(-1)) {
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                return super.dispatchTouchEvent(event)
+            }
+        }.apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        }
+        logScroll.addView(logTextView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        logCard.addView(logScroll, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(260)
+        ))
+        container.addView(logCard)
+
+        container.addView(verticalGap(14))
+        container.addView(textView(
+            "The activity history above is a concise summary. For sporadic playback bugs, start a bounded diagnostic recording before listening. Snapshots are best effort: Android may have already overwritten older Logcat. Exported ZIPs can be attached to a bug report.",
+            13f,
+            COLOR_MUTED
+        ))
+
+        container.addView(verticalGap(24))
         container.addView(sectionTitle("DEBUG CAPTURE"))
         diagnosticStatusText = textView("", 13f, COLOR_TEXT_SECONDARY)
         container.addView(diagnosticStatusText)
@@ -876,7 +928,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(diagnosticBufferChangeButton)
         container.addView(verticalGap(8))
         container.addView(textView(
-            "Captures GMMP and GoneSmart Android Logcat, not only the summary below. " +
+            "Captures GMMP and GoneSmart Android Logcat, not only the activity history above. " +
                 "A snapshot requests the previous five minutes but Android may retain only seconds of them. " +
                 "The ZIP reports the earliest/latest captured entries and includes the companion event history. " +
                 "Continuous recording keeps up to 6 MB of rotating traces while its visible notification is active. " +
@@ -890,26 +942,6 @@ class MainActivity : AppCompatActivity() {
             COLOR_MUTED
         ))
 
-        logCountText = textView("0 lines", 14f, COLOR_TEXT_SECONDARY).apply {
-            setPadding(0, dp(14), 0, dp(8))
-        }
-        container.addView(logCountText)
-
-        val logCard = card().apply { setContentPadding(dp(18), dp(18), dp(18), dp(18)) }
-        logTextView = textView("No runtime events yet.", 13f, COLOR_TEXT_SECONDARY).apply {
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-            setLineSpacing(0f, 1.14f)
-        }
-        logCard.addView(logTextView)
-        container.addView(logCard)
-
-        container.addView(verticalGap(14))
-        container.addView(textView(
-            "The activity history above is a concise summary. For sporadic playback bugs, start a bounded diagnostic recording before listening. Snapshots are best effort: Android may have already overwritten older Logcat. Exported ZIPs can be attached to a bug report.",
-            13f,
-            COLOR_MUTED
-        ))
         return scrollPage(container)
     }
 

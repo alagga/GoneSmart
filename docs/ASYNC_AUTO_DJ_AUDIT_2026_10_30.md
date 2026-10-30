@@ -40,3 +40,17 @@ The prior `2026-10-30 16:35:56` device trace confirmed cold refill returning
 in approximately 33 ms and native additions approximately 1.8 seconds later;
 it was collected **before** this Next replay code and does not validate the
 new input-observer path.
+
+## Companion Logs layout follow-up (2026-10-30)
+
+- Place the companion event-history count and copyable monospace event panel
+  immediately after Clear/Copy and **before** optional Debug Capture tools.
+- Cap only the visible event-history viewport at 260 dp and scroll its contents
+  independently. Preserve the outer Logs-page scroll, Android text selection,
+  the Clear/Copy actions, and the underlying retention/data semantics.
+- Update the existing Logcat explanatory wording to refer to history **above**
+  the capture controls. No logging tags/categories, buffers, recording features
+  or capture logic change.
+- **No new GMMP-facing translations required**: this adjusts only the
+  English-language companion UI. Exact-head CI and on-device nested-scrolling
+  validation remain required.
