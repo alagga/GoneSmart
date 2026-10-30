@@ -743,6 +743,9 @@ class GoneSmartModule : XposedModule() {
     private val autoDjSelectionWindow =
         ThreadLocal<SelectionWindowContext?>()
 
+    private val autoDjRefillSingleFlight =
+        AutoDjRefillSingleFlight()
+
     /*
      * Keep one overall pool-fill pipeline per session so queue state and
      * recommendation aggregation stay deterministic. Independent network
@@ -5099,13 +5102,29 @@ class GoneSmartModule : XposedModule() {
                     TrackMixInitialFillPolicy.NativeRefillAction.SUPPRESS -> {
                         return@intercept null
                     }
-                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> {
-                        trackMixController.onNativeAutoDjRefillRequested(
-                            requestedTracks
-                        )
-                    }
+                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL -> Unit
                 }
             }
+
+            // The deferred cold-pool request itself coalesces while waiting.
+            // Once a pool is available, this separate native single-flight
+            // guard still protects against two simultaneous qr.z callers
+            // selecting the same pending Track ID before either commits it.
+            // Special Track Mix continuity/bootstrap paths have returned above.
+            val guardSmartRefill = autoDjInstance != null && options.enabled
+            if (guardSmartRefill && !autoDjRefillSingleFlight.tryEnter()) {
+                Log.i(
+                    TAG,
+                    "SMART DJ REFILL COALESCED | requested=$requestedTracks | " +
+                        "another native refill already pending"
+                )
+                return@intercept null
+            }
+
+            try {
+                if (guardSmartRefill) {
+                    trackMixController.onNativeAutoDjRefillRequested(requestedTracks)
+                }
 
             Log.i(
                 TAG,
@@ -5604,7 +5623,12 @@ class GoneSmartModule : XposedModule() {
                 "========================================"
             )
 
-            result
+                result
+            } finally {
+                if (guardSmartRefill) {
+                    autoDjRefillSingleFlight.leave()
+                }
+            }
         }
 
         Log.i(

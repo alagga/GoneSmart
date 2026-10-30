@@ -27,6 +27,12 @@ Smart DJ cancel it. No direct Room writer, separate playback engine, new
 recommendation heuristics, Intent-based insertion or permanent polling is
 introduced. The `PLAY_FILE`/`ENQUEUE_FILE` Track Mix start is unchanged.
 
+The separate `fix/audio-profiles-device-identity` native single-flight guard
+is retained after integration. It protects the short synchronous selection
+and queue-writing window even when a pool is already warm. The deferred
+session-request coalescer handles the long background waiting window instead;
+both guards serve different stages and must remain in place.
+
 ## Real-device tests required
 
 1. With a newly made two-track queue and cold pool, skip to the second/last
