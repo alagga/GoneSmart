@@ -752,6 +752,27 @@ class GoneSmartModule : XposedModule() {
     private val pipelineExecutor =
         Executors.newSingleThreadExecutor()
 
+    // Native refill may occur inside the playback transition. Do not wait
+    // for a cold recommendation pool on that GMMP call stack.
+    private val deferredAutoDjExecutor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "GoneSmart-DeferredAutoDJ").apply { isDaemon = true }
+        }
+
+    private data class DeferredAutoDjRefill(
+        val autoDj: Any,
+        val sessionId: Long,
+        val originalEntryIds: Set<Long>,
+        val poolFill: Future<Boolean>,
+        val scheduledAt: Long,
+        var requestedTracks: Int,
+        var waiter: Future<*>? = null
+    )
+
+    private val deferredAutoDjLock = Any()
+    private var pendingDeferredAutoDjRefill: DeferredAutoDjRefill? = null
+    private val performingDeferredAutoDjRefill = ThreadLocal.withInitial { false }
+
     private val providerExecutor =
         Executors.newFixedThreadPool(2) { runnable ->
             Thread(runnable, "GoneSmart-Provider").apply { isDaemon = true }
@@ -5350,7 +5371,25 @@ class GoneSmartModule : XposedModule() {
 
                     true
 
+                } else if (performingDeferredAutoDjRefill.get()) {
+                    // Already waited off-thread: use the completed pool or
+                    // the normal native fallback/stop rule, without a repeat.
+                    false
+
                 } else {
+
+                    if (deferColdAutoDjRefill(
+                            autoDjInstance = autoDjInstance,
+                            requestedTracks = requestedTracks,
+                            seeds = seeds,
+                            queueContext = beforeContext,
+                            session = session,
+                            sizing = poolSizing
+                        )) {
+                        logRefillTiming("cold-pool-deferred")
+                        Log.i(TAG, "SMART DJ DEFERRED REFILL | native transition released")
+                        return@intercept null
+                    }
 
                     ensureRecommendationPoolReady(
                         seeds = seeds,
@@ -6156,6 +6195,117 @@ class GoneSmartModule : XposedModule() {
             )
         }
         return TrackMixPreparedInitialPool(sessionId, preparedIds)
+    }
+
+    /**
+     * Let the native transition finish immediately. Later invoke the exact
+     * same GMMP refill boundary, only for the still-current queue session.
+     */
+    private fun deferColdAutoDjRefill(
+        autoDjInstance: Any,
+        requestedTracks: Int,
+        seeds: List<RecommendationSeed>,
+        queueContext: QueueContext,
+        session: QueueSessionSnapshot,
+        sizing: SmartPoolSizing
+    ): Boolean {
+        if (trackMixController.isExplicitInitialRefill()) return false
+        val originalIds = queueContext.items.map { it.queueEntryId }.toSet()
+        if (originalIds.isEmpty()) return false
+
+        return synchronized(deferredAutoDjLock) {
+            val pending = pendingDeferredAutoDjRefill
+            if (pending != null && pending.autoDj === autoDjInstance &&
+                pending.sessionId == session.sessionId
+            ) {
+                pending.requestedTracks = maxOf(pending.requestedTracks, requestedTracks)
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | coalesced=true | " +
+                    "session=${session.sessionId} | requested=${pending.requestedTracks}")
+                true
+            } else {
+                pending?.waiter?.cancel(true)
+                val poolFill = startPoolFill(
+                    seeds = seeds, autoDjInstance = autoDjInstance,
+                    queueContext = queueContext, session = session,
+                    sizing = sizing, background = true
+                )
+                val refill = DeferredAutoDjRefill(
+                    autoDj = autoDjInstance,
+                    sessionId = session.sessionId,
+                    originalEntryIds = originalIds,
+                    poolFill = poolFill,
+                    scheduledAt = SystemClock.elapsedRealtime(),
+                    requestedTracks = requestedTracks
+                )
+                pendingDeferredAutoDjRefill = refill
+                refill.waiter = deferredAutoDjExecutor.submit {
+                    resumeDeferredAutoDjRefill(refill)
+                }
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | scheduled=true | " +
+                    "session=${session.sessionId} | requested=$requestedTracks")
+                true
+            }
+        }
+    }
+
+    private fun resumeDeferredAutoDjRefill(refill: DeferredAutoDjRefill) {
+        try {
+            try {
+                refill.poolFill.get(SMART_PREPARE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                Log.w(TAG, "SMART DJ DEFERRED REFILL | pool timed out; checking fallback")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            } catch (failure: Exception) {
+                Log.w(TAG, "SMART DJ DEFERRED REFILL | pool failed; checking fallback", failure)
+            }
+
+            val currentQueue = readQueueContext(refill.autoDj)
+            if (currentQueue == null) {
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | cancelled=queue-unavailable")
+                return
+            }
+            val observedSession = queueSessionTracker.observe(currentQueue)
+            val stillValid = DeferredAutoDjRefillPolicy.canResume(
+                expectedSessionId = refill.sessionId,
+                observedSessionId = observedSession.sessionId,
+                originalEntryIds = refill.originalEntryIds,
+                observedEntryIds = currentQueue.items.map { it.queueEntryId }.toSet(),
+                recommendationSessionIsCurrent = recommendationPool.isForSession(refill.sessionId),
+                smartDjEnabled = options.enabled
+            )
+            if (!stillValid || trackMixController.nativeRefillAction() !=
+                TrackMixInitialFillPolicy.NativeRefillAction.NORMAL
+            ) {
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | cancelled=stale-session-or-track-mix")
+                return
+            }
+
+            synchronized(deferredAutoDjLock) {
+                if (pendingDeferredAutoDjRefill !== refill) return
+                val requested = refill.requestedTracks
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | resuming-native=true | " +
+                    "requested=$requested | waitMs=" +
+                    (SystemClock.elapsedRealtime() - refill.scheduledAt))
+                performingDeferredAutoDjRefill.set(true)
+                try {
+                    refill.autoDj.javaClass.getDeclaredMethod("z", Int::class.javaPrimitiveType)
+                        .apply { isAccessible = true }
+                        .invoke(refill.autoDj, requested)
+                } finally {
+                    performingDeferredAutoDjRefill.remove()
+                }
+            }
+        } catch (failure: Throwable) {
+            Log.e(TAG, "SMART DJ DEFERRED REFILL | native retry failed", failure)
+        } finally {
+            synchronized(deferredAutoDjLock) {
+                if (pendingDeferredAutoDjRefill === refill) {
+                    pendingDeferredAutoDjRefill = null
+                }
+            }
+        }
     }
 
     private fun ensureRecommendationPoolReady(
