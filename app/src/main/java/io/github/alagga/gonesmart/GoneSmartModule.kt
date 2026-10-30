@@ -548,7 +548,11 @@ class GoneSmartModule : XposedModule() {
         seedTrackId: Long,
         seedEntryId: Long
     ): Long? = runCatching {
-        val context = queueReader.read(autoDj)
+        // PLAY_FILE / manual ENQUEUE_FILE can leave GMMP 4.2.1's structural
+        // CURRENT marker ambiguous. The Track Mix worker already uses the
+        // passively verified native position writer; session adoption must
+        // read the same authoritative CURRENT instead of discarding the pool.
+        val context = readQueueContext(autoDj)
             ?: error("Native file Track Mix has no verified queue")
         check(context.items.any { it.track.id == seedTrackId &&
             it.queueEntryId == seedEntryId }) {
@@ -566,7 +570,8 @@ class GoneSmartModule : XposedModule() {
             newTargetSize = sizing.targetSize
         )) { "Native file Track Mix prepared recommendation pool changed" }
         Log.i(TAG, "MIX NATIVE FILE SESSION | prepared=$preparedSessionId | " +
-            "session=${session.sessionId} | retained=true")
+            "session=${session.sessionId} | retained=true | " +
+            "currentResolver=${context.currentResolutionSource}")
         session.sessionId
     }.onFailure {
         Log.e(TAG, "MIX NATIVE FILE SESSION | verified=false", it)
@@ -581,7 +586,10 @@ class GoneSmartModule : XposedModule() {
         check(recommendationPool.isForSession(sessionId)) {
             "Native file Track Mix recommendation session changed"
         }
-        val after = queueReader.read(autoDj)
+        // After native ENQUEUE_FILE, GMMP may again have no uniquely
+        // discoverable structural CURRENT marker. Reuse the verified writer
+        // exactly as in every ordinary Smart-DJ refill and Track Mix read.
+        val after = readQueueContext(autoDj)
             ?: error("Native file Track Mix final queue unavailable")
         check(addedTrackIds.isNotEmpty() && addedTrackIds.size == addedEntryIds.size &&
             addedEntryIds.distinct().size == addedEntryIds.size &&
@@ -596,6 +604,8 @@ class GoneSmartModule : XposedModule() {
             origin = QueueEntryOrigin.GONESMART
         )
         recommendationPool.commitSelected(sessionId, addedTrackIds)
+        Log.i(TAG, "MIX NATIVE FILE COMMIT | verified=true | " +
+            "tracks=${addedTrackIds.size} | currentResolver=${after.currentResolutionSource}")
         true
     }.onFailure {
         Log.e(TAG, "MIX NATIVE FILE COMMIT | verified=false", it)

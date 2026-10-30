@@ -29,6 +29,12 @@ AudioSource replay or parallel player is introduced.
 
 - A manual Enqueue/Play Next or in-session reordering during the recommendation
   search **does not** cancel the mix. Generated titles go behind the live tail.
+- Device log 2026-10-29 revealed that GMMP 4.2.1's structural CURRENT marker
+  is ambiguous after `ENQUEUE_FILE`, even when the verified native position
+  writer is available. Both pool-to-session adoption and final generated-row
+  commit now use the same position-hinted read as the Track Mix worker. This
+  prevents false aborts after manual appends and false failures after four
+  successfully materialized recommendations. Await device re-acceptance.
 - A new playback source normally replaces GMMP's native queue and removes the
   original seed entry. Missing original entry, duplicate/ambiguous enqueue
   identity or noncontiguous queue positions aborts remaining insertions.

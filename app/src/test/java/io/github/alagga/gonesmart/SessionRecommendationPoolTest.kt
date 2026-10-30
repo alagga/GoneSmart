@@ -64,4 +64,39 @@ class SessionRecommendationPoolTest {
         pool.commitSelected(9L, listOf(11L, 22L))
         assertEquals(listOf(33L), pool.peek(9L, 3, emptySet()))
     }
+
+    @Test
+    fun manualQueueEntriesSurviveNativeFileSessionAdoptionAndCommit() {
+        fun queueItem(index: Int, entryId: Long, trackId: Long) = QueueItemInfo(
+            orderIndex = index,
+            queuePosition = index + 1,
+            shufflePosition = index + 1,
+            queueEntryId = entryId,
+            track = TrackInfo(trackId, "Track $trackId", "Artist", null, "/music/$trackId.mp3"),
+            state = if (index == 0) QueueItemState.CURRENT else QueueItemState.UPCOMING
+        )
+
+        val seed = queueItem(0, 101L, 1L)
+        val manual = queueItem(1, 102L, 9L)
+        val recommended = queueItem(2, 103L, 11L)
+        val before = QueueContext(1, listOf(seed, manual), "verified-native-writer-hint")
+        val after = QueueContext(1, listOf(seed, manual, recommended), "verified-native-writer-hint")
+
+        val pool = SessionRecommendationPool()
+        pool.reset(newSessionId = -101L, newTargetSize = 20)
+        pool.mergeCandidates(-101L, listOf(11L, 22L), 20)
+
+        val tracker = QueueSessionTracker()
+        val session = tracker.forceNewSession(before, "native-file Track Mix seed")
+        assertTrue(pool.rebindPreparedSession(-101L, session.sessionId, 20))
+        assertEquals(listOf(11L, 22L), pool.peek(session.sessionId, 2, setOf(1L, 9L)))
+
+        val additions = tracker.commitGeneratedAdditions(before, after, QueueEntryOrigin.GONESMART)
+        pool.commitSelected(session.sessionId, additions.map { it.track.id })
+
+        assertEquals(listOf(103L), additions.map { it.queueEntryId })
+        assertEquals(QueueEntryOrigin.USER_QUEUE, tracker.originOf(manual.queueEntryId))
+        assertEquals(QueueEntryOrigin.GONESMART, tracker.originOf(recommended.queueEntryId))
+        assertEquals(listOf(22L), pool.peek(session.sessionId, 2, emptySet()))
+    }
 }
