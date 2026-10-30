@@ -150,6 +150,12 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 - Keep the recommendation pool ahead of GMMP's visible queue through background prewarm/low-water top-up, including local-only prewarm when the network is unavailable.
 - Provider backoff applies to **unproductive** fills, not successful ones.
 - Native queue insertion remains owned by GMMP's verified Auto-DJ refill path.
+- Cold normal Auto-DJ refills may finish asynchronously after GMMP advances to
+  the last song. Any deliberately deferred extra Next action is replayed only
+  through GMMP's public command after verified native additions, same-session
+  queue ownership and a nonempty upcoming queue; never infer a decoder method
+  or replay an unverified click. Limit retries/readbacks and cancel on a new
+  playback session. Hardware/UI actions without proven identity remain native.
 - Normal GoneSmart `qr.z(int)` refills are single-flight: two concurrent GMMP callbacks can wait for the same pool fill, select the same pending Track ID, and each append a native row. Coalesce the overlapping normal refill before pool selection, releasing the gate on every return/error. Do not gate Track Mix's special native continuity/pre-play bootstrap paths; log coalesced calls for device verification.
 - GMMP Auto-DJ selection objects are mutable native rows. If returned list slots alias the same object, never assign separate smart Track IDs to those slots; a later write can silently turn both into the same Track ID. Fail closed for Track Mix bootstrap, or return only identity-distinct successfully selected rows in an ordinary partial smart refill. Detect confirmed new duplicate Track IDs from queue-entry readback rather than guessing from a repeated song title.
 - Latency diagnostics distinguish queue-read-before, pool hit/fill, provider rounds/playlist affinity, native refill, queue-read-after and total time.

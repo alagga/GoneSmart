@@ -1,9 +1,12 @@
 package io.github.alagga.gonesmart
 
 import android.app.Activity
+import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.os.SystemClock
 import android.util.Log
+import android.view.View
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
@@ -769,12 +772,18 @@ class GoneSmartModule : XposedModule() {
         val poolFill: Future<Boolean>,
         val scheduledAt: Long,
         var requestedTracks: Int,
-        var waiter: Future<*>? = null
+        var waiter: Future<*>? = null,
+        var replayNextPresses: Int = 0,
+        var nextCommandContext: Context? = null,
+        var nativeRefillStarted: Boolean = false
     )
 
     private val deferredAutoDjLock = Any()
     private var pendingDeferredAutoDjRefill: DeferredAutoDjRefill? = null
     private val performingDeferredAutoDjRefill = ThreadLocal.withInitial { false }
+    // Captured only after the accepted GMMP native refill boundary is hooked.
+    // The delayed worker must never resolve a second, independently guessed writer.
+    @Volatile private var verifiedNativeAutoDjRefill: Method? = null
 
     private val providerExecutor =
         Executors.newFixedThreadPool(2) { runnable ->
@@ -938,6 +947,12 @@ class GoneSmartModule : XposedModule() {
                     message = "GoneSmart Smart DJ selection hook is unavailable for this GMMP build. Independent UI features can still load.",
                     appendEvent = true
                 )
+            }
+
+            runCatching {
+                installDeferredAutoDjNextHook()
+            }.onFailure { error ->
+                Log.w(TAG, "SMART DJ DEFERRED NEXT | native click observer unavailable", error)
             }
 
             try {
@@ -4946,6 +4961,54 @@ class GoneSmartModule : XposedModule() {
         return result
     }
 
+    /**
+     * Only watch a proven GMMP player Next control while a cold native refill
+     * is pending. The original click always executes normally. We record
+     * additional presses after the first request has already been deferred;
+     * no queue read or network request occurs on the UI thread.
+     */
+    private fun installDeferredAutoDjNextHook() {
+        val click = View::class.java.getDeclaredMethod("performClick")
+        hook(click).intercept { chain ->
+            val pending = synchronized(deferredAutoDjLock) {
+                pendingDeferredAutoDjRefill?.takeIf { options.enabled }
+            }
+            if (pending == null) return@intercept chain.proceed()
+
+            val view = chain.getThisObject() as? View
+                ?: return@intercept chain.proceed()
+            if (view.context.packageName != GMMP_PACKAGE || !view.isShown) {
+                return@intercept chain.proceed()
+            }
+            val entryName = runCatching {
+                view.resources.getResourceEntryName(view.id)
+            }.getOrNull()
+            if (!DeferredAutoDjNextPolicy.isNativeNextButton(entryName)) {
+                return@intercept chain.proceed()
+            }
+
+            val clicked = chain.proceed()
+            if (clicked == true) {
+                synchronized(deferredAutoDjLock) {
+                    if (pendingDeferredAutoDjRefill === pending &&
+                        !pending.nativeRefillStarted
+                    ) {
+                        val appContext = view.context.applicationContext
+                        if (appContext != null) {
+                            pending.replayNextPresses = DeferredAutoDjNextPolicy.increment(
+                                pending.replayNextPresses
+                            )
+                            pending.nextCommandContext = appContext
+                            Log.i(TAG, "SMART DJ DEFERRED NEXT | queued=" +
+                                pending.replayNextPresses + " | nativeButton=$entryName")
+                        }
+                    }
+                }
+            }
+            clicked
+        }
+    }
+
     private fun installAutoDjRefillHook(
         param: PackageReadyParam
     ) {
@@ -4960,6 +5023,12 @@ class GoneSmartModule : XposedModule() {
                 "z",
                 Integer.TYPE
             )
+
+        // The accepted R8 alias is evidence only. A remapped method with
+        // the same name/argument but a different contract is not a refill.
+        require(AutoDjNativeMethodShapePolicy.isRefill(refillMethod)) {
+            "GMMP native Auto-DJ refill method shape is unverified"
+        }
 
         refillMethod.isAccessible =
             true
@@ -5635,6 +5704,7 @@ class GoneSmartModule : XposedModule() {
             TAG,
             "Auto-DJ refill hook installed successfully"
         )
+        verifiedNativeAutoDjRefill = refillMethod
     }
 
     /**
@@ -5652,7 +5722,9 @@ class GoneSmartModule : XposedModule() {
                 "F1",
                 Integer.TYPE
             )
-        }.getOrNull()?.let {
+        }.getOrNull()?.takeIf {
+            AutoDjNativeMethodShapePolicy.isSelection(it)
+        }?.let {
             return it
         }
 
@@ -6305,21 +6377,38 @@ class GoneSmartModule : XposedModule() {
                 Log.i(TAG, "SMART DJ DEFERRED REFILL | cancelled=stale-session-or-track-mix")
                 return
             }
+            val beforeNativeEntryIds = currentQueue.items.map { it.queueEntryId }.toSet()
 
-            synchronized(deferredAutoDjLock) {
+            val replayRequest = synchronized(deferredAutoDjLock) {
                 if (pendingDeferredAutoDjRefill !== refill) return
+                val nativeRefill = verifiedNativeAutoDjRefill
+                    ?.takeIf { it.declaringClass.isInstance(refill.autoDj) }
+                if (nativeRefill == null) {
+                    Log.w(TAG, "SMART DJ DEFERRED REFILL | cancelled=native-method-unverified")
+                    return
+                }
+                refill.nativeRefillStarted = true
                 val requested = refill.requestedTracks
                 Log.i(TAG, "SMART DJ DEFERRED REFILL | resuming-native=true | " +
                     "requested=$requested | waitMs=" +
                     (SystemClock.elapsedRealtime() - refill.scheduledAt))
                 performingDeferredAutoDjRefill.set(true)
                 try {
-                    refill.autoDj.javaClass.getDeclaredMethod("z", Int::class.javaPrimitiveType)
-                        .apply { isAccessible = true }
-                        .invoke(refill.autoDj, requested)
+                    nativeRefill.invoke(refill.autoDj, requested)
                 } finally {
                     performingDeferredAutoDjRefill.remove()
                 }
+                refill.nextCommandContext?.let { context ->
+                    context to refill.replayNextPresses
+                }
+            }
+            if (replayRequest != null && replayRequest.second > 0) {
+                replayDeferredAutoDjNext(
+                    refill = refill,
+                    context = replayRequest.first,
+                    count = replayRequest.second,
+                    beforeNativeEntryIds = beforeNativeEntryIds
+                )
             }
         } catch (failure: Throwable) {
             Log.e(TAG, "SMART DJ DEFERRED REFILL | native retry failed", failure)
@@ -6327,6 +6416,70 @@ class GoneSmartModule : XposedModule() {
             synchronized(deferredAutoDjLock) {
                 if (pendingDeferredAutoDjRefill === refill) {
                     pendingDeferredAutoDjRefill = null
+                }
+            }
+        }
+    }
+
+    /**
+     * A real GMMP Next click while the last song is playing can return at the
+     * end of the queue, before the asynchronously selected native rows exist.
+     * Replay only those extra UI clicks, through GMMP's public NEXT command,
+     * after a fresh queue snapshot proves the same session still owns playback.
+     * Each observed transition is bounded; a new playback session aborts replay.
+     */
+    private fun replayDeferredAutoDjNext(
+        refill: DeferredAutoDjRefill,
+        context: Context,
+        count: Int,
+        beforeNativeEntryIds: Set<Long>
+    ) {
+        for (index in 0 until count.coerceAtMost(DeferredAutoDjNextPolicy.MAX_PENDING_SKIPS)) {
+            if (Thread.currentThread().isInterrupted ||
+                synchronized(deferredAutoDjLock) { pendingDeferredAutoDjRefill !== refill }
+            ) break
+            val queue = readQueueContext(refill.autoDj) ?: break
+            val currentId = queue.currentItem?.queueEntryId ?: break
+            val sessionId = queueSessionTracker.observe(queue).sessionId
+            val entryIds = queue.items.map { it.queueEntryId }.toSet()
+            if (!DeferredAutoDjNextPolicy.canReplay(
+                    initialSessionId = refill.sessionId,
+                    liveSessionId = sessionId,
+                    originalEntryIds = refill.originalEntryIds,
+                    liveEntryIds = entryIds,
+                    hasNext = queue.upcomingItems.isNotEmpty(),
+                    enabled = options.enabled
+                ) || (index == 0 && (currentId !in refill.originalEntryIds ||
+                    !DeferredAutoDjNextPolicy.hasNativeQueueAddition(
+                        beforeNativeEntryIds, entryIds
+                    )))
+            ) {
+                Log.i(TAG, "SMART DJ DEFERRED NEXT | cancelled=queue-changed | step=${index + 1}")
+                break
+            }
+
+            Log.i(TAG, "SMART DJ DEFERRED NEXT | replay=${index + 1}/$count | " +
+                "session=${refill.sessionId}")
+            context.sendBroadcast(
+                Intent("gonemad.gmmp.command.NEXT").setPackage(GMMP_PACKAGE)
+            )
+
+            // Only another explicitly queued click may be replayed. Require
+            // GMMP to acknowledge the preceding one via native CURRENT state.
+            if (index + 1 < count) {
+                var advanced = false
+                for (delayMs in listOf(350L, 850L)) {
+                    if (Thread.currentThread().isInterrupted) break
+                    SystemClock.sleep(delayMs)
+                    val nextQueue = readQueueContext(refill.autoDj) ?: break
+                    val nextId = nextQueue.currentItem?.queueEntryId
+                    advanced = nextId != null && nextId != currentId &&
+                        queueSessionTracker.observe(nextQueue).sessionId == refill.sessionId
+                    if (advanced) break
+                }
+                if (!advanced) {
+                    Log.i(TAG, "SMART DJ DEFERRED NEXT | stopped=no-native-advance")
+                    break
                 }
             }
         }

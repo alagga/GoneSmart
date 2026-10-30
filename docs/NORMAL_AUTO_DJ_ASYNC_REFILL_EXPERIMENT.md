@@ -33,6 +33,33 @@ and queue-writing window even when a pool is already warm. The deferred
 session-request coalescer handles the long background waiting window instead;
 both guards serve different stages and must remain in place.
 
+### Extra Next presses at the empty tail
+
+The first native Next still completes immediately, including when it starts
+the cold fill. While that fill is pending, a second or later **actual GMMP
+player Next UI click** may have nothing to advance to. GoneSmart passively
+observes `View.performClick` for a narrow list of Next-named native resource
+IDs and lets the original click execute. Only a successfully handled click
+while the same fill is pending increments a bounded counter (maximum four).
+
+After the verified native refill completes, a background worker checks the
+queue session, original queue-entry identity, newly appended native entries,
+current playback ownership and existence of an upcoming item. When all checks
+hold, it dispatches GMMP's documented public `gonemad.gmmp.command.NEXT`
+broadcast for each extra pending press; between consecutive commands, no more
+than two delayed native-current readbacks establish the previous advance.
+No GMMP decoder, position setter or queue writer is invoked by this replay.
+New playback, missing native additions, missing/ambiguous Current and failed
+advance cancel the remaining requests. Manual queue additions still remain
+at their native position ahead of later generated rows.
+
+**Acceptance limitation:** the exact resource ID of the player's Next view
+has not yet been observed on a test device. Only recognized visible GMMP
+player buttons are covered; Bluetooth/headset/notification Next and unknown
+view IDs currently follow GMMP without deferred replay. A broad global
+key-event/control-method guess is intentionally not introduced. The next
+device log must confirm `SMART DJ DEFERRED NEXT | queued=...` then `replay=...`.
+
 ## Real-device tests required
 
 1. With a newly made two-track queue and cold pool, skip to the second/last
@@ -40,21 +67,37 @@ both guards serve different stages and must remain in place.
    followed by native Auto-DJ queue additions with no duplicate tracks.
 2. Verify natural transition and next track decoder with screen on/off;
    inspect for cached `next audio source is null` even when queue looks good.
-3. Press Next once more while already on the last song and the pool is still
-   loading. GMMP might have no next decoder until late refill; record whether
-   it waits, pauses, or needs another Next. No guessed decoder replay is used.
+3. Press the actual GMMP player Next control once more while already on the
+   last song and the pool is still loading. Expect exactly one queued replay
+   after native additions; test two rapid extra presses, upper bound and
+   missing native next rows. Capture resource name and actual decoder change.
 4. Manually enqueue during search (manual tracks retained, smart appended).
-   Start a new playback during search (old recommendations discarded).
+   Press Next after a manual enqueue: a click that already advances to that
+   manual track must **not** be replayed. Start a new playback during search
+   (old recommendations and pending Next presses discarded).
 5. Confirm fallback enabled/disabled, offline, repeated refill requests and
-   Track Mix regression behavior.
+   Track Mix regression behavior. Verify hardware/headset Next remains native.
 
 ## Audit
 
-- Native first: unchanged `qr.z(int)` and selection hook; no new writer.
+- Native first: unchanged accepted `qr.z(int)` selection/insertion hook; no new
+  writer. The delayed invocation now reuses the *already hooked `Method`*,
+  rather than performing a second hardcoded `getDeclaredMethod("z")` lookup.
+- Hook compatibility: `View.performClick` and the public Next broadcast are
+  stable framework/GMMP contracts. The Next view resource-name allowlist is
+  only a conservative tested-shape candidate, **not a future-version proof**;
+  unknown names fail closed. The original native `qr.z` installation still
+  requires a verified binding for each new GMMP version; R8 names are not
+  semantic guarantees. No claim is made for untested GMMP releases.
 - Performance: no cold-pool provider wait on GMMP playback call stack; only
-  an event-triggered one-shot worker. Match scoring and pool sizing unchanged.
+  an event-triggered one-shot worker. Pending click detection is a cheap null
+  check for normal UI calls; limited readbacks occur only after requested
+  replay. Match scoring and pool sizing unchanged.
 - Diagnostics: existing `GoneSmart` Logcat tag logs deferred scheduling,
-  coalescing, cancellation and native retry with wait time. No new tag/filter
-  or routine companion events; existing companion fallback events remain.
+  coalescing, cancellation, native retry with wait time, queued Next and
+  replay/abort. No new tag/filter or routine companion events; existing
+  companion fallback events remain, and failures still use the existing
+  fallback/runtime reporter path. No new Help filter strings or categories.
 - Localization: **no new translations required**; no new GMMP UI strings.
+- Hygiene: no temporary branch, runtime scan, poller or alternate queue writer.
 - Device validation and exact-head CI still required; not release-ready.

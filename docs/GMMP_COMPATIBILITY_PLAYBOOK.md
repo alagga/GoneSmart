@@ -373,3 +373,24 @@ R71 restores the R70 ownership contract instead of weakening writer dispatch. At
 - The obsolete r45 `MenuItem,List -> boolean` context-Play observer and dead zero-pool list placeholder are removed after acceptance. They were diagnostic only and supplied no mutation authority.
 - The accepted library Cursor fallback is cached per concrete Auto-DJ runtime type after the native TrackDao path is proven unavailable. This does not turn Cursor data into write authority; all state-changing queue work remains behind verified native callbacks/DAOs.
 - Final release-readiness auditing also includes GMMP-host localization, hot-path reflection/view scans, repeated logging, dead probes/APIs, exact-head CI and temporary-file residue.
+
+### 2026-10-30 normal Auto-DJ deferred refill and extra Next (experimental)
+
+The accepted 4.2.1 native refill boundary `qr.z(int)` remains the sole queue
+insertion owner. An empty recommendation pool may now be prepared off the
+native transition stack; the pending native retry reuses the *same hooked
+`Method` object* and runs only after revalidating the original queue session.
+This reduces the accepted fast path's dependence on a second literal R8 lookup
+but does not magically resolve a future remapping of `qr.z` itself. A new GMMP
+version must prove its Auto-DJ refill/selection boundaries before enabling
+their mutations; shape-only guesses remain prohibited.
+
+The optional extra-Next continuation observes only a visible, resource-name-
+recognized native player click while cold refill is pending; the original
+click always proceeds. Once the native method has appended new queue entries,
+the worker may send GMMP's public `gonemad.gmmp.command.NEXT` broadcast if the
+session/entry/current/next proofs still hold. Each additional command requires
+bounded native Current readback. Unknown button IDs, remote/hardware actions,
+new playback, missing queue additions and lost Current fail closed. The 2026-
+10-30 source-only audit cannot establish the installed GMMP player button ID;
+device acceptance and exact-head CI remain prerequisites for shipping.
