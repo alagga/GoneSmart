@@ -140,6 +140,8 @@ The Home status UI is one large Status card. Aggregate health uses the worst sta
 
 ## 9. Smart Auto-DJ performance invariants
 
+- Version-specific remix/bootleg producers take precedence over original artists as recommendation identity. A failed version match must not promote the original artist's unverified similar-artist graph as if it described the remix.
+- External genre evidence comes from recognized provider community tags, **not automatically from the local MP3 genre field**. Exclude non-musical tags, keep genre-based discovery lower-weight than exact track similarity, cap extra network requests and reuse cached tag results. Unknown/missing genres must not block native playback or force hard genre exclusions.
 - Normal GMMP playlists are a first-class local recommendation signal: use read-only indexed playlist identities, cache membership by file fingerprint, weight focused playlists more strongly than huge catch-all lists, and reward independent playlist co-occurrence. Smart Playlists are not part of this signal unless a future explicitly weaker opt-in policy is implemented.
 - Smart recommendation mode is the default and owns conservative stable-provider enablement/weights. Custom mode may expose provider enablement, bounded ranking weights and playlist-size weighting, but provider request order is not a user preference.
 - Independent network providers should run in parallel inside one deterministic pool-fill pipeline when this reduces latency. Weight/ranking priority must not be implemented by serially delaying one enabled provider behind another.

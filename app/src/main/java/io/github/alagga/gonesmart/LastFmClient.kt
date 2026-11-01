@@ -9,6 +9,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.Normalizer
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 data class LastFmTrackIdentity(
     val artistName: String,
@@ -22,6 +23,8 @@ data class LastFmSimilarTrack(
     val match: Double,
     val mbid: String?
 )
+
+data class LastFmGenreTag(val name: String, val count: Int)
 
 private data class LastFmSimilarArtist(
     val artistName: String,
@@ -49,7 +52,61 @@ class LastFmClient(private val apiKey: String) : RecommendationProviderSource {
             Regex("\\s*[\\(\\[][^\\)\\]]+[\\)\\]]\\s*$")
     }
 
+    // Genre requests are only used on the bounded artist-rescue path. Cache
+    // their results across sessions so every refill does not query Last.fm.
+    private val artistGenreCache = ConcurrentHashMap<String, List<LastFmGenreTag>>()
+    private val genreTracksCache = ConcurrentHashMap<String, List<LastFmSimilarTrack>>()
+
     fun isConfigured(): Boolean = apiKey.isNotBlank()
+
+    fun getArtistGenreTags(artist: String): List<LastFmGenreTag> {
+        ensureConfigured()
+        val key = comparisonKey(artist)
+        if (key.isBlank()) return emptyList()
+        artistGenreCache[key]?.let { return it }
+        val tags = try {
+            val json = requestJson(buildArtistTopTagsUrl(artist))
+                .optJSONObject("toptags")
+            parseGenreTags(json?.opt("tag"))
+        } catch (error: LastFmApiException) {
+            if (error.isMissingResource()) emptyList() else throw error
+        }
+        if (artistGenreCache.size >= 128) artistGenreCache.clear()
+        artistGenreCache.putIfAbsent(key, tags)
+        return tags
+    }
+
+    fun getGenreTopTracks(genre: String, limit: Int = 40): List<LastFmSimilarTrack> {
+        ensureConfigured()
+        val normalizedGenre = ExternalGenrePolicy.normalizedGenre(genre)
+            ?: return emptyList()
+        val boundedLimit = limit.coerceIn(1, 50)
+        val key = "$normalizedGenre|$boundedLimit"
+        genreTracksCache[key]?.let { return it }
+        val tracks = try {
+            val json = requestJson(buildTagTopTracksUrl(normalizedGenre, boundedLimit))
+                .optJSONObject("toptracks")
+            parseTrackCollection(json?.opt("track"), defaultMatch = 0.0)
+                .take(boundedLimit)
+                .mapIndexed { index, track ->
+                    track.copy(match = ExternalGenrePolicy.genreRankScore(index, boundedLimit))
+                }
+        } catch (error: LastFmApiException) {
+            if (error.isMissingResource()) emptyList() else throw error
+        }
+        if (genreTracksCache.size >= 64) genreTracksCache.clear()
+        genreTracksCache.putIfAbsent(key, tracks)
+        return tracks
+    }
+
+    private fun parseGenreTags(raw: Any?): List<LastFmGenreTag> =
+        jsonObjects(raw).mapNotNull { item ->
+            val name = item.optString("name").trim()
+            if (name.isBlank()) null else LastFmGenreTag(
+                name = name,
+                count = item.optInt("count", 0)
+            )
+        }
 
     /**
      * Resolves the strongest available Last.fm track identity. If getInfo
@@ -385,6 +442,22 @@ class LastFmClient(private val apiKey: String) : RecommendationProviderSource {
             "&artist=${encode(artist)}" +
             "&api_key=${encode(apiKey)}" +
             "&autocorrect=1" +
+            "&limit=$limit" +
+            "&format=json"
+
+    private fun buildArtistTopTagsUrl(artist: String): String =
+        API_URL +
+            "?method=artist.gettoptags" +
+            "&artist=${encode(artist)}" +
+            "&api_key=${encode(apiKey)}" +
+            "&autocorrect=1" +
+            "&format=json"
+
+    private fun buildTagTopTracksUrl(genre: String, limit: Int): String =
+        API_URL +
+            "?method=tag.gettoptracks" +
+            "&tag=${encode(genre)}" +
+            "&api_key=${encode(apiKey)}" +
             "&limit=$limit" +
             "&format=json"
 

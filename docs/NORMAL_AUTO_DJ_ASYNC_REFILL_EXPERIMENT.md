@@ -72,6 +72,19 @@ the synthetic continuation. No native decoder, Current writer or SQL writer
 is called. AudioManager's audio-inactive signal is only a conservative guard;
 paused playback and external output routes need device validation.
 
+### Deferred native invocation lock discipline (2026-11-01)
+
+Native GMMP `qr.z(int)` is now invoked **outside** GoneSmart's global deferred
+refill lock. Previously the asynchronous worker held that lock while executing
+GMMP code, which could in principle contend with an on-screen native Next
+callback taking the same lock. Ownership/requested-count is captured while
+locked, native work runs unlocked, then the pending identity is checked again
+before considering any replay. The actual deadlock is **not proven** by the
+new device snapshot: its retained Logcat covers only 13:58:25–13:58:45 and
+shows successful `current+1` refill at 13:58:27 (65 ms), not the reported hang.
+If the issue recurs, start continuous recording before playback stalls; the
+absence of the problematic moment is not evidence that the host was healthy.
+
 **Acceptance limitation:** the exact resource ID of the player's Next view
 has not yet been observed on a test device. Only recognized visible GMMP
 player buttons are covered; Bluetooth/headset/notification Next and unknown
@@ -114,7 +127,8 @@ device log must confirm `SMART DJ DEFERRED NEXT | queued=...` then `replay=...`.
   semantic guarantees. No claim is made for untested GMMP releases.
 - Performance: no cold-pool provider wait on GMMP playback call stack; only
   an event-triggered one-shot worker. Pending click detection is a cheap null
-  check for normal UI calls; limited readbacks occur only after requested
+  check for normal UI calls; native refill never holds the GoneSmart deferred
+  global lock. Limited readbacks occur only after requested
   replay. Match scoring and pool sizing unchanged.
 - Diagnostics: existing `GoneSmart` Logcat tag logs deferred scheduling,
   coalescing, cancellation, native retry with wait time, queued Next and

@@ -6410,7 +6410,10 @@ class GoneSmartModule : XposedModule() {
             }
             val beforeNativeEntryIds = currentQueue.items.map { it.queueEntryId }.toSet()
 
-            val replayRequest = synchronized(deferredAutoDjLock) {
+            // Serialize ownership/lease checks only. Invoking GMMP native
+            // refill under deferredAutoDjLock could deadlock its own UI Next
+            // callback if GMMP waits for that thread while it needs our lock.
+            val nativeRequest = synchronized(deferredAutoDjLock) {
                 if (pendingDeferredAutoDjRefill !== refill) return
                 val nativeRefill = verifiedNativeAutoDjRefill
                     ?.takeIf { it.declaringClass.isInstance(refill.autoDj) }
@@ -6423,12 +6426,16 @@ class GoneSmartModule : XposedModule() {
                 Log.i(TAG, "SMART DJ DEFERRED REFILL | resuming-native=true | " +
                     "requested=$requested | waitMs=" +
                     (SystemClock.elapsedRealtime() - refill.scheduledAt))
-                performingDeferredAutoDjRefill.set(true)
-                try {
-                    nativeRefill.invoke(refill.autoDj, requested)
-                } finally {
-                    performingDeferredAutoDjRefill.remove()
-                }
+                nativeRefill to requested
+            }
+            performingDeferredAutoDjRefill.set(true)
+            try {
+                nativeRequest.first.invoke(refill.autoDj, nativeRequest.second)
+            } finally {
+                performingDeferredAutoDjRefill.remove()
+            }
+            val replayRequest = synchronized(deferredAutoDjLock) {
+                if (pendingDeferredAutoDjRefill !== refill) return
                 refill.nextCommandContext?.let { context ->
                     context to refill.replayNextPresses
                 }
@@ -7945,6 +7952,18 @@ class GoneSmartModule : XposedModule() {
                 return emptyList()
             }
 
+            // A bootleg's original artist is not evidence of the bootleg's
+            // sound. Without a version-matched recording, the original's
+            // similar-artists graph would turn Re-Style into Armin trance.
+            // Last.fm's remixer-first genre/artist rescue covers this case.
+            if (!RemixSourcePriorityPolicy.allowUnverifiedOriginalArtistFallback(
+                    metadata.remixArtists.isNotEmpty()
+                )) {
+                Log.i(TAG, "LB ARTIST FALLBACK SKIPPED | seed=$seedNumber | " +
+                    "reason=remix-version-not-verified")
+                return emptyList()
+            }
+
             // Recording graph exhausted: use ListenBrainz's official
             // similar-artists dataset as a lower-confidence signal and expand
             // it only to tracks that are already in the local GMMP library.
@@ -8064,6 +8083,63 @@ class GoneSmartModule : XposedModule() {
     ): List<RawRecommendationContribution> {
         if (!lastFmClient.isConfigured()) return emptyList()
 
+        // Version producers are stronger musical identity evidence than the
+        // original's credited singer/composer. Never use the original's
+        // track similarity until both remixer-specific routes fail.
+        val remixArtists = RemixSourcePriorityPolicy.remixArtists(
+            metadata, metadataNormalizer::comparisonKey
+        )
+        if (remixArtists.isNotEmpty()) {
+            for (remixer in remixArtists) {
+                if (!artistFallbackOnly) {
+                    val title = metadata.searchTitle
+                    val remixIdentity = try {
+                        lastFmClient.resolveTrack(remixer, title)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (remixIdentity != null) {
+                        val similar = try {
+                            lastFmClient.getSimilarTracksDirect(
+                                remixIdentity,
+                                if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+                            )
+                        } catch (_: Throwable) {
+                            emptyList()
+                        }
+                        if (similar.isNotEmpty()) {
+                            Log.i(TAG, "LASTFM REMIX DIRECT | seed=$seedNumber | " +
+                                "artist=$remixer | results=${similar.size}")
+                            return mapLastFmContributions(similar, seed, 0.95)
+                        }
+                    }
+                }
+
+                if (allowArtistFallback) {
+                    val genre = collectLastFmGenreContributions(
+                        seedNumber = seedNumber, seed = seed, artist = remixer,
+                        identityConfidence = 0.93
+                    )
+                    if (genre.isNotEmpty()) return genre
+
+                    val similarArtists = try {
+                        lastFmClient.getArtistFallbackTracks(
+                            remixer,
+                            if (broadSearch) BROAD_LASTFM_RESULT_LIMIT else LASTFM_RESULT_LIMIT
+                        )
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                    if (similarArtists.isNotEmpty()) {
+                        Log.i(TAG, "LASTFM REMIX ARTIST | seed=$seedNumber | " +
+                            "artist=$remixer | results=${similarArtists.size}")
+                        return mapLastFmContributions(similarArtists, seed, 0.88)
+                    }
+                }
+            }
+            if (!allowArtistFallback) return emptyList()
+        }
+
         val queryCandidates = buildLastFmQueryCandidates(metadata)
         val testedIdentityKeys = mutableSetOf<String>()
         var fallbackIdentity: LastFmTrackIdentity? = null
@@ -8079,7 +8155,9 @@ class GoneSmartModule : XposedModule() {
             val identityKey = buildLastFmIdentityKey(identity)
             if (!testedIdentityKeys.add(identityKey)) continue
 
-            val identityConfidence = lastFmIdentityConfidence(metadata, candidate)
+            val identityConfidence = RemixSourcePriorityPolicy.originalIdentityConfidence(
+                lastFmIdentityConfidence(metadata, candidate), remixArtists.isNotEmpty()
+            )
             if (identityConfidence > fallbackConfidence) {
                 fallbackIdentity = identity
                 fallbackConfidence = identityConfidence
@@ -8113,6 +8191,15 @@ class GoneSmartModule : XposedModule() {
             return emptyList()
         }
 
+        if (remixArtists.isEmpty()) {
+            val genre = collectLastFmGenreContributions(
+                seedNumber = seedNumber, seed = seed,
+                artist = fallbackIdentity?.artistName ?: metadata.searchArtist,
+                identityConfidence = 0.80
+            )
+            if (genre.isNotEmpty()) return genre
+        }
+
         val identity = fallbackIdentity ?: return emptyList()
         val fallback = try {
             lastFmClient.getArtistFallbackTracks(
@@ -8131,6 +8218,32 @@ class GoneSmartModule : XposedModule() {
                 "artist=${identity.artistName}"
         )
         return mapLastFmContributions(fallback, seed, fallbackConfidence)
+    }
+
+    private fun collectLastFmGenreContributions(
+        seedNumber: Int,
+        seed: RecommendationSeed,
+        artist: String,
+        identityConfidence: Double
+    ): List<RawRecommendationContribution> {
+        if (artist.isBlank()) return emptyList()
+        val tags = try {
+            lastFmClient.getArtistGenreTags(artist)
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        // One well-supported style avoids a multi-request genre fan-out.
+        val genre = ExternalGenrePolicy.select(tags).firstOrNull()
+            ?: return emptyList()
+        val tracks = try {
+            lastFmClient.getGenreTopTracks(genre)
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        if (tracks.isEmpty()) return emptyList()
+        Log.i(TAG, "LASTFM GENRE FALLBACK | seed=$seedNumber | " +
+            "artist=$artist | genre=$genre | results=${tracks.size}")
+        return mapLastFmContributions(tracks, seed, identityConfidence)
     }
 
     private fun mapLastFmContributions(
