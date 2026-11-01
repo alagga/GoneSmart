@@ -50,6 +50,27 @@ AudioSource replay or parallel player is introduced.
 - If recommendations are unavailable, only the configured native GMMP
   fallback may be enabled.
 
+## 2026-11-01 device log follow-up
+
+- `18:36` Re-Style bootleg: Last.fm supplied 24 remix-artist candidates,
+  but only one recording matched the local library. The original-artist
+  **seed** was still allowed into the local artist fallback, explaining
+  why an unrelated Armin van Buuren recording could follow hardstyle.
+  Local artist rescue now uses the explicitly parsed remixer identity. If
+  exact local tracks are scarce, Last.fm's *artist community genre tags*
+  also seed bounded `tag.getTopArtists` lookups, expanded into matching
+  **local** tracks. ID3/MP3 genre tags are not trusted for this rescue.
+- `21:35` playback stall: native Auto-DJ requested its next track only
+  after reaching the last Current row (`upcoming=0`). GoneSmart supplied
+  `Re-Style - Feel Alive` within 54 ms and GMMP reported a valid next
+  AudioSource, but no subsequent audio start was observed. The accepted
+  GMMP `qr.z(int)` refill is now requested *earlier*, off the playback
+  thread, when a previously proven native Auto-DJ queue reaches fewer
+  than two upcoming tracks. This safety margin does not alter the native
+  player position, create a placeholder or force an audio restart.
+- Both paths remain **device-test-required**: the recorded source is not
+  proof the decoder started, and external genre API coverage may vary.
+
 ## Device acceptance (must be tested on GMMP 4.2.1)
 
 1. Verify exact-head `BuildConfig.GIT_REVISION`; trigger Track Mix from Search,
@@ -64,8 +85,15 @@ AudioSource replay or parallel player is introduced.
    late GoneSmart recommendations are discarded, not inserted in the new queue.
 5. Check shortage/zero matches, fallback enabled/disabled, duplicate
    candidates, queue reordering, and a rapid second explicit mix request.
-6. Confirm subsequent native Auto-DJ continuation respects GMMP's configured
-   upcoming count and only uses the maintained Smart pool.
+6. Confirm subsequent native Auto-DJ continuation uses the maintained Smart
+   pool, with at most one extra upcoming-track safety margin beyond GMMP's
+   configured count (minimum 2) in sessions already proven through `qr.z`.
+7. For Re-Style and other remixes, confirm `SMART DJ REMIX GENRE` and
+   `SMART DJ REMIX GENRE LOCAL` log external style discovery and local artist
+   matches. Confirm originals do not dominate the remixer's result set.
+8. On the penultimate Current track of an established Auto-DJ session,
+   confirm `SMART DJ WARM REFILL` appears before end-of-file, then verify
+   actual audio starts on the following track after natural transition.
 
 Until this is device-accepted, the experimental branch is not release-ready.
 Native public file commands are documented by GMMP but a *late* native enqueue

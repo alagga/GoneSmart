@@ -484,7 +484,9 @@ class GoneSmartModule : XposedModule() {
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val queueFlipController =
-        QueueFlipController()
+        QueueFlipController { autoDj, position ->
+            scheduleWarmNativeAutoDjRefill(autoDj, position)
+        }
 
     // Track Mix is always available from single-song context menus,
     // even while Smart DJ is disabled. Clicking it explicitly enables
@@ -769,6 +771,14 @@ class GoneSmartModule : XposedModule() {
             Thread(runnable, "GoneSmart-DeferredAutoDJ").apply { isDaemon = true }
         }
 
+    private val warmAutoDjExecutor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "GoneSmart-WarmAutoDJ").apply { isDaemon = true }
+        }
+    private val warmRefillCheckQueued = AtomicBoolean(false)
+    @Volatile private var provenNativeAutoDjSessionId = -1L
+    @Volatile private var warmRefilledCurrentEntryId = -1L
+
     private data class DeferredAutoDjRefill(
         val autoDj: Any,
         val sessionId: Long,
@@ -897,12 +907,11 @@ class GoneSmartModule : XposedModule() {
             appendEvent = true
         )
 
-        if (lastFmClient.isConfigured()) {
-            Log.i(TAG, "LASTFM CONFIG | available=true")
-        } else {
-            Log.w(TAG, "LASTFM CONFIG | available=false | " +
-                "API key missing from this APK; Last.fm recommendations disabled")
-        }
+        Log.i(
+            TAG,
+            "Last.fm configured = " +
+                lastFmClient.isConfigured()
+        )
 
         Log.i(
             TAG,
@@ -4959,6 +4968,66 @@ class GoneSmartModule : XposedModule() {
         return queueReader.read(autoDjInstance, verifiedPosition)
     }
 
+    /**
+     * At natural queue-position changes, prefill *ahead* of the final audio
+     * boundary. In the 21:35 trace GMMP waited until its 13th track had ended
+     * before calling qr.z(1); adding a source 54 ms later was too late to
+     * restart the decoder. This worker never changes playback position or
+     * injects a synthetic/placeholder track. Only a native Auto-DJ session
+     * already observed through the accepted qr.z hook is eligible.
+     */
+    private fun scheduleWarmNativeAutoDjRefill(autoDj: Any, position: Int?) {
+        if (!options.enabled || position == null || position <= 0 ||
+            provenNativeAutoDjSessionId < 0 ||
+            trackMixController.ownsManagedAutoDj(autoDj) ||
+            !warmRefillCheckQueued.compareAndSet(false, true)
+        ) return
+
+        warmAutoDjExecutor.execute {
+            try {
+                if (!options.enabled || trackMixController.ownsManagedAutoDj(autoDj)) {
+                    return@execute
+                }
+                val nativeRefill = verifiedNativeAutoDjRefill
+                    ?.takeIf { it.declaringClass.isInstance(autoDj) }
+                    ?: return@execute
+                val context = readQueueContext(autoDj) ?: return@execute
+                val ordered = context.items.sortedBy { it.queuePosition }
+                val currentItems = ordered.filter { it.state == QueueItemState.CURRENT }
+                val current = currentItems.singleOrNull() ?: return@execute
+                if (current.queuePosition != position ||
+                    context.currentQueuePosition != position ||
+                    current.queueEntryId == warmRefilledCurrentEntryId
+                ) return@execute
+                val firstPosition = ordered.firstOrNull()?.queuePosition ?: return@execute
+                if (ordered.map { it.queuePosition } !=
+                    List(ordered.size) { index -> firstPosition + index }
+                ) return@execute
+                val session = queueSessionTracker.observe(context)
+                if (session.sessionId != provenNativeAutoDjSessionId) return@execute
+                val configuredUpcoming = gmmpAutoDjSettingsReader.read().upcomingTrackCount
+                val requested = AutoDjWarmQueuePolicy.refillCount(
+                    queueSize = ordered.size,
+                    currentIndex = ordered.indexOf(current),
+                    configuredUpcoming = configuredUpcoming
+                )
+                if (requested <= 0) return@execute
+
+                // Deduplicate this native current-entry event; GMMP itself
+                // still owns enqueue, order, and all future transitions.
+                warmRefilledCurrentEntryId = current.queueEntryId
+                Log.i(TAG, "SMART DJ WARM REFILL | session=${session.sessionId} | " +
+                    "current=$position | upcoming=${context.upcomingItems.size} | " +
+                    "requested=$requested | boundary=verified-native-qr.z")
+                nativeRefill.invoke(autoDj, requested)
+            } catch (failure: Throwable) {
+                Log.w(TAG, "SMART DJ WARM REFILL | native early request failed", failure)
+            } finally {
+                warmRefillCheckQueued.set(false)
+            }
+        }
+    }
+
     private fun isAudioInactive(context: Context): Boolean? = runCatching {
         (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
             ?.isMusicActive
@@ -5335,6 +5404,11 @@ class GoneSmartModule : XposedModule() {
                     .observe(
                         beforeContext
                     )
+
+            // Only GMMP's own proven native Auto-DJ requests establish this
+            // queue session as eligible for early native refills. Ordinary
+            // Play/Next (including smart playlists) never opts in by itself.
+            provenNativeAutoDjSessionId = session.sessionId
 
             logQueueSession(
                 session
@@ -6867,7 +6941,6 @@ class GoneSmartModule : XposedModule() {
                 TAG,
                 "SMART DJ PROVIDER POLICY | mode=${providerPolicy.mode} | " +
                     "enabled=${providerPolicy.enabledProviders.sortedBy { it.name }} | " +
-                    "lastFmAvailable=${lastFmClient.isConfigured()} | " +
                     "weights=LB:${formatScore(providerPolicy.weight(RecommendationProvider.LISTENBRAINZ))}," +
                     "LASTFM:${formatScore(providerPolicy.weight(RecommendationProvider.LASTFM))}," +
                     "PLAYLIST:${formatScore(providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST))} | " +
@@ -7067,6 +7140,8 @@ class GoneSmartModule : XposedModule() {
                     return emptyList()
                 }
 
+                rawContributions += broadContributions
+
                 merged =
                     recommendationAggregator
                         .aggregate(
@@ -7131,6 +7206,34 @@ class GoneSmartModule : XposedModule() {
                     .map { it.track.id }
                     .distinct()
                     .size
+
+            // A versioned remix may have plenty of *local* genre peers even
+            // when Last.fm returns only one recording available on device.
+            // Expand the remixer's external genre artist chart into local
+            // tracks before admitting generic artist-only fallbacks. This is
+            // independent of whether the broad provider round already ran.
+            if (directLocalTrackCount < rescueCandidateTarget &&
+                networkStateReader.getState() == GoneSmartNetworkState.ONLINE
+            ) {
+                val remixGenreContributions = collectRemixGenreLibraryContributions(
+                    seeds = seeds,
+                    library = library,
+                    excludedTrackIds = excludedTrackIds,
+                    providerPolicy = providerPolicy
+                )
+                if (generation != pipelineGeneration.get()) return emptyList()
+                if (remixGenreContributions.isNotEmpty()) {
+                    rawContributions += remixGenreContributions
+                    activeRecommendations = recommendationAggregator.aggregate(rawContributions)
+                    directLocalMatches = localLibraryMatcher.match(
+                        recommendations = activeRecommendations,
+                        library = library,
+                        excludedTrackIds = excludedTrackIds
+                    )
+                    directLocalTrackCount = directLocalMatches.map { it.track.id }
+                        .distinct().size
+                }
+            }
 
             val shouldRunArtistRescue =
                 !broadSearchPerformed &&
@@ -7232,7 +7335,7 @@ class GoneSmartModule : XposedModule() {
                     localArtistFallbackMatcher
                         .match(
                             recommendations = activeRecommendations,
-                            seeds = seeds,
+                            seeds = remixerPreferredFallbackSeeds(seeds),
                             library = library,
                             excludedTrackIds = excludedTrackIds,
                             maxResults =
@@ -7334,7 +7437,7 @@ class GoneSmartModule : XposedModule() {
                                 localArtistFallbackMatcher
                                     .match(
                                         recommendations = activeRecommendations,
-                                        seeds = seeds,
+                                        seeds = remixerPreferredFallbackSeeds(seeds),
                                         library = library,
                                         excludedTrackIds = excludedTrackIds,
                                         maxResults =
@@ -7676,9 +7779,7 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
         }
-        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM) &&
-            lastFmClient.isConfigured()
-        ) {
+        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM)) {
             tasks += RecommendationProvider.LASTFM to
                 providerExecutor.submit<List<RawRecommendationContribution>> {
                     collectLastFmContributions(
@@ -7844,6 +7945,95 @@ class GoneSmartModule : XposedModule() {
             result += contributions
         }
         return result
+    }
+
+    private fun remixerPreferredFallbackSeeds(
+        seeds: List<RecommendationSeed>
+    ): List<RecommendationSeed> = seeds.map { seed ->
+        runCatching {
+            val resolved = trackInputResolver.resolve(seed.track)
+            val metadata = metadataNormalizer.normalize(resolved.track)
+            RemixSourcePriorityPolicy.localFallbackSeed(
+                seed, metadata, metadataNormalizer::comparisonKey
+            )
+        }.getOrDefault(seed)
+    }
+
+    /**
+     * A genre is read from Last.fm's community artist tags, never from the
+     * device's potentially wrong ID3 genre. Matching the *genre's artists*
+     * against the local catalog reaches songs omitted by top-track charts.
+     * Only explicit remix producers can authorize this special rescue path.
+     */
+    private fun collectRemixGenreLibraryContributions(
+        seeds: List<RecommendationSeed>,
+        library: List<GmmpLibraryTrack>,
+        excludedTrackIds: Set<Long>,
+        providerPolicy: RecommendationProviderPolicy
+    ): List<RawRecommendationContribution> {
+        if (!providerPolicy.isEnabled(RecommendationProvider.LASTFM) ||
+            !lastFmClient.isConfigured()
+        ) return emptyList()
+
+        val results = mutableListOf<RawRecommendationContribution>()
+        val observedRemixers = mutableSetOf<String>()
+        for (seed in seeds) {
+            val metadata = runCatching {
+                metadataNormalizer.normalize(trackInputResolver.resolve(seed.track).track)
+            }.getOrNull() ?: continue
+            val remixers = RemixSourcePriorityPolicy.remixArtists(
+                metadata, metadataNormalizer::comparisonKey
+            )
+            for (remixer in remixers) {
+                if (observedRemixers.size >= 2) break
+                if (!observedRemixers.add(metadataNormalizer.comparisonKey(remixer))) continue
+                val tags = runCatching { lastFmClient.getArtistGenreTags(remixer) }
+                    .onFailure { Log.w(TAG, "REMIX GENRE TAGS failed | remixer=$remixer", it) }
+                    .getOrDefault(emptyList())
+                val styles = ExternalGenrePolicy.select(tags, limit = 2)
+                Log.i(TAG, "SMART DJ REMIX GENRE | remixer=$remixer | " +
+                    "tags=${tags.size} | recognized=$styles")
+                for (style in styles) {
+                    val artists = runCatching { lastFmClient.getGenreTopArtists(style) }
+                        .onFailure { Log.w(TAG, "REMIX GENRE ARTISTS failed | genre=$style", it) }
+                        .getOrDefault(emptyList())
+                    val signals = artists.map { artist -> ListenBrainzSimilarArtist(
+                        artistMbid = "",
+                        artistName = artist.name,
+                        score = artist.match,
+                        referenceMbid = null
+                    ) }
+                    val local = localArtistSignalExpander.expand(
+                        artists = signals,
+                        library = library,
+                        excludedTrackIds = excludedTrackIds + seed.track.id,
+                        maxArtists = 50,
+                        maxTracksPerArtist = 3
+                    )
+                    Log.i(TAG, "SMART DJ REMIX GENRE LOCAL | remixer=$remixer | " +
+                        "genre=$style | remoteArtists=${artists.size} | " +
+                        "localTracks=${local.size}")
+                    results += local.mapNotNull { match ->
+                        val track = match.libraryTrack.track
+                        val artist = track.artist?.trim().orEmpty()
+                        val title = track.title?.trim().orEmpty()
+                        if (artist.isBlank() || title.isBlank()) null else
+                            RawRecommendationContribution(
+                                provider = RecommendationProvider.LASTFM,
+                                seed = seed,
+                                artist = artist,
+                                title = title,
+                                mbid = null,
+                                providerSimilarity = match.providerScore,
+                                seedWeight = seedWeight(seed),
+                                identityConfidence = 0.90,
+                                providerWeight = providerPolicy.weight(RecommendationProvider.LASTFM)
+                            )
+                    }
+                }
+            }
+        }
+        return results
     }
 
     private fun buildProviderFallbackTrack(

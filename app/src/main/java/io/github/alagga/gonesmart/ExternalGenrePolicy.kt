@@ -64,4 +64,12 @@ internal object ExternalGenrePolicy {
             (count - 1).coerceAtLeast(1).toDouble()
         return (0.50 - 0.18 * progress).coerceIn(0.0, 0.50)
     }
+
+    // Genre-level artist identity is less specific than a recognized recording,
+    // but more informative than generic original-artist fallback for a bootleg.
+    fun genreArtistRankScore(index: Int, count: Int): Double {
+        val progress = index.coerceAtLeast(0).toDouble() /
+            (count - 1).coerceAtLeast(1).toDouble()
+        return (0.78 - 0.30 * progress).coerceIn(0.0, 0.78)
+    }
 }

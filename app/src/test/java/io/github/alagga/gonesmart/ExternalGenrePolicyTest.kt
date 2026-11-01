@@ -28,6 +28,8 @@ class ExternalGenrePolicyTest {
     @Test fun `genre evidence remains below direct track similarity`() {
         assertEquals(0.50, ExternalGenrePolicy.genreRankScore(0, 40), 0.0001)
         assertTrue(ExternalGenrePolicy.genreRankScore(39, 40) < 0.5)
+        assertEquals(0.78, ExternalGenrePolicy.genreArtistRankScore(0, 50), 0.0001)
+        assertTrue(ExternalGenrePolicy.genreArtistRankScore(49, 50) < 0.5)
         assertEquals(emptyList<String>(), ExternalGenrePolicy.select(
             listOf(LastFmGenreTag("pop", 60)), limit = 0))
     }

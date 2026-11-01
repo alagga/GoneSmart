@@ -430,6 +430,8 @@ internal class TrackMixController(
         }
     }
 
+    fun ownsManagedAutoDj(autoDj: Any): Boolean = managedAutoDj?.get() === autoDj
+
     private fun awaitAutoDjCommandRefillBoundary(request: Pending) {
         val legacyQueue = nativeAutoDj?.get()?.let { autoDj ->
             field(autoDj, "q")?.javaClass?.name == "ex3"
