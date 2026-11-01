@@ -192,6 +192,8 @@ internal class TrackMixController(
         @Volatile var zeroPoolNextSourceGuardAttempted = false
         @Volatile var zeroPoolNextSourceGuardApplied = false
         @Volatile var zeroPoolSourceBatchGuardApplied = false
+        val nativeFileContinuityAttempted = AtomicBoolean(false)
+        @Volatile var nativeFileContinuityEntryId: Long? = null
         val preparedNextSourceGate = TrackMixPreparedNextSourceGate()
     }
 
@@ -209,6 +211,7 @@ internal class TrackMixController(
     // exception to the calling worker thread so unrelated GMMP refills remain
     // suppressed until Initial Size has been verified.
     private val nativeRefillAllowance = ThreadLocal<Int>()
+    private val nativeFileContinuityAllowance = ThreadLocal<Boolean>()
     private val events = GoneSmartRuntimeReporter()
     private val settings = GmmpAutoDjSettingsReader()
     private val queueReader = GmmpQueueReader()
@@ -244,6 +247,12 @@ internal class TrackMixController(
     }
 
     fun nativeRefillAction(): TrackMixInitialFillPolicy.NativeRefillAction {
+        // The single native qr.z(1) invoked at GMMP's *natural* predecoder
+        // I2 boundary must bypass both the Track Mix hold and the normal
+        // cold-pool deferral. Its native follower is never rewritten later.
+        if (nativeFileContinuityAllowance.get() == true) {
+            return TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE
+        }
         val request = pending
         if (request?.stage == "ZERO_POOL_NATIVE_FILL") {
             return TrackMixInitialFillPolicy.NativeRefillAction.PASS_NATIVE
@@ -512,6 +521,7 @@ internal class TrackMixController(
         method: java.lang.reflect.Method,
         value: Int?
     ) {
+        primeNativeFileContinuityBeforeNextSource(service, method, value)
         awaitPreparedQueueBeforeNextSource(service, method, value)
         val request = pending ?: return
         if (request.stage != "WAIT_PLAY") return
@@ -605,6 +615,83 @@ internal class TrackMixController(
         guardZeroPoolNaturalNextSource(
             request = request,
             method = method
+        )
+    }
+
+    /**
+     * PLAY_FILE starts audibly before recommendation search, but GMMP 4.2.1
+     * caches CURRENT+1 almost immediately. If we hold its natural refill
+     * until the provider result, that cache becomes null permanently even
+     * when ENQUEUE_FILE subsequently fills the visible queue. Prime exactly
+     * one native follower synchronously at the accepted natural I2 event,
+     * *before* the original I2 reads CURRENT+1; leave the other slots for
+     * asynchronous GoneSmart recommendations. Never replay I2 or retarget
+     * the decoded follower.
+     */
+    private fun primeNativeFileContinuityBeforeNextSource(
+        service: Any?,
+        method: java.lang.reflect.Method,
+        observedArgument: Int?
+    ) {
+        val request = pending ?: return
+        if (request.stage != "NATIVE_FILE_PLAY" &&
+            request.stage != "NATIVE_FILE_PREPARE"
+        ) return
+        if (!request.nativePlayAccepted || observedArgument == null ||
+            !refillHold.get() || service == null
+        ) return
+        if (!TrackMixZeroPoolPolicy.isAcceptedGmmp421NextSourceCommand(
+                declaringClassName = method.declaringClass.name,
+                methodName = method.name,
+                parameterTypeName = method.parameterTypes.singleOrNull()?.name,
+                returnTypeName = method.returnType.name
+            )
+        ) return
+        if (generateSequence<Class<*>>(service.javaClass) { it.superclass }
+                .none { it.name == "gonemad.gmmp.playback.service.MusicService" }
+        ) return
+
+        val autoDj = nativeAutoDj?.get() ?: return
+        val target = request.prePlayTarget ?: return
+        val before = queueSnapshot() ?: return
+        if (!TrackMixNativeEnqueuePolicy.canPrimeFirstNextSource(
+                ids = before.ids,
+                entryIds = before.entryIds,
+                positions = before.queuePositions,
+                currentIndex = before.currentIndex,
+                currentPosition = before.currentQueuePosition,
+                selectedTrackId = target.id
+            )
+        ) return
+        val entryId = before.currentEntryId ?: return
+        if (!request.nativeFileContinuityAttempted.compareAndSet(false, true)) return
+
+        // The observed I2 int is opaque on GMMP 4.2.1. Identity and the
+        // absolute CURRENT position come only from the verified queue read.
+        val primed = try {
+            nativeFileContinuityAllowance.set(true)
+            requestNativeRefill(autoDj, 1)
+        } finally {
+            nativeFileContinuityAllowance.remove()
+        }
+        val after = queueSnapshot(entryId)
+        val followerEntryId = if (primed && after != null) {
+            TrackMixNativeEnqueuePolicy.verifiedFirstNextSourceEntry(
+                ids = after.ids,
+                entryIds = after.entryIds,
+                positions = after.queuePositions,
+                currentIndex = after.currentIndex,
+                currentPosition = after.currentQueuePosition,
+                selectedTrackId = target.id,
+                selectedEntryId = entryId
+            )
+        } else null
+        request.nativeFileContinuityEntryId = followerEntryId
+        Log.i(
+            TAG,
+            "MIX NATIVE FILE NEXT SOURCE | verified=${followerEntryId != null} | " +
+                "seed=${target.id} | nextEntry=${followerEntryId ?: -1L} | " +
+                "observedArg=$observedArgument | native=qr.z(1) | beforeOriginal=true"
         )
     }
 
@@ -1545,10 +1632,16 @@ internal class TrackMixController(
             val target = request.prePlayTarget ?: error("Native file target missing")
             val autoDj = nativeAutoDj?.get() ?: error("GMMP Auto-DJ unavailable")
             val seed = awaitQueue(request, 8_000L) { snapshot ->
-                snapshot.ids == listOf(target.id) &&
+                (snapshot.ids == listOf(target.id) &&
+                    snapshot.queuePositions == listOf(1) ||
+                    request.nativeFileContinuityEntryId?.let { followerEntry ->
+                        snapshot.entryIds.getOrNull(1) == followerEntry &&
+                            snapshot.ids.firstOrNull() == target.id &&
+                            snapshot.ids.size == 2 &&
+                            snapshot.queuePositions == listOf(1, 2)
+                    } == true) &&
                     snapshot.currentIndex == 0 &&
                     snapshot.currentQueuePosition == 1 &&
-                    snapshot.queuePositions == listOf(1) &&
                     snapshot.currentEntryId != null &&
                     (request.before?.ids != snapshot.ids ||
                         request.before?.currentEntryId != snapshot.currentEntryId ||
@@ -1585,6 +1678,12 @@ internal class TrackMixController(
             check(snapshotStillOwned() != null) {
                 "The original native queue was replaced during recommendation search"
             }
+            val protectedFollower = request.nativeFileContinuityEntryId
+            val nativeContinuityPresent = protectedFollower != null &&
+                snapshotStillOwned()?.entryIds?.contains(protectedFollower) == true
+            check(protectedFollower == null || nativeContinuityPresent) {
+                "GMMP's predecoded native next-source entry disappeared"
+            }
             if (prepared.trackIds.isEmpty()) {
                 request.stage = "NATIVE_FILE_FALLBACK"
                 refillHold.set(false)
@@ -1607,7 +1706,10 @@ internal class TrackMixController(
             request.stage = "NATIVE_FILE_ENQUEUE"
             val selectedIds = mutableListOf<Long>()
             val selectedEntries = mutableListOf<Long>()
-            for (slot in 0 until needed) {
+            val recommendationSlots = TrackMixNativeEnqueuePolicy.recommendedFollowerCount(
+                needed, nativeContinuityPresent
+            )
+            for (slot in 0 until recommendationSlots) {
                 val before = snapshotStillOwned()
                     ?: error("The original queue was replaced before slot ${slot + 1}")
                 var candidateId: Long? = null
@@ -1661,7 +1763,8 @@ internal class TrackMixController(
                 SystemClock.elapsedRealtime() + 3_000L
             managedSessionReady = true
             Log.i(TAG, "MIX NATIVE FILE VERIFIED | currentSeed=${target.id} | " +
-                "enqueued=${selectedIds.size} | owner=GMMP-ENQUEUE_FILE | " +
+                "enqueued=${selectedIds.size} | nativeContinuity=${if (nativeContinuityPresent) 1 else 0} | " +
+                "owner=GMMP-ENQUEUE_FILE | " +
                 "manualQueueChanges=allowed")
             events.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,

@@ -5176,8 +5176,8 @@ class GoneSmartModule : XposedModule() {
                         // GMMP can query next/current+1 within tens of ms.
                         Log.i(
                             "GoneSmartTrackMix",
-                            "MIX AUTO-DJ CONTINUITY | stage=WAIT_PLAY | " +
-                                "native refill pass-through | requested=$requestedTracks"
+                            "MIX AUTO-DJ CONTINUITY | native refill pass-through | " +
+                                "requested=$requestedTracks"
                         )
                         return@intercept chain.proceed()
                     }

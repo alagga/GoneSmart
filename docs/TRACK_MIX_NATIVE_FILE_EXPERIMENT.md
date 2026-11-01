@@ -9,7 +9,14 @@ acceptance required; do not merge to the 0.5.0 fix branch yet.
    Restrict the new route to the known `qr` runtime and absolute file paths;
    preserve the old prepared-predecoder path otherwise.
 2. Immediately broadcast GMMP's documented `PLAY_FILE` with `filename`.
-   Verify that the host created one Current row at position 1.
+   Verify that the host created Current at position 1. GMMP 4.2.1 may ask
+   for `current+1` within milliseconds: at the already accepted natural
+   `MusicService.I2(int)` boundary, independently verify the exact one-row
+   Current and synchronously let native `qr.z(1)` materialize **one**
+   continuity follower *before* the original I2 proceeds. Its integer
+   argument is opaque and never used as a queue coordinate. Verify that
+   the native refill preserved the original queue entry and created exactly
+   one follower at position 2. Any ambiguity fails closed.
 3. In the background, run the **unchanged full** selected-seed recommendation
    pipeline. Retain the original queue entry ID as a request-local ownership
    anchor, even if the user later appends or reorders manual queue entries.
@@ -18,7 +25,11 @@ acceptance required; do not merge to the 0.5.0 fix branch yet.
    the live queue; for each selected recommendation, broadcast `ENQUEUE_FILE`.
    Verify the newly materialized native Track/entry identity and contiguous
    positions before dispatching the next. Preserve manual entries and append
-   recommendations after whatever the queue contains at that moment.
+   recommendations after whatever the queue contains at that moment. Reserve
+   one of the configured initial slots for the protected native continuity
+   follower when it exists; never overwrite or delete that already predecoded
+   Track ID. Other than this one native continuity slot, candidates keep the
+   existing quality ranking and natural GMMP enqueue semantics.
 5. After confirming generated entries, release the native refill guard and
    enable GMMP's own `AUTO_DJ` mode for subsequent refills.
 
@@ -49,6 +60,13 @@ AudioSource replay or parallel player is introduced.
   conservatively cancel instead of assuming this is still the same session.
 - If recommendations are unavailable, only the configured native GMMP
   fallback may be enabled.
+- The 2026-11-01 log (`1c09704ce6a2`) **disproves** the original assumption
+  that a late ENQUEUE_FILE repairs an absent next decoder: `qr.z(4)` was held
+  at 17:07:46.433, `MusicService.I2` cached `next audio source is null` at
+  17:07:46.489, four native fallback rows were added only at 17:07:54, and
+  the natural transition around 17:11:23 did not correctly play Track 2.
+  The predecoder single-slot native fill above prevents this specific race,
+  while allowing the remaining recommended songs to arrive asynchronously.
 
 ## Device acceptance (must be tested on GMMP 4.2.1)
 
@@ -56,8 +74,10 @@ AudioSource replay or parallel player is introduced.
    Queue, file browser and playlist contexts. The selected song must become
    audible *before* network/provider search finishes.
 2. Wait for the **second** generated song to become audible at natural end;
-   repeat with Skip and screen off. A visually correct native queue is not
-   sufficient: specifically check for cached `next audio source is null`.
+   repeat with Skip and screen off. The first follower may be a GMMP-native
+   continuity song, with the remaining followers from GoneSmart. A visually
+   correct native queue is not sufficient: verify a non-null `next audio
+   source` at initial Play and the real audio decoder after natural transition.
 3. During search, manually Enqueue and Play Next one or more songs; confirm
    none are removed and generated songs appear later in the live queue.
 4. During search, start an unrelated song with native Play/PLAY_FILE; confirm
