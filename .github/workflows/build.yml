@@ -13,6 +13,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Debug APKs are installed for real recommendation-provider device tests.
+      # Without this the Last.fm provider was silently inert in CI artifacts.
+      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
 
     steps:
       - name: Checkout
@@ -40,6 +44,14 @@ jobs:
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
+
+      - name: Require Last.fm in maintainer test APKs
+        if: github.event_name != 'pull_request'
+        run: |
+          if [ -z "$LASTFM_API_KEY" ]; then
+            echo "::error::LASTFM_API_KEY repository secret is missing; debug APK would have no Last.fm provider"
+            exit 1
+          fi
 
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace

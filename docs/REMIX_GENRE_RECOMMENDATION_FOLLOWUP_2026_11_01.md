@@ -41,6 +41,20 @@ No additional GMMP hooks or queue/decoder writers are introduced.
 - Confirm delay is acceptable on a cold pool; look at provider timing and
   the exact same queue Session ID, not only the visible track list.
 
+## 2026-11-01 first-device-test discovery: debug key missing
+
+Capture `GoneSmart-last-5min-20261101-170820-409.zip` verifies commit
+`1c09704ce6a2` and correct parsing of the Re-Style bootleg, but both GMMP
+process starts logged `Last.fm configured = false`. No Last.fm requests ran;
+the apparent genre/artist-rescue miss was a **Build workflow configuration
+failure**, not proof that the library's 18,800 tracks lacked a match. The
+GitHub `Build` workflow had never passed the existing `LASTFM_API_KEY`
+repository secret into Gradle (the Release workflow already did). The debug
+workflow now supplies it and fails explicitly on maintainer pushes when the
+secret is absent. A future APK must log `LASTFM CONFIG | available=true`
+before the Re-Style device test is meaningful. Missing-key builds also exclude
+Last.fm from dispatched provider tasks instead of counting it as queried.
+
 ## Audit
 
 - **Compatibility:** external source selection only; existing native GMMP

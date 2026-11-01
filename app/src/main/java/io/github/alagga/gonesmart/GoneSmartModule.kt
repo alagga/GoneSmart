@@ -897,11 +897,12 @@ class GoneSmartModule : XposedModule() {
             appendEvent = true
         )
 
-        Log.i(
-            TAG,
-            "Last.fm configured = " +
-                lastFmClient.isConfigured()
-        )
+        if (lastFmClient.isConfigured()) {
+            Log.i(TAG, "LASTFM CONFIG | available=true")
+        } else {
+            Log.w(TAG, "LASTFM CONFIG | available=false | " +
+                "API key missing from this APK; Last.fm recommendations disabled")
+        }
 
         Log.i(
             TAG,
@@ -6866,6 +6867,7 @@ class GoneSmartModule : XposedModule() {
                 TAG,
                 "SMART DJ PROVIDER POLICY | mode=${providerPolicy.mode} | " +
                     "enabled=${providerPolicy.enabledProviders.sortedBy { it.name }} | " +
+                    "lastFmAvailable=${lastFmClient.isConfigured()} | " +
                     "weights=LB:${formatScore(providerPolicy.weight(RecommendationProvider.LISTENBRAINZ))}," +
                     "LASTFM:${formatScore(providerPolicy.weight(RecommendationProvider.LASTFM))}," +
                     "PLAYLIST:${formatScore(providerPolicy.weight(RecommendationProvider.LOCAL_PLAYLIST))} | " +
@@ -7674,7 +7676,9 @@ class GoneSmartModule : XposedModule() {
                     )
                 }
         }
-        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM)) {
+        if (providerPolicy.isEnabled(RecommendationProvider.LASTFM) &&
+            lastFmClient.isConfigured()
+        ) {
             tasks += RecommendationProvider.LASTFM to
                 providerExecutor.submit<List<RawRecommendationContribution>> {
                     collectLastFmContributions(
