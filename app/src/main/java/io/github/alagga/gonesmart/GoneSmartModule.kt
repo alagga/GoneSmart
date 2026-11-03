@@ -5055,6 +5055,45 @@ class GoneSmartModule : XposedModule() {
         }
     }
 
+    /**
+     * Observes a real GMMP fallback without modifying any of its choices.
+     * Failure/partial insertion is logged, never silently treated as success.
+     */
+    private fun auditNativeFallbackQueue(
+        before: QueueContext?,
+        after: QueueContext?,
+        requested: Int,
+        reason: String
+    ) {
+        fun rows(queue: QueueContext?) = queue?.items?.map {
+            AutoDjNativeFallbackAuditPolicy.Row(
+                entryId = it.queueEntryId,
+                trackId = it.track.id,
+                position = it.queuePosition
+            )
+        }
+        val audit = AutoDjNativeFallbackAuditPolicy.audit(
+            before = rows(before),
+            after = rows(after),
+            beforeCurrentEntryId = before?.currentItem?.queueEntryId,
+            afterCurrentEntryId = after?.currentItem?.queueEntryId,
+            requested = requested
+        )
+        Log.i(TAG, "SMART DJ NATIVE FALLBACK VERIFY | " +
+            "trigger=$reason | verified=${audit.verified}" +
+            " | status=${audit.status} | requested=$requested" +
+            " | added=${audit.addedTrackIds.size}" +
+            " | trackIds=${audit.addedTrackIds.joinToString(",")}" +
+            " | beforeSize=${before?.items?.size ?: -1}" +
+            " | afterSize=${after?.items?.size ?: -1}" +
+            " | currentBefore=${before?.currentItem?.queueEntryId ?: -1L}" +
+            " | currentAfter=${after?.currentItem?.queueEntryId ?: -1L}")
+        if (!audit.verified) {
+            Log.w(TAG, "SMART DJ NATIVE FALLBACK | native queue not verified" +
+                " | reason=${audit.status} | trigger=$reason")
+        }
+    }
+
     private fun isAudioInactive(context: Context): Boolean? = runCatching {
         (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
             ?.isMusicActive
@@ -5416,6 +5455,12 @@ class GoneSmartModule : XposedModule() {
                         appendEvent = true
                     )
                     val result = proceedNativeRefill(autoDjInstance) { chain.proceed() }
+                    auditNativeFallbackQueue(
+                        before = null,
+                        after = readQueueContext(autoDjInstance),
+                        requested = requestedTracks,
+                        reason = "queue-unavailable-$reason"
+                    )
                     Log.i(
                         TAG,
                         "========================================"
@@ -5689,6 +5734,13 @@ class GoneSmartModule : XposedModule() {
 
                     val afterContext =
                         readQueueContext(autoDjInstance)
+
+                    auditNativeFallbackQueue(
+                        before = beforeContext,
+                        after = afterContext,
+                        requested = requestedTracks,
+                        reason = if (offline) "offline" else "confirmed-no-matches"
+                    )
 
                     if (
                         afterContext != null

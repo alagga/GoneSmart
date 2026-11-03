@@ -209,3 +209,27 @@ None of these checks insert placeholders, restart playback, add provider
 calls, change GMMP's `upcoming` setting, or mutate the queue directly.
 Queue verification is not decoder/device acceptance. On-device testing
 must demonstrate actual audible playback and non-null next AudioSource.
+
+## 2026-11-03 native GMMP fallback audit
+
+A successful `qr.z` invocation is **not** proof that GMMP appended a valid
+queue or that the player successfully prepared the next AudioSource.
+The no-matches ordinary Smart DJ fallback and the single-seed
+`PLAY_FILE` Track Mix native fallback now independently report a
+read-only postcondition: stable Current entry and track ID, unique
+queue-entry IDs, contiguous positions, unchanged existing future rows,
+and exactly the requested number of newly appended GMMP tracks.
+The exact returned Track IDs and the reason for any failed/partial
+postcondition are logged. The previously unavailable queue-mapping
+path is explicitly labelled **unverifiable**, never success.
+
+For a device log inspect `SMART DJ NATIVE FALLBACK VERIFY` (ordinary
+native fallback) or `MIX NATIVE FILE FALLBACK PREFILL` (single-file
+Track Mix). Check `verified`, `status`/`audit`, `requested`,
+`added` and `currentBefore/After`. The fallback's actual use remains
+restricted to the pre-existing eligible paths; this audit does not
+perform a provider query, select a track, insert or remove any song,
+seek/restart playback, or attempt a synthetic transition.
+
+A verified native queue still does not prove decoder/source continuity;
+an on-device natural-next transition remains necessary.

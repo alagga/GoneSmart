@@ -1644,15 +1644,42 @@ internal class TrackMixController(
                     val nativeRequested = nativeDeficit == 0 ||
                         requestNativeRefill(autoDj, nativeDeficit)
                     val nativeAfter = snapshotStillOwned()
+                    fun auditRows(snapshot: Snapshot?): List<AutoDjNativeFallbackAuditPolicy.Row>? {
+                        if (snapshot == null ||
+                            snapshot.ids.size != snapshot.entryIds.size ||
+                            snapshot.ids.size != snapshot.queuePositions.size
+                        ) return null
+                        return snapshot.ids.indices.map { index ->
+                            AutoDjNativeFallbackAuditPolicy.Row(
+                                entryId = snapshot.entryIds[index],
+                                trackId = snapshot.ids[index],
+                                position = snapshot.queuePositions[index]
+                            )
+                        }
+                    }
+                    val nativeAudit = if (nativeDeficit > 0) {
+                        AutoDjNativeFallbackAuditPolicy.audit(
+                            before = auditRows(liveSeed),
+                            after = auditRows(nativeAfter),
+                            beforeCurrentEntryId = liveSeed.currentEntryId,
+                            afterCurrentEntryId = nativeAfter?.currentEntryId,
+                            requested = nativeDeficit
+                        )
+                    } else null
                     val nativeVerified = nativeRequested &&
                         nativeAfter != null &&
-                        nativeAfter.ids.size >= liveSeed.ids.size + nativeDeficit &&
                         nativeAfter.currentEntryId == seedEntryId &&
-                        nativeAfter.currentId == target.id
+                        nativeAfter.currentId == target.id &&
+                        (nativeAudit?.verified ?: (nativeDeficit == 0))
                     Log.i(
                         TAG,
                         "MIX NATIVE FILE FALLBACK PREFILL | requested=$nativeDeficit" +
                             " | nativeAccepted=$nativeRequested | verified=$nativeVerified" +
+                            " | audit=${nativeAudit?.status ?: "no-deficit"}" +
+                            " | added=${nativeAudit?.addedTrackIds?.size ?: 0}" +
+                            " | trackIds=${nativeAudit?.addedTrackIds?.joinToString(",") ?: ""}" +
+                            " | currentBefore=${liveSeed.currentEntryId}" +
+                            " | currentAfter=${nativeAfter?.currentEntryId}" +
                             " | queueSize=${nativeAfter?.ids?.size ?: -1}" +
                             " | owner=GMMP-qr.z"
                     )
