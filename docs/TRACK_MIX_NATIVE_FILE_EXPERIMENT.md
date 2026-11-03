@@ -267,3 +267,25 @@ Device re-acceptance is required. If the new symptom persists, capture a
 recording started **before** the transition, ideally including at least a
 few seconds before the previous song ends; the snapshot buffer retained
 only ~30 seconds in this incident. No localization changes required.
+
+
+### Additional maintainer observation: displayed next track, previous progress frozen
+
+The maintainer confirmed that after the final song ends, GMMP displays
+the *next track's metadata*, but the progress indication remains stuck on
+the previous song, no audio starts, and the player controls appear frozen
+until GMMP is force-stopped and restarted. This is stronger evidence of a
+**failed playback-state handoff** than of a provider/queue mismatch.
+The 17:24:54 device trace also proves the GMMP main thread was still
+dispatching touch events and updating playback metadata 17 s after the
+transition; a total main-thread deadlock is not established.
+
+In addition to the bounded audio-activity checks, each diagnostic sample
+therefore posts one asynchronous main-looper acknowledgement and logs
+`SMART DJ UI LOOP PROBE` with latency or a 1.5 s threshold failure.
+This is passive and lightweight: no UI traversal, player call, queue
+mutation, provider request, or periodic polling. An acknowledged looper
+does not itself prove that GMMP's playback controls work, but distinguishes
+a blocked UI event loop from a player-state transition failure. Confirmation
+of the root cause still requires an on-device capture containing the
+corresponding audio and UI probe logs.

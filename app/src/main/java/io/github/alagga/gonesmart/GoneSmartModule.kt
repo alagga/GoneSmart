@@ -5135,7 +5135,34 @@ class GoneSmartModule : XposedModule() {
             lastAudioTransitionProbeKey = key
         }
         val startedAt = SystemClock.elapsedRealtime()
+        fun measureMainLoop(phase: String) {
+            // A non-blocking main-looper acknowledgement distinguishes an
+            // unresponsive UI thread from an internally stalled player.
+            // No queue read or native API call runs on the main thread.
+            val postedAt = SystemClock.elapsedRealtime()
+            val acknowledged = AtomicBoolean(false)
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            val posted = mainHandler.post {
+                acknowledged.set(true)
+                Log.i(TAG, "SMART DJ UI LOOP PROBE | phase=$phase" +
+                    " | acknowledged=true" +
+                    " | latencyMs=${SystemClock.elapsedRealtime() - postedAt}")
+            }
+            if (!posted) {
+                Log.w(TAG, "SMART DJ UI LOOP PROBE | phase=$phase" +
+                    " | post-rejected=true")
+                return
+            }
+            audioTransitionProbeExecutor.schedule({
+                if (!acknowledged.get()) {
+                    Log.w(TAG, "SMART DJ UI LOOP PROBE | phase=$phase" +
+                        " | acknowledged=false | thresholdMs=1500" +
+                        " | possible-main-loop-stall=true")
+                }
+            }, 1_500L, TimeUnit.MILLISECONDS)
+        }
         fun snapshot(phase: String): Boolean {
+            measureMainLoop(phase)
             val queue = readQueueContext(autoDj)
             val liveCurrent = queue?.currentItem
             val sameCurrent = liveCurrent?.queueEntryId == currentEntryId &&
