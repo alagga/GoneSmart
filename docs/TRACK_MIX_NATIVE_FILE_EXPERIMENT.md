@@ -160,3 +160,30 @@ the maintainer's 4.2.1 installation.
   the first cold `qr.z`, and confirm only GoneSmart `SMART DJ SELECT`
   tracks appear. Cold playback at the very first load may still require
   independent GMMP next-source refresh diagnosis.
+
+## 2026-11-03 native tail-only refill correction (maintainer requirements)
+
+The 10:19:52 GMMP request was `qr.z(1)`, with `initial=5` and
+`upcoming=1`. The existing deferred worker correctly waited for one
+GoneSmart provider fill (~10.4 s, 20 real matched candidates) before
+executing the **same native qr.z(1) selection hook**. Subsequent
+experiments introduced unwanted changes: prewarming providers after every
+natural Current change (`acd65d4`) and maintaining three upcoming
+tracks rather than GMMP's configured one (`afac4cf` onwards).
+
+Maintain the original on-demand provider policy and single-flight deferred
+worker. Observe GMMP's proven natural Current transition passively, but
+request a refill ONLY once the last queue item becomes Current (not while
+one or more followers remain). The requested native amount is exactly
+`autoDj_upcomingTracks` (minimum 1), with no bonus buffering, synthetic
+placeholders, random native GMMP selection, playback restart or forced Next
+while audio remains active. On a cold smart pool the GMMP native refill
+callback returns promptly; one in-flight GoneSmart pool search continues
+in the background and the matching native refill resumes after it completes.
+Any explicit native fallback remains restricted to the existing verified
+zero-matches policy. Ordinary `PLAY_FILE/ENQUEUE_FILE` Track Mix is unchanged.
+
+On-device acceptance remains required: while the last song begins playing
+normally, the delayed refill should add `upcoming` GoneSmart-selected tracks.
+If GMMP had already cached a null next AudioSource, also verify that the
+next song actually starts; the queue alone is not proof of playback.

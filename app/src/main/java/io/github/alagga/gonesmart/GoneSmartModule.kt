@@ -776,10 +776,6 @@ class GoneSmartModule : XposedModule() {
             Thread(runnable, "GoneSmart-WarmAutoDJ").apply { isDaemon = true }
         }
     private val warmRefillCheckQueued = AtomicBoolean(false)
-    // Only one passive, read-only queue snapshot per natural transition.
-    // The network recommendation pipeline already has its own per-session
-    // single-flight guard and never mutates GMMP's queue.
-    private val earlySmartPrewarmQueued = AtomicBoolean(false)
     @Volatile private var provenNativeAutoDjSessionId = -1L
     @Volatile private var warmRefilledCurrentEntryId = -1L
 
@@ -4880,24 +4876,15 @@ class GoneSmartModule : XposedModule() {
     }
 
     private fun scheduleInitialRecommendationPoolPrewarm(
-        autoDjInstance: Any,
-        expectedPosition: Int? = null
+        autoDjInstance: Any
     ) {
-        if (!options.enabled || trackMixController.hasActiveRequest() ||
-            !earlySmartPrewarmQueued.compareAndSet(false, true)
-        ) return
+        if (!options.enabled) return
+        // Prewarm only during the existing once-per-startup cache phase.
+        // A natural queue position change must never launch new provider calls.
 
-        // No queue insertion here: only prepare GoneSmart recommendations in
-        // advance of GMMP's first natural qr.z request. An active Track Mix
-        // has its own prepared pool and must never be reset by this observer.
         startupExecutor.execute {
-            try {
-            if (!options.enabled || trackMixController.hasActiveRequest()) return@execute
             val startedAt = SystemClock.elapsedRealtime()
             val queueContext = readQueueContext(autoDjInstance) ?: return@execute
-            if (expectedPosition != null &&
-                queueContext.currentQueuePosition != expectedPosition
-            ) return@execute
             val session = queueSessionTracker.observe(queueContext)
             val settings = gmmpAutoDjSettingsReader.read()
             val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
@@ -4942,15 +4929,9 @@ class GoneSmartModule : XposedModule() {
             )
             Log.i(
                 TAG,
-                "SMART DJ INITIAL POOL PREWARM SCHEDULED | " +
-                    "source=${if (expectedPosition == null) "startup" else "verified-current"}" +
-                    " | ms=" + (SystemClock.elapsedRealtime() - startedAt)
+                "SMART DJ INITIAL POOL PREWARM SCHEDULED | ms=" +
+                    (SystemClock.elapsedRealtime() - startedAt)
             )
-            } catch (failure: Throwable) {
-                Log.w(TAG, "SMART DJ INITIAL POOL PREWARM | skipped after failure", failure)
-            } finally {
-                earlySmartPrewarmQueued.set(false)
-            }
         }
     }
 
@@ -4997,24 +4978,17 @@ class GoneSmartModule : XposedModule() {
      * already observed through the accepted qr.z hook is eligible.
      */
     private fun scheduleWarmNativeAutoDjRefill(autoDj: Any, position: Int?) {
-        if (!SmartAutoDjPrewarmPolicy.shouldPrewarm(
-                enabled = options.enabled,
-                currentPosition = position,
-                trackMixPending = trackMixController.hasActiveRequest(),
-                managedTrackMix = trackMixController.ownsManagedAutoDj(autoDj)
-            )
-        ) return
-
-        // First native refill can arrive at the last song's end. Preparing
-        // GoneSmart's pool only inside that callback is 5-15 seconds too late:
-        // GMMP has already cached a null next AudioSource. The accepted
-        // natural-position signal starts a bounded background smart search
-        // while the *previous* song is still playing, not an insertion.
-        scheduleInitialRecommendationPoolPrewarm(autoDj, position)
-
-        if (provenNativeAutoDjSessionId < 0 ||
+        if (!options.enabled || position == null || position <= 0 ||
+            provenNativeAutoDjSessionId < 0 ||
+            trackMixController.ownsManagedAutoDj(autoDj) ||
             !warmRefillCheckQueued.compareAndSet(false, true)
         ) return
+
+        // Only the queue tail is eligible. GMMP plays the selected last track
+        // immediately; after that natural transition, qr.z may obtain exactly
+        // the configured upcoming deficit. If the smart pool is still cold,
+        // the existing deferred worker waits for the *same* search to finish.
+        // Neither a position event nor this check starts a provider query.
 
         warmAutoDjExecutor.execute {
             try {
@@ -6502,14 +6476,24 @@ class GoneSmartModule : XposedModule() {
     private fun resumeDeferredAutoDjRefill(refill: DeferredAutoDjRefill) {
         try {
             try {
-                refill.poolFill.get(SMART_PREPARE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            } catch (_: TimeoutException) {
-                Log.w(TAG, "SMART DJ DEFERRED REFILL | pool timed out; checking fallback")
+                // This worker is already off GMMP's playback thread. A slow
+                // provider search is not a zero-match result: never turn a
+                // pending GoneSmart search into a random native fallback.
+                // A newer queue session cancels this waiter, so stale results
+                // cannot be applied to the next playback session.
+                refill.poolFill.get()
+                Log.i(TAG, "SMART DJ DEFERRED REFILL | pool completed" +
+                    " | waitedMs=" +
+                    (SystemClock.elapsedRealtime() - refill.scheduledAt))
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
             } catch (failure: Exception) {
-                Log.w(TAG, "SMART DJ DEFERRED REFILL | pool failed; checking fallback", failure)
+                // An interrupted/failed pipeline is not evidence that the
+                // user's library lacks smart matches.
+                Log.w(TAG, "SMART DJ DEFERRED REFILL | " +
+                    "pool failed; refusing unverified native fallback", failure)
+                return
             }
 
             val currentQueue = readQueueContext(refill.autoDj)

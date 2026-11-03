@@ -1,9 +1,10 @@
 package io.github.alagga.gonesmart
 
 /**
- * Native Auto-DJ tends to refill at the audio end boundary, when its player
- * may already have committed to an absent next source. A verified prior
- * Auto-DJ session may refill one track sooner without changing Current.
+ * Ordinary Smart Auto-DJ leaves GMMP's current song alone and only refills
+ * when the last queue entry has become CURRENT. This check never performs
+ * a provider request itself; the accepted qr.z hook may defer selection
+ * until the single existing GoneSmart recommendation pipeline completes.
  */
 internal object AutoDjWarmQueuePolicy {
     fun refillCount(
@@ -11,10 +12,7 @@ internal object AutoDjWarmQueuePolicy {
         currentIndex: Int,
         configuredUpcoming: Int
     ): Int {
-        if (queueSize <= 0 || currentIndex !in 0 until queueSize) return 0
-        val remaining = queueSize - currentIndex - 1
-        val safeUpcoming = maxOf(3, configuredUpcoming.coerceAtLeast(1))
-        return (safeUpcoming - remaining).coerceAtLeast(0)
-            .coerceAtMost(safeUpcoming)
+        if (queueSize <= 0 || currentIndex != queueSize - 1) return 0
+        return configuredUpcoming.coerceAtLeast(1)
     }
 }

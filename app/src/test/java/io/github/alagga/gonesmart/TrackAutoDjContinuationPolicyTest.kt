@@ -4,59 +4,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TrackAutoDjContinuationPolicyTest {
-    @Test
-    fun `keeps a safety margin even if a single upcoming track exists`() {
-        assertEquals(
-            0,
-            TrackAutoDjContinuationPolicy.refillCount(
-                queueSize = 5,
-                currentIndex = 1,
-                upcomingTrackCount = 1
-            )
-        )
+    @Test fun `managed track mix waits until the last queue row becomes current`() {
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(5, 2, 1))
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(5, 3, 1))
+        assertEquals(1, TrackAutoDjContinuationPolicy.refillCount(5, 4, 1))
     }
 
-    @Test
-    fun `refills three tracks at current queue tail to avoid late source binding`() {
-        assertEquals(
-            3,
-            TrackAutoDjContinuationPolicy.refillCount(
-                queueSize = 5,
-                currentIndex = 4,
-                upcomingTrackCount = 1
-            )
-        )
+    @Test fun `uses configured upcoming without overfilling`() {
+        assertEquals(2, TrackAutoDjContinuationPolicy.refillCount(5, 4, 2))
+        assertEquals(4, TrackAutoDjContinuationPolicy.refillCount(5, 4, 4))
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(5, 3, 2))
     }
 
-    @Test
-    fun `requests only the missing upcoming deficit`() {
-        assertEquals(
-            2,
-            TrackAutoDjContinuationPolicy.refillCount(
-                queueSize = 5,
-                currentIndex = 3,
-                upcomingTrackCount = 2
-            )
-        )
-        assertEquals(
-            3,
-            TrackAutoDjContinuationPolicy.refillCount(
-                queueSize = 5,
-                currentIndex = 4,
-                upcomingTrackCount = 2
-            )
-        )
-    }
-
-    @Test
-    fun `invalid current index fails closed`() {
-        assertEquals(
-            0,
-            TrackAutoDjContinuationPolicy.refillCount(
-                queueSize = 5,
-                currentIndex = -1,
-                upcomingTrackCount = 1
-            )
-        )
+    @Test fun `invalid current index fails closed`() {
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(5, -1, 1))
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(5, 5, 1))
+        assertEquals(0, TrackAutoDjContinuationPolicy.refillCount(0, 0, 1))
     }
 }
