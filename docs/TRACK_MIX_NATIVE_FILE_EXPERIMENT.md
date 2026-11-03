@@ -133,3 +133,30 @@ the maintainer's 4.2.1 installation.
   Logcat is not proof that ExoPlayer started playback. Check whether the
   natural transition is actually audible and that native fallback creates
   tracks before any `next audio source is null` event.
+
+## 2026-11-03 10:24 R83 device hang: cold tail instead of late refill
+
+- On exact-head `abfbef61`, the final queue item triggered native `qr.z(1)`
+  at 10:19:52. The cold recommendation request was deferred and GMMP read
+  `next audio source is null` **3 ms later**. The pool only completed 10.4
+  seconds later. This is an observable playback-continuity failure, independent
+  of whether the visible queue is eventually updated.
+- A second, warm `qr.z(3)` call occurred at 10:23:34, after GMMP had
+  already logged `Marking as played`; a 639 ms native TagManager monitor
+  contention was subsequently recorded. An eventual valid next AudioSource
+  did not prove audible playback. More tracks at that instant do not solve
+  the first critical cold-tail null.
+- When *native fallback is enabled*, a cold ordinary Auto-DJ refill with
+  **zero** upcoming tracks now lets GMMP select real native tracks
+  immediately through the existing `qr.z` callback. GoneSmart starts its
+  full recommendation pipeline asynchronously for the *next* refills.
+  When it completes, the established queue can be topped up to the existing
+  3-upcoming safety margin **while the current track still plays**.
+- To avoid GMMP's source-transition critical section, the ordinary warm
+  current-change check runs 900 ms after the event and revalidates current,
+  queue positions, session, and the selected native method. No playback
+  restart, placeholder, or change to `PLAY_FILE/ENQUEUE_FILE` Track Mix.
+- **On-device acceptance still required.** Test both cold-tail with network
+  latency and repeated natural transitions (including screen off) and verify
+  that the first native fallback row is visible to GMMP before it queries
+  `next audio source`. A valid queued row alone is insufficient.

@@ -4985,9 +4985,14 @@ class GoneSmartModule : XposedModule() {
 
         warmAutoDjExecutor.execute {
             try {
-                if (!options.enabled || trackMixController.ownsManagedAutoDj(autoDj)) {
-                    return@execute
-                }
+                // A native Current change fires while MusicService is still
+                // binding/committing its audio transition. Never contend with
+                // that playback-critical path by invoking qr.z immediately.
+                // Re-check the live queue after the short handoff interval.
+                SystemClock.sleep(900L)
+                if (Thread.currentThread().isInterrupted ||
+                    !options.enabled || trackMixController.ownsManagedAutoDj(autoDj)
+                ) return@execute
                 val nativeRefill = verifiedNativeAutoDjRefill
                     ?.takeIf { it.declaringClass.isInstance(autoDj) }
                     ?: return@execute
@@ -5540,6 +5545,81 @@ class GoneSmartModule : XposedModule() {
                 )
 
                 return@intercept null
+            }
+
+            // Cold tail is playback-critical: GMMP requests its next
+            // AudioSource immediately after this qr.z callback returns.
+            // Deferring a network search here leaves a cached null next source,
+            // which late queue insertion does not reliably repair.
+            // Only use GMMP's *real* native Auto-DJ when the user has allowed
+            // native fallback, and only for an ordinary (unmanaged) session.
+            // PLAY_FILE + ENQUEUE_FILE Track Mix is never changed by this path.
+            if (AutoDjColdTailContinuityPolicy.useNativeImmediately(
+                    poolReady = poolAlreadyReady,
+                    upcomingCount = beforeContext.upcomingItems.size,
+                    nativeFallbackAllowed = options.fallbackToNativeAutoDjWhenNoSuitableTracks ||
+                        networkState == GoneSmartNetworkState.OFFLINE,
+                    managedTrackMix = trackMixController.ownsManagedAutoDj(autoDjInstance)
+                )
+            ) {
+                Log.i(TAG, "SMART DJ COLD TAIL NATIVE | requested=$requestedTracks" +
+                    " | upcoming=0 | pool=cold | mode=GMMP-native" +
+                    " | backgroundPool=true")
+                val nativeResult = proceedNativeRefill(autoDjInstance) {
+                    chain.proceed()
+                }
+                val filledQueue = readQueueContext(autoDjInstance)
+                if (filledQueue != null) {
+                    queueSessionTracker.commitGeneratedAdditions(
+                        beforeContext = beforeContext,
+                        afterContext = filledQueue,
+                        origin = QueueEntryOrigin.NATIVE_AUTO_DJ
+                    )
+                    logAddedTracks(
+                        beforeContext = beforeContext,
+                        afterContext = filledQueue,
+                        origin = QueueEntryOrigin.NATIVE_AUTO_DJ
+                    )
+                }
+                playerBadgeController.setMode(
+                    PlayerAutoDjBadgeController.Mode.FALLBACK
+                )
+                // Run recommendations in parallel for subsequent refills.
+                // Never wait on the player/qr.z thread.
+                val future = startPoolFill(
+                    seeds = seeds,
+                    autoDjInstance = autoDjInstance,
+                    queueContext = filledQueue ?: beforeContext,
+                    session = session,
+                    sizing = poolSizing,
+                    background = true
+                )
+                deferredAutoDjExecutor.submit {
+                    try {
+                        val ready = future.get(
+                            SMART_PREPARE_TIMEOUT_SECONDS, TimeUnit.SECONDS
+                        )
+                        if (ready && options.enabled &&
+                            recommendationPool.isForSession(session.sessionId)
+                        ) {
+                            val livePosition = readQueueContext(autoDjInstance)
+                                ?.currentQueuePosition
+                            if (livePosition != null) {
+                                Log.i(TAG, "SMART DJ COLD TAIL NATIVE | " +
+                                    "poolReady=true | schedule=warm-buffer")
+                                scheduleWarmNativeAutoDjRefill(
+                                    autoDjInstance, livePosition
+                                )
+                            }
+                        }
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    } catch (failure: Exception) {
+                        Log.w(TAG, "SMART DJ COLD TAIL NATIVE | " +
+                            "background recommendations unavailable", failure)
+                    }
+                }
+                return@intercept nativeResult
             }
 
             val poolReady =
