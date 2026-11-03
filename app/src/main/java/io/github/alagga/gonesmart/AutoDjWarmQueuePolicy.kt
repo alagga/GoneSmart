@@ -13,7 +13,7 @@ internal object AutoDjWarmQueuePolicy {
     ): Int {
         if (queueSize <= 0 || currentIndex !in 0 until queueSize) return 0
         val remaining = queueSize - currentIndex - 1
-        val safeUpcoming = maxOf(2, configuredUpcoming.coerceAtLeast(1))
+        val safeUpcoming = maxOf(3, configuredUpcoming.coerceAtLeast(1))
         return (safeUpcoming - remaining).coerceAtLeast(0)
             .coerceAtMost(safeUpcoming)
     }

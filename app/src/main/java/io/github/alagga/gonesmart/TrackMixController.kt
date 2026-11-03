@@ -291,6 +291,22 @@ internal class TrackMixController(
         pending?.stage == "FILLING" &&
             (nativeRefillAllowance.get() ?: 0) > 0
 
+    /**
+     * This exact native Track Mix fallback already proved the original
+     * PLAY_FILE seed and completed a full (empty) GoneSmart search. Do not
+     * run the recommendation pipeline again inside GMMP's qr.z callback.
+     */
+    fun isNativeFileFallbackInitialRefill(autoDj: Any): Boolean {
+        val request = pending ?: return false
+        return TrackMixInitialFillPolicy.canRunNativeFileFallbackPrefill(
+            stage = request.stage,
+            hasVerifiedSeed = request.prePlayTarget != null &&
+                request.verifiedCurrentQueueEntryId != null,
+            preparedCount = request.prePlayPrepared.trackIds.size,
+            receiverMatches = nativeAutoDj?.get() === autoDj
+        )
+    }
+
     fun normalizeManagedQueueAfterNativeRefill(autoDj: Any): Boolean {
         if (managedAutoDj?.get() !== autoDj) return false
         return runCatching {
@@ -1591,10 +1607,37 @@ internal class TrackMixController(
                 request.stage = "NATIVE_FILE_FALLBACK"
                 refillHold.set(false)
                 if (allowNativeFallback()) {
+                    // No placeholder/transition track: GMMP itself selects
+                    // its native fallback songs via the already verified qr.z.
+                    // The previous AUTO_DJ-only path waited for a second
+                    // cold recommendation search after PLAY_FILE; MusicService
+                    // had already cached next AudioSource = null by then.
+                    val liveSeed = snapshotStillOwned()
+                        ?: error("Native fallback lost the PLAY_FILE seed")
+                    val nativeDeficit = (
+                        needed + 1 - liveSeed.ids.size
+                    ).coerceAtLeast(0)
+                    val nativeRequested = nativeDeficit == 0 ||
+                        requestNativeRefill(autoDj, nativeDeficit)
+                    val nativeAfter = snapshotStillOwned()
+                    val nativeVerified = nativeRequested &&
+                        nativeAfter != null &&
+                        nativeAfter.ids.size >= liveSeed.ids.size + nativeDeficit &&
+                        nativeAfter.currentEntryId == seedEntryId &&
+                        nativeAfter.currentId == target.id
+                    Log.i(
+                        TAG,
+                        "MIX NATIVE FILE FALLBACK PREFILL | requested=$nativeDeficit" +
+                            " | nativeAccepted=$nativeRequested | verified=$nativeVerified" +
+                            " | queueSize=${nativeAfter?.ids?.size ?: -1}" +
+                            " | owner=GMMP-qr.z"
+                    )
+                    if (!nativeVerified) {
+                        Log.w(TAG, "MIX NATIVE FILE FALLBACK PREFILL | " +
+                            "verification failed; preserving native playback")
+                    }
                     armManagedAutoDjSession()
                     sendCommand(request.context, COMMAND_AUTO_DJ)
-                    // The native status Toast can arrive asynchronously after
-                    // this request has already left its pending stage.
                     nativeToastSuppressionUntilMs =
                         SystemClock.elapsedRealtime() + 3_000L
                     managedSessionReady = true

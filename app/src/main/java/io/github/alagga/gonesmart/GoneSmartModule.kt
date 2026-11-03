@@ -5273,6 +5273,17 @@ class GoneSmartModule : XposedModule() {
             }
 
             try {
+                if (autoDjInstance != null &&
+                    trackMixController.isNativeFileFallbackInitialRefill(autoDjInstance)
+                ) {
+                    Log.i(TAG, "SMART DJ NATIVE FILE FALLBACK PREFILL | " +
+                        "direct-native=true | requested=$requestedTracks")
+                    // No second provider search and no cold deferred refill:
+                    // only GMMP's real fallback selections are appended.
+                    return@intercept proceedNativeRefill(autoDjInstance) {
+                        chain.proceed()
+                    }
+                }
                 if (guardSmartRefill) {
                     trackMixController.onNativeAutoDjRefillRequested(requestedTracks)
                 }

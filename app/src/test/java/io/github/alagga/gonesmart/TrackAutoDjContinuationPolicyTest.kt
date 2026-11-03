@@ -5,21 +5,21 @@ import org.junit.Test
 
 class TrackAutoDjContinuationPolicyTest {
     @Test
-    fun `does not refill while configured upcoming track is present`() {
+    fun `keeps a safety margin even if a single upcoming track exists`() {
         assertEquals(
             0,
             TrackAutoDjContinuationPolicy.refillCount(
                 queueSize = 5,
-                currentIndex = 3,
+                currentIndex = 1,
                 upcomingTrackCount = 1
             )
         )
     }
 
     @Test
-    fun `refills one track when current reaches queue tail`() {
+    fun `refills three tracks at current queue tail to avoid late source binding`() {
         assertEquals(
-            1,
+            3,
             TrackAutoDjContinuationPolicy.refillCount(
                 queueSize = 5,
                 currentIndex = 4,
@@ -31,7 +31,7 @@ class TrackAutoDjContinuationPolicyTest {
     @Test
     fun `requests only the missing upcoming deficit`() {
         assertEquals(
-            1,
+            2,
             TrackAutoDjContinuationPolicy.refillCount(
                 queueSize = 5,
                 currentIndex = 3,
@@ -39,7 +39,7 @@ class TrackAutoDjContinuationPolicyTest {
             )
         )
         assertEquals(
-            2,
+            3,
             TrackAutoDjContinuationPolicy.refillCount(
                 queueSize = 5,
                 currentIndex = 4,

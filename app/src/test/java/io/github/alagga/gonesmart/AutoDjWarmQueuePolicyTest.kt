@@ -5,8 +5,9 @@ import org.junit.Test
 
 class AutoDjWarmQueuePolicyTest {
     @Test fun `one track before tail gets a spare before end of audio`() {
-        assertEquals(1, AutoDjWarmQueuePolicy.refillCount(13, 11, 1))
-        assertEquals(2, AutoDjWarmQueuePolicy.refillCount(13, 12, 1))
+        assertEquals(1, AutoDjWarmQueuePolicy.refillCount(13, 10, 1))
+        assertEquals(2, AutoDjWarmQueuePolicy.refillCount(13, 11, 1))
+        assertEquals(3, AutoDjWarmQueuePolicy.refillCount(13, 12, 1))
     }
 
     @Test fun `a buffered queue is left untouched`() {

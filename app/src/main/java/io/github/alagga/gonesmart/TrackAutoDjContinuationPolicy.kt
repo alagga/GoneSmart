@@ -17,7 +17,7 @@ internal object TrackAutoDjContinuationPolicy {
         if (queueSize <= 0) return 0
         if (currentIndex !in 0 until queueSize) return 0
 
-        val targetUpcoming = upcomingTrackCount.coerceAtLeast(1)
+        val targetUpcoming = maxOf(3, upcomingTrackCount.coerceAtLeast(1))
         val remaining = queueSize - currentIndex - 1
         return (targetUpcoming - remaining).coerceAtLeast(0)
     }

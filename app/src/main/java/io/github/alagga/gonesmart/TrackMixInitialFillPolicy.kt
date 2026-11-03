@@ -59,6 +59,16 @@ internal object TrackMixInitialFillPolicy {
         return NoMatchNoticeAction.SHOW_OWNED
     }
 
+    /** Exact GMMP 4.2.1 PLAY_FILE fallback only: no GoneSmart candidates, one verified seed. */
+    fun canRunNativeFileFallbackPrefill(
+        stage: String?,
+        hasVerifiedSeed: Boolean,
+        preparedCount: Int,
+        receiverMatches: Boolean
+    ): Boolean =
+        stage == "NATIVE_FILE_FALLBACK" &&
+            hasVerifiedSeed && preparedCount == 0 && receiverMatches
+
     fun nativeInitialRefillCount(initialSize: Int, seedQueueSize: Int): Int =
         (initialSize.coerceAtLeast(1) - seedQueueSize.coerceAtLeast(0)).coerceAtLeast(0)
 

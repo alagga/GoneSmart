@@ -112,3 +112,24 @@ the maintainer's 4.2.1 installation.
   on completion/abort; no extra hot-path candidate dumps.
 - Localization: no new GMMP-facing UI labels; companion messages remain
   English-only, as in the rest of that app.
+
+
+## 2026-11-03 cold native fallback / warm continuity (device re-acceptance)
+
+- The 2026-11-02 16:35 log captured `next audio source is null` before
+  deferred native fallback inserted four GMMP tracks. If a verified
+  `PLAY_FILE` seed produced **zero** GoneSmart candidates, call the
+  already-verified native `qr.z` once on the worker **before** sending
+  `AUTO_DJ`; do not invoke a second provider search in that exact
+  native-fallback callback. Require a matching receiver, proven seed
+  queue-entry and empty prepared pool. Check the appended queue afterward.
+- Natural-track transitions in the 19:46 and 21:44 logs already reported
+  `Marking as played` before the previous one-following-song prefill.
+  During established/proven native Auto-DJ sessions, keep at least three
+  upcoming real tracks when possible, refilling via the verified GMMP
+  `qr.z` callback on the next natural Current event. Do not synthesize
+  placeholders, replay audio or force Next.
+- **Device acceptance is still necessary.** A present next AudioSource in
+  Logcat is not proof that ExoPlayer started playback. Check whether the
+  natural transition is actually audible and that native fallback creates
+  tracks before any `next audio source is null` event.
