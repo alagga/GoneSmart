@@ -532,6 +532,9 @@ class GoneSmartModule : XposedModule() {
                 selectedTrackId = selectedTrackId,
                 selectedEntryId = selectedEntryId
             )
+        },
+        onManagedTailRefill = { autoDj, currentPosition, entryId ->
+            scheduleAutoDjAudioTransitionProbe(autoDj, currentPosition, entryId)
         }
     )
 
@@ -776,6 +779,16 @@ class GoneSmartModule : XposedModule() {
             Thread(runnable, "GoneSmart-WarmAutoDJ").apply { isDaemon = true }
         }
     private val warmRefillCheckQueued = AtomicBoolean(false)
+
+    // Passive playback diagnostics only at a verified queue-tail transition.
+    // Never poll providers, seek, skip, start audio or alter native queue.
+    private val audioTransitionProbeExecutor =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "GoneSmart-AudioProbe").apply { isDaemon = true }
+        }
+    private val audioTransitionProbeLock = Any()
+    private var lastAudioTransitionProbeKey: String? = null
+
     @Volatile private var provenNativeAutoDjSessionId = -1L
     @Volatile private var warmRefilledCurrentEntryId = -1L
 
@@ -5024,6 +5037,13 @@ class GoneSmartModule : XposedModule() {
                 )
                 if (requested <= 0) return@execute
 
+                // Diagnose this actual playback transition after the native
+                // player has had time to start audio. This does not delay qr.z.
+                scheduleAutoDjAudioTransitionProbe(
+                    autoDj = autoDj,
+                    currentPosition = position,
+                    currentEntryId = current.queueEntryId
+                )
                 // Deduplicate this native current-entry event; GMMP itself
                 // still owns enqueue, order, and all future transitions.
                 Log.i(TAG, "SMART DJ WARM REFILL | session=${session.sessionId} | " +
@@ -5092,6 +5112,68 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "SMART DJ NATIVE FALLBACK | native queue not verified" +
                 " | reason=${audit.status} | trigger=$reason")
         }
+    }
+
+    /**
+     * Bounded, passive check after a real queue-tail CURRENT transition.
+     * The R86 device log proved that GMMP appended the correct next track
+     * and returned a non-null AudioSource, but not that audio started.
+     *
+     * Probe once after 1.8 s; only if music is inactive and CURRENT is
+     * unchanged, confirm once more after another 2.5 s. Neither probe
+     * changes playback or causes a provider/queue request.
+     */
+    private fun scheduleAutoDjAudioTransitionProbe(
+        autoDj: Any,
+        currentPosition: Int,
+        currentEntryId: Long
+    ) {
+        if (!options.enabled || currentPosition <= 0 || currentEntryId <= 0L) return
+        val key = "${System.identityHashCode(autoDj)}:$currentEntryId"
+        synchronized(audioTransitionProbeLock) {
+            if (lastAudioTransitionProbeKey == key) return
+            lastAudioTransitionProbeKey = key
+        }
+        val startedAt = SystemClock.elapsedRealtime()
+        fun snapshot(phase: String): Boolean {
+            val queue = readQueueContext(autoDj)
+            val liveCurrent = queue?.currentItem
+            val sameCurrent = liveCurrent?.queueEntryId == currentEntryId &&
+                queue?.currentQueuePosition == currentPosition
+            val audioActive = gmmpAppContext
+                ?.let { isAudioInactive(it)?.not() }
+            val status = AutoDjPlaybackTransitionProbePolicy.status(
+                currentStillPlaying = sameCurrent,
+                audioActive = audioActive
+            )
+            Log.i(TAG, "SMART DJ AUDIO TRANSITION PROBE | phase=$phase" +
+                " | elapsedMs=${SystemClock.elapsedRealtime() - startedAt}" +
+                " | currentExpected=$currentEntryId" +
+                " | currentActual=${liveCurrent?.queueEntryId ?: -1L}" +
+                " | trackId=${liveCurrent?.track?.id ?: -1L}" +
+                " | queuePosition=${queue?.currentQueuePosition ?: -1}" +
+                " | upcoming=${queue?.upcomingItems?.size ?: -1}" +
+                " | audioActive=$audioActive | status=$status")
+            return AutoDjPlaybackTransitionProbePolicy.shouldRecheck(
+                currentStillPlaying = sameCurrent,
+                audioActive = audioActive
+            )
+        }
+        audioTransitionProbeExecutor.schedule({
+            try {
+                if (snapshot("initial-1800ms")) {
+                    audioTransitionProbeExecutor.schedule({
+                        runCatching { snapshot("confirm-4300ms") }
+                            .onFailure {
+                                Log.w(TAG, "SMART DJ AUDIO TRANSITION PROBE | " +
+                                    "confirmation unavailable", it)
+                            }
+                    }, 2_500L, TimeUnit.MILLISECONDS)
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "SMART DJ AUDIO TRANSITION PROBE | unavailable", failure)
+            }
+        }, 1_800L, TimeUnit.MILLISECONDS)
     }
 
     private fun isAudioInactive(context: Context): Boolean? = runCatching {

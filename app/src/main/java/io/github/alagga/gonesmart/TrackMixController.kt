@@ -61,7 +61,9 @@ internal class TrackMixController(
     private val allowNativeFallback: () -> Boolean = { false },
     private val ensureZeroPoolSourceBatchHooks: (Any) -> Boolean = { false },
     private val resetRecommendationSession: (Any, Long, Long) -> Boolean =
-        { _, _, _ -> true }
+        { _, _, _ -> true },
+    private val onManagedTailRefill: (Any, Int, Long) -> Unit =
+        { _, _, _ -> }
 ) {
     companion object {
         private const val TAG = "GoneSmartTrackMix"
@@ -432,6 +434,9 @@ internal class TrackMixController(
                         " | boundary=native-qr.z"
                 )
 
+                context.currentItem?.queueEntryId?.let { entryId ->
+                    onManagedTailRefill(autoDj, position, entryId)
+                }
                 if (!requestNativeRefill(autoDj, requested)) {
                     Log.w(
                         TAG,

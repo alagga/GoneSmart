@@ -233,3 +233,37 @@ seek/restart playback, or attempt a synthetic transition.
 
 A verified native queue still does not prove decoder/source continuity;
 an on-device natural-next transition remains necessary.
+
+
+## 2026-11-03 17:25 device hang: native queue correct, audio still stalled
+
+Captured `GoneSmart-last-5min-20261103-172506-171.zip` (GMMP 4.2.1,
+GoneSmart `198e8f2`). The exported five-minute snapshot contains only
+17:24:36.544–17:25:06.039 (30 seconds of retained host Logcat).
+At 17:24:36.544 GMMP logged `DspProcessor: Finishing process thread`.
+At 17:24:37.026 GMMP logged `Marking as played`.
+The managed native refill requested exactly one follower at 17:24:37.049;
+the existing smart pool was a hit, and `kr.F1` selected local Track 6601.
+Native `qr.z` completed in ~53 ms. Both `SMART DJ SELECT QUEUE VERIFY`
+and `MIX CONTINUITY QUEUE VERIFY` passed; position 7 contains exactly
+that smart Track. At 17:24:37.997 MusicService independently resolved
+a **non-null next AudioSource** for Track 6601. Therefore the observed
+hang is **not** shown to be a provider latency, stale queue ID,
+incorrect smart match or null next-source failure. Nor does a non-null
+next AudioSource prove that the new song's decoder or audio output started.
+No definitive player-start marker is present in the retained Logcat.
+
+To distinguish the remaining possibilities without changing working
+Auto-DJ behavior, add one passive tail-transition check after 1.8 s
+(`SMART DJ AUDIO TRANSITION PROBE`), and only when the native Current
+entry remains unchanged and `AudioManager.isMusicActive` is false,
+repeat once after 2.5 s. Both checks run on a daemon executor, read only
+the native queue and Android audio activity, and never start providers,
+insert songs, seek, restart or invoke `qr.z`. This activity flag is a
+*heuristic*, not proof of decoder state; a persistent inactive flag
+alongside stable Current is a stronger diagnostic clue.
+
+Device re-acceptance is required. If the new symptom persists, capture a
+recording started **before** the transition, ideally including at least a
+few seconds before the previous song ends; the snapshot buffer retained
+only ~30 seconds in this incident. No localization changes required.
