@@ -4992,11 +4992,10 @@ class GoneSmartModule : XposedModule() {
 
         warmAutoDjExecutor.execute {
             try {
-                // A native Current change fires while MusicService is still
-                // binding/committing its audio transition. Never contend with
-                // that playback-critical path by invoking qr.z immediately.
-                // Re-check the live queue after the short handoff interval.
-                SystemClock.sleep(900L)
+                // The observer already returned from GMMP's Current
+                // callback. Work off-thread, but do not sleep: the R83 log
+                // preloaded the next AudioSource after about 714 ms, sooner
+                // than the former 900-ms timer.
                 if (Thread.currentThread().isInterrupted ||
                     !options.enabled || trackMixController.ownsManagedAutoDj(autoDj)
                 ) return@execute
@@ -5027,11 +5026,27 @@ class GoneSmartModule : XposedModule() {
 
                 // Deduplicate this native current-entry event; GMMP itself
                 // still owns enqueue, order, and all future transitions.
-                warmRefilledCurrentEntryId = current.queueEntryId
                 Log.i(TAG, "SMART DJ WARM REFILL | session=${session.sessionId} | " +
                     "current=$position | upcoming=${context.upcomingItems.size} | " +
                     "requested=$requested | boundary=verified-native-qr.z")
                 nativeRefill.invoke(autoDj, requested)
+                val after = readQueueContext(autoDj)
+                val verified = AutoDjQueueAppendPolicy.confirmed(
+                    before = context.items.map { it.queueEntryId to it.queuePosition },
+                    after = after?.items?.map {
+                        it.queueEntryId to it.queuePosition
+                    } ?: emptyList(),
+                    currentEntryId = current.queueEntryId,
+                    afterCurrentEntryId = after?.currentItem?.queueEntryId,
+                    requested = requested
+                )
+                // A cold deferred request can return without appending rows.
+                // Only materialized native additions count as fulfilled.
+                if (verified) warmRefilledCurrentEntryId = current.queueEntryId
+                Log.i(TAG, "SMART DJ WARM QUEUE VERIFY | verified=$verified" +
+                    " | requested=$requested | oldSize=${context.items.size}" +
+                    " | newSize=${after?.items?.size ?: -1}" +
+                    " | currentEntry=${current.queueEntryId}")
             } catch (failure: Throwable) {
                 Log.w(TAG, "SMART DJ WARM REFILL | native early request failed", failure)
             } finally {
@@ -5733,15 +5748,14 @@ class GoneSmartModule : XposedModule() {
                 return@intercept null
             }
 
+            val selectionWindow = SelectionWindowContext(
+                sessionId = session.sessionId,
+                excludedTrackIds = queueTrackIds
+            )
             val result =
                 try {
 
-                    autoDjSelectionWindow.set(
-                        SelectionWindowContext(
-                            sessionId = session.sessionId,
-                            excludedTrackIds = queueTrackIds
-                        )
-                    )
+                    autoDjSelectionWindow.set(selectionWindow)
 
                     proceedNativeRefill(autoDjInstance) { chain.proceed() }
 
@@ -5760,6 +5774,20 @@ class GoneSmartModule : XposedModule() {
             if (
                 afterContext != null
             ) {
+                val previousEntryIds = beforeContext.items.mapTo(hashSetOf()) {
+                    it.queueEntryId
+                }
+                val materialized = afterContext.items
+                    .filter { it.queueEntryId !in previousEntryIds }
+                    .sortedBy { it.queuePosition }
+                    .map { it.track.id }
+                if (selectionWindow.selectedTrackIds.isNotEmpty()) {
+                    Log.i(TAG, "SMART DJ SELECT QUEUE VERIFY | " +
+                        "matched=${materialized == selectionWindow.selectedTrackIds}" +
+                        " | selected=${selectionWindow.selectedTrackIds}" +
+                        " | appended=$materialized" +
+                        " | session=${session.sessionId}")
+                }
 
                 queueSessionTracker
                     .commitGeneratedAdditions(
@@ -6131,6 +6159,7 @@ class GoneSmartModule : XposedModule() {
                 return@intercept ArrayList<Any>()
             }
 
+            selectionContext.selectedTrackIds.addAll(appliedTrackIds)
             recommendationPool
                 .commitSelected(
                     expectedSessionId = selectionContext.sessionId,
@@ -9004,7 +9033,8 @@ class GoneSmartModule : XposedModule() {
 
     private data class SelectionWindowContext(
         val sessionId: Long,
-        val excludedTrackIds: Set<Long>
+        val excludedTrackIds: Set<Long>,
+        val selectedTrackIds: MutableList<Long> = mutableListOf()
     )
 
     private data class LastFmQueryCandidate(

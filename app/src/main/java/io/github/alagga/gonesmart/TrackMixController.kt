@@ -377,7 +377,6 @@ internal class TrackMixController(
         synchronized(this) {
             if (managedAutoDj?.get() !== autoDj) return
             if (lastManagedObservedPosition == position) return
-            lastManagedObservedPosition = position
         }
 
         work.execute {
@@ -386,6 +385,12 @@ internal class TrackMixController(
             if (!managedRefillInFlight.compareAndSet(false, true)) return@execute
 
             try {
+                val livePosition = nativePositionWriterProvider(autoDj)?.read()
+                if (livePosition != position) {
+                    Log.i(TAG, "MIX CONTINUITY | stale current hint" +
+                        " | observed=$position | live=$livePosition")
+                    return@execute
+                }
                 val context = queueReader.read(autoDj, position)
                     ?: return@execute
                 val ordered = context.items.sortedBy { it.queuePosition }
@@ -433,7 +438,26 @@ internal class TrackMixController(
                         "MIX CONTINUITY REFILL | native request rejected | " +
                             "requested=$requested"
                     )
+                    return@execute
                 }
+                val refreshedPosition = nativePositionWriterProvider(autoDj)?.read()
+                val after = refreshedPosition?.let { queueReader.read(autoDj, it) }
+                val verified = AutoDjQueueAppendPolicy.confirmed(
+                    before = context.items.map { it.queueEntryId to it.queuePosition },
+                    after = after?.items?.map {
+                        it.queueEntryId to it.queuePosition
+                    } ?: emptyList(),
+                    currentEntryId = context.currentItem?.queueEntryId,
+                    afterCurrentEntryId = after?.currentItem?.queueEntryId,
+                    requested = requested
+                )
+                if (verified) {
+                    synchronized(this) { lastManagedObservedPosition = position }
+                }
+                Log.i(TAG, "MIX CONTINUITY QUEUE VERIFY | verified=$verified" +
+                    " | requested=$requested | oldSize=${context.items.size}" +
+                    " | newSize=${after?.items?.size ?: -1}" +
+                    " | currentPosition=$position")
             } catch (failure: Throwable) {
                 Log.e(
                     TAG,

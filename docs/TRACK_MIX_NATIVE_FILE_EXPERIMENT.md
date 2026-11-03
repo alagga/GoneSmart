@@ -187,3 +187,25 @@ On-device acceptance remains required: while the last song begins playing
 normally, the delayed refill should add `upcoming` GoneSmart-selected tracks.
 If GMMP had already cached a null next AudioSource, also verify that the
 next song actually starts; the queue alone is not proof of playback.
+
+## 2026-11-03 queue postcondition follow-up
+
+The R83 10:23:34 trace placed the next-source lookup ~714 ms after
+natural Current, so the R85 900-ms warm-refill sleep could race **after**
+GMMP had already cached a null next AudioSource. The extra sleep is removed;
+the refill remains on its worker thread after the native position callback.
+
+A successful `qr.z(int)` reflection invocation is also not proof of
+successful queue insertion: while a cold recommendation pool runs, it can
+return immediately without adding a row. Both ordinary warm and managed
+Track Mix continuation now require a read-only queue postcondition before
+marking that Current as refilled: preserved current-entry identity,
+nonduplicated/contiguous queue positions, preserved future entries, and at
+least one newly appended GMMP row (no more than requested). The managed
+worker also rechecks the verified native Current writer to reject stale
+position hints before invoking `qr.z`.
+
+None of these checks insert placeholders, restart playback, add provider
+calls, change GMMP's `upcoming` setting, or mutate the queue directly.
+Queue verification is not decoder/device acceptance. On-device testing
+must demonstrate actual audible playback and non-null next AudioSource.
