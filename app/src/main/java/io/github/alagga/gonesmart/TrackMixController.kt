@@ -287,6 +287,8 @@ internal class TrackMixController(
         }
     }
 
+    fun hasActiveRequest(): Boolean = pending != null
+
     fun isExplicitInitialRefill(): Boolean =
         pending?.stage == "FILLING" &&
             (nativeRefillAllowance.get() ?: 0) > 0

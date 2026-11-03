@@ -776,6 +776,10 @@ class GoneSmartModule : XposedModule() {
             Thread(runnable, "GoneSmart-WarmAutoDJ").apply { isDaemon = true }
         }
     private val warmRefillCheckQueued = AtomicBoolean(false)
+    // Only one passive, read-only queue snapshot per natural transition.
+    // The network recommendation pipeline already has its own per-session
+    // single-flight guard and never mutates GMMP's queue.
+    private val earlySmartPrewarmQueued = AtomicBoolean(false)
     @Volatile private var provenNativeAutoDjSessionId = -1L
     @Volatile private var warmRefilledCurrentEntryId = -1L
 
@@ -4876,14 +4880,24 @@ class GoneSmartModule : XposedModule() {
     }
 
     private fun scheduleInitialRecommendationPoolPrewarm(
-        autoDjInstance: Any
+        autoDjInstance: Any,
+        expectedPosition: Int? = null
     ) {
-        if (!options.enabled) return
-        // Local Playlist Affinity can prewarm a useful pool without network.
+        if (!options.enabled || trackMixController.hasActiveRequest() ||
+            !earlySmartPrewarmQueued.compareAndSet(false, true)
+        ) return
 
+        // No queue insertion here: only prepare GoneSmart recommendations in
+        // advance of GMMP's first natural qr.z request. An active Track Mix
+        // has its own prepared pool and must never be reset by this observer.
         startupExecutor.execute {
+            try {
+            if (!options.enabled || trackMixController.hasActiveRequest()) return@execute
             val startedAt = SystemClock.elapsedRealtime()
             val queueContext = readQueueContext(autoDjInstance) ?: return@execute
+            if (expectedPosition != null &&
+                queueContext.currentQueuePosition != expectedPosition
+            ) return@execute
             val session = queueSessionTracker.observe(queueContext)
             val settings = gmmpAutoDjSettingsReader.read()
             val sizing = gmmpAutoDjSettingsReader.calculatePoolSizing(settings)
@@ -4928,9 +4942,15 @@ class GoneSmartModule : XposedModule() {
             )
             Log.i(
                 TAG,
-                "SMART DJ INITIAL POOL PREWARM SCHEDULED | ms=" +
-                    (SystemClock.elapsedRealtime() - startedAt)
+                "SMART DJ INITIAL POOL PREWARM SCHEDULED | " +
+                    "source=${if (expectedPosition == null) "startup" else "verified-current"}" +
+                    " | ms=" + (SystemClock.elapsedRealtime() - startedAt)
             )
+            } catch (failure: Throwable) {
+                Log.w(TAG, "SMART DJ INITIAL POOL PREWARM | skipped after failure", failure)
+            } finally {
+                earlySmartPrewarmQueued.set(false)
+            }
         }
     }
 
@@ -4977,9 +4997,22 @@ class GoneSmartModule : XposedModule() {
      * already observed through the accepted qr.z hook is eligible.
      */
     private fun scheduleWarmNativeAutoDjRefill(autoDj: Any, position: Int?) {
-        if (!options.enabled || position == null || position <= 0 ||
-            provenNativeAutoDjSessionId < 0 ||
-            trackMixController.ownsManagedAutoDj(autoDj) ||
+        if (!SmartAutoDjPrewarmPolicy.shouldPrewarm(
+                enabled = options.enabled,
+                currentPosition = position,
+                trackMixPending = trackMixController.hasActiveRequest(),
+                managedTrackMix = trackMixController.ownsManagedAutoDj(autoDj)
+            )
+        ) return
+
+        // First native refill can arrive at the last song's end. Preparing
+        // GoneSmart's pool only inside that callback is 5-15 seconds too late:
+        // GMMP has already cached a null next AudioSource. The accepted
+        // natural-position signal starts a bounded background smart search
+        // while the *previous* song is still playing, not an insertion.
+        scheduleInitialRecommendationPoolPrewarm(autoDj, position)
+
+        if (provenNativeAutoDjSessionId < 0 ||
             !warmRefillCheckQueued.compareAndSet(false, true)
         ) return
 
@@ -5545,81 +5578,6 @@ class GoneSmartModule : XposedModule() {
                 )
 
                 return@intercept null
-            }
-
-            // Cold tail is playback-critical: GMMP requests its next
-            // AudioSource immediately after this qr.z callback returns.
-            // Deferring a network search here leaves a cached null next source,
-            // which late queue insertion does not reliably repair.
-            // Only use GMMP's *real* native Auto-DJ when the user has allowed
-            // native fallback, and only for an ordinary (unmanaged) session.
-            // PLAY_FILE + ENQUEUE_FILE Track Mix is never changed by this path.
-            if (AutoDjColdTailContinuityPolicy.useNativeImmediately(
-                    poolReady = poolAlreadyReady,
-                    upcomingCount = beforeContext.upcomingItems.size,
-                    nativeFallbackAllowed = options.fallbackToNativeAutoDjWhenNoSuitableTracks ||
-                        networkState == GoneSmartNetworkState.OFFLINE,
-                    managedTrackMix = trackMixController.ownsManagedAutoDj(autoDjInstance)
-                )
-            ) {
-                Log.i(TAG, "SMART DJ COLD TAIL NATIVE | requested=$requestedTracks" +
-                    " | upcoming=0 | pool=cold | mode=GMMP-native" +
-                    " | backgroundPool=true")
-                val nativeResult = proceedNativeRefill(autoDjInstance) {
-                    chain.proceed()
-                }
-                val filledQueue = readQueueContext(autoDjInstance)
-                if (filledQueue != null) {
-                    queueSessionTracker.commitGeneratedAdditions(
-                        beforeContext = beforeContext,
-                        afterContext = filledQueue,
-                        origin = QueueEntryOrigin.NATIVE_AUTO_DJ
-                    )
-                    logAddedTracks(
-                        beforeContext = beforeContext,
-                        afterContext = filledQueue,
-                        origin = QueueEntryOrigin.NATIVE_AUTO_DJ
-                    )
-                }
-                playerBadgeController.setMode(
-                    PlayerAutoDjBadgeController.Mode.FALLBACK
-                )
-                // Run recommendations in parallel for subsequent refills.
-                // Never wait on the player/qr.z thread.
-                val future = startPoolFill(
-                    seeds = seeds,
-                    autoDjInstance = autoDjInstance,
-                    queueContext = filledQueue ?: beforeContext,
-                    session = session,
-                    sizing = poolSizing,
-                    background = true
-                )
-                deferredAutoDjExecutor.submit {
-                    try {
-                        val ready = future.get(
-                            SMART_PREPARE_TIMEOUT_SECONDS, TimeUnit.SECONDS
-                        )
-                        if (ready && options.enabled &&
-                            recommendationPool.isForSession(session.sessionId)
-                        ) {
-                            val livePosition = readQueueContext(autoDjInstance)
-                                ?.currentQueuePosition
-                            if (livePosition != null) {
-                                Log.i(TAG, "SMART DJ COLD TAIL NATIVE | " +
-                                    "poolReady=true | schedule=warm-buffer")
-                                scheduleWarmNativeAutoDjRefill(
-                                    autoDjInstance, livePosition
-                                )
-                            }
-                        }
-                    } catch (_: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                    } catch (failure: Exception) {
-                        Log.w(TAG, "SMART DJ COLD TAIL NATIVE | " +
-                            "background recommendations unavailable", failure)
-                    }
-                }
-                return@intercept nativeResult
             }
 
             val poolReady =

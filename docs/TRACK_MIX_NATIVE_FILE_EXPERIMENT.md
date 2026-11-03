@@ -134,29 +134,29 @@ the maintainer's 4.2.1 installation.
   natural transition is actually audible and that native fallback creates
   tracks before any `next audio source is null` event.
 
-## 2026-11-03 10:24 R83 device hang: cold tail instead of late refill
+## 2026-11-03 Smart DJ continuity correction
 
-- On exact-head `abfbef61`, the final queue item triggered native `qr.z(1)`
-  at 10:19:52. The cold recommendation request was deferred and GMMP read
-  `next audio source is null` **3 ms later**. The pool only completed 10.4
-  seconds later. This is an observable playback-continuity failure, independent
-  of whether the visible queue is eventually updated.
-- A second, warm `qr.z(3)` call occurred at 10:23:34, after GMMP had
-  already logged `Marking as played`; a 639 ms native TagManager monitor
-  contention was subsequently recorded. An eventual valid next AudioSource
-  did not prove audible playback. More tracks at that instant do not solve
-  the first critical cold-tail null.
-- When *native fallback is enabled*, a cold ordinary Auto-DJ refill with
-  **zero** upcoming tracks now lets GMMP select real native tracks
-  immediately through the existing `qr.z` callback. GoneSmart starts its
-  full recommendation pipeline asynchronously for the *next* refills.
-  When it completes, the established queue can be topped up to the existing
-  3-upcoming safety margin **while the current track still plays**.
-- To avoid GMMP's source-transition critical section, the ordinary warm
-  current-change check runs 900 ms after the event and revalidates current,
-  queue positions, session, and the selected native method. No playback
-  restart, placeholder, or change to `PLAY_FILE/ENQUEUE_FILE` Track Mix.
-- **On-device acceptance still required.** Test both cold-tail with network
-  latency and repeated natural transitions (including screen off) and verify
-  that the first native fallback row is visible to GMMP before it queries
-  `next audio source`. A valid queued row alone is insufficient.
+- The R83 log (`abfbef61`) shows a *cold GoneSmart pool* when a real
+  `qr.z(1)` request arrived at 10:19:52. The request was deferred and GMMP
+  recorded `next audio source is null` 3 ms later, 10.4 seconds before
+  GoneSmart's network/provider search returned 20 suitable **smart** tracks.
+  The later queue insertion alone cannot prove the decoder repaired its
+  previously null next source.
+- Commit `7386809` tried to let GMMP supply native fallback tracks at
+  this boundary. **That behavior was explicitly rejected by the maintainer
+  and is removed.** The Smart DJ remains a GoneSmart-ranked recommendation
+  system, and GMMP native fallback is retained *only* when no suitable
+  GoneSmart matches are found and the fallback setting permits it.
+- Use the already verified natural-position callback to start the existing
+  GoneSmart pool preparation before the final transition, while a previous
+  song is still playing. Coalesce per-session background searches; never
+  block the GMMP player thread, inject a placeholder, force Next or
+  select a random GMMP track just because the pool is still cold.
+- The 900 ms delayed warm refill from R84 remains guarded by a live native
+  Current/session/queue check; it is not itself a replacement for early
+  recommendation preparation.
+- Device acceptance required: check real audio progression on multiple
+  natural transitions, verify `SMART DJ INITIAL POOL PREWARM` occurs before
+  the first cold `qr.z`, and confirm only GoneSmart `SMART DJ SELECT`
+  tracks appear. Cold playback at the very first load may still require
+  independent GMMP next-source refresh diagnosis.
