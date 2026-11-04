@@ -403,3 +403,41 @@ after a background-only GMMP restart, and at the next cold Smart-DJ tail
 confirm a successful `SMART DJ NATIVE RETURN HOLD` start/end, verified
 native queue insertion, a non-null CURRENT+1 audio source, and audible
 natural playback. No translations required.
+
+## 2026-11-04 15:52 regression: synchronous source holds delay native Next
+
+The exact `1f240d6b7435` device capture
+`GoneSmart-recording-20261104-155204-437.zip` invalidates the assumption
+that holding `qr.z` after a Current update cannot delay track switching.
+At 15:49:17.025 a normal cold refill of BoyWithUke - Sick of U held the
+native service call for **17,189 ms**. Only at 15:49:34.213, after the
+existing search completed and a native queue row was verified, could
+GMMP process the subsequent Next; GMMP recorded a skip and started The
+Shirelles - Mama Said. A second cold refill held the same service path
+at 15:50:01.211 for **14,152 ms**; native `onTransitionComplete` was
+not logged until 15:50:16.664. The new Application.attach capture itself
+was verified in the second process, so the wait was now enabled as
+designed; the threading premise was wrong.
+
+**R86 supersedes both synchronous normal Smart-DJ source holds.** Remove
+the `qr.z` return barrier **and** the dormant I2 blocking observer, along
+with their one-shot latch/policy/tests. Do not block either of these GMMP
+transport/service call paths for the provider pipeline, regardless of
+whether audio was active before the call. Restore the exact nonblocking
+flow: native Next/current transition returns immediately, one existing
+provider pipeline continues in the background, and after its results are
+ready the same native `qr.z` writer appends and verifies the smart row.
+No additional provider calls, altered search timeout, player method
+replay, native placeholder or random fallback is introduced. Preserve
+the new headless Application.attach Context capture for unrelated audio
+diagnostics and safe deferred EOF checks.
+
+The earlier **cached-null CURRENT+1 source remains unresolved** under
+this nonblocking constraint. Do not claim queue verification proves
+playable next audio or reintroduce any synchronous hold. A future repair
+requires separately proving a safe nonblocking native next-source
+invalidation/refresh or an equivalent real GMMP callback, without
+replaying unverified obfuscated player methods or delaying current Play.
+Device regression acceptance: a manual Next onto the final queue row
+must start that row immediately while a cold search is still running;
+only the following queue append waits for matching. No new translations.

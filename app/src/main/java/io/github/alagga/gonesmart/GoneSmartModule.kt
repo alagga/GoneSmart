@@ -801,7 +801,6 @@ class GoneSmartModule : XposedModule() {
         val poolFill: Future<Boolean>,
         val scheduledAt: Long,
         var requestedTracks: Int,
-        val nextSourceGate: AutoDjDeferredNextSourceGate = AutoDjDeferredNextSourceGate(),
         var waiter: Future<*>? = null,
         var replayNextPresses: Int = 0,
         var nextCommandContext: Context? = null,
@@ -1591,7 +1590,6 @@ class GoneSmartModule : XposedModule() {
                         method = method,
                         value = value
                     )
-                    awaitColdAutoDjNextSource(service, method)
                     queueFlipController.aroundNativePositionCommand(
                         service = service,
                         method = method,
@@ -5242,99 +5240,6 @@ class GoneSmartModule : XposedModule() {
             ?.not()
     }.getOrNull()
 
-    /**
-     * GMMP 4.2.1 naturally calls MusicService.I2 before reading CURRENT+1.
-     * The 2026-11-04 trace proved qr.z returned to that read while the cold
-     * provider pipeline was still running, so GMMP cached a null AudioSource
-     * although the chosen row was inserted 7.6 s later. Wait only at this
-     * proven lookup, only with active current audio, and never on main or the
-     * worker responsible for materializing the row. The original I2 runs once.
-     */
-    private fun awaitColdAutoDjNextSource(service: Any?, method: Method) {
-        if (service == null || !options.enabled) return
-        val accepted = TrackMixZeroPoolPolicy.isAcceptedGmmp421NextSourceCommand(
-            declaringClassName = method.declaringClass.name,
-            methodName = method.name,
-            parameterTypeName = method.parameterTypes.singleOrNull()?.name,
-            returnTypeName = method.returnType.name
-        )
-        if (!accepted) return
-        val request = synchronized(deferredAutoDjLock) {
-            pendingDeferredAutoDjRefill
-        } ?: return
-        val audioActive = gmmpAppContext?.let { isAudioInactive(it)?.not() }
-        val ageMs = SystemClock.elapsedRealtime() - request.scheduledAt
-        if (!AutoDjDeferredNextSourceGate.shouldAwait(
-                acceptedNativeNextSource = accepted,
-                requestAgeMs = ageMs,
-                currentEntryId = request.currentEntryId,
-                requestedTracks = request.requestedTracks,
-                audioActive = audioActive,
-                onMainThread = android.os.Looper.myLooper() ==
-                    android.os.Looper.getMainLooper(),
-                onDeferredWorker = performingDeferredAutoDjRefill.get() ||
-                    Thread.currentThread().name == "GoneSmart-DeferredAutoDJ",
-                specialTrackMixActive = trackMixController.nativeRefillAction() !=
-                    TrackMixInitialFillPolicy.NativeRefillAction.NORMAL
-            )) return
-
-        val startedAt = SystemClock.elapsedRealtime()
-        Log.i(TAG, "SMART DJ NEXT SOURCE HOLD | current=${request.currentEntryId}" +
-            " | session=${request.sessionId} | ageMs=$ageMs" +
-            " | boundary=verified-native-I2 | maxWaitMs=" +
-            AutoDjDeferredNextSourceGate.MAX_WAIT_MS)
-        val verified = request.nextSourceGate.awaitVerifiedQueue()
-        Log.i(TAG, "SMART DJ NEXT SOURCE HOLD END | verified=$verified" +
-            " | waitedMs=${SystemClock.elapsedRealtime() - startedAt}" +
-            " | original=proceed | session=${request.sessionId}")
-    }
-
-    /**
-     * The R84 device recording shows GMMP querying CURRENT+1 three ms after
-     * the cold qr.z interception returned, without entering our passive I2
-     * gate. Hold that *observed* native return instead, while the already
-     * audible current track continues on the player thread. The original
-     * qr.z has not run; the same verified worker will append the next row.
-     * Never wait on main or on the worker responsible for the append.
-     */
-    private fun awaitColdAutoDjNativeReturn(autoDjInstance: Any) {
-        val request = synchronized(deferredAutoDjLock) {
-            pendingDeferredAutoDjRefill?.takeIf { it.autoDj === autoDjInstance }
-        } ?: return
-        val ageMs = SystemClock.elapsedRealtime() - request.scheduledAt
-        val audioActive = gmmpAppContext?.let { isAudioInactive(it)?.not() }
-        val onMainThread = android.os.Looper.myLooper() ==
-            android.os.Looper.getMainLooper()
-        val onDeferredWorker = performingDeferredAutoDjRefill.get() ||
-            Thread.currentThread().name == "GoneSmart-DeferredAutoDJ"
-        val specialTrackMixActive = trackMixController.nativeRefillAction() !=
-            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL
-        if (!AutoDjDeferredNextSourceGate.shouldHoldNativeReturn(
-                requestAgeMs = ageMs,
-                currentEntryId = request.currentEntryId,
-                requestedTracks = request.requestedTracks,
-                audioActive = audioActive,
-                onMainThread = onMainThread,
-                onDeferredWorker = onDeferredWorker,
-                specialTrackMixActive = specialTrackMixActive
-            )) {
-            Log.i(TAG, "SMART DJ NATIVE RETURN HOLD | skipped=true" +
-                " | ageMs=$ageMs | audioActive=$audioActive" +
-                " | mainThread=$onMainThread | deferredWorker=$onDeferredWorker" +
-                " | trackMix=$specialTrackMixActive")
-            return
-        }
-
-        val startedAt = SystemClock.elapsedRealtime()
-        Log.i(TAG, "SMART DJ NATIVE RETURN HOLD | session=${request.sessionId}" +
-            " | current=${request.currentEntryId} | ageMs=$ageMs" +
-            " | maxWaitMs=${AutoDjDeferredNextSourceGate.MAX_WAIT_MS}")
-        val verified = request.nextSourceGate.awaitVerifiedQueue()
-        Log.i(TAG, "SMART DJ NATIVE RETURN HOLD END | verified=$verified" +
-            " | waitedMs=${SystemClock.elapsedRealtime() - startedAt}" +
-            " | nativeCaller=proceed | session=${request.sessionId}")
-    }
-
     private fun proceedNativeRefill(
         autoDjInstance: Any,
         proceed: () -> Any?
@@ -5572,8 +5477,6 @@ class GoneSmartModule : XposedModule() {
                 )
                 return@intercept null
             }
-
-            var ownsSingleFlight = guardSmartRefill
 
             try {
                 if (autoDjInstance != null &&
@@ -5882,16 +5785,11 @@ class GoneSmartModule : XposedModule() {
                             sizing = poolSizing
                         )) {
                         logRefillTiming("cold-pool-deferred")
-                        // The worker must be able to re-enter this very same
-                        // native qr.z hook. Releasing single-flight first is
-                        // essential; otherwise the hold would coalesce the
-                        // worker and prevent the queue from materializing.
-                        if (ownsSingleFlight) {
-                            autoDjRefillSingleFlight.leave()
-                            ownsSingleFlight = false
-                        }
-                        awaitColdAutoDjNativeReturn(autoDjInstance)
-                        Log.i(TAG, "SMART DJ DEFERRED REFILL | native transition released")
+                        // The source/transport callback must return now. A
+                        // synchronous hold here delayed real Next commands
+                        // by 14-17 s in the R86 device recording.
+                        Log.i(TAG, "SMART DJ DEFERRED REFILL | " +
+                            "native transition released immediately")
                         return@intercept null
                     }
 
@@ -6130,7 +6028,7 @@ class GoneSmartModule : XposedModule() {
 
                 result
             } finally {
-                if (ownsSingleFlight) {
+                if (guardSmartRefill) {
                     autoDjRefillSingleFlight.leave()
                 }
             }
@@ -6766,7 +6664,6 @@ class GoneSmartModule : XposedModule() {
                 true
             } else {
                 pending?.waiter?.cancel(true)
-                pending?.nextSourceGate?.abort()
                 val poolFill = startPoolFill(
                     seeds = seeds, autoDjInstance = autoDjInstance,
                     queueContext = queueContext, session = session,
@@ -6882,7 +6779,6 @@ class GoneSmartModule : XposedModule() {
                 afterCurrentEntryId = afterNative?.currentItem?.queueEntryId,
                 requested = nativeRequest.second
             )
-            refill.nextSourceGate.finish(queueVerified)
             Log.i(TAG, "SMART DJ DEFERRED QUEUE VERIFY | verified=$queueVerified" +
                 " | requested=${nativeRequest.second}" +
                 " | current=${refill.currentEntryId}" +
@@ -6940,7 +6836,6 @@ class GoneSmartModule : XposedModule() {
         } catch (failure: Throwable) {
             Log.e(TAG, "SMART DJ DEFERRED REFILL | native retry failed", failure)
         } finally {
-            refill.nextSourceGate.abort()
             synchronized(deferredAutoDjLock) {
                 if (pendingDeferredAutoDjRefill === refill) {
                     pendingDeferredAutoDjRefill = null
