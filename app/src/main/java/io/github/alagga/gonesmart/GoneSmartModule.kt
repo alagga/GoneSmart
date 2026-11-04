@@ -1,6 +1,7 @@
 package io.github.alagga.gonesmart
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -892,6 +893,16 @@ class GoneSmartModule : XposedModule() {
         ) {
 
             return
+        }
+
+        // PackageReady runs during GMMP's ClassLoader creation, before its
+        // Application is attached. Capture the process Context even if the
+        // player service starts and plays music without opening MainActivity.
+        // The older onResume-only capture missed that headless case (R85).
+        runCatching {
+            installGmmpApplicationContextHook()
+        }.onFailure { error ->
+            Log.w(TAG, "GMMP APP CONTEXT | Application.attach hook unavailable", error)
         }
 
         initializeRemoteSettings()
@@ -4609,6 +4620,25 @@ class GoneSmartModule : XposedModule() {
             "GoneSmartPlaylist",
             "FOLDER NAV BADGE | MainActivity observer ready"
         )
+    }
+
+    private fun installGmmpApplicationContextHook() {
+        val attach = Application::class.java.getDeclaredMethod(
+            "attach", Context::class.java
+        ).apply { isAccessible = true }
+        hook(attach).intercept { chain ->
+            val base = (chain.getArg(0) as? Context)
+                ?.takeIf { it.packageName == GMMP_PACKAGE }
+            val result = chain.proceed()
+            if (base != null) {
+                // The base Context is already attached; Application's
+                // applicationContext can still be null at this lifecycle step.
+                gmmpAppContext = base
+                Log.i(TAG, "GMMP APP CONTEXT | source=Application.attach" +
+                    " | available=true")
+            }
+            result
+        }
     }
 
     private fun installPlayerBadgeHook(

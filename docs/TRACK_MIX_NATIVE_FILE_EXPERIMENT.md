@@ -365,3 +365,41 @@ device trace to prove eligibility, duration and queue verification.
 This remains a **device-test candidate**. Exact-head CI and a natural
 audible transition are required before calling the decoder issue fixed.
 There are no new user-facing strings or translations.
+
+## 2026-11-04 15:13 device follow-up: headless GMMP skipped the hold
+
+`GoneSmart-recording-20261104-151351-359.zip` confirms the preceding
+native-return gate works in one GMMP process: at 13:08:15 it held the
+return for 9050 ms, native `qr.z` appended and verified the next queue
+row, and GMMP then logged a **non-null** next AudioSource. Subsequent
+transitions were audible and the passive audio probes were active.
+
+After GMMP restarted in background process 3612 (without MainActivity
+resume), the same tested build `bf2cd01bf173` again saw a cold pool at
+Sunshine (current position 35) at 15:09:41.729. The new explicit skip
+diagnostic was decisive: `SMART DJ NATIVE RETURN HOLD | skipped=true |
+ageMs=1 | audioActive=null | mainThread=false | deferredWorker=false |
+trackMix=false`. The adjacent EOF check also recorded `context=false`:
+`gmmpAppContext` was populated **only** in MainActivity.onResume, so
+normal background-only playback had no Context from which to query
+AudioManager.isMusicActive. GMMP cached `next audio source is null` for
+position 36 at 15:09:41.738, before the existing provider pipeline
+finished 12.5 s later. GoneSmart appended Up & Down (ID 15973) at
+position 36 at 15:09:54.302 and independently verified the queue. At
+15:13:12.816 GMMP selected Up & Down's metadata but did not start audio.
+
+Correction: capture a GMMP-only **Android Application.attach(Context)**
+callback as the process Context during normal application binding, which
+also precedes headless MusicService playback. Keep the existing Activity
+onResume capture as an independent later refresh. This is a passive
+Android lifecycle read, not another GMMP player resolver, provider call
+or playback operation. Its single startup log proves whether the Context
+was acquired on device. The existing `audioActive == true` eligibility
+remains fail-closed when Android audio state really is unavailable; no
+unproved assumption about audible playback is introduced.
+
+Device acceptance: confirm `GMMP APP CONTEXT | source=Application.attach`
+after a background-only GMMP restart, and at the next cold Smart-DJ tail
+confirm a successful `SMART DJ NATIVE RETURN HOLD` start/end, verified
+native queue insertion, a non-null CURRENT+1 audio source, and audible
+natural playback. No translations required.
