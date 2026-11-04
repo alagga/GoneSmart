@@ -326,3 +326,42 @@ completes, followed by a non-null `next audio source` for the exact
 appended Track ID **and** audible natural playback at the following EOF.
 The earlier 2026-11-03 non-null-source hang remains a separate diagnostic
 possibility. No new translations required.
+
+## 2026-11-04 12:45 device re-test: I2 gate did not protect normal refill
+
+The exact `b6430689e607` build in
+`GoneSmart-recording-20261104-124525-615.zip` reproduced the fault.
+GMMP started Cro - long nights at 12:41:39.413 with the queue at position
+23. Normal `qr.z(1)` deferred its cold recommendation pool at
+12:41:40.112; GoneSmart logged `native transition released` at .113.
+GMMP read queue position 24 at .115 and cached `next audio source is null`
+at .116. The provider/local-match pass completed at 12:41:48.297;
+the verified native refill appended Danju/Cro - Touch the Sky (ID 15902,
+position 24) at 12:41:48.398. When long nights ended at 12:44:40.855,
+GMMP selected the correct metadata for Touch the Sky but produced no
+audio; the two audio probes at +1.8 s and +4.3 s were inactive while the
+main looper acknowledged. The first follow-up source at position 25 was
+non-null, but this could not repair the cached null at position 24.
+
+Critically, no `SMART DJ NEXT SOURCE HOLD` start/end appeared at all
+between native refill deferral and the null source lookup. The R83 I2
+gate was therefore not exercised on this observed ordinary refill path;
+we must not assume the passive alias catches every next-source read.
+
+The next candidate protects the **actually observed `qr.z` return** for
+this same cold request: on the already-audible, non-main playback worker,
+temporarily defer its return (maximum 63 s: the established 60 s smart
+preparation window plus a 3 s verified-native-append margin) until the pool and
+verified native append finish. First release GoneSmart's normal-refill
+single-flight lease so its own deferred worker can re-enter `qr.z`;
+without that release the attempted fix would coalesce the only append
+and deadlock itself. Continue immediately for main-thread, inactive,
+aged-out, canceled or special Track-Mix requests. No extra provider
+queries, native placeholder, seek or replay is introduced. Retain the
+earlier I2 gate for a separately observed source callback. Distinct
+`SMART DJ NATIVE RETURN HOLD` start/skipped/end logs allow the next
+device trace to prove eligibility, duration and queue verification.
+
+This remains a **device-test candidate**. Exact-head CI and a natural
+audible transition are required before calling the decoder issue fixed.
+There are no new user-facing strings or translations.

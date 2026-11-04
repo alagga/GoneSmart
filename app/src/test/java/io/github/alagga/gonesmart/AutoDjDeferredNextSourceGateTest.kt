@@ -8,6 +8,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutoDjDeferredNextSourceGateTest {
+    private fun nativeReturnEligible(
+        age: Long = 2L,
+        audioActive: Boolean? = true,
+        main: Boolean = false,
+        deferredWorker: Boolean = false,
+        specialTrackMix: Boolean = false
+    ) = AutoDjDeferredNextSourceGate.shouldHoldNativeReturn(
+        requestAgeMs = age,
+        currentEntryId = 17L,
+        requestedTracks = 1,
+        audioActive = audioActive,
+        onMainThread = main,
+        onDeferredWorker = deferredWorker,
+        specialTrackMixActive = specialTrackMix
+    )
+
+    @Test fun coldNativeReturnOnlyWaitsAfterActivePlaybackOnWorkerThread() {
+        assertTrue(nativeReturnEligible())
+        assertFalse(nativeReturnEligible(age = -1L))
+        assertFalse(nativeReturnEligible(
+            age = AutoDjDeferredNextSourceGate.MAX_REQUEST_AGE_MS + 1L))
+        assertFalse(nativeReturnEligible(audioActive = false))
+        assertFalse(nativeReturnEligible(audioActive = null))
+        assertFalse(nativeReturnEligible(main = true))
+        assertFalse(nativeReturnEligible(deferredWorker = true))
+        assertFalse(nativeReturnEligible(specialTrackMix = true))
+    }
+
     private fun eligible(
         accepted: Boolean = true,
         age: Long = 2L,
@@ -68,9 +96,11 @@ class AutoDjDeferredNextSourceGateTest {
     @Test fun failedRefillOrTimeoutNeverVerifiesSource() {
         val failed = AutoDjDeferredNextSourceGate()
         failed.finish(false)
+        failed.finish(true)
         assertFalse(failed.awaitVerifiedQueue(0L))
         val abandoned = AutoDjDeferredNextSourceGate()
         abandoned.abort()
+        abandoned.finish(true)
         assertFalse(abandoned.awaitVerifiedQueue(0L))
         assertFalse(AutoDjDeferredNextSourceGate().awaitVerifiedQueue(5L))
     }

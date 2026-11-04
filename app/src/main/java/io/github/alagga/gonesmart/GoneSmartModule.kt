@@ -5259,6 +5259,52 @@ class GoneSmartModule : XposedModule() {
             " | original=proceed | session=${request.sessionId}")
     }
 
+    /**
+     * The R84 device recording shows GMMP querying CURRENT+1 three ms after
+     * the cold qr.z interception returned, without entering our passive I2
+     * gate. Hold that *observed* native return instead, while the already
+     * audible current track continues on the player thread. The original
+     * qr.z has not run; the same verified worker will append the next row.
+     * Never wait on main or on the worker responsible for the append.
+     */
+    private fun awaitColdAutoDjNativeReturn(autoDjInstance: Any) {
+        val request = synchronized(deferredAutoDjLock) {
+            pendingDeferredAutoDjRefill?.takeIf { it.autoDj === autoDjInstance }
+        } ?: return
+        val ageMs = SystemClock.elapsedRealtime() - request.scheduledAt
+        val audioActive = gmmpAppContext?.let { isAudioInactive(it)?.not() }
+        val onMainThread = android.os.Looper.myLooper() ==
+            android.os.Looper.getMainLooper()
+        val onDeferredWorker = performingDeferredAutoDjRefill.get() ||
+            Thread.currentThread().name == "GoneSmart-DeferredAutoDJ"
+        val specialTrackMixActive = trackMixController.nativeRefillAction() !=
+            TrackMixInitialFillPolicy.NativeRefillAction.NORMAL
+        if (!AutoDjDeferredNextSourceGate.shouldHoldNativeReturn(
+                requestAgeMs = ageMs,
+                currentEntryId = request.currentEntryId,
+                requestedTracks = request.requestedTracks,
+                audioActive = audioActive,
+                onMainThread = onMainThread,
+                onDeferredWorker = onDeferredWorker,
+                specialTrackMixActive = specialTrackMixActive
+            )) {
+            Log.i(TAG, "SMART DJ NATIVE RETURN HOLD | skipped=true" +
+                " | ageMs=$ageMs | audioActive=$audioActive" +
+                " | mainThread=$onMainThread | deferredWorker=$onDeferredWorker" +
+                " | trackMix=$specialTrackMixActive")
+            return
+        }
+
+        val startedAt = SystemClock.elapsedRealtime()
+        Log.i(TAG, "SMART DJ NATIVE RETURN HOLD | session=${request.sessionId}" +
+            " | current=${request.currentEntryId} | ageMs=$ageMs" +
+            " | maxWaitMs=${AutoDjDeferredNextSourceGate.MAX_WAIT_MS}")
+        val verified = request.nextSourceGate.awaitVerifiedQueue()
+        Log.i(TAG, "SMART DJ NATIVE RETURN HOLD END | verified=$verified" +
+            " | waitedMs=${SystemClock.elapsedRealtime() - startedAt}" +
+            " | nativeCaller=proceed | session=${request.sessionId}")
+    }
+
     private fun proceedNativeRefill(
         autoDjInstance: Any,
         proceed: () -> Any?
@@ -5496,6 +5542,8 @@ class GoneSmartModule : XposedModule() {
                 )
                 return@intercept null
             }
+
+            var ownsSingleFlight = guardSmartRefill
 
             try {
                 if (autoDjInstance != null &&
@@ -5804,6 +5852,15 @@ class GoneSmartModule : XposedModule() {
                             sizing = poolSizing
                         )) {
                         logRefillTiming("cold-pool-deferred")
+                        // The worker must be able to re-enter this very same
+                        // native qr.z hook. Releasing single-flight first is
+                        // essential; otherwise the hold would coalesce the
+                        // worker and prevent the queue from materializing.
+                        if (ownsSingleFlight) {
+                            autoDjRefillSingleFlight.leave()
+                            ownsSingleFlight = false
+                        }
+                        awaitColdAutoDjNativeReturn(autoDjInstance)
                         Log.i(TAG, "SMART DJ DEFERRED REFILL | native transition released")
                         return@intercept null
                     }
@@ -6043,7 +6100,7 @@ class GoneSmartModule : XposedModule() {
 
                 result
             } finally {
-                if (guardSmartRefill) {
+                if (ownsSingleFlight) {
                     autoDjRefillSingleFlight.leave()
                 }
             }
