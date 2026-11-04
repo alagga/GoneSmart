@@ -14,6 +14,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.io.File
 import java.lang.ref.WeakReference
 import java.util.ArrayList
@@ -798,6 +799,7 @@ class GoneSmartModule : XposedModule() {
         val sessionId: Long,
         val currentEntryId: Long,
         val originalEntryIds: Set<Long>,
+        val hadNoUpcomingAtRequest: Boolean,
         val poolFill: Future<Boolean>,
         val scheduledAt: Long,
         var requestedTracks: Int,
@@ -805,12 +807,30 @@ class GoneSmartModule : XposedModule() {
         var replayNextPresses: Int = 0,
         var nextCommandContext: Context? = null,
         val endedQueueCurrentEntryId: Long? = null,
-        var nativeRefillStarted: Boolean = false
+        var nativeRefillStarted: Boolean = false,
+        var observedNullNextSource: Boolean = false,
+        var nativeNextSourceRecovered: Boolean = false,
+        var nativeSourceService: WeakReference<Any>? = null
     )
 
     private val deferredAutoDjLock = Any()
     private var pendingDeferredAutoDjRefill: DeferredAutoDjRefill? = null
     private val performingDeferredAutoDjRefill = ThreadLocal.withInitial { false }
+    private val performingNextSourceRefresh = ThreadLocal.withInitial { false }
+    private data class NativeNextSourceWindow(
+        val refill: DeferredAutoDjRefill?,
+        val phase: String,
+        var nullSourceObserved: Boolean = false,
+        var nonNullSourceObserved: Boolean = false
+    )
+    private data class NextSourceRefreshCapture(
+        val sawNull: Boolean,
+        val nativeRecovered: Boolean,
+        val service: Any?,
+        val pendingManualNext: Int
+    )
+    private val nativeNextSourceWindow = ThreadLocal<NativeNextSourceWindow?>()
+    @Volatile private var verifiedNativeNextSourceRefresh: Method? = null
     // Captured only after the accepted GMMP native refill boundary is hooked.
     // The delayed worker must never resolve a second, independently guessed writer.
     @Volatile private var verifiedNativeAutoDjRefill: Method? = null
@@ -993,6 +1013,12 @@ class GoneSmartModule : XposedModule() {
                 installDeferredAutoDjNextHook()
             }.onFailure { error ->
                 Log.w(TAG, "SMART DJ DEFERRED NEXT | native click observer unavailable", error)
+            }
+
+            runCatching {
+                installNativeNextSourceRefreshHook(param)
+            }.onFailure { error ->
+                Log.w(TAG, "SMART DJ NEXT SOURCE REFRESH | native source hook unavailable", error)
             }
 
             try {
@@ -5250,6 +5276,164 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
+     * GMMP 4.2.1 APK inspection proves that MusicService.E2(service) computes
+     * CURRENT+1 and passes its AudioSource to hn3.h0(sq,z). During a deferred
+     * cold refill the original call can pass null before native insertion.
+     * Observe that exact null assignment without delaying the native call.
+     */
+    private fun installNativeNextSourceRefreshHook(param: PackageReadyParam) {
+        val serviceType = param.classLoader.loadClass(
+            "gonemad.gmmp.playback.service.MusicService"
+        )
+        val sourceType = param.classLoader.loadClass("sq")
+        val playerType = param.classLoader.loadClass("hn3")
+        val nativeSourceSetter = playerType.getDeclaredMethod(
+            "h0", sourceType, java.lang.Boolean.TYPE
+        )
+        val nativeSourceRefresh = serviceType.getDeclaredMethod("E2", serviceType)
+        require(
+            nativeSourceSetter.returnType == Void.TYPE &&
+                !Modifier.isStatic(nativeSourceSetter.modifiers) &&
+                nativeSourceRefresh.returnType == Void.TYPE &&
+                Modifier.isStatic(nativeSourceRefresh.modifiers)
+        ) { "GMMP source calculation and setter signatures differ from 4.2.1 APK" }
+        nativeSourceSetter.isAccessible = true
+        nativeSourceRefresh.isAccessible = true
+
+        hook(nativeSourceSetter).intercept { chain ->
+            nativeNextSourceWindow.get()?.let { window ->
+                if (chain.getArg(0) == null) window.nullSourceObserved = true
+                else window.nonNullSourceObserved = true
+            }
+            chain.proceed()
+        }
+        hook(nativeSourceRefresh).intercept { chain ->
+            val service = chain.getArg(0) ?: return@intercept chain.proceed()
+            val sourceWindow = if (performingNextSourceRefresh.get()) {
+                NativeNextSourceWindow(refill = null, phase = "after-native-append")
+            } else {
+                val observed = synchronized(deferredAutoDjLock) {
+                    pendingDeferredAutoDjRefill?.takeIf {
+                        options.enabled && it.hadNoUpcomingAtRequest
+                    }?.let { it to it.nativeRefillStarted }
+                }
+                if (observed != null && serviceType.isInstance(service)) {
+                    NativeNextSourceWindow(
+                        refill = observed.first,
+                        phase = if (observed.second) {
+                            "native-after-cold-refill"
+                        } else "initial-native-lookup"
+                    )
+                } else null
+            }
+            if (sourceWindow == null) return@intercept chain.proceed()
+            val prior = nativeNextSourceWindow.get()
+            nativeNextSourceWindow.set(sourceWindow)
+            try {
+                chain.proceed()
+            } finally {
+                nativeNextSourceWindow.set(prior)
+                if (sourceWindow.phase == "after-native-append") {
+                    Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | " +
+                        "nativeSourceNonNull=${sourceWindow.nonNullSourceObserved}" +
+                        " | nativeSourceNull=${sourceWindow.nullSourceObserved}")
+                } else if (sourceWindow.phase == "native-after-cold-refill" &&
+                    sourceWindow.nonNullSourceObserved
+                ) {
+                    val pending = sourceWindow.refill
+                    synchronized(deferredAutoDjLock) {
+                        if (pending != null && pendingDeferredAutoDjRefill === pending) {
+                            pending.nativeNextSourceRecovered = true
+                        }
+                    }
+                } else if (sourceWindow.nullSourceObserved &&
+                    sourceWindow.phase == "initial-native-lookup"
+                ) {
+                    val pending = sourceWindow.refill
+                    synchronized(deferredAutoDjLock) {
+                        if (pending != null &&
+                            pendingDeferredAutoDjRefill === pending &&
+                            !pending.nativeRefillStarted
+                        ) {
+                            pending.observedNullNextSource = true
+                            pending.nativeSourceService = WeakReference(service)
+                            Log.i(TAG, "SMART DJ NEXT SOURCE NULL OBSERVED | " +
+                                "session=${pending.sessionId} | current=${pending.currentEntryId}")
+                        }
+                    }
+                }
+            }
+        }
+        verifiedNativeNextSourceRefresh = nativeSourceRefresh
+        Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH READY | " +
+            "boundary=MusicService.E2->hn3.h0 | strategy=post-native-append")
+    }
+
+    /** Refresh only CURRENT+1 after real GMMP insertion; never block Next. */
+    private fun refreshNativeNextSourceAfterAppend(
+        refill: DeferredAutoDjRefill,
+        queueVerified: Boolean,
+        afterNative: QueueContext?
+    ) {
+        val callback = verifiedNativeNextSourceRefresh
+        val captured = synchronized(deferredAutoDjLock) {
+            if (pendingDeferredAutoDjRefill !== refill) return
+            NextSourceRefreshCapture(
+                sawNull = refill.observedNullNextSource,
+                nativeRecovered = refill.nativeNextSourceRecovered,
+                service = refill.nativeSourceService?.get(),
+                pendingManualNext = refill.replayNextPresses
+            )
+        }
+        val context = gmmpAppContext
+        val versionAccepted = context?.let { app ->
+            runCatching {
+                GmmpCompatibilityPolicy.state(
+                    app.packageManager.getPackageInfo(GMMP_PACKAGE, 0).versionName
+                ) == GmmpCompatibilityPolicy.State.TESTED
+            }.getOrDefault(false)
+        } ?: false
+        val audioActive = context?.let { isAudioInactive(it)?.not() }
+        val eligible = AutoDjNextSourceRefreshPolicy.shouldRefresh(
+            hadNoUpcomingAtRequest = refill.hadNoUpcomingAtRequest,
+            nativeNullSourceObserved = captured.sawNull,
+            nativeSourceAlreadyRecovered = captured.nativeRecovered,
+            nativeAppendVerified = queueVerified,
+            originalCurrentEntryId = refill.currentEntryId,
+            liveCurrentEntryId = afterNative?.currentItem?.queueEntryId,
+            liveUpcomingCount = afterNative?.upcomingItems?.size ?: 0,
+            audioActive = audioActive,
+            pendingManualNextPresses = captured.pendingManualNext,
+            sourceCallbackAvailable = callback != null && captured.service != null &&
+                callback.parameterTypes[0].isInstance(captured.service),
+            acceptedGmmpVersion = versionAccepted
+        )
+        if (!eligible) {
+            if (captured.sawNull) {
+                Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | skipped=true" +
+                    " | verified=$queueVerified | sameCurrent=" +
+                    (afterNative?.currentItem?.queueEntryId == refill.currentEntryId) +
+                    " | upcoming=${afterNative?.upcomingItems?.size ?: 0}" +
+                    " | audioActive=$audioActive | manualNext=${captured.pendingManualNext}" +
+                    " | sourceAvailable=${captured.service != null}" +
+                    " | nativeRecovered=${captured.nativeRecovered}" +
+                    " | testedVersion=$versionAccepted")
+            }
+            return
+        }
+        try {
+            performingNextSourceRefresh.set(true)
+            Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | requested=true" +
+                " | session=${refill.sessionId} | current=${refill.currentEntryId}")
+            callback!!.invoke(null, captured.service)
+        } catch (failure: Throwable) {
+            Log.w(TAG, "SMART DJ NEXT SOURCE REFRESH | native calculation failed", failure)
+        } finally {
+            performingNextSourceRefresh.remove()
+        }
+    }
+
+    /**
      * Only watch a proven GMMP player Next control while a cold native refill
      * is pending. The original click always executes normally. We record
      * additional presses after the first request has already been deferred;
@@ -6674,6 +6858,7 @@ class GoneSmartModule : XposedModule() {
                     sessionId = session.sessionId,
                     currentEntryId = currentEntryId,
                     originalEntryIds = originalIds,
+                    hadNoUpcomingAtRequest = queueContext.upcomingItems.isEmpty(),
                     poolFill = poolFill,
                     scheduledAt = SystemClock.elapsedRealtime(),
                     requestedTracks = requestedTracks,
@@ -6784,6 +6969,11 @@ class GoneSmartModule : XposedModule() {
                 " | current=${refill.currentEntryId}" +
                 " | beforeSize=${currentQueue.items.size}" +
                 " | afterSize=${afterNative?.items?.size ?: -1}")
+            refreshNativeNextSourceAfterAppend(
+                refill = refill,
+                queueVerified = queueVerified,
+                afterNative = afterNative
+            )
             val replayRequest = synchronized(deferredAutoDjLock) {
                 if (pendingDeferredAutoDjRefill !== refill) return
                 refill.nextCommandContext?.let { context ->

@@ -441,3 +441,42 @@ replaying unverified obfuscated player methods or delaying current Play.
 Device regression acceptance: a manual Next onto the final queue row
 must start that row immediately while a cold search is still running;
 only the following queue append waits for matching. No new translations.
+
+## 2026-11-04 targeted native source refresh candidate (device test pending)
+
+The original GMMP 4.2.1 APK (not a guessed R8 map) was inspected at the
+actual `next audio source is ` logging statement. It resides inside static
+`MusicService.E2(MusicService):void`. Its native path reads the next queue
+entry, builds the `sq` AudioSource and passes it to `hn3.h0(sq,boolean)`.
+The same helper is called by several native transitions, including
+`hn3.V0()` after `onTransitionComplete`. This is distinct from the
+`I2(int)` event whose R83 hold did not run on the ordinary cold-refill path.
+
+The new candidate passively wraps this exact E2/source-setter pair only on
+the shape-validated, tested GMMP 4.2.1 mapping. It never holds the original
+native call. If native E2 actually sets a **null** source while the last
+song's one existing GoneSmart recommendation fill is pending, it retains
+that service instance for this request only. After the **same native qr.z**
+worker appends a real next row and passes the independent queue postcondition,
+one off-transport invocation of the **now APK-proven E2 source-calculation
+helper** is eligible only with unchanged Current identity, a nonempty
+upcoming queue, still-active audio, no pending manual Next, current request,
+no intervening native non-null source recovery, and exactly GMMP 4.2.1.
+It does not invoke I2, select another track, seek, restart, mutate the queue
+or request more providers.
+
+Logs: `SMART DJ NEXT SOURCE NULL OBSERVED`, then after the native queue
+verification either `SMART DJ NEXT SOURCE REFRESH | skipped=true` or
+`requested=true` followed by the actual native setter's
+`nativeSourceNonNull=true/false`. One-time source recalculation is a new
+**device-test candidate**, not an accepted audio/decoder fix. There is no
+12/63-second synchronous hold. The 60-second existing provider preparation
+limit remains unchanged. No translations or companion UI changes required.
+
+Acceptance must verify (1) immediate manual Next onto the final queue song
+with a cold pool, (2) original `E2` records a null source without delaying
+the transition, (3) native refill verifies the exact smart row, (4) the
+one-shot E2 refresh reports a **non-null** native source, and (5) the
+following natural transition really starts audio. Also test Stop After
+Each Track, canceled/new sessions and manual skips; a native non-null
+AudioSource alone is not sufficient proof of audible playback.
