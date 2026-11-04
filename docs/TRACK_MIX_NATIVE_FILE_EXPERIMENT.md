@@ -289,3 +289,40 @@ does not itself prove that GMMP's playback controls work, but distinguishes
 a blocked UI event loop from a player-state transition failure. Confirmation
 of the root cause still requires an on-device capture containing the
 corresponding audio and UI probe logs.
+
+## 2026-11-04 continuous trace: cold normal Smart DJ cached null before refill
+
+The continuous recording `GoneSmart-recording-20261104-115346-299.zip`
+identifies a distinct, now proven failure path in GMMP 4.2.1. At
+11:49:39.920 the native AudioPlayer switched to Bosse - Sunnyside. The
+ordinary native `qr.z(1)` request then found no GoneSmart pool and
+deferred **the same single provider pipeline** at 11:49:40.125. At
+11:49:40.127, before it returned any match, GMMP queried queue position
+22 and logged `next audio source is null`. The pool completed 7.594 s
+later with 20 ranked local matches, and native `qr.z(1)` appended the
+selected Lityway - Für dich (ID 15872) at position 22, independently
+verified at 11:49:47.773. At Sunnyside's natural end (11:52:54), GMMP
+selected that correct Track ID but did not start output. Both passive
+audio probes observed inactive output while the main looper acknowledged
+normally. The later non-null source for position 23 does **not** repair
+the earlier null source cached for position 22.
+
+Candidate correction: only when this exact cold deferred request is
+still within 1.5 s of its start, the original song already has active
+audio, and the accepted `MusicService.I2(int)` pre-source callback is
+invoked off the UI/deferred worker, temporarily hold that callback for
+at most 12 s while the existing provider and native `qr.z` worker run.
+Release on **verified native queue materialization** (preserved Current,
+unique/contiguous positions, real newly appended GMMP rows), rejection
+or timeout. Never invoke/replay `I2`, alter its opaque argument, add a
+provider query, change GMMP's configured upcoming count, inject a native
+random/placeholder row, or seek/skip/restart the player. On timeout the
+original callback proceeds unchanged. No persistent polling is added.
+
+This is a targeted **device-test candidate**, not accepted decoder
+repair. The on-device trace must confirm `SMART DJ NEXT SOURCE HOLD`
+before the natural source lookup, `verified=true` after the *same* pool
+completes, followed by a non-null `next audio source` for the exact
+appended Track ID **and** audible natural playback at the following EOF.
+The earlier 2026-11-03 non-null-source hang remains a separate diagnostic
+possibility. No new translations required.
