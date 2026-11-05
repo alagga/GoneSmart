@@ -830,6 +830,7 @@ class GoneSmartModule : XposedModule() {
         val pendingManualNext: Int
     )
     private val nativeNextSourceWindow = ThreadLocal<NativeNextSourceWindow?>()
+    private val completedNextSourceRefresh = ThreadLocal<NativeNextSourceWindow?>()
     @Volatile private var verifiedNativeNextSourceRefresh: Method? = null
     // Captured only after the accepted GMMP native refill boundary is hooked.
     // The delayed worker must never resolve a second, independently guessed writer.
@@ -5238,6 +5239,19 @@ class GoneSmartModule : XposedModule() {
                 " | queuePosition=${queue?.currentQueuePosition ?: -1}" +
                 " | upcoming=${queue?.upcomingItems?.size ?: -1}" +
                 " | audioActive=$audioActive | status=$status")
+            // The Android 128 KiB ring buffer can evict a five-minute trace
+            // before the user opens GoneSmart. Retain only these two bounded
+            // tail-transition samples in the companion event history, with
+            // numeric IDs rather than track names or filesystem paths.
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                "Playback probe $phase: entry=$currentEntryId " +
+                    "actual=${liveCurrent?.queueEntryId ?: -1L} " +
+                    "track=${liveCurrent?.track?.id ?: -1L} " +
+                    "position=${queue?.currentQueuePosition ?: -1} " +
+                    "upcoming=${queue?.upcomingItems?.size ?: -1} " +
+                    "audioActive=$audioActive status=$status"
+            )
             return AutoDjPlaybackTransitionProbePolicy.shouldRecheck(
                 currentStillPlaying = sameCurrent,
                 audioActive = audioActive
@@ -5334,6 +5348,7 @@ class GoneSmartModule : XposedModule() {
             } finally {
                 nativeNextSourceWindow.set(prior)
                 if (sourceWindow.phase == "after-native-append") {
+                    completedNextSourceRefresh.set(sourceWindow)
                     Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | " +
                         "nativeSourceNonNull=${sourceWindow.nonNullSourceObserved}" +
                         " | nativeSourceNull=${sourceWindow.nullSourceObserved}")
@@ -5418,17 +5433,43 @@ class GoneSmartModule : XposedModule() {
                     " | sourceAvailable=${captured.service != null}" +
                     " | nativeRecovered=${captured.nativeRecovered}" +
                     " | testedVersion=$versionAccepted")
+                runtimeReporter.reportEvent(
+                    GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                    "Next-source refresh skipped: entry=${refill.currentEntryId} " +
+                        "queueVerified=$queueVerified " +
+                        "sameCurrent=${afterNative?.currentItem?.queueEntryId == refill.currentEntryId} " +
+                        "upcoming=${afterNative?.upcomingItems?.size ?: 0} " +
+                        "audioActive=$audioActive manualNext=${captured.pendingManualNext} " +
+                        "serviceAvailable=${captured.service != null} " +
+                        "nativeRecovered=${captured.nativeRecovered} " +
+                        "testedVersion=$versionAccepted"
+                )
             }
             return
         }
         try {
             performingNextSourceRefresh.set(true)
+            completedNextSourceRefresh.remove()
             Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | requested=true" +
                 " | session=${refill.sessionId} | current=${refill.currentEntryId}")
             callback!!.invoke(null, captured.service)
+            val observed = completedNextSourceRefresh.get()
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                "Next-source refresh invoked: entry=${refill.currentEntryId} " +
+                    "session=${refill.sessionId} queueVerified=$queueVerified " +
+                    "sourceNonNull=${observed?.nonNullSourceObserved} " +
+                    "sourceNull=${observed?.nullSourceObserved}"
+            )
         } catch (failure: Throwable) {
             Log.w(TAG, "SMART DJ NEXT SOURCE REFRESH | native calculation failed", failure)
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                "Next-source refresh failed: entry=${refill.currentEntryId} " +
+                    "error=${failure.javaClass.simpleName}"
+            )
         } finally {
+            completedNextSourceRefresh.remove()
             performingNextSourceRefresh.remove()
         }
     }
@@ -6969,6 +7010,15 @@ class GoneSmartModule : XposedModule() {
                 " | current=${refill.currentEntryId}" +
                 " | beforeSize=${currentQueue.items.size}" +
                 " | afterSize=${afterNative?.items?.size ?: -1}")
+            runtimeReporter.reportEvent(
+                GoneSmartRuntimeContract.CATEGORY_SMART_DJ,
+                "Deferred queue append: session=${refill.sessionId} " +
+                    "entry=${refill.currentEntryId} verified=$queueVerified " +
+                    "requested=${nativeRequest.second} " +
+                    "before=${currentQueue.items.size} " +
+                    "after=${afterNative?.items?.size ?: -1} " +
+                    "waitMs=${SystemClock.elapsedRealtime() - refill.scheduledAt}"
+            )
             refreshNativeNextSourceAfterAppend(
                 refill = refill,
                 queueVerified = queueVerified,

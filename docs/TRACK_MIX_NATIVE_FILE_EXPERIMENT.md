@@ -480,3 +480,31 @@ one-shot E2 refresh reports a **non-null** native source, and (5) the
 following natural transition really starts audio. Also test Stop After
 Each Track, canceled/new sessions and manual skips; a native non-null
 AudioSource alone is not sufficient proof of audible playback.
+
+## 2026-11-05 five-minute capture gap and persistent playback breadcrumbs
+
+The device snapshot `GoneSmart-last-5min-20261105-115430-629.zip` is
+from the targeted refresh build `030c1b1`, but does **not** include the
+reported `You` to `I Will Remain` freeze. The requested window begins
+11:49:30; the first retained GMMP/GoneSmart logcat entry is 11:54:23,
+only 6.7 seconds before export. Android reported `main`, `system` and
+`crash` at only 128 KiB each. The snapshot was not truncated by the app;
+it contains only window/UI entries, no source or playback events. The
+actual failure mechanism and efficacy of the R86 source refresh therefore
+remain unproven. Do **not** add another player replay or queue timing hold
+based on this file.
+
+To preserve actionable clues when Android rotates its logcat ring, the
+existing passive 1.8s/4.3s managed-tail audio probe now forwards each
+bounded result to the companion event history, with only numeric queue/
+track IDs, current identity, next-row count and AudioManager activity.
+The existing background native refill worker also retains its verified
+append result and the source-refresh decision/result, including the
+`hn3.h0` null/non-null observation after the one-shot recalculation.
+These broadcasts are emitted **outside** the synchronous native playback
+and E2 interception boundaries; they do not change provider queries,
+queue mutations, timing, decoder state or transport. They are diagnostic
+samples, not proof of audible playback. A continuous recording started
+before a freeze remains the preferred evidence; the separate root-gated
+8 MiB main-logcat buffer option requires explicit confirmation and was
+not silently changed.
