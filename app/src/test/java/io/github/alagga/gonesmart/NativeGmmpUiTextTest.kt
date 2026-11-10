@@ -18,7 +18,7 @@ class NativeGmmpUiTextTest {
             )
         )
         assertEquals(
-            "GoneSmart is searching for recommendations… Next will play when ready.",
+            "GoneSmart is searching for recommendations…",
             NativeGmmpUiText.smartDjNoticeLabel(
                 "searching-next", "Auto-DJ", "Bewertung", "Fehler"
             )
