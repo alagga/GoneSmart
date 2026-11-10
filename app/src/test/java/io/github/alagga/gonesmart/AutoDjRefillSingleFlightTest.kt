@@ -63,7 +63,7 @@ class AutoDjRefillSingleFlightTest {
         }
         owner.start()
         val joiner = Thread {
-            joined.set(gate.joinActive(3_000))
+            joined.set(gate.joinActive())
             joinerFinished.countDown()
         }
         try {
@@ -81,25 +81,19 @@ class AutoDjRefillSingleFlightTest {
         assertEquals(AutoDjRefillSingleFlight.JoinResult.COMPLETED, joined.get())
         assertEquals(
             AutoDjRefillSingleFlight.JoinResult.NO_ACTIVE_REFILL,
-            gate.joinActive(0)
+            gate.joinActive()
         )
     }
 
     @Test
-    fun reentrantAndSlowRefillsCannotDeadlockPlayback() {
+    fun reentrantRefillIsNeverAllowedToJoinItself() {
         val gate = AutoDjRefillSingleFlight()
         assertTrue(gate.tryEnter())
         try {
             assertEquals(
                 AutoDjRefillSingleFlight.JoinResult.SAME_THREAD,
-                gate.joinActive(500)
+                gate.joinActive()
             )
-            val result = AtomicReference<AutoDjRefillSingleFlight.JoinResult>()
-            val worker = Thread { result.set(gate.joinActive(20)) }
-            worker.start()
-            worker.join(2_000)
-            assertFalse(worker.isAlive)
-            assertEquals(AutoDjRefillSingleFlight.JoinResult.TIMED_OUT, result.get())
             assertFalse(gate.tryEnter())
         } finally {
             gate.leave()

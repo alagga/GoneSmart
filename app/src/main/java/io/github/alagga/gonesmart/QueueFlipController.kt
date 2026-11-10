@@ -34,9 +34,7 @@ import kotlin.math.roundToInt
  * command, then reverse the NEW list just before MusicService builds the
  * playback queue. Neither path edits any playlist on disk.
  */
-internal class QueueFlipController(
-    private val onVerifiedNaturalPosition: (Any, Int?) -> Unit = { _, _ -> }
-) {
+internal class QueueFlipController {
     companion object {
         private const val TAG = "GoneSmartFlip"
         private const val FLIP_ACTION_ID = 0x47534601
@@ -117,7 +115,6 @@ internal class QueueFlipController(
             autoDj = instance,
             currentPosition = position
         )
-        onVerifiedNaturalPosition(instance, position)
     }
 
     /**

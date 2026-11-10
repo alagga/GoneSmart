@@ -3,6 +3,17 @@
 **Branch:** `feature/async-track-mix-playback`. **Status:** host CI and device
 acceptance required; do not merge to the 0.5.0 fix branch yet.
 
+**2026-11-10 latest correction:** The speculative `qr.z` refill workers
+described in the historical November 1–3 entries below have been retired.
+They collided with real native `qr.z` on the playback thread and produced
+cached null AudioSources despite successful subsequent queue insertion. The
+natural Current observer now only assists the existing Track Mix zero-pool
+transition; normal and managed ongoing refills occur at GMMP's own `qr.z`
+boundary, with one controlled deferred native completion after a cold pool
+search. The former 1.5-second join is removed. Audible device re-acceptance
+is still required. Older sections describe historical experiments, not the
+current design.
+
 ## Native workflow
 
 1. Resolve a unique GMMP library Track ID/file path from the clicked song.
@@ -85,9 +96,9 @@ AudioSource replay or parallel player is introduced.
    late GoneSmart recommendations are discarded, not inserted in the new queue.
 5. Check shortage/zero matches, fallback enabled/disabled, duplicate
    candidates, queue reordering, and a rapid second explicit mix request.
-6. Confirm subsequent native Auto-DJ continuation uses the maintained Smart
-   pool, with at most one extra upcoming-track safety margin beyond GMMP's
-   configured count (minimum 2) in sessions already proven through `qr.z`.
+6. Confirm subsequent GMMP-owned native Auto-DJ continuation uses the
+   maintained Smart pool and only the configured upcoming-track count. No
+   passive CURRENT event may invoke its own speculative `qr.z`.
 7. For Re-Style and other remixes, confirm `SMART DJ REMIX GENRE` and
    `SMART DJ REMIX GENRE LOCAL` log external style discovery and local artist
    matches. Confirm originals do not dominate the remixer's result set.

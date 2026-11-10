@@ -33,7 +33,35 @@ and queue-writing window even when a pool is already warm. The deferred
 session-request coalescer handles the long background waiting window instead;
 both guards serve different stages and must remain in place.
 
-### 2026-11-10 playback regression: joining an overlapping warm refill
+### 2026-11-10 correction: GMMP owns the queue-tail refill (new candidate)
+
+The 17:33 and 21:51 device failures below identify the *proactive* refill
+calls as the collision source. Natural GMMP `qr.z` calls arrived 18–26 ms
+after GoneSmart's separate normal/managed tail workers had begun the same
+refill. Coalescing those natural callbacks caused GMMP's playback thread to
+cache a null `current+1` source before the follower was written.
+
+Both proactive workers are now **retired**. A natural Current event does not
+invoke `qr.z` or start a provider request. GMMP owns the real `qr.z(int)`
+boundary; GoneSmart only substitutes the selected `kr.F1(int)` result while
+GMMP performs its own native enqueue. For a cold pool, the existing single
+background search still finishes asynchronously and resumes one verified
+native refill after results are available. The verified Track Mix initial
+bootstrap and explicit native fallback remain separate native workflows.
+
+The synchronous native writer stays single-flight. An overlapping off-main
+native caller may join its **actual completion**, with no 1.5-second deadline
+or hold across the provider search. Same-thread reentrancy and main-thread
+waits are excluded. A passive audio probe now observes successfully verified
+natural tail refills. Neither the probe nor a position event starts a refill.
+
+**Device re-acceptance pending:** test audible natural transitions for normal
+Auto-DJ and managed Track Mix, warm and cold pool, screen off, rapid Next,
+fallback and new-session cancellation. The next AudioSource must be non-null
+and the subsequent song must actually play; queue readback and CI alone are
+insufficient evidence.
+
+### 2026-11-10 playback regression: former join attempt (superseded)
 
 Two 5-MiB Logcat snapshots from the exact tested `e678933` debug APK
 independently caught the same race with an already-warm pool:
@@ -56,20 +84,15 @@ the existing single-flight guard let the *second*, playback-critical `qr.z`
 call return before the *first* native enqueue committed. Correct later queue
 postconditions could not retroactively prepare GMMP's cached AudioSource.
 
-The candidate repair lets a coalesced off-main-thread native `qr.z` caller
-**join the existing single-flight completion** (up to 1,500 ms, event-driven)
-before allowing the original native caller to resume its next-source lookup.
-It does not invoke a second refill, change provider searches, rewrite queue
-rows, replay transport commands or delay the main thread. Same-thread
-reentrancy is never joined; slow/cold fills time out instead of blocking the
-existing 60-second provider search. The original fast native writer remains
-the sole enqueue owner. Logs include `join=COMPLETED` / `TIMED_OUT` and
-`waitMs` to distinguish verified coordination from another missed window.
+The first, unaccepted repair tried a 1,500 ms join for the overlapping writer.
+This guessed deadline left both extra `qr.z` callers in place; it has been
+superseded by the native-ownership correction above. The gate now joins only
+actual synchronous native writer completion, with no time threshold.
 
 **Device re-acceptance required:** repeat multiple natural transitions with
 normal Auto-DJ and managed Track Mix when the pool is warm, including screen
-off and rapid Next. The relevant overlap should now log `join=COMPLETED`,
-the original native next-source lookup should return a real file, and the
+off and rapid Next. There should be no speculative warm/managed overlap at
+all. The original native next-source lookup should return a real file, and the
 following track must actually play. Also verify that long provider fills,
 main-thread calls and new sessions remain responsive. A successful build or
 queue verification alone does not prove audible playback.

@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.media.AudioManager
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -84,11 +83,6 @@ class GoneSmartModule : XposedModule() {
 
         private const val TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS =
             60L
-
-        // A native current+1 lookup may overlap a fast, already-running
-        // enqueue. Join its completion, but never wait for a 60-second
-        // provider search on the playback worker.
-        private const val NATIVE_REFILL_JOIN_TIMEOUT_MS = 1_500L
 
         // Track Auto-DJ must never strand playback on the isolated seed while
         // the network recommendation pipeline takes many seconds. Once the
@@ -491,10 +485,7 @@ class GoneSmartModule : XposedModule() {
     private val playlistBridgeRuleBindHookKeys =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    private val queueFlipController =
-        QueueFlipController { autoDj, position ->
-            scheduleWarmNativeAutoDjRefill(autoDj, position)
-        }
+    private val queueFlipController = QueueFlipController()
 
     // Track Mix is always available from single-song context menus,
     // even while Smart DJ is disabled. Clicking it explicitly enables
@@ -540,9 +531,6 @@ class GoneSmartModule : XposedModule() {
                 selectedTrackId = selectedTrackId,
                 selectedEntryId = selectedEntryId
             )
-        },
-        onManagedTailRefill = { autoDj, currentPosition, entryId ->
-            scheduleAutoDjAudioTransitionProbe(autoDj, currentPosition, entryId)
         }
     )
 
@@ -782,12 +770,6 @@ class GoneSmartModule : XposedModule() {
             Thread(runnable, "GoneSmart-DeferredAutoDJ").apply { isDaemon = true }
         }
 
-    private val warmAutoDjExecutor =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "GoneSmart-WarmAutoDJ").apply { isDaemon = true }
-        }
-    private val warmRefillCheckQueued = AtomicBoolean(false)
-
     // Passive playback diagnostics only at a verified queue-tail transition.
     // Never poll providers, seek, skip, start audio or alter native queue.
     private val audioTransitionProbeExecutor =
@@ -796,9 +778,6 @@ class GoneSmartModule : XposedModule() {
         }
     private val audioTransitionProbeLock = Any()
     private var lastAudioTransitionProbeKey: String? = null
-
-    @Volatile private var provenNativeAutoDjSessionId = -1L
-    @Volatile private var warmRefilledCurrentEntryId = -1L
 
     private data class DeferredAutoDjRefill(
         val autoDj: Any,
@@ -5048,99 +5027,6 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * At natural queue-position changes, prefill *ahead* of the final audio
-     * boundary. In the 21:35 trace GMMP waited until its 13th track had ended
-     * before calling qr.z(1); adding a source 54 ms later was too late to
-     * restart the decoder. This worker never changes playback position or
-     * injects a synthetic/placeholder track. Only a native Auto-DJ session
-     * already observed through the accepted qr.z hook is eligible.
-     */
-    private fun scheduleWarmNativeAutoDjRefill(autoDj: Any, position: Int?) {
-        if (!options.enabled || position == null || position <= 0 ||
-            provenNativeAutoDjSessionId < 0 ||
-            trackMixController.ownsManagedAutoDj(autoDj) ||
-            !warmRefillCheckQueued.compareAndSet(false, true)
-        ) return
-
-        // Only the queue tail is eligible. GMMP plays the selected last track
-        // immediately; after that natural transition, qr.z may obtain exactly
-        // the configured upcoming deficit. If the smart pool is still cold,
-        // the existing deferred worker waits for the *same* search to finish.
-        // Neither a position event nor this check starts a provider query.
-
-        warmAutoDjExecutor.execute {
-            try {
-                // The observer already returned from GMMP's Current
-                // callback. Work off-thread, but do not sleep: the R83 log
-                // preloaded the next AudioSource after about 714 ms, sooner
-                // than the former 900-ms timer.
-                if (Thread.currentThread().isInterrupted ||
-                    !options.enabled || trackMixController.ownsManagedAutoDj(autoDj)
-                ) return@execute
-                val nativeRefill = verifiedNativeAutoDjRefill
-                    ?.takeIf { it.declaringClass.isInstance(autoDj) }
-                    ?: return@execute
-                val context = readQueueContext(autoDj) ?: return@execute
-                val ordered = context.items.sortedBy { it.queuePosition }
-                val currentItems = ordered.filter { it.state == QueueItemState.CURRENT }
-                val current = currentItems.singleOrNull() ?: return@execute
-                if (current.queuePosition != position ||
-                    context.currentQueuePosition != position ||
-                    current.queueEntryId == warmRefilledCurrentEntryId
-                ) return@execute
-                val firstPosition = ordered.firstOrNull()?.queuePosition ?: return@execute
-                if (ordered.map { it.queuePosition } !=
-                    List(ordered.size) { index -> firstPosition + index }
-                ) return@execute
-                val session = queueSessionTracker.observe(context)
-                if (session.sessionId != provenNativeAutoDjSessionId) return@execute
-                val configuredUpcoming = gmmpAutoDjSettingsReader.read().upcomingTrackCount
-                val requested = AutoDjWarmQueuePolicy.refillCount(
-                    queueSize = ordered.size,
-                    currentIndex = ordered.indexOf(current),
-                    configuredUpcoming = configuredUpcoming
-                )
-                if (requested <= 0) return@execute
-
-                // Diagnose this actual playback transition after the native
-                // player has had time to start audio. This does not delay qr.z.
-                scheduleAutoDjAudioTransitionProbe(
-                    autoDj = autoDj,
-                    currentPosition = position,
-                    currentEntryId = current.queueEntryId
-                )
-                // Deduplicate this native current-entry event; GMMP itself
-                // still owns enqueue, order, and all future transitions.
-                Log.i(TAG, "SMART DJ WARM REFILL | session=${session.sessionId} | " +
-                    "current=$position | upcoming=${context.upcomingItems.size} | " +
-                    "requested=$requested | boundary=verified-native-qr.z")
-                nativeRefill.invoke(autoDj, requested)
-                val after = readQueueContext(autoDj)
-                val verified = AutoDjQueueAppendPolicy.confirmed(
-                    before = context.items.map { it.queueEntryId to it.queuePosition },
-                    after = after?.items?.map {
-                        it.queueEntryId to it.queuePosition
-                    } ?: emptyList(),
-                    currentEntryId = current.queueEntryId,
-                    afterCurrentEntryId = after?.currentItem?.queueEntryId,
-                    requested = requested
-                )
-                // A cold deferred request can return without appending rows.
-                // Only materialized native additions count as fulfilled.
-                if (verified) warmRefilledCurrentEntryId = current.queueEntryId
-                Log.i(TAG, "SMART DJ WARM QUEUE VERIFY | verified=$verified" +
-                    " | requested=$requested | oldSize=${context.items.size}" +
-                    " | newSize=${after?.items?.size ?: -1}" +
-                    " | currentEntry=${current.queueEntryId}")
-            } catch (failure: Throwable) {
-                Log.w(TAG, "SMART DJ WARM REFILL | native early request failed", failure)
-            } finally {
-                warmRefillCheckQueued.set(false)
-            }
-        }
-    }
-
-    /**
      * Observes a real GMMP fallback without modifying any of its choices.
      * Failure/partial insertion is logged, never silently treated as success.
      */
@@ -5710,24 +5596,18 @@ class GoneSmartModule : XposedModule() {
             // Special Track Mix continuity/bootstrap paths have returned above.
             val guardSmartRefill = autoDjInstance != null && options.enabled
             if (guardSmartRefill && !autoDjRefillSingleFlight.tryEnter()) {
-                // A natural MusicService qr.z() can race an early warm refill.
-                // If we return immediately, GMMP may look up current+1 before
-                // the first writer commits and cache a null AudioSource for
-                // the *next* transition (verified in both 2026-11-10 logs).
-                // Join only the active writer, never block GMMP's main thread
-                // or start another search. A cold provider fill remains bounded.
-                val joinStarted = SystemClock.elapsedRealtime()
-                val joinResult = if (Looper.myLooper() == Looper.getMainLooper()) {
-                    null
-                } else {
-                    autoDjRefillSingleFlight.joinActive(NATIVE_REFILL_JOIN_TIMEOUT_MS)
-                }
+                // Another *native writer*, not a provider lookup, already
+                // owns the refill. On a GMMP playback worker wait for its
+                // actual completion, without a guessed 1.5-second deadline.
+                // The main thread must never wait for a competing worker.
+                val joinResult = if (android.os.Looper.myLooper() ==
+                    android.os.Looper.getMainLooper()
+                ) null else autoDjRefillSingleFlight.joinActive()
                 Log.i(
                     TAG,
                     "SMART DJ REFILL COALESCED | requested=$requestedTracks | " +
                         "another native refill already pending" +
-                        " | join=${joinResult?.name ?: "main-thread-skipped"}" +
-                        " | waitMs=${SystemClock.elapsedRealtime() - joinStarted}"
+                        " | join=${joinResult?.name ?: "main-thread-skipped"}"
                 )
                 return@intercept null
             }
@@ -5881,11 +5761,6 @@ class GoneSmartModule : XposedModule() {
                     .observe(
                         beforeContext
                     )
-
-            // Only GMMP's own proven native Auto-DJ requests establish this
-            // queue session as eligible for early native refills. Ordinary
-            // Play/Next (including smart playlists) never opts in by itself.
-            provenNativeAutoDjSessionId = session.sessionId
 
             logQueueSession(
                 session
@@ -6262,6 +6137,31 @@ class GoneSmartModule : XposedModule() {
                     afterContext = afterContext,
                     origin = QueueEntryOrigin.GONESMART
                 )
+
+                // Observe a real GMMP-owned last-song refill, not a
+                // synthetic early qr.z() invocation. This is read-only and
+                // can diagnose the decoder without changing playback.
+                val lastCurrent = beforeContext.currentItem
+                if (beforeContext.upcomingItems.isEmpty() &&
+                    lastCurrent != null &&
+                    AutoDjQueueAppendPolicy.confirmed(
+                        before = beforeContext.items.map {
+                            it.queueEntryId to it.queuePosition
+                        },
+                        after = afterContext.items.map {
+                            it.queueEntryId to it.queuePosition
+                        },
+                        currentEntryId = lastCurrent.queueEntryId,
+                        afterCurrentEntryId = afterContext.currentItem?.queueEntryId,
+                        requested = requestedTracks
+                    )
+                ) {
+                    scheduleAutoDjAudioTransitionProbe(
+                        autoDj = autoDjInstance,
+                        currentPosition = lastCurrent.queuePosition,
+                        currentEntryId = lastCurrent.queueEntryId
+                    )
+                }
 
                 val updatedSession =
                     queueSessionTracker

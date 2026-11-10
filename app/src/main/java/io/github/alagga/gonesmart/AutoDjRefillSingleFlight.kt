@@ -1,19 +1,17 @@
 package io.github.alagga.gonesmart
 
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * GMMP may call qr.z() concurrently while both callers wait for the same
  * recommendation-pool fill. Only one normal Smart-DJ refill may own the
- * subsequent native queue insertion at a time. A second caller can join the
- * active refill before GMMP queries current+1: simply returning immediately
- * allowed its next-source lookup to cache null while the first refill was
- * still writing the follower.
+ * subsequent native queue insertion at a time. A second native playback
+ * worker can wait for the writer's actual completion before GMMP queries
+ * current+1. The gate is never held across the asynchronous provider fill.
  *
- * Track Mix's native continuity and pre-play bootstrap paths are intentionally
- * not routed through this gate.
+ * Track Mix's verified pre-play bootstrap/zero-pool source preparation paths
+ * remain outside this gate; later GMMP-owned continuation enters normally.
  */
 internal class AutoDjRefillSingleFlight {
     private class Flight(
@@ -23,7 +21,6 @@ internal class AutoDjRefillSingleFlight {
 
     enum class JoinResult {
         COMPLETED,
-        TIMED_OUT,
         SAME_THREAD,
         NO_ACTIVE_REFILL,
         INTERRUPTED
@@ -35,18 +32,16 @@ internal class AutoDjRefillSingleFlight {
 
     /**
      * Waits for the already-started native refill to finish; never invokes a
-     * second native writer or provider query. The owner cannot wait on itself,
-     * and the caller controls the short playback-critical timeout.
+     * second native writer or provider query. There is no guessed elapsed-time
+     * completion threshold: the latch opens only when the native writer leaves.
+     * The caller must guard against waiting from the UI thread.
      */
-    fun joinActive(timeoutMs: Long): JoinResult {
+    fun joinActive(): JoinResult {
         val flight = active.get() ?: return JoinResult.NO_ACTIVE_REFILL
         if (flight.owner === Thread.currentThread()) return JoinResult.SAME_THREAD
         return try {
-            if (flight.completed.await(timeoutMs.coerceAtLeast(0), TimeUnit.MILLISECONDS)) {
-                JoinResult.COMPLETED
-            } else {
-                JoinResult.TIMED_OUT
-            }
+            flight.completed.await()
+            JoinResult.COMPLETED
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             JoinResult.INTERRUPTED
