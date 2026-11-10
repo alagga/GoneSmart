@@ -14,10 +14,18 @@ class DeferredAutoDjNextPolicyTest {
         assertFalse(DeferredAutoDjNextPolicy.isNativeNextButton(null))
     }
 
-    @Test fun `repeat presses are bounded`() {
+    @Test fun `repeat presses coalesce to exactly one delayed Next`() {
+        assertEquals(1, DeferredAutoDjNextPolicy.MAX_PENDING_SKIPS)
         assertEquals(1, DeferredAutoDjNextPolicy.increment(0))
-        assertEquals(DeferredAutoDjNextPolicy.MAX_PENDING_SKIPS,
-            DeferredAutoDjNextPolicy.increment(DeferredAutoDjNextPolicy.MAX_PENDING_SKIPS))
+        assertEquals(1, DeferredAutoDjNextPolicy.increment(1))
+        assertEquals(1, DeferredAutoDjNextPolicy.increment(4))
+    }
+
+    @Test fun `only a native queue-end Next with a pending cold refill is remembered`() {
+        assertTrue(DeferredAutoDjNextPolicy.shouldRememberNativeNext(true, true, false))
+        assertFalse(DeferredAutoDjNextPolicy.shouldRememberNativeNext(false, true, false))
+        assertFalse(DeferredAutoDjNextPolicy.shouldRememberNativeNext(true, false, false))
+        assertFalse(DeferredAutoDjNextPolicy.shouldRememberNativeNext(true, true, true))
     }
 
     @Test fun `manual append is allowed but new playback is not`() {

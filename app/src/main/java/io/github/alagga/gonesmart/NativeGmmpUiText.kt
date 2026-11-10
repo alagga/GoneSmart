@@ -60,6 +60,8 @@ internal object NativeGmmpUiText {
             "Preparing GoneSmart cache… This may take a moment."
         "cache-ready" ->
             "GoneSmart cache ready."
+        "searching-next" ->
+            "GoneSmart is searching for recommendations… Next will play when ready."
         "offline-native-fallback" ->
             "GoneSmart is offline. Using GMMP Auto-DJ fallback."
         "no-matches-native-fallback" ->

@@ -62,4 +62,18 @@ class LogcatBufferPolicyTest {
             LogcatBufferPolicy.restoreState(original, null, original)
         )
     }
+
+    @Test
+    fun rebootRestoresOriginalCapacityButAnUnrelatedExternalChangeMustNotBeCleared() {
+        val original = 128L * 1024
+        val applied = 5L * 1024 * 1024
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.ALREADY_ORIGINAL,
+            LogcatBufferPolicy.restoreState(original, applied, original)
+        )
+        assertEquals(
+            LogcatBufferPolicy.RestoreState.CHANGED_EXTERNALLY,
+            LogcatBufferPolicy.restoreState(original, applied, 2L * 1024 * 1024)
+        )
+    }
 }

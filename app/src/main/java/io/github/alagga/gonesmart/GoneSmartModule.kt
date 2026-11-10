@@ -815,6 +815,8 @@ class GoneSmartModule : XposedModule() {
 
     private val deferredAutoDjLock = Any()
     private var pendingDeferredAutoDjRefill: DeferredAutoDjRefill? = null
+    private val nativeNextCommandScope = ThreadLocal.withInitial { false }
+    private val nativeNextCommandAtQueueEnd = ThreadLocal.withInitial { false }
     private val performingDeferredAutoDjRefill = ThreadLocal.withInitial { false }
     private val performingNextSourceRefresh = ThreadLocal.withInitial { false }
     private data class NativeNextSourceWindow(
@@ -1010,7 +1012,7 @@ class GoneSmartModule : XposedModule() {
             }
 
             runCatching {
-                installDeferredAutoDjNextHook()
+                installDeferredAutoDjNextHook(param)
             }.onFailure { error ->
                 Log.w(TAG, "SMART DJ DEFERRED NEXT | native click observer unavailable", error)
             }
@@ -5434,12 +5436,74 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * Only watch a proven GMMP player Next control while a cold native refill
-     * is pending. The original click always executes normally. We record
-     * additional presses after the first request has already been deferred;
-     * no queue read or network request occurs on the UI thread.
+     * One user Next intent per cold refill. The original GMMP event is never
+     * held or replaced. Both the confirmed native command and any verified UI
+     * click use this same coalescing boundary; the toast is posted to main.
      */
-    private fun installDeferredAutoDjNextHook() {
+    private fun rememberDeferredAutoDjNext(context: Context?, source: String) {
+        if (context == null) return
+        val showNotice = synchronized(deferredAutoDjLock) {
+            val pending = pendingDeferredAutoDjRefill?.takeIf {
+                options.enabled && it.hadNoUpcomingAtRequest && !it.nativeRefillStarted
+            } ?: return
+            val first = pending.replayNextPresses == 0
+            pending.replayNextPresses = DeferredAutoDjNextPolicy.increment(
+                pending.replayNextPresses
+            )
+            pending.nextCommandContext = context.applicationContext
+            Log.i(TAG, "SMART DJ DEFERRED NEXT | queued=${pending.replayNextPresses}" +
+                " | coalesced=${!first} | source=$source | session=${pending.sessionId}")
+            first
+        }
+        if (showNotice && options.showStatusMessages) {
+            statusNotifier.showNative("searching-next")
+        }
+    }
+
+    /**
+     * GMMP 4.2.1 APK: its native command handler MusicService.l1(m63)
+     * invokes MusicService.B1(boolean) for the end-of-queue Next path.
+     * The device trace corroborates this command's `End of queue reached`
+     * log followed by qr.z. Observe that path passively, and remember the
+     * command only if qr.z then actually defers a cold empty-tail refill.
+     * The View.performClick observer remains a harmless fallback for other
+     * native player controls; neither path delays or replays a command here.
+     */
+    private fun installDeferredAutoDjNextHook(param: PackageReadyParam) {
+        runCatching {
+            val serviceType = param.classLoader.loadClass(
+                "gonemad.gmmp.playback.service.MusicService"
+            )
+            val commandType = param.classLoader.loadClass("m63")
+            val nativeCommand = serviceType.getDeclaredMethod("l1", commandType)
+            val nativeQueueEnd = serviceType.getDeclaredMethod("B1", java.lang.Boolean.TYPE)
+            require(nativeCommand.returnType == Void.TYPE &&
+                nativeQueueEnd.returnType == java.lang.Boolean.TYPE &&
+                !Modifier.isStatic(nativeCommand.modifiers) &&
+                !Modifier.isStatic(nativeQueueEnd.modifiers)
+            ) { "Native GMMP 4.2.1 Next command shape not verified" }
+            nativeCommand.isAccessible = true
+            nativeQueueEnd.isAccessible = true
+            hook(nativeCommand).intercept { chain ->
+                val priorScope = nativeNextCommandScope.get()
+                val priorQueueEnd = nativeNextCommandAtQueueEnd.get()
+                nativeNextCommandScope.set(true)
+                nativeNextCommandAtQueueEnd.set(false)
+                try {
+                    chain.proceed()
+                } finally {
+                    nativeNextCommandScope.set(priorScope)
+                    nativeNextCommandAtQueueEnd.set(priorQueueEnd)
+                }
+            }
+            hook(nativeQueueEnd).intercept { chain ->
+                if (nativeNextCommandScope.get()) nativeNextCommandAtQueueEnd.set(true)
+                chain.proceed()
+            }
+        }.onFailure {
+            Log.w(TAG, "SMART DJ DEFERRED NEXT | native command observer unavailable", it)
+        }
+
         val click = View::class.java.getDeclaredMethod("performClick")
         hook(click).intercept { chain ->
             val pending = synchronized(deferredAutoDjLock) {
@@ -5461,21 +5525,7 @@ class GoneSmartModule : XposedModule() {
 
             val clicked = chain.proceed()
             if (clicked == true) {
-                synchronized(deferredAutoDjLock) {
-                    if (pendingDeferredAutoDjRefill === pending &&
-                        !pending.nativeRefillStarted
-                    ) {
-                        val appContext = view.context.applicationContext
-                        if (appContext != null) {
-                            pending.replayNextPresses = DeferredAutoDjNextPolicy.increment(
-                                pending.replayNextPresses
-                            )
-                            pending.nextCommandContext = appContext
-                            Log.i(TAG, "SMART DJ DEFERRED NEXT | queued=" +
-                                pending.replayNextPresses + " | nativeButton=$entryName")
-                        }
-                    }
-                }
+                rememberDeferredAutoDjNext(view.context, "nativeButton=$entryName")
             }
             clicked
         }
@@ -5968,6 +6018,17 @@ class GoneSmartModule : XposedModule() {
                             session = session,
                             sizing = poolSizing
                         )) {
+                        if (DeferredAutoDjNextPolicy.shouldRememberNativeNext(
+                                commandReachedQueueEnd = nativeNextCommandAtQueueEnd.get(),
+                                hadNoUpcomingAtRequest = beforeContext.upcomingItems.isEmpty(),
+                                nativeRefillStarted = synchronized(deferredAutoDjLock) {
+                                    pendingDeferredAutoDjRefill?.nativeRefillStarted == true
+                                }
+                            )) {
+                            rememberDeferredAutoDjNext(
+                                gmmpAppContext, "native-MusicService-command"
+                            )
+                        }
                         logRefillTiming("cold-pool-deferred")
                         // The source/transport callback must return now. A
                         // synchronous hold here delayed real Next commands

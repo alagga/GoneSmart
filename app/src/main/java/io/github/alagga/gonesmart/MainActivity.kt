@@ -94,6 +94,8 @@ class MainActivity : AppCompatActivity() {
     private var diagnosticBufferBusy = false
     private var diagnosticBufferStatusText: TextView? = null
     private var diagnosticBufferChangeButton: MaterialButton? = null
+    private var diagnosticBufferRestoreButton: MaterialButton? = null
+    private var diagnosticBufferResetCheckedThisSession = false
     private var minimumRatingSlider: Slider? = null
     private var minimumRatingValueText: TextView? = null
     private var ratingFallbackRow: LinearLayout? = null
@@ -927,6 +929,13 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(diagnosticBufferChangeButton)
         container.addView(verticalGap(8))
+        diagnosticBufferRestoreButton = outlineButton("Restore previous main buffer size") {
+            GoneSmartDiagnosticCapture.previousMainBufferBytes(this)?.let {
+                confirmDiagnosticBufferRestore(it)
+            }
+        }
+        container.addView(diagnosticBufferRestoreButton)
+        container.addView(verticalGap(8))
         container.addView(textView(
             "Captures GMMP and GoneSmart Android Logcat, not only the activity history above. " +
                 "A snapshot requests the previous five minutes but Android may retain only seconds of them. " +
@@ -1497,12 +1506,28 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= 33 && access) View.VISIBLE else View.GONE
         diagnosticRootButton?.text =
             if (root) "Disable root diagnostics" else "Use root for diagnostics"
-        diagnosticBufferChangeButton?.text =
-            if (GoneSmartDiagnosticCapture.previousMainBufferBytes(this) != null) {
-                "Restore previous main buffer size"
-            } else {
-                "Increase main buffer to 8 MiB"
-            }
+        diagnosticBufferChangeButton?.text = "Increase main buffer to 8 MiB"
+        val savedOriginalBuffer = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
+        diagnosticBufferRestoreButton?.visibility =
+            if (savedOriginalBuffer != null) {
+                View.VISIBLE
+            } else View.GONE
+        // Root is already opt-in. Check once per Activity whether Android
+        // reset logd across a reboot, without blocking the UI or changing
+        // the system-wide buffer implicitly.
+        if (savedOriginalBuffer != null && root && !diagnosticBufferResetCheckedThisSession) {
+            diagnosticBufferResetCheckedThisSession = true
+            Thread({
+                val cleared = runCatching {
+                    GoneSmartDiagnosticCapture.clearStaleMainBufferRestore(applicationContext)
+                }.getOrDefault(false)
+                if (cleared) runOnUiThread {
+                    diagnosticBufferStatusText?.text =
+                        "Android already reset main to its original size; Restore is no longer needed."
+                    refreshLogs()
+                }
+            }, "GoneSmartLogcatResetCheck").start()
+        }
         val text = localizedFeatureLogs(GoneSmartEventStore.logText(this))
         val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
         val summary = GoneSmartEventStore.summary(this)
@@ -1544,13 +1569,21 @@ class MainActivity : AppCompatActivity() {
         diagnosticBufferStatusText?.text = "Checking Android Logcat buffer capacities…"
         Thread({
             val result = runCatching {
-                LogcatBufferPolicy.display(
+                val cleared = GoneSmartDiagnosticCapture.clearStaleMainBufferRestore(
+                    applicationContext
+                )
+                val display = LogcatBufferPolicy.display(
                     GoneSmartDiagnosticCapture.inspectLogcatBuffers(applicationContext)
                 )
+                if (cleared) "$display\nAndroid already restored its original size; saved restore state cleared."
+                else display
             }
             runOnUiThread {
                 diagnosticBufferBusy = false
-                result.onSuccess { diagnosticBufferStatusText?.text = it }
+                result.onSuccess {
+                    diagnosticBufferStatusText?.text = it
+                    refreshLogs()
+                }
                     .onFailure {
                         diagnosticBufferStatusText?.text =
                             "Could not read sizes. Root or ADB log access may be required."
@@ -1575,12 +1608,6 @@ class MainActivity : AppCompatActivity() {
                 .show()
             return
         }
-        val previous = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
-        if (previous != null) {
-            confirmDiagnosticBufferRestore(previous)
-            return
-        }
-
         diagnosticBufferBusy = true
         diagnosticBufferStatusText?.text = "Checking the current size before offering a change…"
         Thread({
@@ -1592,7 +1619,19 @@ class MainActivity : AppCompatActivity() {
                 result.onSuccess { buffers ->
                     diagnosticBufferStatusText?.text = LogcatBufferPolicy.display(buffers)
                     val main = buffers.getValue("main").sizeBytes
-                    if (main >= LogcatBufferPolicy.TARGET_MAIN_BYTES) {
+                    val savedOriginal = GoneSmartDiagnosticCapture.previousMainBufferBytes(this)
+                    if (savedOriginal != null && savedOriginal != main) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Restore state still active")
+                            .setMessage(
+                                "GoneSmart saved ${LogcatBufferPolicy.format(savedOriginal)} " +
+                                    "as the previous buffer size. Android now reports " +
+                                    "${LogcatBufferPolicy.format(main)}. Restore the previous " +
+                                    "size or inspect the external change before increasing again."
+                            )
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else if (main >= LogcatBufferPolicy.TARGET_MAIN_BYTES) {
                         AlertDialog.Builder(this)
                             .setTitle("Already at least 8 MiB")
                             .setMessage(
@@ -1617,8 +1656,9 @@ class MainActivity : AppCompatActivity() {
                                     "This helps retain future logs, but does not guarantee five " +
                                     "minutes or recover already overwritten messages.\n\n" +
                                     "GoneSmart will remember the previous size and provide a " +
-                                    "Restore button. A reboot or other system setting may also " +
-                                    "reset it."
+                                    "separate Restore button. If Android already reset the " +
+                                    "buffer to its saved original after a reboot, the stale " +
+                                    "restore record will be cleared before increasing again."
                             )
                             .setPositiveButton("Increase to 8 MiB") { _, _ ->
                                 executeDiagnosticBufferChange(restore = false)

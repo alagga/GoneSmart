@@ -8,7 +8,9 @@ internal object DeferredAutoDjNextPolicy {
         "playernext", "playernextbutton", "playernexttrack",
         "playbacknext", "transportnext", "actionnext", "skipnext"
     )
-    const val MAX_PENDING_SKIPS = 4
+    // Repeated taps during a slow provider search are usually impatience,
+    // not an intentional request to skip several future songs.
+    const val MAX_PENDING_SKIPS = 1
 
     fun isNativeNextButton(resourceEntryName: String?): Boolean {
         if (resourceEntryName.isNullOrBlank()) return false
@@ -17,6 +19,13 @@ internal object DeferredAutoDjNextPolicy {
     }
 
     fun increment(current: Int): Int = (current + 1).coerceIn(0, MAX_PENDING_SKIPS)
+
+    /** Native Next must have reached GMMP's verified end-of-queue callback. */
+    fun shouldRememberNativeNext(
+        commandReachedQueueEnd: Boolean,
+        hadNoUpcomingAtRequest: Boolean,
+        nativeRefillStarted: Boolean
+    ): Boolean = commandReachedQueueEnd && hadNoUpcomingAtRequest && !nativeRefillStarted
 
     fun hasNativeQueueAddition(
         beforeNativeEntryIds: Set<Long>,

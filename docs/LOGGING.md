@@ -98,3 +98,15 @@ The system-wide log reading capability is powerful; even though GoneSmart restri
 
 The Flip-specific native queue/order checks and on-device results are
 documented in [QUEUE_FLIP_TESTING.md](QUEUE_FLIP_TESTING.md).
+
+## Android Logcat main-buffer recovery
+
+Android can restore a manually enlarged Logcat ring buffer to its saved
+original size after reboot. GoneSmart now presents separate **Increase**
+and **Restore** buttons. When Android reports exactly the original size,
+the prior restore record is stale: GoneSmart may clear that record after
+read-only verification and offer a new explicitly confirmed Increase.
+If Android instead reports any other size, GoneSmart preserves its
+restore state and refuses to overwrite an external change. Inspecting
+the buffer never resizes it; the system-wide Increase/Restore operations
+still require an opt-in root grant and separate confirmation.

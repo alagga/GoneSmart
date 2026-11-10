@@ -480,3 +480,36 @@ one-shot E2 refresh reports a **non-null** native source, and (5) the
 following natural transition really starts audio. Also test Stop After
 Each Track, canceled/new sessions and manual skips; a native non-null
 AudioSource alone is not sufficient proof of audible playback.
+
+## 2026-11-10 manual Next while the cold recommendation pool is empty
+
+The improved 5-minute capture from 10:14 shows three user Next attempts
+at 10:12:45.364, 10:12:45.745 and 10:12:49.058. Each reached GMMP's
+`End of queue reached` and its normal Auto-DJ refill. GoneSmart coalesced
+all three requests into **one** ongoing recommendation search, completed
+after 23.57 s, and verified a native 1-row append at 10:13:09.025.
+There is no `SMART DJ DEFERRED NEXT` record: the existing
+`View.performClick` observer did not recognize these real GMMP Next
+inputs. The native queue itself was not lost or inconsistent.
+
+DEX inspection of the tested GMMP 4.2.1 APK finds the native
+`MusicService.l1(m63)` command handler calling its
+`MusicService.B1(boolean)` end-of-queue boundary. The revised candidate
+passively scopes this native command and its end-of-queue invocation;
+only when the same native `qr.z` request then actually defers a cold
+refill with no upcoming tracks does GoneSmart remember one manual Next.
+The original GMMP command and its native refill return immediately.
+Further Next presses coalesce to **one** pending action (never 2–4);
+the existing queue/session/entry validation and one verified native
+`gonemad.gmmp.command.NEXT` replay after append remain unchanged.
+The proven UI `performClick` path can also feed this same single-slot
+behavior without accumulating duplicates. Show one short, nonmodal
+GoneSmart-owned Toast confirming that recommendations are being searched
+and the requested Next will follow. Respect `showStatusMessages`.
+
+This is a targeted input-recognition/UX candidate and requires device
+confirmation that the native command scope indeed recognizes Next even
+when GMMP dispatches the button without `performClick`, that one
+delayed Next resumes only within the same session, and that subsequent
+manual playback cancels the pending action. It must never reintroduce
+transport blocking or extra recommendation requests.

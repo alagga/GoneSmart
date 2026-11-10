@@ -86,13 +86,34 @@ object GoneSmartDiagnosticCapture {
             .getLong(APPLIED_MAIN_BUFFER_BYTES, -1L)
             .takeIf(LogcatBufferPolicy::restorable)
 
+    /**
+     * Android may reset logd to its original size after a reboot. A matching
+     * live size proves that there is nothing left for GoneSmart to restore.
+     * Never discard a saved restore value when Android instead reports a
+     * different third-party size or the inspection fails.
+     */
+    fun clearStaleMainBufferRestore(context: Context): Boolean {
+        val original = previousMainBufferBytes(context) ?: return false
+        val live = inspectLogcatBuffers(context).getValue("main").sizeBytes
+        if (live != original) return false
+        clearPreviousMainBuffer(context)
+        return true
+    }
+
     /** Called only after a separate, explicit in-app confirmation. */
     fun enlargeMainBuffer(context: Context): Pair<Long, Long> {
         require(rootCaptureApproved(context)) { "Enable diagnostic root access first." }
-        require(previousMainBufferBytes(context) == null) {
-            "GoneSmart already remembers a previous main buffer size; restore it first."
-        }
         val before = inspectLogcatBuffers(context).getValue("main").sizeBytes
+        val previous = previousMainBufferBytes(context)
+        if (previous != null) {
+            check(before == previous) {
+                "Android's main buffer is not back at the saved original size. " +
+                    "Restore it first or inspect the external change."
+            }
+            // Android already restored the original, e.g. across reboot.
+            // Drop the stale record only after observing the matching size.
+            clearPreviousMainBuffer(context)
+        }
         if (before >= LogcatBufferPolicy.TARGET_MAIN_BYTES) return before to before
         require(LogcatBufferPolicy.restorable(before)) {
             "Cannot safely remember Android's original main buffer size."
