@@ -33,6 +33,47 @@ and queue-writing window even when a pool is already warm. The deferred
 session-request coalescer handles the long background waiting window instead;
 both guards serve different stages and must remain in place.
 
+### 2026-11-10 playback regression: joining an overlapping warm refill
+
+Two 5-MiB Logcat snapshots from the exact tested `e678933` debug APK
+independently caught the same race with an already-warm pool:
+
+- At 17:33:41.356 GMMP's playback worker entered `qr.z(1)` while an early
+  GoneSmart refill was selecting a pool hit. The native call was immediately
+  coalesced, and `MusicService` cached `next audio source is null` at
+  17:33:41.358. The correct `Only You` queue row was appended at 17:33:41.368,
+  ten milliseconds **after** that failed lookup. At the following transition
+  (17:37:40), the now-current `Only You` entry existed and another follower
+  was inserted, but the 1.8/4.3-second audio probes reported inactive audio.
+- At 21:51:57.425 the exact same overlap occurred during managed Track Mix
+  continuation. Native `next audio source is null` followed at 21:51:57.426;
+  the correct `We Found Love` row appeared at 21:51:57.504. The subsequent
+  21:55:22 transition again showed valid Current/upcoming rows but inactive
+  audio in both probes.
+
+This is not recommendation scarcity, a failed queue write, or a stalled UI:
+the existing single-flight guard let the *second*, playback-critical `qr.z`
+call return before the *first* native enqueue committed. Correct later queue
+postconditions could not retroactively prepare GMMP's cached AudioSource.
+
+The candidate repair lets a coalesced off-main-thread native `qr.z` caller
+**join the existing single-flight completion** (up to 1,500 ms, event-driven)
+before allowing the original native caller to resume its next-source lookup.
+It does not invoke a second refill, change provider searches, rewrite queue
+rows, replay transport commands or delay the main thread. Same-thread
+reentrancy is never joined; slow/cold fills time out instead of blocking the
+existing 60-second provider search. The original fast native writer remains
+the sole enqueue owner. Logs include `join=COMPLETED` / `TIMED_OUT` and
+`waitMs` to distinguish verified coordination from another missed window.
+
+**Device re-acceptance required:** repeat multiple natural transitions with
+normal Auto-DJ and managed Track Mix when the pool is warm, including screen
+off and rapid Next. The relevant overlap should now log `join=COMPLETED`,
+the original native next-source lookup should return a real file, and the
+following track must actually play. Also verify that long provider fills,
+main-thread calls and new sessions remain responsive. A successful build or
+queue verification alone does not prove audible playback.
+
 ### Extra Next presses at the empty tail
 
 The first native Next still completes immediately, including when it starts

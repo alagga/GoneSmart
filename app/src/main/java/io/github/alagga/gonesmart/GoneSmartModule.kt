@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.media.AudioManager
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -83,6 +84,11 @@ class GoneSmartModule : XposedModule() {
 
         private const val TRACK_MIX_SMART_REMAINDER_WAIT_SECONDS =
             60L
+
+        // A native current+1 lookup may overlap a fast, already-running
+        // enqueue. Join its completion, but never wait for a 60-second
+        // provider search on the playback worker.
+        private const val NATIVE_REFILL_JOIN_TIMEOUT_MS = 1_500L
 
         // Track Auto-DJ must never strand playback on the isolated seed while
         // the network recommendation pipeline takes many seconds. Once the
@@ -5704,10 +5710,24 @@ class GoneSmartModule : XposedModule() {
             // Special Track Mix continuity/bootstrap paths have returned above.
             val guardSmartRefill = autoDjInstance != null && options.enabled
             if (guardSmartRefill && !autoDjRefillSingleFlight.tryEnter()) {
+                // A natural MusicService qr.z() can race an early warm refill.
+                // If we return immediately, GMMP may look up current+1 before
+                // the first writer commits and cache a null AudioSource for
+                // the *next* transition (verified in both 2026-11-10 logs).
+                // Join only the active writer, never block GMMP's main thread
+                // or start another search. A cold provider fill remains bounded.
+                val joinStarted = SystemClock.elapsedRealtime()
+                val joinResult = if (Looper.myLooper() == Looper.getMainLooper()) {
+                    null
+                } else {
+                    autoDjRefillSingleFlight.joinActive(NATIVE_REFILL_JOIN_TIMEOUT_MS)
+                }
                 Log.i(
                     TAG,
                     "SMART DJ REFILL COALESCED | requested=$requestedTracks | " +
-                        "another native refill already pending"
+                        "another native refill already pending" +
+                        " | join=${joinResult?.name ?: "main-thread-skipped"}" +
+                        " | waitMs=${SystemClock.elapsedRealtime() - joinStarted}"
                 )
                 return@intercept null
             }
