@@ -421,3 +421,23 @@ bounded native Current readback. Unknown button IDs, remote/hardware actions,
 new playback, missing queue additions and lost Current fail closed. The 2026-
 10-30 source-only audit cannot establish the installed GMMP player button ID;
 device acceptance and exact-head CI remain prerequisites for shipping.
+
+### 2026-11-11 playlist creation follow-up: native row ordering
+
+The device log for a newly created `Festival 2027.m3u` confirms GMMP
+reloaded the playlist catalogue (257 native entries), but opening that playlist
+and two older playlists from GoneSmart's folder overlay failed at the
+native-row binding gate (`expectedPosition=96/95/104`). These are GoneSmart
+navigation failures, not evidence that the M3U files are invalid.
+
+`NativePlaylistSourceInspector` previously accepted a full playlist count from
+reflection-based collection traversal as though its iteration order matched
+GMMP's RecyclerView adapter positions. Completeness does not prove order.
+For a live, independently correlated `NativePlaylistRuntimeBinding`, the
+inspector now derives all paths/models from the verified native indexed
+`getItem(position)` accessor in adapter order. If that established binding
+cannot read the complete native list, the folder overlay fails closed instead
+of inventing a path-to-position mapping from an unrelated collection. Native
+row click handlers, GMMP playlist storage and the original adapter are not
+modified. Device re-acceptance must verify newly created and older playlists
+can be opened in both the physical folder view and root view.

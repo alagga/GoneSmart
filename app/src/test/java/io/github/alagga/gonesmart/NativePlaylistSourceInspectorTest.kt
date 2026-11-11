@@ -2,6 +2,7 @@ package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -74,5 +75,41 @@ class NativePlaylistSourceInspectorTest {
             setOf("/root/A.m3u", "/external/B.m3u"),
             NativePlaylistSourceInspector.inspect(adapter, 2).paths.toSet()
         )
+    }
+
+    private class OrderedNativeModel(
+        val id: Long,
+        val title: String,
+        val path: String
+    )
+
+    private class OrderedAdapter(
+        private val discoveredFirst: List<OrderedNativeModel>,
+        private val sortedRows: List<OrderedNativeModel>
+    ) {
+        fun getItem(position: Int): OrderedNativeModel = sortedRows[position]
+    }
+
+    private class OrderedHolder(val model: OrderedNativeModel)
+
+    @Test fun authoritativeAdapterPositionsOverrideCompleteButUnorderedNativeCollections() {
+        val summer = OrderedNativeModel(1, "Summer 2027", "/playlists/Summer/Summer 2027.m3u")
+        val festival = OrderedNativeModel(2, "Festival 2027", "/playlists/Festival/Festival 2027.m3u")
+        val adapter = OrderedAdapter(
+            discoveredFirst = listOf(summer, festival),
+            sortedRows = listOf(festival, summer)
+        )
+        assertNotNull(
+            NativePlaylistRuntimeBinding.observeBoundRow(
+                adapter, OrderedHolder(festival), 0, "Festival 2027"
+            )
+        )
+
+        val result = NativePlaylistSourceInspector.inspect(adapter, 2)
+        assertEquals(
+            listOf(festival.path, summer.path), result.paths
+        )
+        assertEquals(festival, result.nativeObjects[festival.path])
+        assertTrue(result.traces.single().contains("orderedRows=2"))
     }
 }

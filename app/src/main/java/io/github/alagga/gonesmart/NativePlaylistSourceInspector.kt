@@ -29,6 +29,32 @@ internal object NativePlaylistSourceInspector {
     private const val MAX_CONTAINER_ITEMS = 4000
 
     fun inspect(adapter: Any, expectedRows: Int = -1): Result {
+        // This is the only playlist source whose order is independently
+        // correlated with RecyclerView's real adapter positions. Walking
+        // native fields/collections can find every playlist, but their
+        // iteration order is not necessarily the adapter's display order.
+        // Treat a failed established binding as unresolved instead of
+        // inventing positions from an unrelated native collection.
+        if (expectedRows in 1..MAX_CONTAINER_ITEMS &&
+            NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            val ordered = NativePlaylistRuntimeBinding.readAll(
+                adapter, expectedRows
+            ) ?: return Result(
+                emptyList(), listOf("adapter.runtimeBinding(order=unresolved)"),
+                0, false
+            )
+            return Result(
+                paths = ordered.map { it.path },
+                traces = listOf("adapter.runtimeBinding(orderedRows=${ordered.size})"),
+                visitedObjects = ordered.size,
+                truncated = false,
+                models = ordered.map {
+                    NativePlaylistTitleResolver.Model(it.path, textFields(it.model))
+                },
+                nativeObjects = ordered.associate { it.path to it.model }
+            )
+        }
         val paths = linkedSetOf<String>()
         val models = linkedMapOf<String, NativePlaylistTitleResolver.Model>()
         val nativeObjects = linkedMapOf<String, Any>()

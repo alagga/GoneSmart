@@ -3825,7 +3825,8 @@ internal class PlaylistFolderPreviewController(
                     "FOLDER INLINE ACTION | native row not bound" +
                         " | expectedPosition=" + expectedPosition +
                         " | visibleRows=" + list.childCount +
-                        " | path=" + targetPath
+                        " | path=" + targetPath +
+                        nativeActionFailureEvidence(list, targetPath)
                 )
                 warn(list, "Playlist row not ready; please try again")
             }
@@ -3862,6 +3863,40 @@ internal class PlaylistFolderPreviewController(
         list.postDelayed(timeout, 3_000L)
         list.post { tryDispatch() }
     }
+
+    /** Failure-only evidence; never scan or reflect holders on the hot path. */
+    private fun nativeActionFailureEvidence(
+        list: ViewGroup,
+        targetPath: String
+    ): String = runCatching {
+        val adapter = nativeAdapter(list)
+        val count = adapter?.javaClass?.getMethod("getItemCount")
+            ?.invoke(adapter) as? Int ?: 0
+        val actualIndex = if (adapter != null &&
+            NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            NativePlaylistRuntimeBinding.readAll(adapter, count)
+                ?.indexOfFirst { it.path == targetPath }
+        } else null
+        val holderGetter = list.javaClass.getMethod(
+            "getChildViewHolder", View::class.java
+        )
+        val positions = (0 until list.childCount).mapNotNull { index ->
+            val holder = runCatching {
+                holderGetter.invoke(list, list.getChildAt(index))
+            }.getOrNull() ?: return@mapNotNull null
+            runCatching {
+                holder.javaClass.getMethod("getBindingAdapterPosition")
+                    .invoke(holder) as? Int
+            }.getOrNull()?.takeIf { it >= 0 }
+        }
+        val window = if (positions.isEmpty()) "none" else {
+            "${positions.minOrNull()}..${positions.maxOrNull()}"
+        }
+        " | nativeItemCount=$count | verifiedIndex=$actualIndex" +
+            " | boundPositions=$window" +
+            " | shown=${list.isShown} | alpha=${list.alpha}"
+    }.getOrDefault(" | nativeEvidence=unavailable")
 
     private fun clearPickerOverlayTargets(list: ViewGroup) {
         val iterator = pickerOverlayTargets.entries.iterator()
