@@ -30,7 +30,8 @@ class NativePlaylistCreateBindingTest {
             assertEquals("sa4", delegate!!.javaClass.name)
             assertEquals(
                 "/storage/emulated/0/gmmp/playlists",
-                delegate.javaClass.getDeclaredMethod("getValue").invoke(delegate)
+                delegate.javaClass.getDeclaredMethod("getValue")
+                    .apply { isAccessible = true }.invoke(delegate)
             )
         }
         assertNull(NativePlaylistCreateBinding.resolveDelegate(Any(), layout))
