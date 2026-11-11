@@ -510,8 +510,14 @@ class GoneSmartModule : XposedModule() {
         preparePrePlaySmartPool = { autoDj, track, count ->
             prepareTrackMixPrePlaySmartPool(autoDj, track, count)
         },
-        adoptNativeRefillSession = { autoDj, preparedSession, seedId, entryId ->
-            adoptTrackMixNativeRefillSession(autoDj, preparedSession, seedId, entryId)
+        resolveNativeEnqueuePaths = { autoDj, trackIds ->
+            resolveTrackMixNativeEnqueuePaths(autoDj, trackIds)
+        },
+        adoptNativeEnqueueSession = { autoDj, preparedSession, seedId, entryId ->
+            adoptTrackMixNativeEnqueueSession(autoDj, preparedSession, seedId, entryId)
+        },
+        commitNativeEnqueue = { autoDj, sessionId, selectedIds, selectedEntries ->
+            commitTrackMixNativeEnqueue(autoDj, sessionId, selectedIds, selectedEntries)
         },
         allowNativeFallback = {
             options.fallbackToNativeAutoDjWhenNoSuitableTracks
@@ -528,15 +534,28 @@ class GoneSmartModule : XposedModule() {
         }
     )
 
-    private fun adoptTrackMixNativeRefillSession(
+    private fun resolveTrackMixNativeEnqueuePaths(
+        autoDj: Any,
+        trackIds: List<Long>
+    ): List<String>? {
+        if (trackIds.isEmpty() || trackIds.distinct().size != trackIds.size) return null
+        val tracksById = gmmpLibraryReader.read(autoDj).groupBy { it.track.id }
+        return trackIds.map { id ->
+            val match = tracksById[id]?.singleOrNull()?.track ?: return null
+            match.path?.takeIf { it.startsWith('/') && it.isNotBlank() }
+                ?: return null
+        }
+    }
+
+    private fun adoptTrackMixNativeEnqueueSession(
         autoDj: Any,
         preparedSessionId: Long,
         seedTrackId: Long,
         seedEntryId: Long
     ): Long? = runCatching {
-        // PLAY_FILE / manual queue changes can leave GMMP 4.2.1's structural
-        // CURRENT marker ambiguous. Reuse the passive native position hint
-        // before the one controlled qr.z initial refill.
+        // PLAY_FILE / manual ENQUEUE_FILE can leave GMMP 4.2.1's structural
+        // CURRENT marker ambiguous. Reuse the passively verified native
+        // position writer rather than discarding the prepared pool.
         val context = readQueueContext(autoDj)
             ?: error("Native file Track Mix has no verified queue")
         check(context.items.any { it.track.id == seedTrackId &&
@@ -561,6 +580,37 @@ class GoneSmartModule : XposedModule() {
     }.onFailure {
         Log.e(TAG, "MIX NATIVE FILE SESSION | verified=false", it)
     }.getOrNull()
+
+    private fun commitTrackMixNativeEnqueue(
+        autoDj: Any,
+        sessionId: Long,
+        addedTrackIds: List<Long>,
+        addedEntryIds: List<Long>
+    ): Boolean = runCatching {
+        check(recommendationPool.isForSession(sessionId)) {
+            "Native file Track Mix recommendation session changed"
+        }
+        val after = readQueueContext(autoDj)
+            ?: error("Native file Track Mix final queue unavailable")
+        check(addedTrackIds.isNotEmpty() && addedTrackIds.size == addedEntryIds.size &&
+            addedEntryIds.distinct().size == addedEntryIds.size &&
+            addedEntryIds.zip(addedTrackIds).all { (entryId, trackId) ->
+                after.items.any { it.queueEntryId == entryId && it.track.id == trackId }
+            }
+        ) { "Native file Track Mix generated rows changed" }
+        val added = addedEntryIds.toSet()
+        queueSessionTracker.commitGeneratedAdditions(
+            beforeContext = after.copy(items = after.items.filter { it.queueEntryId !in added }),
+            afterContext = after,
+            origin = QueueEntryOrigin.GONESMART
+        )
+        recommendationPool.commitSelected(sessionId, addedTrackIds)
+        Log.i(TAG, "MIX NATIVE FILE COMMIT | verified=true | " +
+            "tracks=${addedTrackIds.size} | currentResolver=${after.currentResolutionSource}")
+        true
+    }.onFailure {
+        Log.e(TAG, "MIX NATIVE FILE COMMIT | verified=false", it)
+    }.getOrDefault(false)
 
     private fun resetTrackMixRecommendationSession(
         autoDjInstance: Any,
@@ -5741,6 +5791,22 @@ class GoneSmartModule : XposedModule() {
                         expectedSessionId = session.sessionId,
                         newTargetSize = poolSizing.targetSize
                     )
+            }
+
+            if (trackMixController.shouldDeferInitialSmartShortfall(
+                    autoDj = autoDjInstance,
+                    sessionId = session.sessionId,
+                    queue = beforeContext
+                )
+            ) {
+                // An accepted partial Track Mix is not a zero-match start.
+                // Let its verified smart followers play before GMMP tries to
+                // fill the remaining initial-size slot with native random
+                // tracks. The next genuine Current change releases this gate.
+                Log.i(TAG, "SMART DJ INITIAL SHORTFALL | " +
+                    "native-padding=suppressed | session=${session.sessionId}" +
+                    " | upcoming=${beforeContext.upcomingItems.size}")
+                return@intercept null
             }
 
             Log.i(

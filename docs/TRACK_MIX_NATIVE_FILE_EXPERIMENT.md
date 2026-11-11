@@ -3,23 +3,25 @@
 **Branch:** `feature/async-track-mix-playback`. **Status:** host CI and device
 acceptance required; do not merge to the 0.5.0 fix branch yet.
 
-**2026-11-11 native initial-refill candidate:** The device-tested
-`PLAY_FILE`-then-`ENQUEUE_FILE` smart route now retains the immediate
-`PLAY_FILE` start and unchanged full background recommendation search, but
-inserts prepared matches with **one** verified GMMP `qr.z(needed)` call.
-During that exact call GoneSmart's existing `kr.F1` selection hook supplies
-the smart Track IDs *before* GMMP writes any queue entries. The request-local
-hold suppresses unrelated GMMP refill while the search is running; it grants
-the sole explicit initial refill only after source queue/session ownership is
-reconfirmed. An independent postcondition requires the same CURRENT, every
-existing/manual row and its Track identity/order to survive, contiguous
-queue positions, unique new smart Track IDs from the prepared pool, and no
-overfill. The verified 4.2.1 position-only normalization is armed before
-native append. GMMP's subsequent natural `qr.z` remains exclusively native-
-owned. Zero-matches fallback still calls GMMP's original `qr.z` selection
-without a second provider search; disabled fallback still leaves playback
-untouched. **This is not yet device-accepted**, particularly for actual next
-AudioSource/decoder readiness and native candidate-row shortages.
+**2026-11-11 device regression / correction:** The initial smart-fill
+experiment with one late `qr.z(needed)` is **retired**. On exact device revision
+`6b08760`, GMMP queried and cached `next audio source is null` at 13:35:19,
+11 seconds before the prepared pool completed. At 13:35:30 the verified native
+`qr.z(4)` appended just three valid GoneSmart matches, but the second song
+did not play; the following native AUTO_DJ command immediately requested the
+missing fourth slot and added a GMMP random fallback after another cold search.
+Successful queue mutation did not repair the early missing decoder.
+
+Restore the previously device-working `PLAY_FILE` followed by individually
+verified GMMP `ENQUEUE_FILE` commands for the async smart initial fill. Native
+GMMP file actions, not direct Room writes or an inferred AudioSource replay,
+own these inserts. A request-local, exact-session/current/entry-ID check holds
+only immediate AUTO_DJ native padding when there are *some but not enough*
+verified smart followers. It ends as soon as Current changes or the expected
+smart rows no longer match. Zero suitable smart matches still invoke the
+established direct native `qr.z` fallback (when enabled); normal ongoing GMMP
+refills continue to use GMMP's natural `qr.z` boundary. The resulting fix
+still requires fresh audible device acceptance.
 
 **2026-11-10 latest correction:** The speculative `qr.z` refill workers
 described in the historical November 1–3 entries below have been retired.
@@ -43,13 +45,14 @@ current design.
    pipeline. Retain the original queue entry ID as a request-local ownership
    anchor, even if the user later appends or reorders manual queue entries.
 4. When the full ranked pool is available, re-check the original anchor and
-   rebind the pool to the real queue session. Capture the live queue and its
-   manual entries, then make exactly one guarded native `qr.z` request for
-   GMMP's configured initial followers. The existing `kr.F1` hook substitutes
-   the selected smart IDs as native rows are materialized. Verify preserved
-   CURRENT/manual entries, order, identities and appended smart IDs.
-5. After confirming generated entries, release the native refill guard and
-   enable GMMP's own `AUTO_DJ` mode for subsequent refills.
+   rebind the pool to the real queue session. Use GMMP's public ENQUEUE_FILE
+   for each verified smart Track path, checking the native queue entry ID,
+   Current identity and all manual entries after every insertion. Do not
+   replace any already-materialized Track ID.
+5. After committing verified generated entries, release the refill hold and
+   enable GMMP's own `AUTO_DJ` mode. If a smart shortage left some initial
+   slots unfilled, suppress only automatic native padding while the original
+   seed remains Current; GMMP may refill normally after that Current changes.
 
 No direct Room queue insertion, guessed native writer, **post-materialization**
 Track-ID retarget, AudioSource replay or parallel player is introduced.
