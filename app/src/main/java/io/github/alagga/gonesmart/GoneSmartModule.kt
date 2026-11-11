@@ -510,14 +510,8 @@ class GoneSmartModule : XposedModule() {
         preparePrePlaySmartPool = { autoDj, track, count ->
             prepareTrackMixPrePlaySmartPool(autoDj, track, count)
         },
-        resolveNativeEnqueuePaths = { autoDj, trackIds ->
-            resolveTrackMixNativeEnqueuePaths(autoDj, trackIds)
-        },
-        adoptNativeEnqueueSession = { autoDj, preparedSession, seedId, entryId ->
-            adoptTrackMixNativeEnqueueSession(autoDj, preparedSession, seedId, entryId)
-        },
-        commitNativeEnqueue = { autoDj, sessionId, selectedIds, selectedEntries ->
-            commitTrackMixNativeEnqueue(autoDj, sessionId, selectedIds, selectedEntries)
+        adoptNativeRefillSession = { autoDj, preparedSession, seedId, entryId ->
+            adoptTrackMixNativeRefillSession(autoDj, preparedSession, seedId, entryId)
         },
         allowNativeFallback = {
             options.fallbackToNativeAutoDjWhenNoSuitableTracks
@@ -534,29 +528,15 @@ class GoneSmartModule : XposedModule() {
         }
     )
 
-    private fun resolveTrackMixNativeEnqueuePaths(
-        autoDj: Any,
-        trackIds: List<Long>
-    ): List<String>? {
-        if (trackIds.isEmpty() || trackIds.distinct().size != trackIds.size) return null
-        val tracksById = gmmpLibraryReader.read(autoDj).groupBy { it.track.id }
-        return trackIds.map { id ->
-            val match = tracksById[id]?.singleOrNull()?.track ?: return null
-            match.path?.takeIf { it.startsWith('/') && it.isNotBlank() }
-                ?: return null
-        }
-    }
-
-    private fun adoptTrackMixNativeEnqueueSession(
+    private fun adoptTrackMixNativeRefillSession(
         autoDj: Any,
         preparedSessionId: Long,
         seedTrackId: Long,
         seedEntryId: Long
     ): Long? = runCatching {
-        // PLAY_FILE / manual ENQUEUE_FILE can leave GMMP 4.2.1's structural
-        // CURRENT marker ambiguous. The Track Mix worker already uses the
-        // passively verified native position writer; session adoption must
-        // read the same authoritative CURRENT instead of discarding the pool.
+        // PLAY_FILE / manual queue changes can leave GMMP 4.2.1's structural
+        // CURRENT marker ambiguous. Reuse the passive native position hint
+        // before the one controlled qr.z initial refill.
         val context = readQueueContext(autoDj)
             ?: error("Native file Track Mix has no verified queue")
         check(context.items.any { it.track.id == seedTrackId &&
@@ -581,40 +561,6 @@ class GoneSmartModule : XposedModule() {
     }.onFailure {
         Log.e(TAG, "MIX NATIVE FILE SESSION | verified=false", it)
     }.getOrNull()
-
-    private fun commitTrackMixNativeEnqueue(
-        autoDj: Any,
-        sessionId: Long,
-        addedTrackIds: List<Long>,
-        addedEntryIds: List<Long>
-    ): Boolean = runCatching {
-        check(recommendationPool.isForSession(sessionId)) {
-            "Native file Track Mix recommendation session changed"
-        }
-        // After native ENQUEUE_FILE, GMMP may again have no uniquely
-        // discoverable structural CURRENT marker. Reuse the verified writer
-        // exactly as in every ordinary Smart-DJ refill and Track Mix read.
-        val after = readQueueContext(autoDj)
-            ?: error("Native file Track Mix final queue unavailable")
-        check(addedTrackIds.isNotEmpty() && addedTrackIds.size == addedEntryIds.size &&
-            addedEntryIds.distinct().size == addedEntryIds.size &&
-            addedEntryIds.zip(addedTrackIds).all { (entryId, trackId) ->
-                after.items.any { it.queueEntryId == entryId && it.track.id == trackId }
-            }
-        ) { "Native file Track Mix generated rows changed" }
-        val added = addedEntryIds.toSet()
-        queueSessionTracker.commitGeneratedAdditions(
-            beforeContext = after.copy(items = after.items.filter { it.queueEntryId !in added }),
-            afterContext = after,
-            origin = QueueEntryOrigin.GONESMART
-        )
-        recommendationPool.commitSelected(sessionId, addedTrackIds)
-        Log.i(TAG, "MIX NATIVE FILE COMMIT | verified=true | " +
-            "tracks=${addedTrackIds.size} | currentResolver=${after.currentResolutionSource}")
-        true
-    }.onFailure {
-        Log.e(TAG, "MIX NATIVE FILE COMMIT | verified=false", it)
-    }.getOrDefault(false)
 
     private fun resetTrackMixRecommendationSession(
         autoDjInstance: Any,

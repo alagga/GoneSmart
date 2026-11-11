@@ -13,7 +13,7 @@ class TrackMixNativeFallbackPrefillPolicyTest {
     }
 
     @Test fun `prepared matches and foreign playback never bypass providers`() {
-        for (stage in listOf("NATIVE_FILE_PREPARE", "NATIVE_FILE_ENQUEUE", "DONE", null)) {
+        for (stage in listOf("NATIVE_FILE_PREPARE", "FILLING", "NATIVE_FILE_ARM", "DONE", null)) {
             assertFalse(TrackMixInitialFillPolicy.canRunNativeFileFallbackPrefill(
                 stage, true, 0, true
             ))

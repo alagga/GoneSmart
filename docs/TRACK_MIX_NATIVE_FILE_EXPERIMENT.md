@@ -1,7 +1,25 @@
-# Experimental public-command Track Mix (GMMP 4.2.1)
+# Experimental native-refill Track Mix (GMMP 4.2.1)
 
 **Branch:** `feature/async-track-mix-playback`. **Status:** host CI and device
 acceptance required; do not merge to the 0.5.0 fix branch yet.
+
+**2026-11-11 native initial-refill candidate:** The device-tested
+`PLAY_FILE`-then-`ENQUEUE_FILE` smart route now retains the immediate
+`PLAY_FILE` start and unchanged full background recommendation search, but
+inserts prepared matches with **one** verified GMMP `qr.z(needed)` call.
+During that exact call GoneSmart's existing `kr.F1` selection hook supplies
+the smart Track IDs *before* GMMP writes any queue entries. The request-local
+hold suppresses unrelated GMMP refill while the search is running; it grants
+the sole explicit initial refill only after source queue/session ownership is
+reconfirmed. An independent postcondition requires the same CURRENT, every
+existing/manual row and its Track identity/order to survive, contiguous
+queue positions, unique new smart Track IDs from the prepared pool, and no
+overfill. The verified 4.2.1 position-only normalization is armed before
+native append. GMMP's subsequent natural `qr.z` remains exclusively native-
+owned. Zero-matches fallback still calls GMMP's original `qr.z` selection
+without a second provider search; disabled fallback still leaves playback
+untouched. **This is not yet device-accepted**, particularly for actual next
+AudioSource/decoder readiness and native candidate-row shortages.
 
 **2026-11-10 latest correction:** The speculative `qr.z` refill workers
 described in the historical November 1–3 entries below have been retired.
@@ -25,37 +43,36 @@ current design.
    pipeline. Retain the original queue entry ID as a request-local ownership
    anchor, even if the user later appends or reorders manual queue entries.
 4. When the full ranked pool is available, re-check the original anchor and
-   rebind that pool to the real queue session. Ignore candidates already in
-   the live queue; for each selected recommendation, broadcast `ENQUEUE_FILE`.
-   Verify the newly materialized native Track/entry identity and contiguous
-   positions before dispatching the next. Preserve manual entries and append
-   recommendations after whatever the queue contains at that moment.
+   rebind the pool to the real queue session. Capture the live queue and its
+   manual entries, then make exactly one guarded native `qr.z` request for
+   GMMP's configured initial followers. The existing `kr.F1` hook substitutes
+   the selected smart IDs as native rows are materialized. Verify preserved
+   CURRENT/manual entries, order, identities and appended smart IDs.
 5. After confirming generated entries, release the native refill guard and
    enable GMMP's own `AUTO_DJ` mode for subsequent refills.
 
-No direct Room queue insertion, guessed native writer, Track-ID retarget,
-AudioSource replay or parallel player is introduced.
+No direct Room queue insertion, guessed native writer, **post-materialization**
+Track-ID retarget, AudioSource replay or parallel player is introduced.
 
 ## Session safety
 
 - A manual Enqueue/Play Next or in-session reordering during the recommendation
   search **does not** cancel the mix. Generated titles go behind the live tail.
 - Device log 2026-10-29 revealed that GMMP 4.2.1's structural CURRENT marker
-  is ambiguous after `ENQUEUE_FILE`, even when the verified native position
-  writer is available. Both pool-to-session adoption and final generated-row
-  commit now use the same position-hinted read as the Track Mix worker. This
-  prevents false aborts after manual appends and false failures after four
-  successfully materialized recommendations. Device log 2026-10-30
-  (`090f432`) confirms two four-track commits with the verified writer hint;
-  a newly started playback correctly aborted the intermediate search.
+  may be ambiguous after native queue mutation, even when the verified native
+  position writer is available. Both pool-to-session adoption and native
+  refill verification use the same position-hinted queue read. The former
+  `ENQUEUE_FILE` route proved four rows in 2026-10-30 (`090f432`); those
+  results are *historical evidence*, not acceptance of the new `qr.z` route.
 - Native `AUTO_DJ` can post a delayed GMMP status Toast after the async
   worker has completed. The short post-command suppression grace is now kept
   for this path too; GoneSmart's own confirmation remains visible. Missing
   GMMP `started` string now falls back to readable `Started` instead of `✓`.
   Both UI changes await device verification.
 - A new playback source normally replaces GMMP's native queue and removes the
-  original seed entry. Missing original entry, duplicate/ambiguous enqueue
-  identity or noncontiguous queue positions aborts remaining insertions.
+  original seed entry. Missing original entry or ambiguous queue/Current
+  identity aborts the native refill before invocation; inconsistent native
+  postconditions abort further Track Mix actions without rewriting rows.
 - If "remove after played" removes the original seed during the wait, we
   conservatively cancel instead of assuming this is still the same session.
 - If recommendations are unavailable, only the configured native GMMP
@@ -95,7 +112,8 @@ AudioSource replay or parallel player is introduced.
 4. During search, start an unrelated song with native Play/PLAY_FILE; confirm
    late GoneSmart recommendations are discarded, not inserted in the new queue.
 5. Check shortage/zero matches, fallback enabled/disabled, duplicate
-   candidates, queue reordering, and a rapid second explicit mix request.
+   candidates, queue reordering, a rapid second explicit mix request, and
+   a GMMP-native `kr.F1` selection with fewer carrier rows than requested.
 6. Confirm subsequent GMMP-owned native Auto-DJ continuation uses the
    maintained Smart pool and only the configured upcoming-track count. No
    passive CURRENT event may invoke its own speculative `qr.z`.
