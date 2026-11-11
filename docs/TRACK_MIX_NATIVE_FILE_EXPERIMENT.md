@@ -3,8 +3,8 @@
 **Branch:** `feature/async-track-mix-playback`. **Status:** host CI and device
 acceptance required; do not merge to the 0.5.0 fix branch yet.
 
-**2026-11-11 device regression / correction:** The initial smart-fill
-experiment with one late `qr.z(needed)` is **retired**. On exact device revision
+**2026-11-11 device regression / revised candidate:** The initial smart-fill
+experiment with **only** a late `qr.z(needed)` was **device-disproven**. On revision
 `6b08760`, GMMP queried and cached `next audio source is null` at 13:35:19,
 11 seconds before the prepared pool completed. At 13:35:30 the verified native
 `qr.z(4)` appended just three valid GoneSmart matches, but the second song
@@ -12,16 +12,23 @@ did not play; the following native AUTO_DJ command immediately requested the
 missing fourth slot and added a GMMP random fallback after another cold search.
 Successful queue mutation did not repair the early missing decoder.
 
-Restore the previously device-working `PLAY_FILE` followed by individually
-verified GMMP `ENQUEUE_FILE` commands for the async smart initial fill. Native
-GMMP file actions, not direct Room writes or an inferred AudioSource replay,
-own these inserts. A request-local, exact-session/current/entry-ID check holds
-only immediate AUTO_DJ native padding when there are *some but not enough*
-verified smart followers. It ends as soon as Current changes or the expected
-smart rows no longer match. Zero suitable smart matches still invoke the
-established direct native `qr.z` fallback (when enabled); normal ongoing GMMP
-refills continue to use GMMP's natural `qr.z` boundary. The resulting fix
-still requires fresh audible device acceptance.
+The previous correction restored `PLAY_FILE` plus individually verified native
+`ENQUEUE_FILE` commands (revision `6bec6f7`), but this does not share the
+standard Auto-DJ native refill. The **current, unaccepted candidate** instead
+uses `PLAY_FILE` plus a single post-search native `qr.z(needed)` append, checks
+every new queue-entry identity against the prepared GoneSmart pool, and observes
+the first native `MusicService.E2(service)`/`hn3.h0` source assignment. If that
+source was actually null and no later native non-null source has recovered it,
+invoke the **APK-verified same native E2 calculation** exactly once after a
+verified append; accept only a non-null setter result and unchanged full queue.
+This is a native calculation, not a guessed AudioSource swap, replay, extra
+refill, arbitrary delay or direct Room write. A request-local exact-session/
+Current/entry-ID check continues to hold only immediate native AUTO_DJ padding
+when there are *some but not enough* smart followers; it releases on a real
+Current/queue transition. Zero suitable matches still use the verified native
+`qr.z` fallback (when enabled) and normal ongoing refills remain GMMP-owned.
+The existing non-null source proof is **not** proof that the second song is
+audible: fresh exact-head device acceptance is mandatory.
 
 **2026-11-10 latest correction:** The speculative `qr.z` refill workers
 described in the historical November 1–3 entries below have been retired.
@@ -44,15 +51,17 @@ current design.
 3. In the background, run the **unchanged full** selected-seed recommendation
    pipeline. Retain the original queue entry ID as a request-local ownership
    anchor, even if the user later appends or reorders manual queue entries.
-4. When the full ranked pool is available, re-check the original anchor and
-   rebind the pool to the real queue session. Use GMMP's public ENQUEUE_FILE
-   for each verified smart Track path, checking the native queue entry ID,
-   Current identity and all manual entries after every insertion. Do not
-   replace any already-materialized Track ID.
-5. After committing verified generated entries, release the refill hold and
-   enable GMMP's own `AUTO_DJ` mode. If a smart shortage left some initial
-   slots unfilled, suppress only automatic native padding while the original
-   seed remains Current; GMMP may refill normally after that Current changes.
+4. When the full ranked pool is available, re-check the original anchor,
+   rebind the pool to the real queue session and invoke the same native
+   `qr.z(needed)` used by normal Auto-DJ. Verify each newly materialized
+   queue ID/Track ID against the prepared pool, preserving the original Current
+   and manual entries exactly. Do not replace already-materialized Track IDs.
+5. If the original native E2 source assignment was null and never recovered,
+   recalculate CURRENT+1 once through the verified native E2 method, requiring
+   a non-null native setter and identical Current/queue readback. Then release
+   the refill hold and enable GMMP's own `AUTO_DJ` mode. For a genuine smart
+   shortfall, suppress immediate automatic native random padding until Current
+   changes; subsequent refills remain native.
 
 No direct Room queue insertion, guessed native writer, **post-materialization**
 Track-ID retarget, AudioSource replay or parallel player is introduced.
@@ -66,7 +75,7 @@ Track-ID retarget, AudioSource replay or parallel player is introduced.
   position writer is available. Both pool-to-session adoption and native
   refill verification use the same position-hinted queue read. The former
   `ENQUEUE_FILE` route proved four rows in 2026-10-30 (`090f432`); those
-  results are *historical evidence*, not acceptance of the new `qr.z` route.
+  results are *historical evidence*, not acceptance of this E2/`qr.z` route.
 - Native `AUTO_DJ` can post a delayed GMMP status Toast after the async
   worker has completed. The short post-command suppression grace is now kept
   for this path too; GoneSmart's own confirmation remains visible. Missing

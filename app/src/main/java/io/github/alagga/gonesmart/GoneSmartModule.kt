@@ -510,14 +510,11 @@ class GoneSmartModule : XposedModule() {
         preparePrePlaySmartPool = { autoDj, track, count ->
             prepareTrackMixPrePlaySmartPool(autoDj, track, count)
         },
-        resolveNativeEnqueuePaths = { autoDj, trackIds ->
-            resolveTrackMixNativeEnqueuePaths(autoDj, trackIds)
+        adoptNativeRefillSession = { autoDj, preparedSession, seedId, entryId ->
+            adoptTrackMixNativeRefillSession(autoDj, preparedSession, seedId, entryId)
         },
-        adoptNativeEnqueueSession = { autoDj, preparedSession, seedId, entryId ->
-            adoptTrackMixNativeEnqueueSession(autoDj, preparedSession, seedId, entryId)
-        },
-        commitNativeEnqueue = { autoDj, sessionId, selectedIds, selectedEntries ->
-            commitTrackMixNativeEnqueue(autoDj, sessionId, selectedIds, selectedEntries)
+        refreshInitialNextSource = { autoDj, service, expectedEntry ->
+            refreshTrackMixNativeNextSource(autoDj, service, expectedEntry)
         },
         allowNativeFallback = {
             options.fallbackToNativeAutoDjWhenNoSuitableTracks
@@ -534,28 +531,14 @@ class GoneSmartModule : XposedModule() {
         }
     )
 
-    private fun resolveTrackMixNativeEnqueuePaths(
-        autoDj: Any,
-        trackIds: List<Long>
-    ): List<String>? {
-        if (trackIds.isEmpty() || trackIds.distinct().size != trackIds.size) return null
-        val tracksById = gmmpLibraryReader.read(autoDj).groupBy { it.track.id }
-        return trackIds.map { id ->
-            val match = tracksById[id]?.singleOrNull()?.track ?: return null
-            match.path?.takeIf { it.startsWith('/') && it.isNotBlank() }
-                ?: return null
-        }
-    }
-
-    private fun adoptTrackMixNativeEnqueueSession(
+    private fun adoptTrackMixNativeRefillSession(
         autoDj: Any,
         preparedSessionId: Long,
         seedTrackId: Long,
         seedEntryId: Long
     ): Long? = runCatching {
-        // PLAY_FILE / manual ENQUEUE_FILE can leave GMMP 4.2.1's structural
-        // CURRENT marker ambiguous. Reuse the passively verified native
-        // position writer rather than discarding the prepared pool.
+        // PLAY_FILE / manual queue updates can leave GMMP 4.2.1's
+        // structural CURRENT marker ambiguous. Use the verified hint.
         val context = readQueueContext(autoDj)
             ?: error("Native file Track Mix has no verified queue")
         check(context.items.any { it.track.id == seedTrackId &&
@@ -580,37 +563,6 @@ class GoneSmartModule : XposedModule() {
     }.onFailure {
         Log.e(TAG, "MIX NATIVE FILE SESSION | verified=false", it)
     }.getOrNull()
-
-    private fun commitTrackMixNativeEnqueue(
-        autoDj: Any,
-        sessionId: Long,
-        addedTrackIds: List<Long>,
-        addedEntryIds: List<Long>
-    ): Boolean = runCatching {
-        check(recommendationPool.isForSession(sessionId)) {
-            "Native file Track Mix recommendation session changed"
-        }
-        val after = readQueueContext(autoDj)
-            ?: error("Native file Track Mix final queue unavailable")
-        check(addedTrackIds.isNotEmpty() && addedTrackIds.size == addedEntryIds.size &&
-            addedEntryIds.distinct().size == addedEntryIds.size &&
-            addedEntryIds.zip(addedTrackIds).all { (entryId, trackId) ->
-                after.items.any { it.queueEntryId == entryId && it.track.id == trackId }
-            }
-        ) { "Native file Track Mix generated rows changed" }
-        val added = addedEntryIds.toSet()
-        queueSessionTracker.commitGeneratedAdditions(
-            beforeContext = after.copy(items = after.items.filter { it.queueEntryId !in added }),
-            afterContext = after,
-            origin = QueueEntryOrigin.GONESMART
-        )
-        recommendationPool.commitSelected(sessionId, addedTrackIds)
-        Log.i(TAG, "MIX NATIVE FILE COMMIT | verified=true | " +
-            "tracks=${addedTrackIds.size} | currentResolver=${after.currentResolutionSource}")
-        true
-    }.onFailure {
-        Log.e(TAG, "MIX NATIVE FILE COMMIT | verified=false", it)
-    }.getOrDefault(false)
 
     private fun resetTrackMixRecommendationSession(
         autoDjInstance: Any,
@@ -5200,7 +5152,16 @@ class GoneSmartModule : XposedModule() {
         hook(nativeSourceRefresh).intercept { chain ->
             val service = chain.getArg(0) ?: return@intercept chain.proceed()
             val sourceWindow = if (performingNextSourceRefresh.get()) {
-                NativeNextSourceWindow(refill = null, phase = "after-native-append")
+                nativeNextSourceWindow.get()?.takeIf {
+                    it.phase == "track-mix-refresh"
+                } ?: NativeNextSourceWindow(refill = null, phase = "after-native-append")
+            } else if (trackMixController.isWaitingForNativeFileNextSource() &&
+                serviceType.isInstance(service)
+            ) {
+                // The first PLAY_FILE source calculation can happen before
+                // the selected-seed provider search finishes. Observe its
+                // real native null/nonnull result without holding playback.
+                NativeNextSourceWindow(refill = null, phase = "track-mix-initial")
             } else {
                 val observed = synchronized(deferredAutoDjLock) {
                     pendingDeferredAutoDjRefill?.takeIf {
@@ -5223,7 +5184,13 @@ class GoneSmartModule : XposedModule() {
                 chain.proceed()
             } finally {
                 nativeNextSourceWindow.set(prior)
-                if (sourceWindow.phase == "after-native-append") {
+                if (sourceWindow.phase == "track-mix-initial") {
+                    trackMixController.observeNativeFileNextSource(
+                        service,
+                        wasNull = sourceWindow.nullSourceObserved,
+                        wasNonNull = sourceWindow.nonNullSourceObserved
+                    )
+                } else if (sourceWindow.phase == "after-native-append") {
                     Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH | " +
                         "nativeSourceNonNull=${sourceWindow.nonNullSourceObserved}" +
                         " | nativeSourceNull=${sourceWindow.nullSourceObserved}")
@@ -5320,6 +5287,77 @@ class GoneSmartModule : XposedModule() {
             Log.w(TAG, "SMART DJ NEXT SOURCE REFRESH | native calculation failed", failure)
         } finally {
             performingNextSourceRefresh.remove()
+        }
+    }
+
+    /**
+     * Resume only GMMP's *already proven* E2 next-source calculation after
+     * qr.z has materialized a verified initial Track Mix follower. Nothing
+     * blocks native Play or invokes a second provider/refill/play command.
+     */
+    private fun refreshTrackMixNativeNextSource(
+        autoDj: Any,
+        service: Any,
+        currentEntryId: Long
+    ): Boolean {
+        val callback = verifiedNativeNextSourceRefresh
+        val before = readQueueContext(autoDj)
+        val appContext = gmmpAppContext
+        val audioActive = appContext?.let { isAudioInactive(it)?.not() }
+        val versionAccepted = appContext?.let { app ->
+            runCatching {
+                GmmpCompatibilityPolicy.state(
+                    app.packageManager.getPackageInfo(GMMP_PACKAGE, 0).versionName
+                ) == GmmpCompatibilityPolicy.State.TESTED
+            }.getOrDefault(false)
+        } ?: false
+        val eligible = AutoDjNextSourceRefreshPolicy.shouldRefresh(
+            hadNoUpcomingAtRequest = true,
+            nativeNullSourceObserved = true,
+            nativeSourceAlreadyRecovered = false,
+            nativeAppendVerified = before?.currentItem?.queueEntryId == currentEntryId,
+            originalCurrentEntryId = currentEntryId,
+            liveCurrentEntryId = before?.currentItem?.queueEntryId,
+            liveUpcomingCount = before?.upcomingItems?.size ?: 0,
+            audioActive = audioActive,
+            pendingManualNextPresses = 0,
+            sourceCallbackAvailable = callback != null &&
+                callback.parameterTypes.singleOrNull()?.isInstance(service) == true,
+            acceptedGmmpVersion = versionAccepted
+        )
+        if (!eligible) {
+            Log.w(TAG, "MIX NATIVE FILE SOURCE REFRESH | eligible=false" +
+                " | sameCurrent=${before?.currentItem?.queueEntryId == currentEntryId}" +
+                " | upcoming=${before?.upcomingItems?.size ?: 0}" +
+                " | audioActive=$audioActive | callback=${callback != null}" +
+                " | testedVersion=$versionAccepted")
+            return false
+        }
+        val sourceWindow = NativeNextSourceWindow(
+            refill = null, phase = "track-mix-refresh"
+        )
+        val previous = nativeNextSourceWindow.get()
+        nativeNextSourceWindow.set(sourceWindow)
+        performingNextSourceRefresh.set(true)
+        return try {
+            callback!!.invoke(null, service)
+            val after = readQueueContext(autoDj)
+            val queueUnchanged = after?.currentItem?.queueEntryId == currentEntryId &&
+                before?.items?.map { it.queueEntryId to it.track.id } ==
+                    after?.items?.map { it.queueEntryId to it.track.id }
+            val verified = sourceWindow.nonNullSourceObserved &&
+                !sourceWindow.nullSourceObserved && queueUnchanged
+            Log.i(TAG, "MIX NATIVE FILE SOURCE REFRESH | verified=$verified" +
+                " | nativeSourceNonNull=${sourceWindow.nonNullSourceObserved}" +
+                " | nativeSourceNull=${sourceWindow.nullSourceObserved}" +
+                " | queueUnchanged=$queueUnchanged")
+            verified
+        } catch (failure: Throwable) {
+            Log.w(TAG, "MIX NATIVE FILE SOURCE REFRESH | native E2 failed", failure)
+            false
+        } finally {
+            performingNextSourceRefresh.remove()
+            nativeNextSourceWindow.set(previous)
         }
     }
 

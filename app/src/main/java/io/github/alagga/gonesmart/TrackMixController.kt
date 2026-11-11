@@ -52,12 +52,10 @@ internal class TrackMixController(
         { _, _ -> null },
     private val preparePrePlaySmartPool: (Any, TrackInfo, Int) -> TrackMixPreparedInitialPool =
         { _, _, _ -> TrackMixPreparedInitialPool.EMPTY },
-    private val resolveNativeEnqueuePaths: (Any, List<Long>) -> List<String>? =
-        { _, _ -> null },
-    private val adoptNativeEnqueueSession: (Any, Long, Long, Long) -> Long? =
+    private val adoptNativeRefillSession: (Any, Long, Long, Long) -> Long? =
         { _, _, _, _ -> null },
-    private val commitNativeEnqueue: (Any, Long, List<Long>, List<Long>) -> Boolean =
-        { _, _, _, _ -> false },
+    private val refreshInitialNextSource: (Any, Any, Long) -> Boolean =
+        { _, _, _ -> false },
     private val allowNativeFallback: () -> Boolean = { false },
     private val ensureZeroPoolSourceBatchHooks: (Any) -> Boolean = { false },
     private val resetRecommendationSession: (Any, Long, Long) -> Boolean =
@@ -68,7 +66,6 @@ internal class TrackMixController(
         private const val GMMP_PACKAGE = "gonemad.gmmp"
         private const val COMMAND_AUTO_DJ = "gonemad.gmmp.command.AUTO_DJ"
         private const val COMMAND_PLAY_FILE = "gonemad.gmmp.command.PLAY_FILE"
-        private const val COMMAND_ENQUEUE_FILE = "gonemad.gmmp.command.ENQUEUE_FILE"
         private const val MIX_ITEM_ID = 0x47534D01
         private const val FILE_BROWSER_MENU = "menu_gm_context_file_browser"
         // These GMMP 4.2.0 menu XMLs all have native Play and Play next.
@@ -191,6 +188,9 @@ internal class TrackMixController(
         @Volatile var zeroPoolNextSourceGuardAttempted = false
         @Volatile var zeroPoolNextSourceGuardApplied = false
         @Volatile var zeroPoolSourceBatchGuardApplied = false
+        @Volatile var initialNativeNextSourceNull = false
+        @Volatile var initialNativeNextSourceRecovered = false
+        @Volatile var initialNativeNextSourceService: WeakReference<Any>? = null
         val preparedNextSourceGate = TrackMixPreparedNextSourceGate()
     }
 
@@ -240,6 +240,49 @@ internal class TrackMixController(
             disarmManagedAutoDjSession("feature-disabled")
         }
         Log.i(TAG, "MIX SETTINGS | enabled=$value")
+    }
+
+    /** Read-only observation of the native E2 -> source-setter result. */
+    fun isWaitingForNativeFileNextSource(): Boolean = pending?.let { request ->
+        request.nativePlayAccepted && request.prePlayTarget != null &&
+            request.stage in setOf(
+                "NATIVE_FILE_PLAY", "NATIVE_FILE_PREPARE", "FILLING",
+                "NATIVE_FILE_FALLBACK"
+            )
+    } == true
+
+    fun observeNativeFileNextSource(service: Any, wasNull: Boolean, wasNonNull: Boolean) {
+        val request = pending ?: return
+        if (!isWaitingForNativeFileNextSource()) return
+        if (wasNull) {
+            request.initialNativeNextSourceNull = true
+            request.initialNativeNextSourceRecovered = false
+            request.initialNativeNextSourceService = WeakReference(service)
+            Log.i(TAG, "MIX NATIVE FILE SOURCE | next=null | request=${request.token}")
+        }
+        if (wasNonNull) {
+            request.initialNativeNextSourceRecovered = true
+            Log.i(TAG, "MIX NATIVE FILE SOURCE | next=ready | request=${request.token}")
+        }
+    }
+
+    private fun verifyNativeFileNextSource(
+        request: Pending,
+        autoDj: Any,
+        currentEntryId: Long
+    ): Boolean {
+        if (!request.initialNativeNextSourceNull ||
+            request.initialNativeNextSourceRecovered
+        ) return true
+        val service = request.initialNativeNextSourceService?.get() ?: run {
+            Log.w(TAG, "MIX NATIVE FILE SOURCE | verified=false | reason=service-unavailable")
+            return false
+        }
+        if (!isCurrent(request)) return false
+        val verified = refreshInitialNextSource(autoDj, service, currentEntryId)
+        Log.i(TAG, "MIX NATIVE FILE SOURCE | verified=$verified | " +
+            "reason=post-native-append | request=${request.token}")
+        return verified
     }
 
     /**
@@ -1128,15 +1171,15 @@ internal class TrackMixController(
                 val initial = settings.read().initialQueueSize.coerceAtLeast(1)
                 request.prePlayInitialSize = initial
                 if (autoDj.javaClass.name == "qr" &&
-                    TrackMixNativeEnqueuePolicy.canStart(
+                    TrackMixNativeFileRefillPolicy.canStart(
                         legacyQueue = legacyQueue,
                         selectedPath = resolution.track.path,
                         initialSize = initial
                     )
                 ) {
-                    // GMMP's documented native file actions own both initial
-                    // playback and later insertion. A late direct qr.z write
-                    // does not refresh an already-null next AudioSource.
+                    // Start playback immediately. Once the full selected-seed
+                    // pool is ready, GMMP's native qr.z owns its initial
+                    // append; a verified E2 re-evaluates an early null source.
                     main.post {
                         if (!isCurrent(request)) return@post
                         request.before = old
@@ -1149,9 +1192,14 @@ internal class TrackMixController(
                             return@post
                         }
                         val dispatched = runCatching {
+                            // Native PLAY_FILE can synchronously enter E2 before
+                            // the broadcast returns. Observe that first source
+                            // calculation as part of this exact pending start.
+                            request.nativePlayAccepted = true
                             sendFileCommand(context, COMMAND_PLAY_FILE, resolution.track.path!!)
                             true
                         }.onFailure {
+                            request.nativePlayAccepted = false
                             Log.e(TAG, "MIX NATIVE FILE PLAY | dispatch failed", it)
                         }.getOrDefault(false)
                         if (!dispatched) {
@@ -1160,10 +1208,9 @@ internal class TrackMixController(
                             fail("GMMP could not receive the native Play command.", context)
                             return@post
                         }
-                        request.nativePlayAccepted = true
                         Log.i(TAG, "MIX NATIVE FILE START | track=${resolution.track.id} | " +
                             "owner=GMMP-PLAY_FILE")
-                        work.execute { runNativeFileEnqueueTrackMix(request) }
+                        work.execute { runNativeFileRefillTrackMix(request) }
                     }
                     return@execute
                 }
@@ -1496,7 +1543,7 @@ internal class TrackMixController(
         return filled
     }
 
-    private fun runNativeFileEnqueueTrackMix(request: Pending) {
+    private fun runNativeFileRefillTrackMix(request: Pending) {
         var managedSessionReady = false
         try {
             val target = request.prePlayTarget ?: error("Native file target missing")
@@ -1517,7 +1564,7 @@ internal class TrackMixController(
                 "track=${target.id} | entry=$seedEntryId | queue=1")
 
             val nativeSettings = settings.read()
-            val needed = TrackMixNativeEnqueuePolicy.neededInitialFollowers(
+            val needed = TrackMixNativeFileRefillPolicy.neededInitialFollowers(
                 nativeSettings.initialQueueSize, nativeSettings.upcomingTrackCount
             )
             val fullPoolSize = settings.calculatePoolSizing(nativeSettings).targetSize
@@ -1532,7 +1579,7 @@ internal class TrackMixController(
             fun snapshotStillOwned(): Snapshot? {
                 val current = queueSnapshot() ?: return null
                 return current.takeIf { queue ->
-                    TrackMixNativeEnqueuePolicy.hasOriginalSessionAnchor(
+                    TrackMixNativeFileRefillPolicy.hasOriginalSessionAnchor(
                         queue.ids, queue.entryIds, queue.queuePositions,
                         target.id, seedEntryId
                     )
@@ -1602,6 +1649,13 @@ internal class TrackMixController(
                         Log.w(TAG, "MIX NATIVE FILE FALLBACK PREFILL | " +
                             "verification failed; preserving native playback")
                     }
+                    if (nativeVerified && !verifyNativeFileNextSource(
+                            request, autoDj, seedEntryId
+                        )
+                    ) {
+                        Log.w(TAG, "MIX NATIVE FILE FALLBACK PREFILL | " +
+                            "next source remains unverified; preserving native playback")
+                    }
                     armManagedAutoDjSession()
                     sendCommand(request.context, COMMAND_AUTO_DJ)
                     nativeToastSuppressionUntilMs =
@@ -1612,64 +1666,49 @@ internal class TrackMixController(
                 return
             }
 
-            val nativeSessionId = adoptNativeEnqueueSession(
+            val nativeSessionId = adoptNativeRefillSession(
                 autoDj, prepared.sessionId, target.id, seedEntryId
             ) ?: error("Could not transfer ranked recommendations to native session")
-            request.stage = "NATIVE_FILE_ENQUEUE"
-            val selectedIds = mutableListOf<Long>()
-            val selectedEntries = mutableListOf<Long>()
-            for (slot in 0 until needed) {
-                val before = snapshotStillOwned()
-                    ?: error("The original queue was replaced before slot ${slot + 1}")
-                var candidateId: Long? = null
-                var candidatePath: String? = null
-                for (candidate in prepared.trackIds) {
-                    if (candidate in before.ids || candidate in selectedIds) continue
-                    val resolved = resolveNativeEnqueuePaths(autoDj, listOf(candidate))
-                        ?.singleOrNull() ?: continue
-                    candidateId = candidate
-                    candidatePath = resolved
-                    break
-                }
-                if (candidateId == null || candidatePath == null) {
-                    Log.i(TAG, "MIX NATIVE FILE EXHAUSTED | slot=${slot + 1} | " +
-                        "manualUpcoming=${before.ids.size - 1} | prepared=${prepared.trackIds.size}")
-                    break
-                }
-                val trackId: Long = candidateId
-                val enqueuePath: String = candidatePath
-                sendFileCommand(request.context, COMMAND_ENQUEUE_FILE, enqueuePath)
-                val after = awaitQueue(request, 8_000L) { snapshot ->
-                    TrackMixNativeEnqueuePolicy.hasOriginalSessionAnchor(
-                        snapshot.ids, snapshot.entryIds, snapshot.queuePositions,
-                        target.id, seedEntryId
-                    ) && TrackMixNativeEnqueuePolicy.newNativeEnqueueEntry(
-                        before.entryIds, snapshot.entryIds, snapshot.ids, trackId
-                    ) != null
-                } ?: error("GMMP did not confirm native enqueue ${slot + 1}")
-                val newEntryId = TrackMixNativeEnqueuePolicy.newNativeEnqueueEntry(
-                    before.entryIds, after.entryIds, after.ids, trackId
-                ) ?: error("Native enqueue identity became ambiguous")
-                selectedIds += trackId
-                selectedEntries += newEntryId
-                Log.i(TAG, "MIX NATIVE FILE ENQUEUE | slot=${slot + 1} | " +
-                    "track=$trackId | entry=$newEntryId | queue=${after.ids.size}")
-            }
-            if (selectedIds.isNotEmpty()) {
-                check(snapshotStillOwned() != null && commitNativeEnqueue(
-                    autoDj, nativeSessionId, selectedIds, selectedEntries
-                )) { "Could not commit verified native Track Mix additions" }
-            }
-            check(isCurrent(request)) { "Track Auto-DJ was replaced during native enqueue" }
-            request.stage = "NATIVE_FILE_ARM"
+            check(isCurrent(request)) { "Track Auto-DJ was replaced before native refill" }
+            val before = snapshotStillOwned()
+                ?: error("The original queue was replaced before native refill")
+            request.stage = "FILLING"
+            // Arm the verified native position-only normalization before
+            // GMMP appends; the native allocator may leave a stale offset.
             armManagedAutoDjSession()
+            check(requestHeldNativeRefill(needed)) {
+                "GMMP rejected the verified native initial refill"
+            }
+            val after = snapshotStillOwned()
+                ?: error("The original queue changed during native refill")
+            val added = TrackMixNativeFileRefillPolicy.verifiedSmartRefill(
+                beforeTrackIds = before.ids,
+                beforeEntryIds = before.entryIds,
+                beforePositions = before.queuePositions,
+                afterTrackIds = after.ids,
+                afterEntryIds = after.entryIds,
+                afterPositions = after.queuePositions,
+                currentBefore = before.currentEntryId,
+                currentAfter = after.currentEntryId,
+                requested = needed,
+                preparedTrackIds = prepared.trackIds
+            ) ?: error("GMMP's native smart refill did not preserve/append the verified queue")
+            Log.i(TAG, "MIX NATIVE FILE QRZ | verified=true" +
+                " | requested=$needed | applied=${added.size}" +
+                " | trackIds=${added.joinToString(",")}" +
+                " | session=$nativeSessionId | current=${after.currentEntryId}" +
+                " | manualRetained=${before.entryIds.size - 1}")
+            check(verifyNativeFileNextSource(request, autoDj, seedEntryId)) {
+                "GMMP's native next AudioSource did not recover after the initial refill"
+            }
+            request.stage = "NATIVE_FILE_ARM"
             refillHold.set(false)
-            if (selectedIds.isNotEmpty() && selectedIds.size < needed) {
+            if (added.isNotEmpty() && added.size < needed) {
                 initialSmartShortfall = InitialSmartShortfall(
                     autoDj = WeakReference(autoDj),
                     sessionId = nativeSessionId,
                     seedEntryId = seedEntryId,
-                    generatedEntryIds = selectedEntries.toSet()
+                    generatedEntryIds = after.entryIds.filter { it !in before.entryIds.toSet() }.toSet()
                 )
             }
             sendCommand(request.context, COMMAND_AUTO_DJ)
@@ -1681,11 +1720,11 @@ internal class TrackMixController(
                 SystemClock.elapsedRealtime() + 3_000L
             managedSessionReady = true
             Log.i(TAG, "MIX NATIVE FILE VERIFIED | currentSeed=${target.id} | " +
-                "enqueued=${selectedIds.size} | owner=GMMP-ENQUEUE_FILE | " +
+                "enqueued=${added.size} | owner=GMMP-qr.z | " +
                 "manualQueueChanges=allowed")
             events.reportEvent(
                 GoneSmartRuntimeContract.CATEGORY_TRACK_MIX,
-                "${request.menuLabel}: ${selectedIds.size} recommendations added during playback."
+                "${request.menuLabel}: ${added.size} recommendations added during playback."
             )
             toast(request.context, request.confirmation)
         } catch (failure: Throwable) {
