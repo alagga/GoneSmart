@@ -133,6 +133,33 @@ Accepted on 4.2.1:
 
 Resolvers prefer semantic adapter/model/writer ownership. Historical class names remain fast paths only where useful and safe.
 
+#### Physical playlist creation (2026-11-11 correction, device recheck pending)
+
+The 4.2.1 APK confirms two native create callbacks: `sp3.invoke(Object,Object)`
+for the main playlist tab and **`go3.invoke(Object,Object)`** for Add to
+Playlist (the old `fo3.invoke` is now unrelated). Both resolve the configured
+`playlist_saveLocation` through `tp3.w:vp3 → vp3.E:r15.getValue() →
+sa4.getValue()` (4.2.0 used `vp3.F → va4.getValue()`). The native writer remains
+`hp3.d()` and GMMP's scanner is `t6.g(Context,String[])`. A scoped, identity-
+checked getter substitution is allowed only while the exact native create
+callback runs and only after the configured root matches the independently
+indexed physical playlist root. Reject any ambiguous binding rather than
+creating the playlist in the root. In 4.2.1 the create callback returns the
+verified `ag5` Unit singleton; `uf5` is no longer Kotlin Unit. The picker
+selection source is `go3.n:ho3 → ho3.z:io3 → io3.a:List`, which must be
+restored after any create-only native transaction.
+
+The 2026-11-11 log exposed two independent issues: physical-folder create
+controls were unavailable because the old getter/picker hooks did not match,
+and clicking the resulting root playlist failed GoneSmart's synthetic row
+binding after twelve frames (`Summer 2027.m3u`, native position 189). The row
+action now listens for the actual native RecyclerView bind/pre-draw event and
+dispatches only to a holder with the verified exact playlist path, subject to
+a bounded cancellation timeout. **An actual 4.2.1 device test must confirm**
+main-tab creation, picker create-only, native index updates, actual M3U
+location, save/reopen and off-screen entry navigation; source/CI checks alone
+do not certify the host interaction.
+
 For Playlist Link, the native editor Link action is passively correlated from a real user-triggered GMMP dialog/event chain; the accepted 4.2.1 binding must retain that proof. A historical method name plus the same parameter shape is insufficient evidence for interception. The 2026-10-08 device trace now proves the GMMP 4.2.1 chooser boundary at `as4$g.accept(...)`: that callback appears immediately upstream of GMMP's native event chain and resulting `MaterialDialog.show()`. The unrelated `as4.h2(boolean)` shape therefore remains untrusted.
 
 For Playlist Link specifically, do not rely on a post-inflate `MenuItem` listener as the sole dispatch boundary. GMMP can replace that listener later in the Smart editor lifecycle. Keep the accepted 4.2.0 `ds4.g2(boolean)` path exact. On 4.2.1, intercept the proven `as4$g.accept(...)` callback for GoneSmart's type chooser and retain the exact callback instance/payload as a one-shot native continuation; choosing Smart Playlist resumes that original continuation. This avoids inventing an upstream mapping while keeping ordinary native edit/disabled paths pass-through.

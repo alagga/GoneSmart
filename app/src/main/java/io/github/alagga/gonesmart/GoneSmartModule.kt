@@ -2947,16 +2947,18 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * This GMMP version's vp3.F lazy delegate resolves the configured
-     * playlist_saveLocation via va4.getValue(). Unlike changing the global
+     * GMMP's verified vp3 lazy delegate resolves the configured
+     * playlist_saveLocation via the version's preference getValue().
+     * Unlike changing the global
      * setting or moving a newly-written M3U, a targeted thread-local
      * override affects ONLY the original create lambda's File(parent,name).
      * File writing (hp3.d) and GMMP's own rescan (t6.f) run untouched.
      */
     private fun aroundNativePhysicalCreation(
-        param: PackageReadyParam,
         surface: String,
         nativeLambda: Any,
+        layout: NativePlaylistCreateBinding.Layout,
+        nativeUnit: Any,
         proceed: () -> Any?
     ): Any? {
         val picker = surface == "picker"
@@ -2964,47 +2966,21 @@ class GoneSmartModule : XposedModule() {
             ?: return proceed()
         fun cancel(): Any? {
             playlistFolderPreview.blockUnsafeNativeCreation(picker)
-            return runCatching {
-                param.classLoader.loadClass("uf5")
-                    .getDeclaredField("a").apply { isAccessible = true }
-                    .get(null)
-            }.getOrNull()
+            return nativeUnit
         }
         if (!playlistFolderPreview.nativeCreateRedirectReady(picker) ||
             !File(target.destination).isDirectory
         ) return cancel()
 
-        val delegate = runCatching {
-            val owner = nativeLambda.javaClass.getDeclaredField("o")
-                .apply { isAccessible = true }
-                .get(nativeLambda) ?: return@runCatching null
-            var holder: Class<*>? = owner.javaClass
-            var state: Any? = null
-            while (holder != null && state == null) {
-                val type = holder
-                state = runCatching {
-                    type.getDeclaredField("x")
-                        .apply { isAccessible = true }
-                        .get(owner)
-                }.getOrNull()
-                holder = type.superclass
-            }
-            if (state?.javaClass?.name != "vp3") {
-                return@runCatching null
-            }
-            val lazy = state.javaClass.getDeclaredField("F")
-                .apply { isAccessible = true }.get(state)
-                ?: return@runCatching null
-            val nativeRootDelegate = lazy.javaClass.getDeclaredMethod("getValue")
-                .apply { isAccessible = true }.invoke(lazy)
-            nativeRootDelegate?.takeIf { it.javaClass.name == "va4" }
-        }.onFailure {
+        val delegate = NativePlaylistCreateBinding.resolveDelegate(
+            nativeLambda, layout
+        ) ?: run {
             Log.w(
                 "GoneSmartPlaylist",
-                "FOLDER CREATE | configured root delegate unavailable",
-                it
+                "FOLDER CREATE | configured root delegate unavailable | layout=$layout"
             )
-        }.getOrNull() ?: return cancel()
+            return cancel()
+        }
 
         val originalRoot = runCatching {
             delegate.javaClass.getDeclaredMethod("getValue")
@@ -3056,14 +3032,32 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
-     * Version-checked GMMP 4.2.0 native create hooks. The two presenters each construct
-     * a separate File(parent, name + ".m3u") inside this lambda. Do not
+     * APK-verified GMMP 4.2.0/4.2.1 native create hooks. Both presenters each
+     * construct File(parent, name + ".m3u") inside the original lambda. Do not
      * redirect either destination before both native transactions are known.
      * No user-entered name, path or playlist contents are logged.
      */
     private fun installNativePlaylistCreationHooks(
         param: PackageReadyParam
     ) {
+        val layout = NativePlaylistCreateBinding.resolveLayout(param.classLoader)
+        if (layout == null) {
+            Log.w(
+                "GoneSmartPlaylist",
+                "NATIVE CREATE | no APK-verified playlist writer/getter layout; " +
+                    "native root creation remains untouched"
+            )
+            playlistFolderPreview.setNativeCreateRedirectReady(false, false)
+            return
+        }
+        val kotlinUnit = NativePlaylistCreateBinding.nativeUnit(
+            param.classLoader, layout
+        ) ?: run {
+            Log.w("GoneSmartPlaylist", "NATIVE CREATE | Unit mapping unavailable")
+            playlistFolderPreview.setNativeCreateRedirectReady(false, false)
+            return
+        }
+
         runCatching {
             val presenterType = param.classLoader.loadClass("tp3")
             val constructors = presenterType.declaredConstructors
@@ -3107,26 +3101,8 @@ class GoneSmartModule : XposedModule() {
             )
         }
 
-        val kotlinUnit = runCatching {
-            val unitType = param.classLoader.loadClass("uf5")
-            val field = unitType.declaredFields.filter {
-                java.lang.reflect.Modifier.isStatic(it.modifiers) &&
-                    unitType.isAssignableFrom(it.type)
-            }.singleOrNull() ?: error(
-                "Kotlin Unit singleton field is not structurally unique"
-            )
-            field.isAccessible = true
-            field.get(null) ?: error("Kotlin Unit singleton is null")
-        }.onFailure {
-            Log.w(
-                "GoneSmartPlaylist",
-                "NATIVE CREATE | Kotlin Unit singleton unavailable",
-                it
-            )
-        }.getOrNull()
-
         val getterReady = runCatching {
-            val nativeGetter = param.classLoader.loadClass("va4")
+            val nativeGetter = param.classLoader.loadClass(layout.preferenceGetter)
                 .getDeclaredMethod("getValue").apply { isAccessible = true }
             hook(nativeGetter).intercept { chain ->
                 nativePlaylistDestinationScope.overrideNativeGetter(
@@ -3146,12 +3122,12 @@ class GoneSmartModule : XposedModule() {
             )
         }.getOrDefault(false)
         val installedSurfaces = mutableSetOf<String>()
-        listOf("sp3" to "main", "fo3" to "picker").forEach { (name, surface) ->
+        listOf("sp3" to "main", layout.pickerCallback to "picker")
+            .forEach { (name, surface) ->
             runCatching {
                 val native = param.classLoader.loadClass(name)
-                // DEX confirms Kotlin Function2: two Object arguments,
-                // one Object return. The earlier three-argument lookup
-                // could never install either probe on GMMP 4.2.0.
+                // Both APK-verified versions' create callbacks are Kotlin
+                // Function2, with two Object arguments and one Object return.
                 val invoke = native.getDeclaredMethod(
                     "invoke",
                     Any::class.java,
@@ -3164,7 +3140,6 @@ class GoneSmartModule : XposedModule() {
                     )
                     try {
                         if (surface == "main" &&
-                            kotlinUnit != null &&
                             NativeGmmpFolderCreator
                                 .interceptNativeMainPlaylistCreate(
                                     chain.getThisObject(),
@@ -3183,30 +3158,47 @@ class GoneSmartModule : XposedModule() {
                         val createOnly = surface == "picker" &&
                             playlistController.canCreatePlaylistWithoutAdding()
                         val result = aroundNativePhysicalCreation(
-                            param, surface, chain.getThisObject()
+                            surface, chain.getThisObject(), layout, kotlinUnit
                         ) {
                         if (!createOnly) {
                             chain.proceed()
                         } else {
-                            // fo3.invoke ALWAYS copies ho3.a into hp3.r,
-                            // regardless of go3.z. Temporarily substitute an
+                            // Both accepted picker callbacks copy their
+                            // source selection into the native playlist writer.
+                            // Temporarily substitute an
                             // empty source-list for THIS synchronous original
                             // GMMP create transaction and restore in finally.
                             // This preserves hp3.d, t6.f and GMMP's own
                             // filename validation / DB registration.
                             val target = runCatching {
                                 val owner = chain.getThisObject().javaClass
-                                    .getDeclaredField("o")
+                                    .getDeclaredField(
+                                        if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
+                                            "n"
+                                        } else "o"
+                                    )
                                     .apply { isAccessible = true }
                                     .get(chain.getThisObject())
-                                if (owner?.javaClass?.name != "go3") {
+                                val expectedOwner =
+                                    if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
+                                        "ho3"
+                                    } else "go3"
+                                if (owner?.javaClass?.name != expectedOwner) {
                                     return@runCatching null
                                 }
                                 val source = owner.javaClass
-                                    .getDeclaredField("A")
+                                    .getDeclaredField(
+                                        if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
+                                            "z"
+                                        } else "A"
+                                    )
                                     .apply { isAccessible = true }
                                     .get(owner)
-                                if (source?.javaClass?.name != "ho3") {
+                                val expectedSource =
+                                    if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
+                                        "io3"
+                                    } else "ho3"
+                                if (source?.javaClass?.name != expectedSource) {
                                     return@runCatching null
                                 }
                                 val field = source.javaClass

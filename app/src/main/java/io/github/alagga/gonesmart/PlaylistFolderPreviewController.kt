@@ -3789,7 +3789,6 @@ internal class PlaylistFolderPreviewController(
             expectedPosition = expectedPosition,
             longClick = longClick,
             contextMenu = contextMenu,
-            attempt = 0,
             onComplete = complete
         )
         return true
@@ -3801,71 +3800,67 @@ internal class PlaylistFolderPreviewController(
         expectedPosition: Int,
         longClick: Boolean,
         contextMenu: Boolean,
-        attempt: Int,
         onComplete: ((Boolean) -> Unit)?
     ) {
         val list = browser.list
-        list.postOnAnimation {
-            if (browsers[list] !== browser || !list.isAttachedToWindow) {
-                browser.actionPending = false
-                onComplete?.invoke(false)
-                return@postOnAnimation
+        // The native FastScrollPagedRecyclerView can bind an off-screen row
+        // after more than twelve animation frames. Listen to real native
+        // pre-draw/layout progress, and click only an actually bound holder
+        // whose model path still matches. No blind retry click or fake model.
+        var completed = false
+        var checkPosted = false
+        lateinit var listener: android.view.ViewTreeObserver.OnPreDrawListener
+        lateinit var timeout: Runnable
+        fun finish(success: Boolean, timedOut: Boolean = false) {
+            if (completed) return
+            completed = true
+            if (list.viewTreeObserver.isAlive) {
+                list.viewTreeObserver.removeOnPreDrawListener(listener)
             }
-
-            // Ask RecyclerView for the exact adapter position first. This
-            // also forces us to wait until that position is actually bound,
-            // rather than assuming two animation frames are enough.
-            val holderReady = runCatching {
-                val holder = list.javaClass.methods.firstOrNull {
-                    it.name == "findViewHolderForAdapterPosition" &&
-                        it.parameterCount == 1 &&
-                        it.parameterTypes[0] == Int::class.javaPrimitiveType
-                }?.invoke(list, expectedPosition)
-                holder != null && boundPlaylistModel(holder)?.let(::modelPath) ==
-                    targetPath
-            }.getOrDefault(false)
-
-            if (holderReady && performMatchingNativeAction(
-                    list, targetPath, longClick, contextMenu
-                )
-            ) {
-                browser.actionPending = false
-                onComplete?.invoke(true)
-                return@postOnAnimation
-            }
-
-            if (attempt >= 11) {
-                browser.actionPending = false
+            list.removeCallbacks(timeout)
+            browser.actionPending = false
+            if (timedOut) {
                 Log.w(
                     TAG,
-                    "FOLDER INLINE ACTION | target not bound after retries" +
+                    "FOLDER INLINE ACTION | native row not bound" +
                         " | expectedPosition=" + expectedPosition +
+                        " | visibleRows=" + list.childCount +
                         " | path=" + targetPath
                 )
                 warn(list, "Playlist row not ready; please try again")
-                onComplete?.invoke(false)
-                return@postOnAnimation
             }
-
-            if (attempt == 3 || attempt == 7) {
-                runCatching {
-                    list.javaClass.getMethod(
-                        "scrollToPosition",
-                        Int::class.javaPrimitiveType
-                    ).invoke(list, expectedPosition)
-                    list.requestLayout()
+            onComplete?.invoke(success)
+        }
+        fun tryDispatch() {
+            if (completed) return
+            if (browsers[list] !== browser || !list.isAttachedToWindow) {
+                finish(false)
+            } else if (performMatchingNativeAction(
+                    list, targetPath, longClick, contextMenu
+                )
+            ) {
+                finish(true)
+            }
+        }
+        listener = android.view.ViewTreeObserver.OnPreDrawListener {
+            if (!completed && !checkPosted) {
+                checkPosted = true
+                list.post {
+                    checkPosted = false
+                    tryDispatch()
                 }
             }
-            awaitMatchingNativeAction(
-                browser,
-                targetPath,
-                expectedPosition,
-                longClick,
-                contextMenu,
-                attempt + 1,
-                onComplete
-            )
+            true
         }
+        timeout = Runnable { finish(false, timedOut = true) }
+        if (!list.viewTreeObserver.isAlive) {
+            browser.actionPending = false
+            onComplete?.invoke(false)
+            return
+        }
+        list.viewTreeObserver.addOnPreDrawListener(listener)
+        list.postDelayed(timeout, 3_000L)
+        list.post { tryDispatch() }
     }
 
     private fun clearPickerOverlayTargets(list: ViewGroup) {
