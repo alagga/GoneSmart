@@ -5,6 +5,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaylistFolderSurfaceLifecyclePolicyTest {
+    @Test fun preHideOnlyPlaylistRowsWhenFolderFeatureEnabled() {
+        val p = PlaylistFolderSurfaceLifecyclePolicy
+        assertTrue(p.shouldPreHideNativeRows(true, "playlistListRecyclerView"))
+        assertFalse(p.shouldPreHideNativeRows(false, "playlistListRecyclerView"))
+        assertFalse(p.shouldPreHideNativeRows(true, "trackListRecyclerView"))
+    }
+
+    @Test fun retainedOverlayMayReturnOnlyAfterPageBecomesFrontmost() {
+        val p = PlaylistFolderSurfaceLifecyclePolicy
+        assertFalse(p.shouldRestoreRetainedBrowser(true, true, false))
+        assertFalse(p.shouldRestoreRetainedBrowser(true, false, true))
+        assertFalse(p.shouldRestoreRetainedBrowser(false, true, true))
+        assertTrue(p.shouldRestoreRetainedBrowser(true, true, true))
+    }
+
     @Test fun mainBrowserBuildsOnlyWhenActuallyVisibleAndFrontmost() {
         assertTrue(
             PlaylistFolderSurfaceLifecyclePolicy.shouldBuildBrowser(

@@ -150,6 +150,7 @@ internal class PlaylistFolderPreviewController(
         var currentFolderId: String? = null,
         var actionPending: Boolean = false,
         var nativeNavigationInProgress: Boolean = false,
+        var awaitingReturnFromDetail: Boolean = false,
         var nativeRefreshPending: Boolean = false,
         var renderedBreadcrumbSignature: String? = null,
         var breadcrumbRefreshPending: Boolean = false,
@@ -766,6 +767,58 @@ internal class PlaylistFolderPreviewController(
         return true
     }
 
+    /**
+     * Hide GMMP's ungrouped native Playlist rows before the host view is
+     * attached or its adapter is set. The folder overlay needs several
+     * frames to rebuild after Back. An independent bounded timeout restores
+     * GMMP if the overlay cannot be attached, rather than leaving a blank UI.
+     */
+    fun onNativePlaylistRecyclerPreparing(view: View?) {
+        val list = view as? ViewGroup ?: return
+        if (!PlaylistFolderSurfaceLifecyclePolicy.shouldPreHideNativeRows(
+                settings.enabled, resourceName(list)
+            ) || browsers.containsKey(list) ||
+            nativeOriginalAlphas.containsKey(list)
+        ) return
+        nativeOriginalAlphas[list] = list.alpha
+        list.alpha = 0f
+        val weak = WeakReference(list)
+        mainHandler.postDelayed({
+            val current = weak.get() ?: return@postDelayed
+            if (browsers.containsKey(current)) return@postDelayed
+            val original = nativeOriginalAlphas.remove(current)
+                ?: return@postDelayed
+            current.alpha = original
+            Log.w(TAG, "FOLDER EARLY HIDE | overlay unavailable, native restored")
+        }, 2_500L)
+    }
+
+    /**
+     * If GMMP keeps the same list behind playlist details, reuse our existing
+     * finished folder overlay immediately on Back instead of recreating it.
+     */
+    private fun restoreRetainedMainBrowser(browser: Browser) {
+        if (!browser.awaitingReturnFromDetail ||
+            !PlaylistFolderSurfaceLifecyclePolicy.shouldRestoreRetainedBrowser(
+                listAttached = browser.list.isAttachedToWindow,
+                listShown = browser.list.isShown,
+                frontFragment = isFrontFragmentView(browser.list)
+            )
+        ) return
+        if (browser.overlay.parent !== browser.parent) {
+            removeBrowser(browser.list)
+            scheduleAttach(browser.list, 0)
+            return
+        }
+        browser.awaitingReturnFromDetail = false
+        browser.nativeNavigationInProgress = false
+        browser.overlay.isClickable = true
+        browser.overlay.isFocusable = true
+        positionOverlay(browser)
+        scheduleNativePlaylistRefresh(browser)
+        Log.i(TAG, "FOLDER INLINE RETURN | retained main browser restored")
+    }
+
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
         if (isDrawerRecycler(list)) {
@@ -777,6 +830,7 @@ internal class PlaylistFolderPreviewController(
             return
         }
         val adapter = nativeAdapter(list) ?: return
+        browsers[list]?.let(::restoreRetainedMainBrowser)
         val pickerFab = nativePickerFab(list)
         if (pickerFab != null) {
             multiSelect.adoptPickerSurface(list, pickerFab)
@@ -2326,6 +2380,7 @@ internal class PlaylistFolderPreviewController(
             val now = android.os.SystemClock.uptimeMillis()
             weakList.get()?.let { current ->
                 browsers[current]?.let { browser ->
+                    restoreRetainedMainBrowser(browser)
                     syncPagerOverlayVisibility(browser)
                     val foreground =
                         browser.overlay.visibility == View.VISIBLE &&
@@ -4093,11 +4148,14 @@ internal class PlaylistFolderPreviewController(
             isFrontFragmentView(list)
 
         if (!stillFront) {
-            // We have now observed the native detail page taking over, so
-            // retiring the old browser cannot reveal the native root list.
-            suspendedNativeLists[list] = NavigationHold(leftForeground = true)
+            // Keep the fully rendered main folder overlay on the back stack.
+            // GMMP's native Playlist list remains hidden behind its detail
+            // fragment and the overlay is revealed on the first Back frame.
+            browser.awaitingReturnFromDetail = true
             browser.overlay.visibility = View.GONE
-            removeBrowser(list, preserveNativeAlpha = true)
+            browser.overlay.isClickable = false
+            browser.overlay.isFocusable = false
+            Log.i(TAG, "FOLDER INLINE SUSPEND | retained browser for Back")
             return
         }
 
@@ -4105,6 +4163,7 @@ internal class PlaylistFolderPreviewController(
             // Native click reported handled but no navigation appeared.
             // Restore the browser rather than leaving an inert overlay.
             browser.nativeNavigationInProgress = false
+            browser.awaitingReturnFromDetail = false
             browser.overlay.isClickable = true
             browser.overlay.isFocusable = true
             positionOverlay(browser)

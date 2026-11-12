@@ -2714,6 +2714,11 @@ class GoneSmartModule : XposedModule() {
         } ?: throw NoSuchMethodException("RecyclerView.setAdapter")
         setAdapter.isAccessible = true
         hook(setAdapter).intercept { chain ->
+            runCatching {
+                playlistFolderPreview.onNativePlaylistRecyclerPreparing(
+                    chain.getThisObject() as? android.view.View
+                )
+            }
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
@@ -2735,6 +2740,11 @@ class GoneSmartModule : XposedModule() {
         } ?: throw NoSuchMethodException("RecyclerView.onAttachedToWindow")
         attach.isAccessible = true
         hook(attach).intercept { chain ->
+            runCatching {
+                playlistFolderPreview.onNativePlaylistRecyclerPreparing(
+                    chain.getThisObject() as? android.view.View
+                )
+            }
             val result = chain.proceed()
             runCatching {
                 val list = chain.getThisObject() as? android.view.View
