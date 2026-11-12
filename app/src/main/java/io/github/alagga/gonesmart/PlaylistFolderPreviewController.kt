@@ -3985,7 +3985,7 @@ internal class PlaylistFolderPreviewController(
             val holder = runCatching {
                 getHolder.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            val actual = boundPlaylistModel(holder) ?: continue
+            val actual = nativeBoundPlaylistModel(list, nativeRow, holder) ?: continue
             if (modelPath(actual) != targetPath) continue
             return runCatching {
                 // Keep the folder browser visible until GMMP's NEW
@@ -4322,7 +4322,7 @@ internal class PlaylistFolderPreviewController(
             val holder = runCatching {
                 holderMethod.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            val model = boundPlaylistModel(holder) ?: continue
+            val model = nativeBoundPlaylistModel(list, nativeRow, holder) ?: continue
             val path = modelPath(model) ?: continue
             visiblePlaylistTitle(nativeRow)?.let {
                 found[path] = it
@@ -4361,6 +4361,31 @@ internal class PlaylistFolderPreviewController(
     private fun nativeAdapter(list: ViewGroup): Any? = runCatching {
         list.javaClass.getMethod("getAdapter").invoke(list)
     }.getOrNull()
+
+    /** Correlate each live GMMP row with its current adapter position. */
+    private fun nativeBoundPlaylistModel(
+        list: ViewGroup,
+        row: View,
+        holder: Any
+    ): Any? {
+        val adapter = nativeAdapter(list)
+        if (adapter != null &&
+            NativePlaylistRuntimeBinding.isReady(adapter)
+        ) {
+            val position = runCatching {
+                list.javaClass.getMethod(
+                    "getChildAdapterPosition", View::class.java
+                ).invoke(list, row) as? Int
+            }.getOrNull() ?: return null
+            // Never use a previously cached holder model when its actual
+            // RecyclerView position no longer matches GMMP's getItem().
+            return NativePlaylistRuntimeBinding.boundModelAt(
+                adapter, holder, position
+            )
+        }
+        // The accepted 4.2.0 adapter/holder field path is unchanged.
+        return boundPlaylistModel(holder)
+    }
 
     private fun boundPlaylistModel(holder: Any): Any? =
         NativePlaylistRuntimeBinding.boundModel(holder)
@@ -4426,7 +4451,7 @@ internal class PlaylistFolderPreviewController(
             val holder = runCatching {
                 holderGetter.invoke(list, nativeRow)
             }.getOrNull() ?: continue
-            val boundModel = boundPlaylistModel(holder) ?: continue
+            val boundModel = nativeBoundPlaylistModel(list, nativeRow, holder) ?: continue
             val name = modelTitle(boundModel)
             val title = findNativeTitleTextView(nativeRow, name) ?: continue
             val matchedNativeTitle = !name.isNullOrBlank() &&

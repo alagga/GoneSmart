@@ -96,9 +96,23 @@ internal object NativePlaylistRuntimeBinding {
         renderedTitle: String?
     ): Description? {
         if (adapterPosition < 0) return null
-        synchronized(byAdapter) {
+        val existing = synchronized(byAdapter) {
             byAdapter[adapter.javaClass]
-        }?.let { return describe(it, "cached") }
+        }
+        if (existing != null) {
+            // The Add picker and the Playlists tab can use distinct holder
+            // classes for the same ao3 adapter. An adapter-level cache hit
+            // must never skip proving the current holder's model field.
+            val current = boundModelAt(adapter, holder, adapterPosition)
+                ?: return null
+            if (renderedTitle != null &&
+                !sameText(
+                    readString(existing.titleField, current).orEmpty(),
+                    renderedTitle
+                )
+            ) return null
+            return describe(existing, "cached")
+        }
 
         val title = renderedTitle
             ?.trim()
@@ -219,6 +233,83 @@ internal object NativePlaylistRuntimeBinding {
             rows += Row(path, title, model)
         }
         return rows.takeIf { it.size == expectedRows }
+    }
+
+    /**
+     * Resolve a *currently visible* holder against the independently
+     * validated getItem(adapterPosition) model. GMMP 4.2.1 may reuse ao3
+     * across Add-to-Playlist and the main Playlists tab but use different
+     * ViewHolder types. Matching only the adapter class made subsequent
+     * native row clicks fail even when the row was already on screen.
+     *
+     * Never guess a holder field: require a unique runtime field with the
+     * same exact model instance (or matching path, ID and title) as GMMP's
+     * indexed adapter row. Keep this binding cached by concrete holder
+     * class; no native click, model replacement or adapter mutation occurs.
+     */
+    fun boundModelAt(
+        adapter: Any,
+        holder: Any,
+        adapterPosition: Int
+    ): Any? {
+        if (adapterPosition < 0) return null
+        val binding = synchronized(byAdapter) {
+            byAdapter[adapter.javaClass]
+        } ?: return null
+        val expected = runCatching {
+            binding.getter.invoke(adapter, adapterPosition)
+        }.getOrNull()?.takeIf {
+            binding.modelClass.isInstance(it)
+        } ?: return null
+        val expectedPath = readString(binding.pathField, expected)
+            ?: return null
+        val expectedTitle = readString(binding.titleField, expected)
+            ?: return null
+
+        fun agrees(candidate: Any?): Boolean {
+            if (candidate == null ||
+                !binding.modelClass.isInstance(candidate) ||
+                readString(binding.pathField, candidate) != expectedPath ||
+                readString(binding.titleField, candidate) != expectedTitle
+            ) return false
+            return candidate === expected ||
+                sameId(binding.idGetter, candidate, expected)
+        }
+
+        val cached = synchronized(byHolder) {
+            byHolder[holder.javaClass]
+        }
+        if (cached?.adapterClass == adapter.javaClass) {
+            val candidate = runCatching {
+                cached.holderField.get(holder)
+            }.getOrNull()
+            if (agrees(candidate)) return candidate
+        }
+
+        val candidates = generateSequence<Class<*>>(holder.javaClass) {
+            it.superclass
+        }.take(7).takeWhile { it != Any::class.java }
+            .flatMap { type ->
+                type.declaredFields.asSequence().filter {
+                    !Modifier.isStatic(it.modifiers) && !it.isSynthetic
+                }
+            }.mapNotNull { field ->
+                val candidate = runCatching {
+                    field.isAccessible = true
+                    field.get(holder)
+                }.getOrNull()
+                if (agrees(candidate)) field to candidate!! else null
+            }.toList()
+        val exact = candidates.filter { it.second === expected }
+        val selected = (if (exact.isNotEmpty()) exact else candidates)
+            .singleOrNull() ?: return null
+        synchronized(byHolder) {
+            byHolder[holder.javaClass] = binding.copy(
+                holderClass = holder.javaClass,
+                holderField = selected.first
+            )
+        }
+        return selected.second
     }
 
     fun boundModel(holder: Any): Any? {
