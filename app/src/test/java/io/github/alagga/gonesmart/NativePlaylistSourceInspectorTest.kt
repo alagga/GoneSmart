@@ -79,7 +79,9 @@ class NativePlaylistSourceInspectorTest {
 
     private class OrderedNativeModel(
         val id: Long,
-        val title: String,
+        // Deliberately obfuscated, just like GMMP 4.2.1's native title
+        // field: the picker must not depend on a literal "title" name.
+        val n: String,
         val path: String
     )
 
@@ -111,5 +113,15 @@ class NativePlaylistSourceInspectorTest {
         )
         assertEquals(festival, result.nativeObjects[festival.path])
         assertTrue(result.traces.single().contains("orderedRows=2"))
+
+        // The picker can have zero bound native labels even though readAll
+        // verified every model and its actual displayed title earlier.
+        // It must still produce the complete folder/title index.
+        val noVisibleTitles = NativePlaylistTitleResolver.resolve(
+            result.models, emptyMap()
+        )
+        assertEquals(2, noVisibleTitles.nativeTitles)
+        assertEquals("Festival 2027", noVisibleTitles.names[festival.path])
+        assertEquals("Summer 2027", noVisibleTitles.names[summer.path])
     }
 }

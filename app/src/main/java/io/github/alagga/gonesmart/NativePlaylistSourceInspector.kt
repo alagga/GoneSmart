@@ -50,7 +50,13 @@ internal object NativePlaylistSourceInspector {
                 visitedObjects = ordered.size,
                 truncated = false,
                 models = ordered.map {
-                    NativePlaylistTitleResolver.Model(it.path, textFields(it.model))
+                    // readAll() already proved the title field against a
+                    // real bound GMMP row. Preserve that authoritative name:
+                    // the Add-to-Playlist picker may have no visible row
+                    // titles for the resolver to correlate again.
+                    NativePlaylistTitleResolver.Model(
+                        it.path, mapOf("title" to it.title)
+                    )
                 },
                 nativeObjects = ordered.associate { it.path to it.model }
             )
