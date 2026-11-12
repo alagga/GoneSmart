@@ -2839,6 +2839,13 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.isClickable = false
         browser.overlay.isFocusable = false
         list.alpha = if (preserveNativeAlpha) 0f else browser.originalAlpha
+        if (!preserveNativeAlpha) {
+            // A detached main Playlist RecyclerView can be reused by GMMP
+            // on Back. Clear its old alpha lease so the next native attach
+            // invokes our BEFORE-first-draw hide again. The picker keeps its
+            // special fragment-replacement lease until its handoff ends.
+            nativeOriginalAlphas.remove(list)
+        }
         list.removeOnAttachStateChangeListener(browser.detachListener)
         list.removeOnLayoutChangeListener(browser.layoutListener)
         if (list.viewTreeObserver.isAlive) {
