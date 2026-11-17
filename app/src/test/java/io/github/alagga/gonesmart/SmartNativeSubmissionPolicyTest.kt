@@ -152,6 +152,16 @@ class SmartNativeSubmissionPolicyTest {
                 expectedPaths = expected
             )
         )
+        // A count match is not sufficient when RecyclerView has not yet
+        // exposed a single verified native Smart row.
+        assertFalse(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2,
+                adapterCount = 2,
+                visiblePaths = emptyList(),
+                expectedPaths = expected
+            )
+        )
         assertTrue(
             SmartNativeSubmissionPolicy.projectionReady(
                 expectedCount = 2,

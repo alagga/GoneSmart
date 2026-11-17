@@ -1717,7 +1717,13 @@ internal class SmartPlaylistFolderController(
             if (current === browser && !browser.nativeContentReady &&
                 list.isAttachedToWindow
             ) {
-                Log.w(TAG, "SMART FOLDERS INITIAL WAIT | fail-open native list")
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS INITIAL WAIT | fail-open native list" +
+                        " | expected=" + browser.nativeOrder.size +
+                        " | actual=" + (nativeAdapterItemCount(browser) ?: -1) +
+                        " | visibleModels=" + visibleNativeModelPaths(browser).size
+                )
                 browser.projectionFailOpenAllowed = true
                 revealInitialContent(
                     browser,

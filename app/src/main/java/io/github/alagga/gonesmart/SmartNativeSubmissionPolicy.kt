@@ -82,6 +82,10 @@ internal object SmartNativeSubmissionPolicy {
         expectedPaths: Set<String>
     ): Boolean {
         if (adapterCount == null || adapterCount != expectedCount) return false
+        // Empty holder evidence must not prove a non-empty differ commit.
+        // Otherwise a stale same-count native root can be revealed before
+        // RecyclerView binds its first row during Smart-tab navigation.
+        if (expectedCount > 0 && visiblePaths.isEmpty()) return false
         return visiblePaths.all(expectedPaths::contains)
     }
 }
