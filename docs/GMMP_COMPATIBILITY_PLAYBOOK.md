@@ -483,3 +483,33 @@ folder create/open/back, and Track Mix initial/native fallback after the
 passive source-boundary change. Future GMMP versions require the original
 read-only self-test plus new native source/writer postconditions; no blanket
 support promise is made.
+
+
+### 2026-11-17 on-device multi-add confirmation correction (1e1db42 runtime log)
+
+The 17:18 device trace for revision `1e1db42b47e8` confirms a **newly
+observed 4.2.1 mapping**: the old picker constructor
+`io3(ho3,boolean)` is absent; `io3(java.util.List)` exists instead, and the
+expected legacy `jd(mode=4)` completion constructor was not resolved. The
+read-only folder/picker overlay nevertheless dispatched two native playlist
+row clicks successfully. GoneSmart logged `accepted=2/2 | sourceCount=0`,
+then the host showed *two separate native toasts*. Thus the old batch guard
+was never created; this is not evidence of a working per-toast suppression.
+
+The correction makes explicit multi-destination confirmation independent of
+R8 picker/finish callback ownership. During an active GoneSmart multi-add,
+`Toast.makeText` identifies only GMMP's exact localized
+`add_to_playlist_toast` string. If the source list is inaccessible, a
+bounded, uniqueness-checked, **read-only** format/count match derives the
+source count from the actual native result. Each uniquely identified Toast
+object is suppressed at `show()` and provides one native-success receipt.
+Only after the confirmed count reaches the number of accepted native row
+dispatches does GoneSmart emit one combined summary. A short bounded timeout
+reports partial/unknown outcomes without treating a dispatched click as a
+confirmed playlist write. This must not consume ordinary single-playlist or
+unrelated error toasts. No GMMP write method is guessed or hooked.
+
+**Status:** code/tests and CI pending at this historical entry; device
+re-acceptance required with one, two and several selected tracks and multiple
+destinations, including delayed/partial callbacks. Preserve the 4.2.1
+observed constructor mismatch in the next-version read-only self-test.

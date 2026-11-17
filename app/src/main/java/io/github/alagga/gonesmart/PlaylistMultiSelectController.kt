@@ -377,7 +377,7 @@ internal class PlaylistMultiSelectController {
             pendingNativeToastBatch?.takeIf {
                 it.toastScopeExpiresAtMs >= now &&
                     it.context.packageName == context.packageName &&
-                    it.sourceCount > 0 && it.requestedDestinations > 1
+                    it.requestedDestinations > 1
             }
         } ?: return
 
@@ -385,22 +385,33 @@ internal class PlaylistMultiSelectController {
             "add_to_playlist_toast", "string", context.packageName
         )
         if (nativeId == 0) return
-        val exactNativeMessage = runCatching {
-            context.getString(nativeId, batch.sourceCount)
-        }.getOrNull() ?: return
+        // GMMP 4.2.1's native picker is io3(List), not the historical
+        // io3(ho3,boolean). Determine track count from GMMP's actual
+        // localized native result, never from obsolete R8 fields.
+        val nativeCount = NativeMultiPlaylistToastPolicy.resolveNativeCount(
+            actualMessage = message,
+            knownCount = batch.sourceCount,
+            localizedMessage = { count ->
+                runCatching { context.getString(nativeId, count) }.getOrNull()
+            }
+        ) ?: return
 
         synchronized(navigationLock) {
             if (pendingNativeToastBatch !== batch ||
                 !NativeMultiPlaylistToastPolicy.shouldTag(
                     actualMessage = message,
-                    nativeMessage = exactNativeMessage,
-                    sourceCount = batch.sourceCount,
+                    nativeMessage = message,
+                    sourceCount = nativeCount,
                     requestedDestinations = batch.requestedDestinations,
                     taggedCount = batch.nativeToastsIdentified,
                     nowMs = now,
                     expiresAtMs = batch.toastScopeExpiresAtMs
-                )
+                ) || (batch.sourceCount > 0 && batch.sourceCount != nativeCount)
             ) return
+            if (batch.sourceCount == 0) {
+                batch.sourceCount = nativeCount
+                Log.i(TAG, "MULTI TOAST | sourceCount verified from native result=$nativeCount")
+            }
             nativeMultiToastCandidates[toast] = batch
             batch.nativeToastsIdentified++
         }
@@ -461,9 +472,10 @@ internal class PlaylistMultiSelectController {
      * j83 can detach its fragment before later Rx callbacks finish.
      */
     private class NativeNavigationBatch(
-        val sourceCount: Int,
+        var sourceCount: Int,
         val context: Context,
-        val requestedDestinations: Int
+        val requestedDestinations: Int,
+        val awaitNativeToasts: Boolean
     ) {
         var closeEventSent = false
         var successfulDestinations = 0
@@ -473,6 +485,7 @@ internal class PlaylistMultiSelectController {
         var nativeToastsSuppressed = 0
         var nativeToastsIdentified = 0
         var toastScopeExpiresAtMs = 0L
+        var nativeToastDeadlineReached = false
         var summaryScheduled = false
     }
 
@@ -568,8 +581,12 @@ internal class PlaylistMultiSelectController {
         } ?: return false
         synchronized(navigationLock) {
             batch.nativeToastsSuppressed++
+            if (batch.nativeToastsSuppressed >= batch.acceptedDestinations &&
+                pendingNativeToastBatch === batch
+            ) pendingNativeToastBatch = null
         }
         Log.i(TAG, "MULTI TOAST | individual GMMP result hidden")
+        maybeShowNativeSummary(batch)
         return true
     }
 
@@ -589,6 +606,20 @@ internal class PlaylistMultiSelectController {
                     android.os.SystemClock.elapsedRealtime() + 12_000L
             }
         }
+        if (batch.awaitNativeToasts && accepted > 0) {
+            // Time-bound partial result: zero verified native Toasts never
+            // produce a success notification. A delayed callback cannot
+            // cause an unbounded spinner or an invented playlist result.
+            mainHandler.postDelayed({
+                synchronized(navigationLock) {
+                    batch.nativeToastDeadlineReached = true
+                    if (pendingNativeToastBatch === batch) {
+                        pendingNativeToastBatch = null
+                    }
+                }
+                maybeShowNativeSummary(batch)
+            }, 5_000L)
+        }
         maybeShowNativeSummary(batch)
     }
 
@@ -597,17 +628,21 @@ internal class PlaylistMultiSelectController {
         // GMMP confirmed zero successful destinations". Emit one final
         // event for either outcome, never intermediate optimistic results.
         val completed = synchronized(navigationLock) {
+            val nativeToastDone = batch.nativeToastsSuppressed >=
+                batch.acceptedDestinations || batch.nativeToastDeadlineReached
             if (batch.summaryScheduled ||
                 !batch.dispatchFinished ||
                 batch.acceptedDestinations <= 0 ||
-                batch.callbacksFinished < batch.acceptedDestinations
+                (batch.awaitNativeToasts && !nativeToastDone) ||
+                (!batch.awaitNativeToasts &&
+                    batch.callbacksFinished < batch.acceptedDestinations)
             ) {
                 null
             } else {
                 batch.summaryScheduled = true
-                batch.successfulDestinations.coerceAtMost(
-                    batch.acceptedDestinations
-                )
+                (if (batch.awaitNativeToasts) batch.nativeToastsSuppressed
+                 else maxOf(batch.successfulDestinations, batch.nativeToastsSuppressed))
+                    .coerceAtMost(batch.acceptedDestinations)
             }
         } ?: return
         if (completed == 0) {
@@ -2079,11 +2114,12 @@ internal class PlaylistMultiSelectController {
 
         val sourceCount = handler?.let(::sourceCount)
             ?.takeIf { it > 0 } ?: 0
-        val navigationBatch = if (targets.size > 1 && sourceCount > 0) {
+        val navigationBatch = if (targets.size > 1) {
             NativeNavigationBatch(
                 sourceCount = sourceCount,
                 context = fab.context,
-                requestedDestinations = targets.size
+                requestedDestinations = targets.size,
+                awaitNativeToasts = sourceCount == 0 || !pickerCloseGuardReady
             ).also { batch ->
                 synchronized(navigationLock) {
                     pendingNativeToastBatch = batch

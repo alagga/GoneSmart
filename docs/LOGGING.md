@@ -118,3 +118,19 @@ If Android instead reports any other size, GoneSmart preserves its
 restore state and refuses to overwrite an external change. Inspecting
 the buffer never resizes it; the system-wide Increase/Restore operations
 still require an opt-in root grant and separate confirmation.
+
+
+## 2026-11-17 multi-add result confirmation after GMMP 4.2.1 remap
+
+The 17:18 user log showed two accepted native destination clicks but
+`sourceCount=0` because the old picker constructor was unavailable.
+The revised multi-add path observes the installed GMMP's **localized native
+Toast** as the only per-destination success receipt when the completion
+callback cannot be proven, and coalesces exactly the verified results.
+If no uniquely matching native text is observable, original GMMP toasts are
+not swallowed and no speculative success event is appended. This retains the
+existing `[Playlists]` category, existing `GoneSmartPlaylist` Logcat tag,
+one terminal aggregate event and single native-locale toast; **no new
+GMMP-facing translations required**. No new capture category, filter-help
+entry or retained event-format migration is needed. Device verification of
+the asynchronous callback/toast ordering is still required.
