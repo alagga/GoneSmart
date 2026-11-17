@@ -840,16 +840,21 @@ internal class PlaylistFolderPreviewController(
         }
         val adapter = nativeAdapter(list) ?: return
         browsers[list]?.let(::restoreRetainedMainBrowser)
+        val adapterVerified =
+            GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
+        val viewName = resourceName(list)
+        // A GMMP 4.2.1 trackListRecyclerView can contain thousands of
+        // tracks and may share a visible FAB ancestor with the playlist
+        // picker. FAB proximity alone is NOT evidence of playlist identity.
+        // Exclude track/library lists before session adoption or scanning.
+        if (!NativePlaylistRecyclerSurfacePolicy.isPlaylistCandidate(
+                viewName, adapterVerified
+            )
+        ) return
         val pickerFab = nativePickerFab(list)
         if (pickerFab != null) {
             multiSelect.adoptPickerSurface(list, pickerFab)
         }
-        val adapterVerified =
-            GmmpPlaylistAdapterPolicy.isVerified(adapter.javaClass.name)
-        val nativePlaylistSurface =
-            resourceName(list) == "playlistListRecyclerView" ||
-                adapterVerified || pickerFab != null
-        if (!nativePlaylistSurface) return
         if (BuildConfig.DEBUG &&
             resourceName(list) != "playlistListRecyclerView"
         ) {

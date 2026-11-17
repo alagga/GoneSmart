@@ -134,3 +134,5 @@ one terminal aggregate event and single native-locale toast; **no new
 GMMP-facing translations required**. No new capture category, filter-help
 entry or retained event-format migration is needed. Device verification of
 the asynchronous callback/toast ordering is still required.
+
+**2026-11-17 native Playlist page regression:** An accepted GMMP 4.2.1 log demonstrated that the old `jd(mode=4)` callback constructor was no longer available. The `j83` close guard now installs independently so one multi-add does not trigger multiple native Back transitions and lose Playlist toolbar state. Companion `[Playlists]` keeps one terminal result based on actual native Toast evidence, with the existing `GoneSmartPlaylist` Logcat tag. The folder UI no longer attempts to inspect unrelated `trackListRecyclerView` adapters. No Logs-tab count, Copy/Clear, Help/filter, persistence or new GMMP text change is required; device confirmation is still pending.

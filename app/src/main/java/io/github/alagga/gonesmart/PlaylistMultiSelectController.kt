@@ -478,6 +478,7 @@ internal class PlaylistMultiSelectController {
         val awaitNativeToasts: Boolean
     ) {
         var closeEventSent = false
+        var nativeCloseEventsObserved = 0
         var successfulDestinations = 0
         var callbacksFinished = 0
         var dispatchFinished = false
@@ -538,21 +539,50 @@ internal class PlaylistMultiSelectController {
         }
     }
 
+    /**
+     * The GMMP 4.2.1 close event can arrive asynchronously, after the
+     * source callback and even after the picker RecyclerView detaches.
+     * The old jd(mode=4) callback ABI is therefore optional evidence.
+     *
+     * A bounded, user-initiated >1-destination transaction is the only
+     * fallback authority. Recognize only the proven native j83 event and
+     * allow its FIRST occurrence; suppress later ones for this transaction
+     * so GMMP cannot pop extra screens and lose its toolbar.
+     */
     fun shouldSuppressNativeCloseEvent(event: Any?): Boolean {
         if (event?.javaClass?.name != "j83") return false
-        val batch = runningNativeCallback.get() ?: return false
+        val now = android.os.SystemClock.elapsedRealtime()
+        val batch = runningNativeCallback.get()
+            ?: constructingNativeCallback.get()
+            ?: synchronized(navigationLock) {
+                pendingNativeToastBatch?.takeIf {
+                    it.dispatchFinished &&
+                        it.acceptedDestinations > 1 &&
+                        now <= it.toastScopeExpiresAtMs
+                }
+            }
+            ?: return false
 
         val suppress = synchronized(navigationLock) {
+            if (!NativePlaylistCloseEventPolicy.eligible(
+                    eventMatches = true,
+                    requestedDestinations = batch.requestedDestinations,
+                    acceptedDestinations = batch.acceptedDestinations,
+                    eventsObserved = batch.nativeCloseEventsObserved,
+                    beforeDeadline = now <= batch.toastScopeExpiresAtMs
+                )
+            ) return false
+            batch.nativeCloseEventsObserved++
             batch.successfulDestinations++
-            if (!batch.closeEventSent) {
-                batch.closeEventSent = true
-                Log.i(TAG, "MULTI NAV | first native close event allowed")
-                false
-            } else {
-                Log.i(TAG, "MULTI NAV | duplicate native close event suppressed")
-                true
-            }
+            val duplicate = batch.closeEventSent
+            batch.closeEventSent = true
+            duplicate
         }
+        Log.i(
+            TAG,
+            if (suppress) "MULTI NAV | duplicate native close suppressed"
+            else "MULTI NAV | first native close allowed"
+        )
         maybeShowNativeSummary(batch)
         return suppress
     }
@@ -581,9 +611,9 @@ internal class PlaylistMultiSelectController {
         } ?: return false
         synchronized(navigationLock) {
             batch.nativeToastsSuppressed++
-            if (batch.nativeToastsSuppressed >= batch.acceptedDestinations &&
-                pendingNativeToastBatch === batch
-            ) pendingNativeToastBatch = null
+            // Keep the bounded event guard alive even after the last
+            // native result Toast. The corresponding j83 close event may
+            // still be queued and must not pop a second Playlist screen.
         }
         Log.i(TAG, "MULTI TOAST | individual GMMP result hidden")
         maybeShowNativeSummary(batch)
@@ -606,10 +636,10 @@ internal class PlaylistMultiSelectController {
                     android.os.SystemClock.elapsedRealtime() + 12_000L
             }
         }
-        if (batch.awaitNativeToasts && accepted > 0) {
-            // Time-bound partial result: zero verified native Toasts never
-            // produce a success notification. A delayed callback cannot
-            // cause an unbounded spinner or an invented playlist result.
+        if (accepted > 0) {
+            // End BOTH the pending native Toast and close-event windows.
+            // Zero verified results never produce a fabricated success.
+            // This is not repeated polling or a second native dispatch.
             mainHandler.postDelayed({
                 synchronized(navigationLock) {
                     batch.nativeToastDeadlineReached = true

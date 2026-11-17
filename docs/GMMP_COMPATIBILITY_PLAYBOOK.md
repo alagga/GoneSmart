@@ -513,3 +513,13 @@ unrelated error toasts. No GMMP write method is guessed or hooked.
 re-acceptance required with one, two and several selected tracks and multiple
 destinations, including delayed/partial callbacks. Preserve the 4.2.1
 observed constructor mismatch in the next-version read-only self-test.
+
+### 2026-11-17 — multi-playlist native close guard / Playlist toolbar regression
+
+An on-device `ea5d774` log at 18:05:10 showed that the historical `jd(mode=4)` constructor ABI no longer resolves, so the old single `runCatching` block skipped **both** callback correlation and the independent `f2.b(Object)` native `j83` close-event guard. Two/three playlist destinations still wrote successfully, and all native Toasts were correctly suppressed and aggregated, but GMMP could receive multiple dialog-close events and navigate past the intended Playlist screen, leaving its native toolbar/page chrome inconsistent.
+
+The close-event hook is now installed **first and independently** from the optional obsolete callback constructor. Within a short, user-initiated, multi-destination dispatch window the first exact `j83` passes, subsequent native closes are suppressed up to the accepted destination count; single additions and unrelated native event classes remain untouched. The bounded active batch outlives picker detachment/Toast completion but is cleared after five seconds. The native Toast still provides the independent localized success count; the gate does not manufacture a successful add.
+
+The same log also showed the folder overlay trying to inspect an unrelated `trackListRecyclerView` with 7,426 tracks, yielding `models=0` and `attach retries exhausted`. A nearby picker FAB is no longer enough to classify the list as a playlist surface: a real `playlistListRecyclerView` identity or the verified native playlist adapter is required, with an explicit rejection of track lists. This eliminates the unnecessary repeated main-thread model traversal and potential cross-screen folder UI side effects.
+
+**Validation:** New pure regression tests cover the surface gate and bounded close-event policy. Native GMMP 4.2.1 device re-acceptance must confirm two/three destinations, exactly one combined Toast, correct return to native Playlists toolbar, then Back/forward navigation; one-playlist add and folder creation/opening must remain unchanged. Exact-head CI is necessary but not a substitute for that device check. **No new GMMP-facing strings/translations required.** Existing `[Playlists]` terminal event, Toast/logcat categories and companion Logcat filter remain unchanged.

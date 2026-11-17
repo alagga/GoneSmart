@@ -4039,69 +4039,77 @@ class GoneSmartModule : XposedModule() {
                 )
             }.getOrDefault(false)
 
-        // GMMP io3.r() builds one jd(mode=4) completion callback per
-        // playlist. Each successful callback posts j83 to the activity,
-        // whose onEvent(j83) navigates back once. Scope ONLY callbacks
-        // created by our multi-add and forward that event once per batch.
-        // Regular one-playlist adds and unrelated back actions are unchanged.
+        // 4.2.1: the native completion-callback constructor was remapped.
+        // Install the j83 event-bus guard independently. Otherwise one
+        // changed callback ABI silently disables the ENTIRE navigation
+        // guard, letting a multi-add navigate back multiple times and
+        // corrupt the visible Playlist toolbar/page stack.
         runCatching {
-            val callbackClass = param.classLoader.loadClass("jd")
-            val nativeCallbackConstructor =
-                callbackClass.declaredConstructors.first {
-                    it.parameterTypes.size == 3 &&
-                        it.parameterTypes[0] == Int::class.javaPrimitiveType
-                }.apply { isAccessible = true }
-
-            hook(nativeCallbackConstructor).intercept { chain ->
-                val result = chain.proceed()
-                playlistController.onNativeResultCallbackConstructed(
-                    chain.getThisObject(),
-                    chain.getArg(0)
-                )
-                result
-            }
-
-            val invoke = callbackClass.getDeclaredMethod(
-                "invoke",
-                Any::class.java
-            ).apply { isAccessible = true }
-
-            hook(invoke).intercept { chain ->
-                playlistController.aroundNativeResultCallback(
-                    chain.getThisObject()
-                ) {
-                    chain.proceed()
-                }
-            }
-
             val eventBusClass = param.classLoader.loadClass("f2")
             val emitEvent = eventBusClass.getDeclaredMethod(
-                "b",
-                Any::class.java
+                "b", Any::class.java
             ).apply { isAccessible = true }
-
             hook(emitEvent).intercept { chain ->
                 val event = chain.getArg(0)
-                if (
-                    playlistController.shouldSuppressPickerCreateCloseEvent(event) ||
+                if (playlistController.shouldSuppressPickerCreateCloseEvent(event) ||
                     playlistController.shouldSuppressNativeCloseEvent(event)
-                ) {
-                    null
-                } else {
-                    chain.proceed()
-                }
+                ) null else chain.proceed()
             }
             playlistController.setPickerCloseGuardReady(true)
-
             Log.i(
                 "GoneSmartPlaylist",
-                "MULTI NAV READY | one native j83 close event per batch"
+                "MULTI NAV READY | bounded native j83 close-event guard"
             )
         }.onFailure { error ->
-            Log.e(
-                TAG,
-                "Playlist native navigation guard unavailable",
-                error
+            playlistController.setPickerCloseGuardReady(false)
+            Log.e(TAG, "Playlist native close-event guard unavailable", error)
+        }
+
+        // Optional historical per-callback proof. If GMMP renamed the
+        // constructor, the bounded active multi-add event guard above still
+        // protects the UI, while native Toast identity remains the authority
+        // for the completed destination count.
+        runCatching {
+            val callbackClass = param.classLoader.loadClass("jd")
+            val constructor = callbackClass.declaredConstructors.singleOrNull {
+                it.parameterTypes.size == 3 &&
+                    it.parameterTypes[0] == Int::class.javaPrimitiveType
+            }
+            val invoke = callbackClass.declaredMethods.singleOrNull {
+                it.name == "invoke" && it.parameterTypes.contentEquals(
+                    arrayOf(Any::class.java)
+                )
+            }
+            if (constructor == null || invoke == null) {
+                Log.i(
+                    "GoneSmartPlaylist",
+                    "MULTI NAV | old callback ABI unavailable; " +
+                        "event-bus guard and native-toast verification retained"
+                )
+            } else {
+                constructor.isAccessible = true
+                invoke.isAccessible = true
+                hook(constructor).intercept { chain ->
+                    val result = chain.proceed()
+                    playlistController.onNativeResultCallbackConstructed(
+                        chain.getThisObject(), chain.getArg(0)
+                    )
+                    result
+                }
+                hook(invoke).intercept { chain ->
+                    playlistController.aroundNativeResultCallback(
+                        chain.getThisObject()
+                    ) { chain.proceed() }
+                }
+                Log.i(
+                    "GoneSmartPlaylist",
+                    "MULTI NAV | native callback evidence active"
+                )
+            }
+        }.onFailure {
+            Log.i(
+                "GoneSmartPlaylist",
+                "MULTI NAV | optional native callback observer unavailable"
             )
         }
 
