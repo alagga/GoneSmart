@@ -86,6 +86,40 @@ class AutoDjRefillSingleFlightTest {
     }
 
     @Test
+    fun blockedOwnerTimesOutWithoutReleasingTheWriteGate() {
+        val gate = AutoDjRefillSingleFlight()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val owner = Thread {
+            assertTrue(gate.tryEnter())
+            started.countDown()
+            try {
+                release.await(3, TimeUnit.SECONDS)
+            } finally {
+                gate.leave()
+                completed.countDown()
+            }
+        }
+        owner.start()
+        try {
+            assertTrue(started.await(3, TimeUnit.SECONDS))
+            assertEquals(
+                AutoDjRefillSingleFlight.JoinResult.TIMED_OUT,
+                gate.joinActive(25L)
+            )
+            // A timeout cannot allow a second native writer.
+            assertFalse(gate.tryEnter())
+        } finally {
+            release.countDown()
+            assertTrue(completed.await(3, TimeUnit.SECONDS))
+            owner.join(3_000)
+        }
+        assertTrue(gate.tryEnter())
+        gate.leave()
+    }
+
+    @Test
     fun reentrantRefillIsNeverAllowedToJoinItself() {
         val gate = AutoDjRefillSingleFlight()
         assertTrue(gate.tryEnter())

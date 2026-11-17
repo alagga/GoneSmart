@@ -766,6 +766,9 @@ class GoneSmartModule : XposedModule() {
     )
     private val nativeNextSourceWindow = ThreadLocal<NativeNextSourceWindow?>()
     @Volatile private var verifiedNativeNextSourceRefresh: Method? = null
+    // Shape discovery alone is not authority for source mutation.
+    // Learn the exact setter relationship from a natural GMMP callback.
+    @Volatile private var nativeNextSourceBoundaryObserved = false
     // Captured only after the accepted GMMP native refill boundary is hooked.
     // The delayed worker must never resolve a second, independently guessed writer.
     @Volatile private var verifiedNativeAutoDjRefill: Method? = null
@@ -2716,7 +2719,8 @@ class GoneSmartModule : XposedModule() {
         hook(setAdapter).intercept { chain ->
             runCatching {
                 playlistFolderPreview.onNativePlaylistRecyclerPreparing(
-                    chain.getThisObject() as? android.view.View
+                    chain.getThisObject() as? android.view.View,
+                    chain.getArg(0)
                 )
             }
             val result = chain.proceed()
@@ -3180,57 +3184,18 @@ class GoneSmartModule : XposedModule() {
                             // GMMP create transaction and restore in finally.
                             // This preserves hp3.d, t6.f and GMMP's own
                             // filename validation / DB registration.
-                            val target = runCatching {
-                                val owner = chain.getThisObject().javaClass
-                                    .getDeclaredField(
-                                        if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
-                                            "n"
-                                        } else "o"
-                                    )
-                                    .apply { isAccessible = true }
-                                    .get(chain.getThisObject())
-                                val expectedOwner =
-                                    if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
-                                        "ho3"
-                                    } else "go3"
-                                if (owner?.javaClass?.name != expectedOwner) {
-                                    return@runCatching null
-                                }
-                                val source = owner.javaClass
-                                    .getDeclaredField(
-                                        if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
-                                            "z"
-                                        } else "A"
-                                    )
-                                    .apply { isAccessible = true }
-                                    .get(owner)
-                                val expectedSource =
-                                    if (layout == NativePlaylistCreateBinding.Layout.GMMP_421) {
-                                        "io3"
-                                    } else "ho3"
-                                if (source?.javaClass?.name != expectedSource) {
-                                    return@runCatching null
-                                }
-                                val field = source.javaClass
-                                    .getDeclaredField("a")
-                                    .apply { isAccessible = true }
-                                val original = field.get(source) as? List<*>
-                                    ?: return@runCatching null
-                                Triple(source, field, original)
-                            }.onFailure {
-                                Log.w(
-                                    "GoneSmartPlaylist",
-                                    "PICKER CREATE ONLY | native source unavailable",
-                                    it
+                            val target =
+                                NativePlaylistCreateBinding.resolvePickerSelectedList(
+                                    chain.getThisObject(), layout
                                 )
-                            }.getOrNull()
 
                             if (target == null) {
                                 Log.w(
                                     "GoneSmartPlaylist",
-                                    "PICKER CREATE ONLY | retaining native fallback"
+                                    "PICKER CREATE ONLY | selected-source unresolved; " +
+                                        "create-only cancelled safely"
                                 )
-                                chain.proceed()
+                                kotlinUnit
                             } else {
                                 val (source, field, original) = target
                                 val substituted = runCatching {
@@ -3246,7 +3211,12 @@ class GoneSmartModule : XposedModule() {
                                 }
                                 if (!substituted) {
                                     runCatching { field.set(source, original) }
-                                    chain.proceed()
+                                    Log.w(
+                                        "GoneSmartPlaylist",
+                                        "PICKER CREATE ONLY | source substitution rejected; " +
+                                            "create-only cancelled safely"
+                                    )
+                                    kotlinUnit
                                 } else {
                                     Log.i(
                                         "GoneSmartPlaylist",
@@ -5129,25 +5099,24 @@ class GoneSmartModule : XposedModule() {
         val serviceType = param.classLoader.loadClass(
             "gonemad.gmmp.playback.service.MusicService"
         )
-        val sourceType = param.classLoader.loadClass("sq")
         val playerType = param.classLoader.loadClass("hn3")
-        val nativeSourceSetter = playerType.getDeclaredMethod(
-            "h0", sourceType, java.lang.Boolean.TYPE
-        )
-        val nativeSourceRefresh = serviceType.getDeclaredMethod("E2", serviceType)
-        require(
-            nativeSourceSetter.returnType == Void.TYPE &&
-                !Modifier.isStatic(nativeSourceSetter.modifiers) &&
-                nativeSourceRefresh.returnType == Void.TYPE &&
-                Modifier.isStatic(nativeSourceRefresh.modifiers)
-        ) { "GMMP source calculation and setter signatures differ from 4.2.1 APK" }
-        nativeSourceSetter.isAccessible = true
-        nativeSourceRefresh.isAccessible = true
+        val nativeBinding = NativeNextSourceBoundary.resolve(
+            serviceType, playerType
+        ) ?: error("No unique GMMP native next-source method shape")
+        val nativeSourceSetter = nativeBinding.setter
+        val nativeSourceRefresh = nativeBinding.refresh
+        nativeNextSourceBoundaryObserved = false
 
         hook(nativeSourceSetter).intercept { chain ->
             nativeNextSourceWindow.get()?.let { window ->
                 if (chain.getArg(0) == null) window.nullSourceObserved = true
                 else window.nonNullSourceObserved = true
+                if (!performingNextSourceRefresh.get() &&
+                    !nativeNextSourceBoundaryObserved
+                ) {
+                    nativeNextSourceBoundaryObserved = true
+                    Log.i(TAG, "SMART DJ NEXT SOURCE | natural setter correlation proven")
+                }
             }
             chain.proceed()
         }
@@ -5224,8 +5193,9 @@ class GoneSmartModule : XposedModule() {
             }
         }
         verifiedNativeNextSourceRefresh = nativeSourceRefresh
-        Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH READY | " +
-            "boundary=MusicService.E2->hn3.h0 | strategy=post-native-append")
+        Log.i(TAG, "SMART DJ NEXT SOURCE REFRESH OBSERVING | " +
+            "boundary=${nativeSourceRefresh.name}->${nativeSourceSetter.name}" +
+            " | strategy=natural-callback-proof")
     }
 
     /** Refresh only CURRENT+1 after real GMMP insertion; never block Next. */
@@ -5245,13 +5215,7 @@ class GoneSmartModule : XposedModule() {
             )
         }
         val context = gmmpAppContext
-        val versionAccepted = context?.let { app ->
-            runCatching {
-                GmmpCompatibilityPolicy.state(
-                    app.packageManager.getPackageInfo(GMMP_PACKAGE, 0).versionName
-                ) == GmmpCompatibilityPolicy.State.TESTED
-            }.getOrDefault(false)
-        } ?: false
+        val boundaryProven = nativeNextSourceBoundaryObserved
         val audioActive = context?.let { isAudioInactive(it)?.not() }
         val eligible = AutoDjNextSourceRefreshPolicy.shouldRefresh(
             hadNoUpcomingAtRequest = refill.hadNoUpcomingAtRequest,
@@ -5265,7 +5229,7 @@ class GoneSmartModule : XposedModule() {
             pendingManualNextPresses = captured.pendingManualNext,
             sourceCallbackAvailable = callback != null && captured.service != null &&
                 callback.parameterTypes[0].isInstance(captured.service),
-            acceptedGmmpVersion = versionAccepted
+            verifiedNativeSourceBoundary = boundaryProven
         )
         if (!eligible) {
             if (captured.sawNull) {
@@ -5276,7 +5240,7 @@ class GoneSmartModule : XposedModule() {
                     " | audioActive=$audioActive | manualNext=${captured.pendingManualNext}" +
                     " | sourceAvailable=${captured.service != null}" +
                     " | nativeRecovered=${captured.nativeRecovered}" +
-                    " | testedVersion=$versionAccepted")
+                    " | nativeBoundaryProven=$boundaryProven")
             }
             return
         }
@@ -5306,13 +5270,7 @@ class GoneSmartModule : XposedModule() {
         val before = readQueueContext(autoDj)
         val appContext = gmmpAppContext
         val audioActive = appContext?.let { isAudioInactive(it)?.not() }
-        val versionAccepted = appContext?.let { app ->
-            runCatching {
-                GmmpCompatibilityPolicy.state(
-                    app.packageManager.getPackageInfo(GMMP_PACKAGE, 0).versionName
-                ) == GmmpCompatibilityPolicy.State.TESTED
-            }.getOrDefault(false)
-        } ?: false
+        val boundaryProven = nativeNextSourceBoundaryObserved
         val eligible = AutoDjNextSourceRefreshPolicy.shouldRefresh(
             hadNoUpcomingAtRequest = true,
             nativeNullSourceObserved = true,
@@ -5325,14 +5283,14 @@ class GoneSmartModule : XposedModule() {
             pendingManualNextPresses = 0,
             sourceCallbackAvailable = callback != null &&
                 callback.parameterTypes.singleOrNull()?.isInstance(service) == true,
-            acceptedGmmpVersion = versionAccepted
+            verifiedNativeSourceBoundary = boundaryProven
         )
         if (!eligible) {
             Log.w(TAG, "MIX NATIVE FILE SOURCE REFRESH | eligible=false" +
                 " | sameCurrent=${before?.currentItem?.queueEntryId == currentEntryId}" +
                 " | upcoming=${before?.upcomingItems?.size ?: 0}" +
                 " | audioActive=$audioActive | callback=${callback != null}" +
-                " | testedVersion=$versionAccepted")
+                " | nativeBoundaryProven=$boundaryProven")
             return false
         }
         val sourceWindow = NativeNextSourceWindow(

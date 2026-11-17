@@ -37,6 +37,48 @@ class NativePlaylistCreateBindingTest {
         assertNull(NativePlaylistCreateBinding.resolveDelegate(Any(), layout))
     }
 
+    @Test fun selectedPickerSourcesResolveByUniqueTypesAndRestore() {
+        val callbackClass = loader.loadClass("go3")
+        val constructor = callbackClass.declaredConstructors.single()
+        constructor.isAccessible = true
+        val callback = constructor.newInstance(
+            constructor.parameterTypes[0].getDeclaredConstructor()
+                .apply { isAccessible = true }.newInstance()
+        )
+        val triple = NativePlaylistCreateBinding.resolvePickerSelectedList(
+            callback, NativePlaylistCreateBinding.Layout.GMMP_421
+        )
+        assertNotNull(triple)
+        val (owner, field, original) = triple!!
+        assertEquals("io3", owner.javaClass.name)
+        field.set(owner, emptyList<Any>())
+        assertEquals(0, (field.get(owner) as List<*>).size)
+        field.set(owner, original)
+        assertSame(original, field.get(owner))
+        assertNull(
+            NativePlaylistCreateBinding.resolvePickerSelectedList(
+                Any(), NativePlaylistCreateBinding.Layout.GMMP_421
+            )
+        )
+    }
+
+    private class Marker
+    private class RenamedField(val opaqueFieldFromNextR8: Marker = Marker())
+    private class AmbiguousFields(val first: Marker = Marker(), val second: Marker = Marker())
+
+    @Test fun uniqueRuntimeEdgesSurviveObfuscatedFieldRenameAndRejectAmbiguity() {
+        val stable = RenamedField()
+        assertSame(
+            stable.opaqueFieldFromNextR8,
+            NativePlaylistCreateBinding.uniqueTypedMember(stable, Marker::class.java)
+        )
+        assertNull(
+            NativePlaylistCreateBinding.uniqueTypedMember(
+                AmbiguousFields(), Marker::class.java
+            )
+        )
+    }
+
     @Test fun cancellationReturns421NativeKotlinUnitNot420CoroutineContext() {
         val actual = NativePlaylistCreateBinding.nativeUnit(
             loader, NativePlaylistCreateBinding.Layout.GMMP_421

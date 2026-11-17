@@ -27,7 +27,7 @@ class AutoDjNextSourceRefreshPolicyTest {
         audioActive = active,
         pendingManualNextPresses = manualNext,
         sourceCallbackAvailable = callback,
-        acceptedGmmpVersion = version
+        verifiedNativeSourceBoundary = version
     )
 
     @Test fun `refreshes only a verified stale null with active current audio`() {

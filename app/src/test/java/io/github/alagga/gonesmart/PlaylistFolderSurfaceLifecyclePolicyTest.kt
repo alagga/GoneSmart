@@ -5,11 +5,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaylistFolderSurfaceLifecyclePolicyTest {
-    @Test fun preHideOnlyPlaylistRowsWhenFolderFeatureEnabled() {
+    @Test fun preHideOnlyVerifiedPlaylistAdapterWhileFoldersEnabled() {
         val p = PlaylistFolderSurfaceLifecyclePolicy
-        assertTrue(p.shouldPreHideNativeRows(true, "playlistListRecyclerView"))
-        assertFalse(p.shouldPreHideNativeRows(false, "playlistListRecyclerView"))
-        assertFalse(p.shouldPreHideNativeRows(true, "trackListRecyclerView"))
+        assertTrue(p.shouldPreHideNativeRows(true, "playlistListRecyclerView", true))
+        assertFalse(p.shouldPreHideNativeRows(false, "playlistListRecyclerView", true))
+        assertFalse(p.shouldPreHideNativeRows(true, "trackListRecyclerView", true))
+        // Unknown GMMP adapter must not leave an invisible native list.
+        assertFalse(p.shouldPreHideNativeRows(true, "playlistListRecyclerView", false))
     }
 
     @Test fun retainedOverlayMayReturnOnlyAfterPageBecomesFrontmost() {

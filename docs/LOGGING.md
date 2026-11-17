@@ -24,6 +24,14 @@ update the Home tab's Smart DJ readiness and fallback state.
 companion receiver appends it to the log without overwriting the Home
 runtime status. UI and Flip features work independently of Smart DJ.
 
+**Multiple playlist additions:** One native-confirmed [Playlists] summary
+event and one combined GMMP-localized Toast per multi-destination transaction.
+Identify original per-destination success Toast objects at construction time
+using the exact installed-GMMP localized string, then suppress only those
+identities at display time. This also covers GMMP's asynchronously posted
+Toast.show() calls, without suppressing unrelated Toasts or ordinary
+single-destination operations.
+
 **Avoid duplicate success reports:** Mark an event as complete only after
 native callbacks/queue verification confirm the actual result. An initial
 Flip click, playlist dispatch and successful reverse are different stages.

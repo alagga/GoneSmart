@@ -17,7 +17,7 @@ internal object AutoDjNextSourceRefreshPolicy {
         audioActive: Boolean?,
         pendingManualNextPresses: Int,
         sourceCallbackAvailable: Boolean,
-        acceptedGmmpVersion: Boolean
+        verifiedNativeSourceBoundary: Boolean
     ): Boolean =
         hadNoUpcomingAtRequest &&
             nativeNullSourceObserved &&
@@ -29,5 +29,5 @@ internal object AutoDjNextSourceRefreshPolicy {
             audioActive == true &&
             pendingManualNextPresses == 0 &&
             sourceCallbackAvailable &&
-            acceptedGmmpVersion
+            verifiedNativeSourceBoundary
 }

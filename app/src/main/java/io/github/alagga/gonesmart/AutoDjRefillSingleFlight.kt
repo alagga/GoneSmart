@@ -1,6 +1,7 @@
 package io.github.alagga.gonesmart
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -23,7 +24,8 @@ internal class AutoDjRefillSingleFlight {
         COMPLETED,
         SAME_THREAD,
         NO_ACTIVE_REFILL,
-        INTERRUPTED
+        INTERRUPTED,
+        TIMED_OUT
     }
 
     private val active = AtomicReference<Flight?>(null)
@@ -31,17 +33,25 @@ internal class AutoDjRefillSingleFlight {
     fun tryEnter(): Boolean = active.compareAndSet(null, Flight())
 
     /**
-     * Waits for the already-started native refill to finish; never invokes a
-     * second native writer or provider query. There is no guessed elapsed-time
-     * completion threshold: the latch opens only when the native writer leaves.
-     * The caller must guard against waiting from the UI thread.
+     * Wait for real native writer completion, without allowing a permanently
+     * blocked owner to pin a second playback worker forever. On timeout the
+     * caller must fail closed: NEVER start a duplicate native refill. The
+     * owner retains the gate until its actual finally/leave() runs.
+     *
+     * The budget is only a liveness bound, NOT evidence that native queue
+     * insertion succeeded. Normal refills release the latch immediately.
+     * The caller must also avoid invoking this on GMMP's UI thread.
      */
-    fun joinActive(): JoinResult {
+    fun joinActive(timeoutMs: Long = 10_000L): JoinResult {
+        require(timeoutMs > 0L)
         val flight = active.get() ?: return JoinResult.NO_ACTIVE_REFILL
         if (flight.owner === Thread.currentThread()) return JoinResult.SAME_THREAD
         return try {
-            flight.completed.await()
-            JoinResult.COMPLETED
+            if (flight.completed.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                JoinResult.COMPLETED
+            } else {
+                JoinResult.TIMED_OUT
+            }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             JoinResult.INTERRUPTED

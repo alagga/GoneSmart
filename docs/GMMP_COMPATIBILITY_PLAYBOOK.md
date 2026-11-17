@@ -441,3 +441,45 @@ of inventing a path-to-position mapping from an unrelated collection. Native
 row click handlers, GMMP playlist storage and the original adapter are not
 modified. Device re-acceptance must verify newly created and older playlists
 can be opened in both the physical folder view and root view.
+
+
+### 2026-11-17 — structural porting follow-up and native multi-add feedback
+
+- Playlist creation: `NativePlaylistCreateBinding` now traverses the verified
+  callback/presenter/preference/selected-source **typed object graph**, using
+  unique field-of-type correlation instead of R8 field names. The original
+  GMMP writer, preference-root identity check and scoped getter substitution
+  remain mandatory. An ambiguous create-only selected-source list **cancels**
+  that special action rather than allowing an unintended playlist population.
+  Callback/owner **class** mappings remain tested-version evidence, and an
+  entirely renamed future APK must still pass passive mapping and device
+  acceptance before any state-changing hook is enabled.
+- Next-AudioSource recovery: `NativeNextSourceBoundary` accepts only
+  unique static service and native setter method shapes; tested names are
+  optional shape-validated fast paths. The bounded passive observation must
+  see the *natural* refresh invoke its native source setter before GoneSmart
+  invokes a verified post-append refresh. This replaces a version-string-only
+  activation gate, but does not imply that a new untested GMMP player-owner
+  class is discovered automatically. Unknown or ambiguous shapes fail closed.
+- Normal Auto-DJ single-flight: joining workers now have a bounded
+  timeout. Timed-out joins never start a second native refill and never
+  unlock the original write gate; ownership remains with the original
+  writer until its `finally`.
+- New main Playlists pages are temporarily hidden only after their native
+  adapter class/shape is verified. Unknown adapters stay visible; the
+  retained-overlay and timed native-visibility restoration remain intact.
+- Multi-playlist add: exactly one combined toast is emitted after the native
+  result callbacks complete. Native individual toasts are tagged **by
+  object identity at `Toast.makeText()`**, matched to the installed GMMP
+  locale's exact `add_to_playlist_toast` result, and suppressed at
+  `Toast.show()` even when GMMP shows them asynchronously. The scope is
+  bounded, limited to an active multiple-destination operation, and must
+  never swallow the combined summary or normal single-playlist adds.
+
+**Acceptance still pending on device for these latest changes.** One bundled
+GMMP 4.2.1 check should cover one/multiple tracks to two/three playlists,
+including partial success and create-only, normal single-playlist addition,
+folder create/open/back, and Track Mix initial/native fallback after the
+passive source-boundary change. Future GMMP versions require the original
+read-only self-test plus new native source/writer postconditions; no blanket
+support promise is made.

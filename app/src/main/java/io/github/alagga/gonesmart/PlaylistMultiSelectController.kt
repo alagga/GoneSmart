@@ -333,6 +333,10 @@ internal class PlaylistMultiSelectController {
         message: CharSequence?
     ) {
         if (toast == null || context == null || message == null) return
+        // The combined summary uses a different text, but an explicit
+        // construction guard keeps it independent of host string variants.
+        if (constructingSummaryToast.get() == true) return
+        identifyNativeMultiResultToast(toast, context, message.toString())
         val insideCreate = pickerCreateOnlyScope.isActive()
         val now = android.os.SystemClock.elapsedRealtime()
         val pending = synchronized(nativeZeroToastLock) {
@@ -361,6 +365,46 @@ internal class PlaylistMultiSelectController {
             if (insideCreate) zeroToastInCurrentCreate.set(true)
             Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast identified")
         }
+    }
+
+    private fun identifyNativeMultiResultToast(
+        toast: Toast,
+        context: Context,
+        message: String
+    ) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val batch = synchronized(navigationLock) {
+            pendingNativeToastBatch?.takeIf {
+                it.toastScopeExpiresAtMs >= now &&
+                    it.context.packageName == context.packageName &&
+                    it.sourceCount > 0 && it.requestedDestinations > 1
+            }
+        } ?: return
+
+        val nativeId = context.resources.getIdentifier(
+            "add_to_playlist_toast", "string", context.packageName
+        )
+        if (nativeId == 0) return
+        val exactNativeMessage = runCatching {
+            context.getString(nativeId, batch.sourceCount)
+        }.getOrNull() ?: return
+
+        synchronized(navigationLock) {
+            if (pendingNativeToastBatch !== batch ||
+                !NativeMultiPlaylistToastPolicy.shouldTag(
+                    actualMessage = message,
+                    nativeMessage = exactNativeMessage,
+                    sourceCount = batch.sourceCount,
+                    requestedDestinations = batch.requestedDestinations,
+                    taggedCount = batch.nativeToastsIdentified,
+                    nowMs = now,
+                    expiresAtMs = batch.toastScopeExpiresAtMs
+                )
+            ) return
+            nativeMultiToastCandidates[toast] = batch
+            batch.nativeToastsIdentified++
+        }
+        Log.i(TAG, "MULTI TOAST | exact native result identified")
     }
 
     fun shouldSuppressPickerCreateCloseEvent(event: Any?): Boolean {
@@ -418,7 +462,8 @@ internal class PlaylistMultiSelectController {
      */
     private class NativeNavigationBatch(
         val sourceCount: Int,
-        val context: Context
+        val context: Context,
+        val requestedDestinations: Int
     ) {
         var closeEventSent = false
         var successfulDestinations = 0
@@ -426,12 +471,23 @@ internal class PlaylistMultiSelectController {
         var dispatchFinished = false
         var acceptedDestinations = 0
         var nativeToastsSuppressed = 0
+        var nativeToastsIdentified = 0
+        var toastScopeExpiresAtMs = 0L
         var summaryScheduled = false
     }
 
     private val navigationLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val nativeCallbacks = WeakHashMap<Any, NativeNavigationBatch>()
+    // GMMP can construct a native success Toast inside its Rx callback and
+    // call Toast.show() later on another thread. A ThreadLocal on show() is
+    // therefore insufficient: retain *Toast object identity* from makeText().
+    // Only the exact host-localized native result of the active multi-add may
+    // be tagged. The bounded scope never applies to normal single adds.
+    private val nativeMultiToastCandidates =
+        WeakHashMap<Toast, NativeNavigationBatch>()
+    private var pendingNativeToastBatch: NativeNavigationBatch? = null
+    private val constructingSummaryToast = ThreadLocal<Boolean>()
     private val constructingNativeCallback = ThreadLocal<NativeNavigationBatch?>()
     private val runningNativeCallback = ThreadLocal<NativeNavigationBatch?>()
 
@@ -505,11 +561,11 @@ internal class PlaylistMultiSelectController {
             Log.i(TAG, "PICKER CREATE ONLY | native 0-file toast suppressed")
             return true
         }
-        // Ordinary multiple-destination native successes are still scoped
-        // to their original jd(mode=4) callback, unchanged by this fix.
-        val batch = runningNativeCallback.get()
-            ?: constructingNativeCallback.get()
-            ?: return false
+        // Async Toast.show() may run after jd.invoke returned. Identity
+        // recorded at makeText() survives the native callback ThreadLocal.
+        val batch = synchronized(navigationLock) {
+            toast?.let { nativeMultiToastCandidates.remove(it) }
+        } ?: return false
         synchronized(navigationLock) {
             batch.nativeToastsSuppressed++
         }
@@ -525,6 +581,13 @@ internal class PlaylistMultiSelectController {
         synchronized(navigationLock) {
             batch.acceptedDestinations = accepted
             batch.dispatchFinished = true
+            if (accepted <= 0) {
+                if (pendingNativeToastBatch === batch) pendingNativeToastBatch = null
+            } else {
+                // Covers late native makeText()/show() after the Rx callback.
+                batch.toastScopeExpiresAtMs =
+                    android.os.SystemClock.elapsedRealtime() + 12_000L
+            }
         }
         maybeShowNativeSummary(batch)
     }
@@ -600,7 +663,14 @@ internal class PlaylistMultiSelectController {
         // Post outside the jd callback's thread-local scope. Otherwise our
         // own summary Toast would be swallowed by the native Toast hook.
         mainHandler.post {
-            Toast.makeText(batch.context, message, Toast.LENGTH_SHORT).show()
+            val previous = constructingSummaryToast.get()
+            constructingSummaryToast.set(true)
+            try {
+                Toast.makeText(batch.context, message, Toast.LENGTH_SHORT).show()
+            } finally {
+                if (previous == null) constructingSummaryToast.remove()
+                else constructingSummaryToast.set(previous)
+            }
             Log.i(
                 TAG,
                 "MULTI TOAST | combined=$message" +
@@ -2012,8 +2082,18 @@ internal class PlaylistMultiSelectController {
         val navigationBatch = if (targets.size > 1 && sourceCount > 0) {
             NativeNavigationBatch(
                 sourceCount = sourceCount,
-                context = fab.context
-            )
+                context = fab.context,
+                requestedDestinations = targets.size
+            ).also { batch ->
+                synchronized(navigationLock) {
+                    pendingNativeToastBatch = batch
+                    // A synchronous native result can construct its Toast
+                    // before markNativeDispatchFinished() executes.
+                    batch.acceptedDestinations = targets.size
+                    batch.toastScopeExpiresAtMs =
+                        android.os.SystemClock.elapsedRealtime() + 12_000L
+                }
+            }
         } else null
 
         val originalRuntimeModel =

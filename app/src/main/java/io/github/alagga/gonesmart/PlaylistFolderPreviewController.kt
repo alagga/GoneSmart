@@ -773,10 +773,19 @@ internal class PlaylistFolderPreviewController(
      * frames to rebuild after Back. An independent bounded timeout restores
      * GMMP if the overlay cannot be attached, rather than leaving a blank UI.
      */
-    fun onNativePlaylistRecyclerPreparing(view: View?) {
+    fun onNativePlaylistRecyclerPreparing(
+        view: View?,
+        expectedNativeAdapter: Any? = null
+    ) {
         val list = view as? ViewGroup ?: return
+        val adapter = expectedNativeAdapter ?: nativeAdapter(list)
+        val adapterBound = adapter != null && (
+            GmmpPlaylistAdapterPolicy.hasVerifiedModelSource(
+                adapter.javaClass.name
+            ) || NativePlaylistRuntimeBinding.isReady(adapter)
+        )
         if (!PlaylistFolderSurfaceLifecyclePolicy.shouldPreHideNativeRows(
-                settings.enabled, resourceName(list)
+                settings.enabled, resourceName(list), adapterBound
             ) || browsers.containsKey(list) ||
             nativeOriginalAlphas.containsKey(list)
         ) return

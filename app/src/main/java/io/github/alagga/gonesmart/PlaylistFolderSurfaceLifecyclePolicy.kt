@@ -7,8 +7,10 @@ package io.github.alagga.gonesmart
 internal object PlaylistFolderSurfaceLifecyclePolicy {
     fun shouldPreHideNativeRows(
         foldersEnabled: Boolean,
-        resourceName: String
-    ): Boolean = foldersEnabled && resourceName == "playlistListRecyclerView"
+        resourceName: String,
+        adapterVerified: Boolean
+    ): Boolean = foldersEnabled && adapterVerified &&
+        resourceName == "playlistListRecyclerView"
 
     fun shouldRestoreRetainedBrowser(
         listAttached: Boolean,

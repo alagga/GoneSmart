@@ -68,3 +68,36 @@ Tests cover `NativePlaylistCreateBindingTest` with 4.2.1 Java fixtures, `NativeP
 4. When a newer GMMP build actually becomes available, run the playbook's read-only self-test and re-prove C-01/C-02, then update `TESTED_VERSION` **only after** device acceptance and exact-head CI.
 
 **Audit decision:** Safe native-first and fail-closed **intent is substantially met** on the reviewed 4.2.1 paths; **not uniformly version-independent**, and **not yet an unconditional future-GMMP or release-readiness pass**.
+
+
+## 2026-11-17 implementation follow-up (device re-acceptance pending)
+
+The `feature/async-track-mix-playback` follow-up implements part of the
+source-audit recommendations without replacing the accepted GMMP native
+playlist writer or AudioSource/Auto-DJ owner:
+
+| Earlier finding | Implementation | Residual limitation |
+| --- | --- | --- |
+| C-01 playlist creation | Unique typed runtime field traversal for the 4.2.1 callback/delegate/selected-list path, and fail-closed create-only ambiguity | Callback/owner class families still need passive remapping on a wholly new R8 APK |
+| C-02 source refresh | Structural unique method candidate plus passive natural refresh-to-setter correlation; no version-string-only promotion | Player owner class and actual audio continuity on new GMMP versions still require proof |
+| C-03 unbounded native refill join | Bounded background wait returns TIMED_OUT; no duplicate writer and owner gate stays held | Timeout path/device liveness still needs practical playback verification |
+| C-04 historical docs | Standing accepted 4.2.1 Track Mix device scope clarified and playbook follow-up added | Historical "pending" evidence remains dated rather than silently rewritten |
+| C-05 coverage | Added pure binding, source shape, native Toast policy and timeout regression tests | Newer GMMP APK and bundled device matrix remain untested |
+| C-06 early native list hide | Require a verified native playlist adapter before first-frame hide | Different future fragment layouts still need device inspection |
+
+**Newly reported issue — multi-playlist popups:** individual GMMP toasts
+can be displayed after their `jd(mode=4)` callback's thread-local scope
+ends. Native toast objects now receive identity tags on creation only when
+their text exactly equals the current host-localized native success string
+inside a bounded multi-add transaction; later show calls are suppressed.
+One combined summary remains GMMP-native in wording with the successful
+playlist count. Plain one-playlist additions remain host-native.
+
+**Logging:** existing `GoneSmartPlaylist` tags and companion
+`[Playlists]` terminal event are retained; no new tag family.
+**I18N:** combined feedback reuses `add_to_playlist_toast` and native
+playlist nouns, no new GMMP translation keys required.
+**Safety:** native state-changing callbacks remain gated by verified
+owner/path/root. No direct GMMP SQL or playlist file writing was added.
+**Release:** exact-head CI and explicit on-device testing are still required
+before treating this follow-up as device-accepted.
