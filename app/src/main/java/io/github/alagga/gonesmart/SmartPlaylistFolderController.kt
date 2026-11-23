@@ -302,6 +302,7 @@ internal class SmartPlaylistFolderController(
         var breadcrumbAlignmentGeneration: Long = 0L,
         var initialHeaderReady: Boolean = false,
         var nativeContentReady: Boolean = false,
+        var projectionRevealTimeout: Runnable? = null,
         var projectionFailOpenAllowed: Boolean = false,
         var folderScrollSyncReady: Boolean = false,
         var pendingFolderScrollReset: Boolean = true,
@@ -1711,26 +1712,6 @@ internal class SmartPlaylistFolderController(
         startObserver(browser)
         refresh(browser)
         updateMenus()
-        val weakList = WeakReference(list)
-        main.postDelayed({
-            val current = weakList.get()?.let { browsers[it] }
-            if (current === browser && !browser.nativeContentReady &&
-                list.isAttachedToWindow
-            ) {
-                Log.w(
-                    TAG,
-                    "SMART FOLDERS INITIAL WAIT | fail-open native list" +
-                        " | expected=" + browser.nativeOrder.size +
-                        " | actual=" + (nativeAdapterItemCount(browser) ?: -1) +
-                        " | visibleModels=" + visibleNativeModelPaths(browser).size
-                )
-                browser.projectionFailOpenAllowed = true
-                revealInitialContent(
-                    browser,
-                    allowProjectionMismatch = true
-                )
-            }
-        }, 2500L)
         Log.i(
             TAG,
             "SMART FOLDERS READY | root=" + safePath(root) +
@@ -1785,6 +1766,13 @@ internal class SmartPlaylistFolderController(
         if (!enabled || browsers[browser.list] !== browser) return
         val generation = refreshGeneration.incrementAndGet()
         browser.generation = generation
+        // The bounded native fail-open belongs to the CURRENT folder snapshot.
+        // An attach-only timer could fire in the middle of a later navigation
+        // and reveal stale GMMP rows even while the new differ was settling.
+        cancelProjectionRevealTimeout(browser)
+        if (!browser.nativeContentReady) {
+            scheduleProjectionRevealTimeout(browser, generation)
+        }
         val directory = browser.current
         val otherLocations = browser.otherLocations
         worker.execute {
@@ -1837,6 +1825,51 @@ internal class SmartPlaylistFolderController(
                 scheduleVisibleRowSync(browser)
             }
         }
+    }
+
+    private fun cancelProjectionRevealTimeout(browser: Browser) {
+        browser.projectionRevealTimeout?.let { main.removeCallbacks(it) }
+        browser.projectionRevealTimeout = null
+    }
+
+    /**
+     * A native fail-open is still required if the current Smart projection
+     * cannot be built, but its deadline must never outlive a newer folder
+     * navigation. Keep only one bounded timeout per live browser/generation.
+     */
+    private fun scheduleProjectionRevealTimeout(
+        browser: Browser,
+        generation: Long
+    ) {
+        val timeout = Runnable {
+            browser.projectionRevealTimeout = null
+            if (!SmartFolderRevealTimeoutPolicy.mayFailOpen(
+                    scheduledGeneration = generation,
+                    currentGeneration = browser.generation,
+                    browserActive = browsers[browser.list] === browser,
+                    listAttached = browser.list.isAttachedToWindow,
+                    nativeContentReady = browser.nativeContentReady
+                )
+            ) return@Runnable
+
+            // Avoid a forced native fallback if the expected differ finally
+            // committed before this timeout callback ran.
+            if (nativeProjectionReady(browser)) {
+                revealInitialContent(browser)
+                return@Runnable
+            }
+            Log.w(
+                TAG,
+                "SMART FOLDERS PROJECTION TIMEOUT | fail-open native list" +
+                    " | expected=" + browser.nativeOrder.size +
+                    " | actual=" + (nativeAdapterItemCount(browser) ?: -1) +
+                    " | visibleModels=" + visibleNativeModelPaths(browser).size
+            )
+            browser.projectionFailOpenAllowed = true
+            revealInitialContent(browser, allowProjectionMismatch = true)
+        }
+        browser.projectionRevealTimeout = timeout
+        main.postDelayed(timeout, 2_500L)
     }
 
     private fun scanDirectory(directory: File): DirectoryScan {
@@ -3520,6 +3553,7 @@ internal class SmartPlaylistFolderController(
 
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
+        cancelProjectionRevealTimeout(browser)
         browser.observer?.stopWatching()
         browser.folderGestureDownEvent?.recycle()
         browser.folderGestureDownEvent = null
@@ -3983,6 +4017,7 @@ internal class SmartPlaylistFolderController(
         // Commit the complete visible geometry before restoring the native
         // RecyclerView alpha. This prevents one frame with root/no-header
         // padding followed by a visible vertical shift.
+        cancelProjectionRevealTimeout(browser)
         browser.initialHeaderReady = true
         browser.nativeContentReady = true
         browser.projectionFailOpenAllowed = false
