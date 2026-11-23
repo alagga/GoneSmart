@@ -118,9 +118,14 @@ internal class PlaylistFolderMoveChrome(
     fun syncPalette(state: State, list: View) {
         if (state.actionMode == null) return
         val fab = state.fab ?: return
-        val color = state.fabColor
-            ?: nativePaletteFallback(fab)
-            ?: return
+        val color = NativeMovePalettePolicy.preferredColor(
+            liveNativePlaylistFab =
+                multiSelect.nativePlaylistFabTint(list),
+            verifiedNativeSelection =
+                multiSelect.verifiedNativeSelectionAccent(),
+            nativeContextBar =
+                multiSelect.visibleContextSelectionAccent(list as ViewGroup)
+        ) ?: return
         val changed = state.lastColor != color
         val previousBarTint = state.barTintApplied
         state.lastColor = color
@@ -236,7 +241,8 @@ internal class PlaylistFolderMoveChrome(
             list,
             onColor = { value ->
                 if (isActive()) {
-                    state.fabColor = value
+                    // Observable changes trigger a native-color re-read;
+                    // the raw Aesthetic accent may be stale red on 4.2.1.
                     syncPalette(state, list)
                 }
             },

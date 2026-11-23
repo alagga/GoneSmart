@@ -54,6 +54,25 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
             val element: Class<*>?
         )
 
+        /** Read-only, bounded mapping evidence for an unmapped GMMP APK. */
+        fun diagnosticKnownOwner(loader: ClassLoader): String =
+            runCatching {
+                val owner = loader.loadClass("py0")
+                val shapes = owner.declaredMethods
+                    .filter { it.parameterCount in 1..3 }
+                    .sortedBy { it.name }
+                    .take(16)
+                    .joinToString(";") { m ->
+                        m.name + "(" +
+                            m.parameterTypes.joinToString(",") { it.simpleName } +
+                            ")" + if (Modifier.isStatic(m.modifiers)) "[static]"
+                                else "[instance]"
+                    }
+                "py0 methods=" + shapes.ifEmpty { "<none>" }
+            }.getOrElse {
+                "py0 unavailable=" + it.javaClass.simpleName
+            }
+
         fun resolve(
             loader: ClassLoader,
             sampleModel: Any? = null

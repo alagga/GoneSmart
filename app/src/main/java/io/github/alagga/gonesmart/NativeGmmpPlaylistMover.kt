@@ -54,6 +54,7 @@ internal class NativeGmmpPlaylistMover(
     private var nativeDelete:
         NativeGmmpPlaylistDeleteBinding? = null
     private var nativeScan: java.lang.reflect.Method? = null
+    private var missingNativeDeleteReported = false
 
     private fun resolveNativeScanner(): Boolean {
         if (nativeScan != null) return true
@@ -113,6 +114,16 @@ internal class NativeGmmpPlaylistMover(
                 "PLAYLIST MOVE | original delete/scan not verified; blocked",
                 it
             )
+            if (!missingNativeDeleteReported) {
+                missingNativeDeleteReported = true
+                Log.w(
+                    TAG,
+                    "PLAYLIST MOVE MAPPING | " +
+                        NativeGmmpPlaylistDeleteBinding
+                            .diagnosticKnownOwner(hostLoader) +
+                        " | no unverified delete invoked"
+                )
+            }
         }.getOrDefault(false)
     }
 

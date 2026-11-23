@@ -851,6 +851,15 @@ internal class PlaylistFolderPreviewController(
                 viewName, adapterVerified
             )
         ) return
+        if (settings.enabled && !browsers.containsKey(list) &&
+            !nativeOriginalAlphas.containsKey(list) &&
+            list.isAttachedToWindow && isFrontFragmentView(list)
+        ) {
+            // A previous offscreen page's bounded early-hide may already have
+            // expired. Re-arm on the actual foreground RecyclerView event
+            // before its async folder overlay is rebuilt.
+            onNativePlaylistRecyclerPreparing(list, adapter)
+        }
         val pickerFab = nativePickerFab(list)
         if (pickerFab != null) {
             multiSelect.adoptPickerSurface(list, pickerFab)

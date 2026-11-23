@@ -327,6 +327,13 @@ internal class SmartPlaylistFolderController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
+    private data class NativeContextMoveAnchor(
+        val list: WeakReference<ViewGroup>,
+        val row: WeakReference<View>,
+        val path: String,
+        val atMs: Long
+    )
+    private var nativeContextMoveAnchor: NativeContextMoveAnchor? = null
     private val menuRefs = arrayListOf<WeakReference<Menu>>()
     private val newFolderMenuId = View.generateViewId()
     private val moveMenuId = View.generateViewId()
@@ -756,6 +763,7 @@ internal class SmartPlaylistFolderController(
             } else if (attempt < MAX_ATTACH_RETRIES) {
                 scheduleRuntimeBinding(list, attempt + 1)
             } else {
+                restorePendingNativeList(list)
                 Log.w(
                     TAG,
                     "SMART FOLDERS RUNTIME BINDING | unresolved after retries"
@@ -910,7 +918,40 @@ internal class SmartPlaylistFolderController(
         knownLists[list] = true
 
         if (native == null && byResource && adapter != null) {
-            if (enabled) scheduleRuntimeBinding(list, 0)
+            if (enabled) {
+                // The first 4.2.1 Smart tab may render raw GMMP root rows
+                // before the asynchronously verified structural mapping
+                // finishes. Mask only a proven RecyclerView+native differ
+                // shape on the actual front Smart surface, never merely an ID.
+                if (!pendingOriginalAlphas.containsKey(list) &&
+                    SmartFolderPrehidePolicy.mayPrehide(
+                        enabled = enabled,
+                        namedSmartSurface = byResource,
+                        nativeRecyclerAdapter =
+                            hasNativeRecyclerAdapterSuperclass(adapter),
+                        differShapeVerified =
+                            hasNativeSmartDifferShape(adapter),
+                        front = isFrontFragmentView(list),
+                        attachedAndShown =
+                            list.isAttachedToWindow && list.isShown
+                    )
+                ) {
+                    pendingOriginalAlphas[list] = list.alpha
+                    list.alpha = 0f
+                    val weak = WeakReference(list)
+                    main.postDelayed({
+                        val live = weak.get() ?: return@postDelayed
+                        if (!browsers.containsKey(live)) {
+                            restorePendingNativeList(live)
+                            Log.w(
+                                TAG,
+                                "SMART FOLDERS EARLY MASK | binding timeout; native restored"
+                            )
+                        }
+                    }, 2_500L)
+                }
+                scheduleRuntimeBinding(list, 0)
+            }
             return
         }
 
@@ -1280,8 +1321,41 @@ internal class SmartPlaylistFolderController(
                 }
             }
             SMART_CONTEXT_MENU -> {
-                if (enabled && currentBrowser() != null) {
-                    installMoveMenu(menu, context)
+                // GMMP 4.2.1 remapped nt4.c. Do not advertise a dead Move
+                // entry unless a real native row menu button supplied an
+                // independently verified holder/model/path on this surface.
+                val anchor = nativeContextMoveAnchor
+                nativeContextMoveAnchor = null
+                val list = anchor?.list?.get()
+                val row = anchor?.row?.get()
+                val browser = list?.let(browsers::get)
+                if (enabled && anchor != null && browser != null &&
+                    row != null && SmartContextMoveAnchorPolicy.isValid(
+                        sameBrowser = currentBrowser() === browser,
+                        rowAttached = row.isAttachedToWindow,
+                        pathStillBound =
+                            browser.rowInteractionPaths[row] == anchor.path,
+                        pathInProjection = anchor.path in browser.nativeOrder,
+                        elapsedMs = android.os.SystemClock.uptimeMillis() -
+                            anchor.atMs
+                    )
+                ) {
+                    installMoveMenu(menu, context).setOnMenuItemClickListener {
+                        val verified =
+                            browsers[browser.list] === browser &&
+                            isFrontFragmentView(browser.list) &&
+                            browser.rowInteractionPaths[row] == anchor.path &&
+                            anchor.path in browser.nativeOrder &&
+                            browser.moveSources == null
+                        if (verified) {
+                            beginMove(browser, listOf(anchor.path), null)
+                        } else {
+                            Log.w(TAG, "SMART MOVE | native source changed")
+                            showMoveError(browser.list.context)
+                        }
+                        true
+                    }
+                    Log.i(TAG, "SMART MOVE MENU | verified row click attached")
                 }
             }
         }
@@ -2777,6 +2851,26 @@ internal class SmartPlaylistFolderController(
                     row.overlay.remove(it)
                 }
                 browser.rowInteractionPaths[row] = path
+                // Observe the original bound rvContextMenu ImageView, without
+                // consuming its touch/click or synthesizing a native command.
+                PlaylistFolderUiKit.contextAnchor(row, list)
+                    ?.takeIf { it.isClickable && it.hasOnClickListeners() }
+                    ?.setOnTouchListener { _, event ->
+                        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+                            browsers[list] === browser &&
+                            isFrontFragmentView(list) &&
+                            browser.moveSources == null &&
+                            path in browser.nativeOrder
+                        ) {
+                            nativeContextMoveAnchor = NativeContextMoveAnchor(
+                                WeakReference(list),
+                                WeakReference(row),
+                                path,
+                                android.os.SystemClock.uptimeMillis()
+                            )
+                        }
+                        false
+                    }
                 row.setOnLongClickListener {
                     val handled = beginSmartSelection(browser, path)
                     if (handled) {
@@ -2919,19 +3013,19 @@ internal class SmartPlaylistFolderController(
     private fun installMoveMenu(
         menu: Menu,
         context: android.content.Context
-    ) {
-        if (menu.findItem(moveMenuId) != null) return
+    ): MenuItem {
+        menu.findItem(moveMenuId)?.let { return it }
         val order = (0 until menu.size())
             .map(menu::getItem)
             .maxOfOrNull { it.order }
             ?.plus(1)
             ?: 0
-        menu.add(
+        return menu.add(
             Menu.NONE,
             moveMenuId,
             order,
             nativeMoveLabel(context)
-        ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
+        ).also { it.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER) }
     }
 
     private fun isSmartActionMode(callback: Any?): Boolean {
@@ -3553,6 +3647,9 @@ internal class SmartPlaylistFolderController(
 
     private fun removeBrowser(browser: Browser) {
         if (browsers.remove(browser.list) !== browser) return
+        if (nativeContextMoveAnchor?.list?.get() === browser.list) {
+            nativeContextMoveAnchor = null
+        }
         cancelProjectionRevealTimeout(browser)
         browser.observer?.stopWatching()
         browser.folderGestureDownEvent?.recycle()
@@ -4104,6 +4201,27 @@ internal class SmartPlaylistFolderController(
             it.list.isAttachedToWindow &&
                 it.overlay.visibility == View.VISIBLE
         }
+
+    private fun hasNativeRecyclerAdapterSuperclass(adapter: Any): Boolean =
+        generateSequence<Class<*>>(adapter.javaClass) { it.superclass }
+            .any {
+                it.name.startsWith("androidx.recyclerview.widget.RecyclerView\$")
+            }
+
+    private fun hasNativeSmartDifferShape(adapter: Any): Boolean =
+        generateSequence<Class<*>>(adapter.javaClass) { it.superclass }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter {
+                it.type.name.startsWith("androidx.recyclerview.widget.")
+            }
+            .any { field ->
+                field.type.declaredMethods.any { method ->
+                    method.parameterCount == 1 &&
+                        java.util.List::class.java.isAssignableFrom(
+                            method.parameterTypes[0]
+                        ) && method.returnType == java.lang.Void.TYPE
+                }
+            }
 
     private fun nativeAdapter(list: ViewGroup): Any? = runCatching {
         list.javaClass.getMethod("getAdapter").invoke(list)

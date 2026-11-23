@@ -125,6 +125,10 @@ internal class PlaylistMultiSelectController {
     fun nativeContextBarColor(list: ViewGroup): Int? =
         (findContextBar(list.rootView)?.background as? ColorDrawable)?.color
 
+    /** Current verified GMMP playlist FAB identity, not its stale theme attr. */
+    fun nativePlaylistFabTint(view: View): Int? =
+        semanticNativeFabTint(view)
+
     /**
      * Normal Playlists multi-select is GMMP-owned and therefore the strongest
      * available live palette witness for extension-owned Smart selection.
