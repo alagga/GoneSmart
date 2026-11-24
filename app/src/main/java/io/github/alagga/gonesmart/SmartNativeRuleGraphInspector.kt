@@ -6,8 +6,11 @@ import java.util.IdentityHashMap
 
 /**
  * Scans the GMMP-native parsed Smart-rule graph read-only, without relying on
- * renamed R8 leaf/group class names. Any unreadable or unbounded branch
- * blocks physical .spl relocation rather than assuming no native links.
+ * renamed R8 leaf/group class names. GMMP 4.2.1's APK parses native XML
+ * Rules via dw3.f -> ct4 leaf and gt4 group, both extending dt4. Do not
+ * traverse android's java.lang.Object runtime shadow fields: Class objects
+ * are not GMMP rule nodes. Any *actual* unreadable or unbounded rule branch
+ * still blocks physical .spl relocation.
  */
 internal object SmartNativeRuleGraphInspector {
     enum class Result { CLEAR, REFERENCED, UNKNOWN }
@@ -56,7 +59,8 @@ internal object SmartNativeRuleGraphInspector {
                     ) return Result.UNKNOWN
                     val fields = generateSequence<Class<*>>(type) {
                         it.superclass
-                    }.flatMap { it.declaredFields.asSequence() }
+                    }.takeWhile { it != Any::class.java }
+                        .flatMap { it.declaredFields.asSequence() }
                         .filter {
                             !Modifier.isStatic(it.modifiers) && !it.isSynthetic
                         }.take(65).toList()

@@ -4206,6 +4206,15 @@ internal class SmartPlaylistFolderController(
         browser.list.alpha = browser.originalAlpha
         alignVisibleNativeTitles(browser)
         syncVisibleSmartRowInteractions(browser)
+        Log.i(
+            TAG,
+            "SMART FOLDERS REVEAL | projected=" + browser.nativeOrder.size +
+                " | native=" + (nativeAdapterItemCount(browser) ?: -1) +
+                " | visibleHolders=" +
+                visibleNativeModelPaths(browser).size +
+                " | fallback=" + allowProjectionMismatch +
+                " | originalAlpha=" + browser.originalAlpha
+        )
     }
 
     private fun isFrontFragmentView(list: ViewGroup): Boolean {

@@ -12,7 +12,8 @@ import java.lang.reflect.ParameterizedType
  * Context + List<T> contract.
  *
  * DEX-verified GMMP 4.2.1 normal Playlist deletion:
- *   zn3.n(MenuItem, ArrayList<xn3>) constructs sh1(File, Long) entries,
+ *   native ao3 adapter binds yn3 (long ID, path and title), while the
+ *   original 4.2.1 Playlist deletion callback constructs sh1(File, Long).
  *   then invokes ry0.b(Context, List<sh1>) (async confirmation event).
  *   The native deletion worker request is ry0.f(Context, List<sh1>)
  *   (references DeletePlaylistFileWorker), enqueued by ry0.a(ArrayList).
@@ -37,8 +38,10 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
 
     fun accepts(model: Any): Boolean =
         if (usesVerifiedNativeWorker) {
-            // Exact 4.2.1 native Playlist adapter row model.
-            model.javaClass.name == "xn3"
+            // The independent native Playlist adapter runtime binding
+            // verifies the actual ao3 row class as yn3, not xn3 (which
+            // belongs to GMMP's unrelated playing-info updater).
+            Gmmp421PlaylistModelPolicy.isOriginalPlaylistRow(model.javaClass)
         } else elementType == null || elementType.isInstance(model)
 
     /**
@@ -56,7 +59,8 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
         require(sources.all { it.isFile })
         val nativeItems = ArrayList<Any>(sources.size)
         for (source in sources) {
-            // APK-proven zn3.n constructs sh1(File, Long), not an xn3.
+            // APK-proven native Playlists delete constructs sh1(File,Long)
+            // from selected yn3 paths; never pass the yn3 to the worker.
             // The original row's optional Long is null in the File-backed
             // conversion; GMMP resolves indexed playlistIds itself.
             nativeItems += wrapper.newInstance(source, null)
@@ -129,7 +133,11 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
             // Explicit APK-proven fast path: required owners, exact
             // signatures, native model conversion and worker are all
             // independently present. No blind invocation for discovery.
-            if (sampleModel?.javaClass?.name == "xn3") {
+            if (sampleModel != null &&
+                Gmmp421PlaylistModelPolicy.isOriginalPlaylistRow(
+                    sampleModel.javaClass
+                )
+            ) {
                 val verified = runCatching {
                     val owner = loader.loadClass("ry0")
                     val item = loader.loadClass("sh1")

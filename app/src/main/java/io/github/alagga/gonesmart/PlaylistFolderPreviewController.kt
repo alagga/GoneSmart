@@ -843,6 +843,14 @@ internal class PlaylistFolderPreviewController(
         ) return
         nativeOriginalAlphas[list] = list.alpha
         list.alpha = 0f
+        if (BuildConfig.DEBUG) {
+            Log.i(
+                TAG,
+                "FOLDER EARLY HIDE | verified native playlist RecyclerView " +
+                    "masked | adapter=" + (adapter?.javaClass?.name ?: "none") +
+                    " | attached=" + list.isAttachedToWindow
+            )
+        }
         val weak = WeakReference(list)
         mainHandler.postDelayed({
             val current = weak.get() ?: return@postDelayed

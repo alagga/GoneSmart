@@ -180,6 +180,32 @@ class SmartNativeSubmissionPolicyTest {
         )
     }
 
+    @Test fun verifiedPhysicalRootCanRevealWithMatchingCountWithoutHolders() {
+        val expected = setOf("/root/a.spl", "/root/b.spl")
+        assertTrue(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2, adapterCount = 2,
+                visiblePaths = emptyList(), expectedPaths = expected,
+                physicalRootUnmodified = true
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2, adapterCount = 3,
+                visiblePaths = emptyList(), expectedPaths = expected,
+                physicalRootUnmodified = true
+            )
+        )
+        assertFalse(
+            SmartNativeSubmissionPolicy.projectionReady(
+                expectedCount = 2, adapterCount = 2,
+                visiblePaths = listOf("/unrelated/stale.spl"),
+                expectedPaths = expected,
+                physicalRootUnmodified = true
+            )
+        )
+    }
+
     @Test fun changedOrderOrFileStateIsSubmitted() {
         assertTrue(
             SmartNativeSubmissionPolicy.shouldSubmit(

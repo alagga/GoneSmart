@@ -79,13 +79,18 @@ internal object SmartNativeSubmissionPolicy {
         expectedCount: Int,
         adapterCount: Int?,
         visiblePaths: List<String>,
-        expectedPaths: Set<String>
+        expectedPaths: Set<String>,
+        physicalRootUnmodified: Boolean = false
     ): Boolean {
         if (adapterCount == null || adapterCount != expectedCount) return false
-        // Empty holder evidence must not prove a non-empty differ commit.
-        // Otherwise a stale same-count native root can be revealed before
-        // RecyclerView binds its first row during Smart-tab navigation.
-        if (expectedCount > 0 && visiblePaths.isEmpty()) return false
+        // A physical-root adapter is exactly GMMP's ungrouped native source.
+        // If groupRoot is disabled and we show the physical root, a count
+        // match is enough to avoid blanking the Smart tab while its first
+        // RecyclerView holder is not yet bound. This exception does NOT
+        // apply to a child directory, virtual location or regrouped root.
+        if (expectedCount > 0 && visiblePaths.isEmpty()) {
+            return physicalRootUnmodified
+        }
         return visiblePaths.all(expectedPaths::contains)
     }
 }
