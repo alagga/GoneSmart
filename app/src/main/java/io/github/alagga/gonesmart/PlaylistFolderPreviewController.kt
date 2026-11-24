@@ -313,6 +313,19 @@ internal class PlaylistFolderPreviewController(
         java.util.IdentityHashMap<View, PickerOverlayTarget>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
+    private val observedNativePositiveAlphas = WeakHashMap<ViewGroup, Float>()
+
+    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float {
+        val result = NativeFolderAlphaLeasePolicy.original(
+            observed, observedNativePositiveAlphas[list]
+        )
+        if (observed <= 0f && result > 0f) {
+            Log.i(TAG, "FOLDER ALPHA LEASE | rejected masked original=" +
+                observed + " | restoring=" + result)
+        }
+        observedNativePositiveAlphas[list] = result
+        return result
+    }
     private val pendingNativeFrontObservers = WeakHashMap<
         ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
     >()
@@ -841,7 +854,7 @@ internal class PlaylistFolderPreviewController(
             ) || browsers.containsKey(list) ||
             nativeOriginalAlphas.containsKey(list)
         ) return
-        nativeOriginalAlphas[list] = list.alpha
+        nativeOriginalAlphas[list] = originalNativeAlpha(list, list.alpha)
         list.alpha = 0f
         if (BuildConfig.DEBUG) {
             Log.i(
@@ -980,7 +993,8 @@ internal class PlaylistFolderPreviewController(
         if (settings.enabled && !browsers.containsKey(list) &&
             nativeOriginalAlphas[list] == null
         ) {
-            nativeOriginalAlphas[list] = list.alpha
+            nativeOriginalAlphas[list] =
+                originalNativeAlpha(list, list.alpha)
             list.alpha = 0f
             val weak = WeakReference(list)
             list.postDelayed({
@@ -2610,7 +2624,9 @@ internal class PlaylistFolderPreviewController(
             index = index,
             modelsByPath = native.nativeObjects,
             nativeOrder = native.paths,
-            originalAlpha = nativeOriginalAlphas.getOrPut(list) { list.alpha },
+            originalAlpha = originalNativeAlpha(
+                list, nativeOriginalAlphas.getOrPut(list) { list.alpha }
+            ),
             layoutListener = layoutListener,
             themeListener = themeListener,
             detachListener = detachListener,
@@ -2946,7 +2962,8 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.visibility = View.GONE
         browser.overlay.isClickable = false
         browser.overlay.isFocusable = false
-        list.alpha = if (preserveNativeAlpha) 0f else browser.originalAlpha
+        list.alpha = if (preserveNativeAlpha) 0f else
+            originalNativeAlpha(list, browser.originalAlpha)
         clearPendingNativeFrontObserver(list)
         if (!preserveNativeAlpha) {
             // A detached main Playlist RecyclerView can be reused by GMMP

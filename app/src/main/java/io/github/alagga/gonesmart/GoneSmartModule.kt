@@ -2754,6 +2754,14 @@ class GoneSmartModule : XposedModule() {
                 playlistFolderPreview.onNativePlaylistRecyclerPreparing(
                     chain.getThisObject() as? android.view.View
                 )
+                smartPlaylistFolderController.onNativeSmartRecyclerAttaching(
+                    chain.getThisObject() as? android.view.View
+                )
+            }.onFailure {
+                Log.w(
+                    "GoneSmartSmartFolders",
+                    "SMART EARLY MASK | attach preparation unavailable", it
+                )
             }
             val result = chain.proceed()
             runCatching {

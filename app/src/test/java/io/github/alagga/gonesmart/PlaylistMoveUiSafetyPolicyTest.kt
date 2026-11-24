@@ -29,6 +29,18 @@ class PlaylistMoveUiSafetyPolicyTest {
         }
     }
 
+    @Test fun verifiedSmartAdapterCanBeMaskedBeforeNativeAttach() {
+        assertTrue(SmartFolderPrehidePolicy.mayPrehide(
+            true,true,true,true,false,false,preparedForAttach=true
+        ))
+        assertFalse(SmartFolderPrehidePolicy.mayPrehide(
+            true,true,false,true,false,false,preparedForAttach=true
+        ))
+        assertFalse(SmartFolderPrehidePolicy.mayPrehide(
+            true,true,true,false,false,false,preparedForAttach=true
+        ))
+    }
+
     @Test fun originalNativePaletteWinsOverUnverifiedAccent() {
         val correctNativeFab = 0xFF36A8BE.toInt()
         val oldStaleRedAccent = 0xFF8E0E00.toInt()

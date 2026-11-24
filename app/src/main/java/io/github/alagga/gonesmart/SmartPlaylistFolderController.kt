@@ -327,6 +327,24 @@ internal class SmartPlaylistFolderController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
+    private val observedNativePositiveAlphas = WeakHashMap<ViewGroup, Float>()
+
+    /**
+     * Fragment re-creation and setAdapter may run while the previous
+     * GoneSmart mask is still alpha=0. Cache the native positive alpha
+     * independently of the current mask lease; never restore that zero.
+     */
+    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float {
+        val resolved = NativeFolderAlphaLeasePolicy.original(
+            observed, observedNativePositiveAlphas[list]
+        )
+        if (observed <= 0f && resolved > 0f) {
+            Log.i(TAG, "SMART FOLDERS ALPHA LEASE | rejected masked original=" +
+                observed + " | restoring=" + resolved)
+        }
+        observedNativePositiveAlphas[list] = resolved
+        return resolved
+    }
     private data class NativeContextMoveAnchor(
         val list: WeakReference<ViewGroup>,
         val row: WeakReference<View>,
@@ -906,10 +924,10 @@ internal class SmartPlaylistFolderController(
     }
 
     /**
-     * Runs BEFORE the host RecyclerView.setAdapter(...) invokes GMMP code.
-     * This is the first safe opportunity to avoid a real native root frame
-     * while the runtime ts4/is4 holder binding is still being discovered.
-     * A resource id alone is insufficient evidence to hide anything.
+     * Gate GMMP's physical root BEFORE setAdapter can draw it. A detached
+     * list is legitimate while FragmentManager prepares a new tab page;
+     * hiding at this point is essential to avoid first-frame native rows.
+     * Do not leave a detached or failed host invisible indefinitely.
      */
     fun onNativeSmartRecyclerPreparing(
         view: View?,
@@ -921,79 +939,62 @@ internal class SmartPlaylistFolderController(
             pendingOriginalAlphas.containsKey(list) ||
             resourceName(list) != SMART_LIST_ID
         ) return
+        // A view without a parent is not a live or incoming tab surface.
+        val hasPageParent = list.parent is ViewGroup
         if (!SmartFolderPrehidePolicy.mayPrehide(
                 enabled = enabled,
-                namedSmartSurface = true,
+                namedSmartSurface = hasPageParent,
                 nativeRecyclerAdapter =
                     hasNativeRecyclerAdapterSuperclass(adapter),
                 differShapeVerified = hasNativeSmartDifferShape(adapter),
-                front = true,
-                attachedAndShown = true
+                front = isFrontFragmentView(list),
+                attachedAndShown =
+                    list.isAttachedToWindow && list.isShown,
+                preparedForAttach = !list.isAttachedToWindow &&
+                    hasPageParent
             )
         ) return
-        pendingOriginalAlphas[list] = list.alpha
+        val alpha = originalNativeAlpha(list, list.alpha)
+        pendingOriginalAlphas[list] = alpha
         list.alpha = 0f
-        Log.i(TAG, "SMART FOLDERS EARLY MASK | verified native adapter before setAdapter")
+        Log.i(
+            TAG, "SMART FOLDERS EARLY MASK | before setAdapter" +
+                " | attached=" + list.isAttachedToWindow +
+                " | retainedAlpha=" + alpha
+        )
         val weak = WeakReference(list)
         main.postDelayed({
             val current = weak.get() ?: return@postDelayed
             if (!browsers.containsKey(current) &&
                 pendingOriginalAlphas.containsKey(current)
             ) {
-                if (current.isAttachedToWindow && current.isShown &&
-                    isFrontFragmentView(current)
-                ) {
-                    restorePendingNativeList(current)
-                    Log.w(TAG, "SMART FOLDERS EARLY MASK | native restored after timeout")
-                } else {
-                    observePendingSmartForeground(current)
-                }
+                // The masked native view is no longer needed while offscreen
+                // or detached; restore it immediately. If still foreground,
+                // fail open after the same bounded timeout as before.
+                val front = current.isAttachedToWindow &&
+                    current.isShown && isFrontFragmentView(current)
+                restorePendingNativeList(current)
+                Log.w(
+                    TAG,
+                    "SMART FOLDERS EARLY MASK | " +
+                        (if (front) "foreground native fallback"
+                        else "inactive native restored")
+                )
             }
         }, 2_500L)
     }
 
-    private val pendingSmartForegroundObservers = WeakHashMap<
-        ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
-    >()
-
-    private fun clearPendingSmartForegroundObserver(list: ViewGroup) {
-        val listener = pendingSmartForegroundObservers.remove(list) ?: return
-        if (list.viewTreeObserver.isAlive) {
-            list.viewTreeObserver.removeOnPreDrawListener(listener)
-        }
-    }
-
-    private fun observePendingSmartForeground(list: ViewGroup) {
-        if (pendingSmartForegroundObservers.containsKey(list)) return
-        val weak = WeakReference(list)
-        val listener = android.view.ViewTreeObserver.OnPreDrawListener {
-            val current = weak.get()
-            if (current == null) {
-                true
-            } else if (!pendingOriginalAlphas.containsKey(current) ||
-                browsers.containsKey(current)
-            ) {
-                clearPendingSmartForegroundObserver(current)
-                true
-            } else if (current.isAttachedToWindow && current.isShown &&
-                isFrontFragmentView(current)
-            ) {
-                clearPendingSmartForegroundObserver(current)
-                current.postDelayed({
-                    if (!browsers.containsKey(current) &&
-                        pendingOriginalAlphas.containsKey(current) &&
-                        current.isAttachedToWindow && current.isShown &&
-                        isFrontFragmentView(current)
-                    ) {
-                        restorePendingNativeList(current)
-                        Log.w(TAG, "SMART FOLDERS EARLY MASK | foreground fallback")
-                    }
-                }, 2_500L)
-                true
-            } else true
-        }
-        pendingSmartForegroundObservers[list] = listener
-        list.viewTreeObserver.addOnPreDrawListener(listener)
+    /**
+     * Native RecyclerView can already carry a retained adapter before its
+     * onAttachedToWindow() callback. Apply the same verified early mask
+     * before the ORIGINAL attach, not after its first possible native draw.
+     * This is a single lifecycle observation, not a recurring view scan.
+     */
+    fun onNativeSmartRecyclerAttaching(view: View?) {
+        val list = view as? ViewGroup ?: return
+        if (!enabled || resourceName(list) != SMART_LIST_ID) return
+        val adapter = nativeAdapter(list) ?: return
+        onNativeSmartRecyclerPreparing(list, adapter)
     }
 
     fun onNativeRecyclerObserved(view: View?) {
@@ -1014,33 +1015,9 @@ internal class SmartPlaylistFolderController(
                 // before the asynchronously verified structural mapping
                 // finishes. Mask only a proven RecyclerView+native differ
                 // shape on the actual front Smart surface, never merely an ID.
-                if (!pendingOriginalAlphas.containsKey(list) &&
-                    SmartFolderPrehidePolicy.mayPrehide(
-                        enabled = enabled,
-                        namedSmartSurface = byResource,
-                        nativeRecyclerAdapter =
-                            hasNativeRecyclerAdapterSuperclass(adapter),
-                        differShapeVerified =
-                            hasNativeSmartDifferShape(adapter),
-                        front = isFrontFragmentView(list),
-                        attachedAndShown =
-                            list.isAttachedToWindow && list.isShown
-                    )
-                ) {
-                    pendingOriginalAlphas[list] = list.alpha
-                    list.alpha = 0f
-                    val weak = WeakReference(list)
-                    main.postDelayed({
-                        val live = weak.get() ?: return@postDelayed
-                        if (!browsers.containsKey(live)) {
-                            restorePendingNativeList(live)
-                            Log.w(
-                                TAG,
-                                "SMART FOLDERS EARLY MASK | binding timeout; native restored"
-                            )
-                        }
-                    }, 2_500L)
-                }
+                // Same exact early-mask and bounded restore lease is used
+                // before/after the native setAdapter call, never two timers.
+                onNativeSmartRecyclerPreparing(list, adapter)
                 scheduleRuntimeBinding(list, 0)
             }
             return
@@ -1079,7 +1056,8 @@ internal class SmartPlaylistFolderController(
                 )
             ) {
                 if (!pendingOriginalAlphas.containsKey(list)) {
-                    pendingOriginalAlphas[list] = list.alpha
+                    pendingOriginalAlphas[list] =
+                        originalNativeAlpha(list, list.alpha)
                 }
                 list.alpha = 0f
             }
@@ -1764,7 +1742,9 @@ internal class SmartPlaylistFolderController(
                 if (browsers[list] === browser) removeBrowser(browser)
             }
         }
-        val originalAlpha = pendingOriginalAlphas.remove(list) ?: list.alpha
+        val originalAlpha = originalNativeAlpha(
+            list, pendingOriginalAlphas.remove(list) ?: list.alpha
+        )
         val originalNativeNestedScrollingEnabled =
             nativeNestedScrollingEnabled(list)
         // GMMP and GoneSmart package the same AndroidX RecyclerView through
@@ -3708,9 +3688,8 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun restorePendingNativeList(list: ViewGroup) {
-        clearPendingSmartForegroundObserver(list)
-        val alpha = pendingOriginalAlphas.remove(list) ?: return
-        list.alpha = alpha
+        val captured = pendingOriginalAlphas.remove(list) ?: return
+        list.alpha = originalNativeAlpha(list, captured)
     }
 
     private fun restoreRootAndRemove(browser: Browser) {
@@ -3741,7 +3720,9 @@ internal class SmartPlaylistFolderController(
         browser.selectionAccentSubscription = null
         clearSmartSelection(browser)
         endMoveChrome(browser)
-        browser.list.alpha = browser.originalAlpha
+        browser.list.alpha = originalNativeAlpha(
+            browser.list, browser.originalAlpha
+        )
         browser.list.setPadding(
             browser.originalPaddingLeft,
             browser.originalPaddingTop,
@@ -4203,7 +4184,9 @@ internal class SmartPlaylistFolderController(
         browser.projectionFailOpenAllowed = false
         positionOverlay(browser)
         updateNativeInset(browser)
-        browser.list.alpha = browser.originalAlpha
+        browser.list.alpha = originalNativeAlpha(
+            browser.list, browser.originalAlpha
+        )
         alignVisibleNativeTitles(browser)
         syncVisibleSmartRowInteractions(browser)
         Log.i(

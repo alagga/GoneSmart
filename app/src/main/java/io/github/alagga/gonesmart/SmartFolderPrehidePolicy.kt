@@ -12,7 +12,9 @@ internal object SmartFolderPrehidePolicy {
         nativeRecyclerAdapter: Boolean,
         differShapeVerified: Boolean,
         front: Boolean,
-        attachedAndShown: Boolean
+        attachedAndShown: Boolean,
+        preparedForAttach: Boolean = false
     ): Boolean = enabled && namedSmartSurface && nativeRecyclerAdapter &&
-        differShapeVerified && front && attachedAndShown
+        differShapeVerified &&
+        ((front && attachedAndShown) || preparedForAttach)
 }
