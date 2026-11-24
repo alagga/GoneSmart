@@ -905,6 +905,97 @@ internal class SmartPlaylistFolderController(
         }
     }
 
+    /**
+     * Runs BEFORE the host RecyclerView.setAdapter(...) invokes GMMP code.
+     * This is the first safe opportunity to avoid a real native root frame
+     * while the runtime ts4/is4 holder binding is still being discovered.
+     * A resource id alone is insufficient evidence to hide anything.
+     */
+    fun onNativeSmartRecyclerPreparing(
+        view: View?,
+        incomingAdapter: Any?
+    ) {
+        val list = view as? ViewGroup ?: return
+        val adapter = incomingAdapter ?: return
+        if (!enabled || browsers.containsKey(list) ||
+            pendingOriginalAlphas.containsKey(list) ||
+            resourceName(list) != SMART_LIST_ID
+        ) return
+        if (!SmartFolderPrehidePolicy.mayPrehide(
+                enabled = enabled,
+                namedSmartSurface = true,
+                nativeRecyclerAdapter =
+                    hasNativeRecyclerAdapterSuperclass(adapter),
+                differShapeVerified = hasNativeSmartDifferShape(adapter),
+                front = true,
+                attachedAndShown = true
+            )
+        ) return
+        pendingOriginalAlphas[list] = list.alpha
+        list.alpha = 0f
+        Log.i(TAG, "SMART FOLDERS EARLY MASK | verified native adapter before setAdapter")
+        val weak = WeakReference(list)
+        main.postDelayed({
+            val current = weak.get() ?: return@postDelayed
+            if (!browsers.containsKey(current) &&
+                pendingOriginalAlphas.containsKey(current)
+            ) {
+                if (current.isAttachedToWindow && current.isShown &&
+                    isFrontFragmentView(current)
+                ) {
+                    restorePendingNativeList(current)
+                    Log.w(TAG, "SMART FOLDERS EARLY MASK | native restored after timeout")
+                } else {
+                    observePendingSmartForeground(current)
+                }
+            }
+        }, 2_500L)
+    }
+
+    private val pendingSmartForegroundObservers = WeakHashMap<
+        ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
+    >()
+
+    private fun clearPendingSmartForegroundObserver(list: ViewGroup) {
+        val listener = pendingSmartForegroundObservers.remove(list) ?: return
+        if (list.viewTreeObserver.isAlive) {
+            list.viewTreeObserver.removeOnPreDrawListener(listener)
+        }
+    }
+
+    private fun observePendingSmartForeground(list: ViewGroup) {
+        if (pendingSmartForegroundObservers.containsKey(list)) return
+        val weak = WeakReference(list)
+        val listener = android.view.ViewTreeObserver.OnPreDrawListener {
+            val current = weak.get()
+            if (current == null) {
+                true
+            } else if (!pendingOriginalAlphas.containsKey(current) ||
+                browsers.containsKey(current)
+            ) {
+                clearPendingSmartForegroundObserver(current)
+                true
+            } else if (current.isAttachedToWindow && current.isShown &&
+                isFrontFragmentView(current)
+            ) {
+                clearPendingSmartForegroundObserver(current)
+                current.postDelayed({
+                    if (!browsers.containsKey(current) &&
+                        pendingOriginalAlphas.containsKey(current) &&
+                        current.isAttachedToWindow && current.isShown &&
+                        isFrontFragmentView(current)
+                    ) {
+                        restorePendingNativeList(current)
+                        Log.w(TAG, "SMART FOLDERS EARLY MASK | foreground fallback")
+                    }
+                }, 2_500L)
+                true
+            } else true
+        }
+        pendingSmartForegroundObservers[list] = listener
+        list.viewTreeObserver.addOnPreDrawListener(listener)
+    }
+
     fun onNativeRecyclerObserved(view: View?) {
         val list = view as? ViewGroup ?: return
         val native = bindings
@@ -3083,6 +3174,13 @@ internal class SmartPlaylistFolderController(
             showMoveError(browser.list.context)
             return
         }
+        // The source row/native selection is still current here. Capture the
+        // same accent resolver used by accepted Smart selection BEFORE the
+        // synthetic Move ActionMode adds its own (potentially red) bar/FAB.
+        browser.moveChrome.fabColor =
+            browser.liveSelectionAccent
+                ?: multiSelect.verifiedNativeSelectionAccent()
+                ?: multiSelect.standaloneSelectionAccent(browser.list)
         browser.movePreviousDirectory = browser.current.path
         browser.movePreviousOtherLocations = browser.otherLocations
         browser.moveSources = selected
@@ -3151,15 +3249,19 @@ internal class SmartPlaylistFolderController(
             val inbound = runCatching {
                 selectedSourcesHaveInboundNativeLinks(root, paths.toSet())
             }.onFailure {
-                Log.e(TAG, "SMART MOVE | inbound-link scan failed", it)
-            }.getOrElse { true }
-            if (inbound) {
+                Log.e(TAG, "SMART MOVE | native rule graph scan failed", it)
+            }.getOrDefault(SmartNativeRuleGraphInspector.Result.UNKNOWN)
+            if (inbound != SmartNativeRuleGraphInspector.Result.CLEAR) {
                 main.post {
                     if (browsers[browser.list] === browser) {
                         Log.w(
                             TAG,
-                            "SMART MOVE BLOCKED | selected Smart-Playlist " +
-                                "is referenced by a native Smart-Playlist link"
+                            when (inbound) {
+                                SmartNativeRuleGraphInspector.Result.REFERENCED ->
+                                    "SMART MOVE BLOCKED | verified inbound native Smart link"
+                                else ->
+                                    "SMART MOVE BLOCKED | native link safety unverifiable"
+                            }
                         )
                         showMoveError(context)
                     }
@@ -3222,76 +3324,55 @@ internal class SmartPlaylistFolderController(
     private fun selectedSourcesHaveInboundNativeLinks(
         root: File,
         selected: Set<String>
-    ): Boolean {
-        val native = bindings ?: return true
+    ): SmartNativeRuleGraphInspector.Result {
+        val native = bindings ?: return SmartNativeRuleGraphInspector.Result.UNKNOWN
         val modelRules = native.modelRules ?: run {
-            Log.w(TAG, "SMART MOVE | native rule graph unavailable")
-            return true
-        }
-        if (native.leafRuleClass == null ||
-            native.leafRuleValue == null ||
-            native.groupRuleClass == null ||
-            native.groupRules == null
-        ) {
-            Log.w(TAG, "SMART MOVE | native link-rule mapping unavailable")
-            return true
+            Log.w(TAG, "SMART MOVE | native model rule-list field unavailable")
+            return SmartNativeRuleGraphInspector.Result.UNKNOWN
         }
         val canonicalSelected = selected.map(::canonicalPath).toSet()
-        val candidates = root.walkTopDown()
-            .filter {
-                it.isFile && it.extension.equals("spl", ignoreCase = true)
-            }
-        for (file in candidates) {
+        val files = root.walkTopDown().filter {
+            it.isFile && it.extension.equals("spl", ignoreCase = true)
+        }.take(4_097).toList()
+        if (files.size > 4_096) {
+            Log.w(TAG, "SMART MOVE | too many Smart files for bounded verification")
+            return SmartNativeRuleGraphInspector.Result.UNKNOWN
+        }
+
+        // The current 4.2.1 resolver proves a native ts4 model, reader,
+        // and a unique list-of-rules field, but cannot recover old jt4/ft4
+        // type names. Inspect the entire NATIVE-parsed rule object graph
+        // read-only, with a strict budget and fail-closed unknown fields.
+        // Never conclude "unreferenced" after a failed native file read.
+        for (file in files) {
             val model = runCatching {
                 native.modelConstructor.newInstance(
                     null, 0, 0, 0, null, 255
-                ).also {
-                    native.modelRead.invoke(it, file)
-                }
-            }.getOrNull() ?: continue
+                ).also { native.modelRead.invoke(it, file) }
+            }.onFailure {
+                Log.w(TAG, "SMART MOVE | native rule read failed | " + safePath(file), it)
+            }.getOrNull() ?: return SmartNativeRuleGraphInspector.Result.UNKNOWN
             val rules = runCatching {
                 modelRules.get(model) as? Iterable<*>
-            }.getOrNull() ?: continue
-            if (rules.any { ruleReferencesSelected(native, it, canonicalSelected) }) {
-                Log.i(
-                    TAG,
-                    "SMART MOVE LINK BLOCK | owner=" + safePath(file)
+            }.getOrNull() ?: return SmartNativeRuleGraphInspector.Result.UNKNOWN
+            when (SmartNativeRuleGraphInspector.inspect(
+                    rules, canonicalSelected
                 )
-                return true
+            ) {
+                SmartNativeRuleGraphInspector.Result.REFERENCED -> {
+                    Log.i(TAG, "SMART MOVE LINK BLOCK | owner=" + safePath(file))
+                    return SmartNativeRuleGraphInspector.Result.REFERENCED
+                }
+                SmartNativeRuleGraphInspector.Result.UNKNOWN -> {
+                    Log.w(TAG, "SMART MOVE | native rule shape not fully verified | " + safePath(file))
+                    return SmartNativeRuleGraphInspector.Result.UNKNOWN
+                }
+                SmartNativeRuleGraphInspector.Result.CLEAR -> Unit
             }
         }
-        return false
-    }
-
-    private fun ruleReferencesSelected(
-        native: Bindings,
-        rule: Any?,
-        selected: Set<String>
-    ): Boolean {
-        if (rule == null) return false
-        val groupRuleClass = native.groupRuleClass ?: return false
-        val groupRules = native.groupRules ?: return false
-        val leafRuleClass = native.leafRuleClass ?: return false
-        val leafRuleValue = native.leafRuleValue ?: return false
-        if (groupRuleClass.isInstance(rule)) {
-            val children = runCatching {
-                groupRules.get(rule) as? Iterable<*>
-            }.getOrNull() ?: return false
-            return children.any {
-                ruleReferencesSelected(native, it, selected)
-            }
-        }
-        if (!leafRuleClass.isInstance(rule)) return false
-        val value = runCatching {
-            leafRuleValue.get(rule) as? String
-        }.getOrNull() ?: return false
-        if (PlaylistBridgeReference.isBridgeValue(value) ||
-            !PlaylistBridgePolicy
-                .isNativeSmartPlaylistReference(value)
-        ) return false
-        val path = value.substringBefore('|', "").takeUnless(String::isBlank)
-            ?: return false
-        return canonicalPath(path) in selected
+        Log.i(TAG, "SMART MOVE LINKS VERIFIED | files=" + files.size +
+            " | nativeReader=" + native.modelRead.name)
+        return SmartNativeRuleGraphInspector.Result.CLEAR
     }
 
     private fun installMoveChrome(browser: Browser) {
@@ -3626,6 +3707,7 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun restorePendingNativeList(list: ViewGroup) {
+        clearPendingSmartForegroundObserver(list)
         val alpha = pendingOriginalAlphas.remove(list) ?: return
         list.alpha = alpha
     }

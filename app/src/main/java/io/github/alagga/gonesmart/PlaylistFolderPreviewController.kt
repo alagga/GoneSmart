@@ -313,6 +313,58 @@ internal class PlaylistFolderPreviewController(
         java.util.IdentityHashMap<View, PickerOverlayTarget>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
+    private val pendingNativeFrontObservers = WeakHashMap<
+        ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
+    >()
+
+    private fun clearPendingNativeFrontObserver(list: ViewGroup) {
+        val observer = pendingNativeFrontObservers.remove(list) ?: return
+        if (list.viewTreeObserver.isAlive) {
+            list.viewTreeObserver.removeOnPreDrawListener(observer)
+        }
+    }
+
+    /** Offscreen native pages remain masked until the real front page draws.
+     * Only THEN does the bounded 2.5s native fail-open window start.
+     * One temporary native predraw listener replaces timer polling.
+     */
+    private fun watchPendingNativeFront(list: ViewGroup) {
+        if (pendingNativeFrontObservers.containsKey(list)) return
+        val weak = WeakReference(list)
+        val observer = android.view.ViewTreeObserver.OnPreDrawListener {
+            val current = weak.get()
+            if (current == null) {
+                true
+            } else if (!nativeOriginalAlphas.containsKey(current) ||
+                browsers.containsKey(current)
+            ) {
+                clearPendingNativeFrontObserver(current)
+                true
+            } else if (current.isAttachedToWindow && current.isShown &&
+                isFrontFragmentView(current)
+            ) {
+                clearPendingNativeFrontObserver(current)
+                current.postDelayed({
+                    if (nativeOriginalAlphas.containsKey(current) &&
+                        !browsers.containsKey(current) &&
+                        current.isAttachedToWindow && current.isShown &&
+                        isFrontFragmentView(current)
+                    ) {
+                        nativeOriginalAlphas.remove(current)?.let {
+                            current.alpha = it
+                        }
+                        Log.w(
+                            TAG,
+                            "FOLDER EARLY HIDE | foreground fallback; native restored"
+                        )
+                    }
+                }, 2_500L)
+                true
+            } else true
+        }
+        pendingNativeFrontObservers[list] = observer
+        list.viewTreeObserver.addOnPreDrawListener(observer)
+    }
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val moveChromeUi = PlaylistFolderMoveChrome(
@@ -795,10 +847,19 @@ internal class PlaylistFolderPreviewController(
         mainHandler.postDelayed({
             val current = weak.get() ?: return@postDelayed
             if (browsers.containsKey(current)) return@postDelayed
+            if (!isPicker(current) && (
+                    !current.isAttachedToWindow || !current.isShown ||
+                        !isFrontFragmentView(current)
+                )
+            ) {
+                watchPendingNativeFront(current)
+                return@postDelayed
+            }
+            clearPendingNativeFrontObserver(current)
             val original = nativeOriginalAlphas.remove(current)
                 ?: return@postDelayed
             current.alpha = original
-            Log.w(TAG, "FOLDER EARLY HIDE | overlay unavailable, native restored")
+            Log.w(TAG, "FOLDER EARLY HIDE | foreground overlay unavailable; native restored")
         }, 2_500L)
     }
 
@@ -917,12 +978,21 @@ internal class PlaylistFolderPreviewController(
             list.postDelayed({
                 weak.get()?.let { current ->
                     if (browsers[current] == null && settings.enabled &&
-                        current.isAttachedToWindow
+                        nativeOriginalAlphas.containsKey(current)
                     ) {
-                        nativeOriginalAlphas.remove(current)?.let {
-                            current.alpha = it
+                        if (!isPicker(current) &&
+                            (!current.isAttachedToWindow ||
+                                !current.isShown ||
+                                !isFrontFragmentView(current))
+                        ) {
+                            watchPendingNativeFront(current)
+                        } else {
+                            clearPendingNativeFrontObserver(current)
+                            nativeOriginalAlphas.remove(current)?.let {
+                                current.alpha = it
+                            }
+                            Log.w(TAG, "FOLDER INLINE WAIT | foreground native list restored")
                         }
-                        Log.w(TAG, "FOLDER INLINE WAIT | native list restored after timeout")
                     }
                 }
             }, 2500L)
@@ -1309,6 +1379,12 @@ internal class PlaylistFolderPreviewController(
             Log.w(TAG, "PLAYLIST MOVE UI | selection changed before navigation")
             return
         }
+        // Capture the host's selection color BEFORE finishing GMMP's actual
+        // selection ActionMode. Reading our later synthetic AestheticFab or
+        // ActionMode would circularly certify its stale red colorAccent.
+        browser.moveChrome.fabColor =
+            multiSelect.verifiedNativeSelectionAccent()
+                ?: multiSelect.standaloneSelectionAccent(browser.list)
         browser.movePreviousFolder = browser.currentFolderId
         browser.moveSources = selected
         browser.currentFolderId = null
@@ -2862,6 +2938,7 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.isClickable = false
         browser.overlay.isFocusable = false
         list.alpha = if (preserveNativeAlpha) 0f else browser.originalAlpha
+        clearPendingNativeFrontObserver(list)
         if (!preserveNativeAlpha) {
             // A detached main Playlist RecyclerView can be reused by GMMP
             // on Back. Clear its old alpha lease so the next native attach

@@ -44,6 +44,12 @@ internal class PlaylistFolderMoveChrome(
         onCancel: () -> Unit
     ): Boolean {
         if (!isActive() || state.actionMode != null) return false
+        // Freeze only the native source resolved before our ActionMode.
+        // Never acquire initial evidence from our own newly created FAB.
+        if (state.fabColor == null) {
+            state.fabColor = multiSelect.verifiedNativeSelectionAccent()
+                ?: multiSelect.standaloneSelectionAccent(list)
+        }
         val callback = object : android.view.ActionMode.Callback {
             override fun onCreateActionMode(
                 mode: android.view.ActionMode,
@@ -118,14 +124,9 @@ internal class PlaylistFolderMoveChrome(
     fun syncPalette(state: State, list: View) {
         if (state.actionMode == null) return
         val fab = state.fab ?: return
-        val color = NativeMovePalettePolicy.preferredColor(
-            liveNativePlaylistFab =
-                multiSelect.nativePlaylistFabTint(list),
-            verifiedNativeSelection =
-                multiSelect.verifiedNativeSelectionAccent(),
-            nativeContextBar =
-                multiSelect.visibleContextSelectionAccent(list as ViewGroup)
-        ) ?: return
+        val color = state.fabColor ?: return
+        // Do NOT read nativePlaylistFabTint(list) or the now-visible context
+        // bar: both may be this synthetic Move chrome's own stale-red views.
         val changed = state.lastColor != color
         val previousBarTint = state.barTintApplied
         state.lastColor = color
@@ -237,12 +238,11 @@ internal class PlaylistFolderMoveChrome(
         isActive: () -> Boolean
     ) {
         if (state.accentSubscription != null || state.fab == null) return
-        val subscription = NativeGmmpAccent.observe(
+        val subscription = NativeGmmpAccent.observePrimary(
             list,
             onColor = { value ->
-                if (isActive()) {
-                    // Observable changes trigger a native-color re-read;
-                    // the raw Aesthetic accent may be stale red on 4.2.1.
+                if (isActive() && NativeMovePalettePolicy.acceptLivePrimary(value)) {
+                    state.fabColor = value
                     syncPalette(state, list)
                 }
             },
@@ -259,7 +259,7 @@ internal class PlaylistFolderMoveChrome(
         if (subscription != null) {
             Log.i(
                 tag,
-                "$surface MOVE UI | native !mainColorAccent observer active"
+                "$surface MOVE UI | native primary palette observer active"
             )
         }
     }
