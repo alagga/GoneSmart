@@ -11,18 +11,67 @@ import java.lang.reflect.ParameterizedType
  * Resolves GMMP's ORIGINAL playlist-delete entry point from its
  * Context + List<T> contract.
  *
- * On 4.2.1 T is the already-bound native playlist model (yn3). Do not
- * manufacture a stale 4.2.0 File wrapper when GMMP has already supplied the
- * exact native model for the visible row. Legacy File wrappers remain only
- * for older builds where the delete contract itself proves that shape.
+ * DEX-verified GMMP 4.2.1 normal Playlist deletion:
+ *   zn3.n(MenuItem, ArrayList<xn3>) constructs sh1(File, Long) entries,
+ *   then invokes ry0.b(Context, List<sh1>) (async confirmation event).
+ *   The native deletion worker request is ry0.f(Context, List<sh1>)
+ *   (references DeletePlaylistFileWorker), enqueued by ry0.a(ArrayList).
+ *   GMMP 4.2.1's on-device py0 is NOT a playlist-delete entrypoint.
+ *
+ * GoneSmart's Select action is the user's confirmation. After durable
+ * staging and exact adapter-source verification, follow GMMP's ORIGINAL
+ * request-builder/enqueue pair on the background worker, bypassing only the
+ * secondary destructive-language confirmation. No direct file/DB deletion.
+ *
+ * Legacy versions retain the old, separately-verified dialog route.
  */
 internal class NativeGmmpPlaylistDeleteBinding private constructor(
     val deleteMethod: Method,
     private val elementType: Class<*>?,
-    private val legacyConstructor: Constructor<*>?
+    private val legacyConstructor: Constructor<*>?,
+    private val nativeWorkerEnqueue: Method? = null,
+    private val nativeWorkerWrapper: Constructor<*>? = null
 ) {
+    val usesVerifiedNativeWorker: Boolean
+        get() = nativeWorkerEnqueue != null && nativeWorkerWrapper != null
+
     fun accepts(model: Any): Boolean =
-        elementType == null || elementType.isInstance(model)
+        if (usesVerifiedNativeWorker) {
+            // Exact 4.2.1 native Playlist adapter row model.
+            model.javaClass.name == "xn3"
+        } else elementType == null || elementType.isInstance(model)
+
+    /**
+     * Schedule the actual APK-proven GMMP playlist DeleteFileWorker chain.
+     * Call ONLY from a background worker after durable original staging,
+     * with plans whose source identities still match the native adapter.
+     */
+    fun enqueueVerifiedNativeWorker(
+        context: Context,
+        sources: List<File>
+    ) {
+        val enqueue = requireNotNull(nativeWorkerEnqueue)
+        val wrapper = requireNotNull(nativeWorkerWrapper)
+        require(sources.isNotEmpty() && sources.distinct().size == sources.size)
+        require(sources.all { it.isFile })
+        val nativeItems = ArrayList<Any>(sources.size)
+        for (source in sources) {
+            // APK-proven zn3.n constructs sh1(File, Long), not an xn3.
+            // The original row's optional Long is null in the File-backed
+            // conversion; GMMP resolves indexed playlistIds itself.
+            nativeItems += wrapper.newInstance(source, null)
+        }
+        val requests = deleteMethod.invoke(null, context, nativeItems)
+            as? ArrayList<*>
+            ?: error("Native playlist worker did not return ArrayList")
+        require(requests.isNotEmpty()) {
+            "GMMP generated no native DeletePlaylistFileWorker request"
+        }
+        // Same native enqueue boundary used after ry0.f by fy0.run.
+        // If enqueue throws after partial scheduling, caller must RETAIN
+        // durable backups and observe/restore the original native index.
+        enqueue.invoke(null, requests)
+    }
 
     fun nativeModel(model: Any): Any {
         require(accepts(model)) {
@@ -77,6 +126,59 @@ internal class NativeGmmpPlaylistDeleteBinding private constructor(
             loader: ClassLoader,
             sampleModel: Any? = null
         ): NativeGmmpPlaylistDeleteBinding {
+            // Explicit APK-proven fast path: required owners, exact
+            // signatures, native model conversion and worker are all
+            // independently present. No blind invocation for discovery.
+            if (sampleModel?.javaClass?.name == "xn3") {
+                val verified = runCatching {
+                    val owner = loader.loadClass("ry0")
+                    val item = loader.loadClass("sh1")
+                    val base = loader.loadClass("on1")
+                    require(base.isAssignableFrom(item))
+                    val pathReader = base.getDeclaredMethod("b")
+                    require(pathReader.returnType == String::class.java)
+                    val wrapper = item.getDeclaredConstructor(
+                        File::class.java, java.lang.Long::class.java
+                    ).apply { isAccessible = true }
+                    val nativeDialog = owner.getDeclaredMethod(
+                        "b", Context::class.java, java.util.List::class.java
+                    )
+                    require(Modifier.isStatic(nativeDialog.modifiers) &&
+                        nativeDialog.returnType == java.lang.Void.TYPE)
+                    val createRequests = owner.getDeclaredMethod(
+                        "f", Context::class.java, java.util.List::class.java
+                    )
+                    require(Modifier.isStatic(createRequests.modifiers) &&
+                        ArrayList::class.java.isAssignableFrom(
+                            createRequests.returnType
+                        ))
+                    val enqueue = owner.getDeclaredMethod(
+                        "a", ArrayList::class.java
+                    )
+                    require(Modifier.isStatic(enqueue.modifiers) &&
+                        enqueue.returnType == java.lang.Void.TYPE)
+                    require(
+                        loader.loadClass(
+                            "gonemad.gmmp.work.delete.DeletePlaylistFileWorker"
+                        ) != null
+                    )
+                    createRequests.isAccessible = true
+                    enqueue.isAccessible = true
+                    NativeGmmpPlaylistDeleteBinding(
+                        deleteMethod = createRequests,
+                        elementType = item,
+                        legacyConstructor = null,
+                        nativeWorkerEnqueue = enqueue,
+                        nativeWorkerWrapper = wrapper
+                    )
+                }.onFailure { error ->
+                    throw IllegalStateException(
+                        "GMMP 4.2.1 native Playlist worker mapping not verified",
+                        error
+                    )
+                }.getOrThrow()
+                return verified
+            }
             val deleteType = loader.loadClass("py0")
             val methods = deleteType.declaredMethods.filter {
                 Modifier.isStatic(it.modifiers) &&

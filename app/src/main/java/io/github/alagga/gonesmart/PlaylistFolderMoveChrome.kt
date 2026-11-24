@@ -238,10 +238,13 @@ internal class PlaylistFolderMoveChrome(
         isActive: () -> Boolean
     ) {
         if (state.accentSubscription != null || state.fab == null) return
-        val subscription = NativeGmmpAccent.observePrimary(
+        val subscription = NativeGmmpAccent.observeVerifiedDynamicAccent(
             list,
             onColor = { value ->
-                if (isActive() && NativeMovePalettePolicy.acceptLivePrimary(value)) {
+                if (isActive()) {
+                    // The same APK-verified qy0.i !mainColorAccent stream
+                    // feeds GMMP's actual AestheticFab. Its accent changes
+                    // should update BOTH the confirm FAB and ActionMode bar.
                     state.fabColor = value
                     syncPalette(state, list)
                 }
@@ -249,8 +252,8 @@ internal class PlaylistFolderMoveChrome(
             onError = {
                 Log.w(
                     tag,
-                    "$surface MOVE UI | native FAB observer unavailable; " +
-                        "using original AestheticFab live background",
+                    "$surface MOVE UI | verified native palette unavailable; " +
+                        "retaining pre-mode selection witness",
                     it
                 )
             }
@@ -259,7 +262,7 @@ internal class PlaylistFolderMoveChrome(
         if (subscription != null) {
             Log.i(
                 tag,
-                "$surface MOVE UI | native primary palette observer active"
+                "$surface MOVE UI | verified GMMP AestheticFab palette active"
             )
         }
     }

@@ -7,7 +7,13 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 /**
- * Shared read-only bridge to GMMP/Aesthetic's live !mainColorAccent stream.
+ * Shared read-only bridge to GMMP/Aesthetic's real live color stream.
+ *
+ * GMMP 4.2.1 APK: AestheticFab.onAttachedToWindow resolves colorValue by
+ * qy0.i(com.afollestad.aesthetic.a, String, de3), then subscribes.
+ * The former oy0 lookup was from a different obfuscated build; it cannot
+ * resolve the dynamic stream on the installed 4.2.1 and fell back to stale
+ * colorAccent (#ff8e0e00).
  *
  * Folder Move chrome and reused native MaterialDialogs must use the same live
  * host palette instead of Android's static colorAccent fallback, which can
@@ -109,11 +115,27 @@ internal object NativeGmmpAccent {
         onError = onError
     )
 
+    /** Strict, native-proven dynamic accent: no stale static fallback. */
+    fun observeVerifiedDynamicAccent(
+        view: View,
+        onColor: (Int) -> Unit,
+        onError: (Throwable?) -> Unit = {}
+    ): Subscription? = observeAttribute(
+        view = view,
+        attributeName = "colorAccent",
+        dynamicName = "!mainColorAccent",
+        rememberVerifiedDynamic = true,
+        requireVerifiedDynamic = true,
+        onColor = onColor,
+        onError = onError
+    )
+
     private fun observeAttribute(
         view: View,
         attributeName: String,
         dynamicName: String?,
         rememberVerifiedDynamic: Boolean,
+        requireVerifiedDynamic: Boolean = false,
         onColor: (Int) -> Unit,
         onError: (Throwable?) -> Unit
     ): Subscription? = runCatching {
@@ -131,39 +153,41 @@ internal object NativeGmmpAccent {
         val resolver = if (dynamicName == null) {
             null
         } else {
-            val utility = loader.loadClass("oy0")
-            val resolverResults = utility.declaredMethods.mapNotNull { candidate ->
-                val p = candidate.parameterTypes
-                if (!Modifier.isStatic(candidate.modifiers) ||
-                    p.size != 3 ||
-                    p[1] != String::class.java ||
-                    candidate.returnType == java.lang.Void.TYPE ||
-                    !p[0].isAssignableFrom(theme.javaClass)
-                ) return@mapNotNull null
-                runCatching {
-                    candidate.isAccessible = true
-                    candidate to candidate.invoke(
-                        null, theme, dynamicName, fallback
-                    )
-                }.getOrNull()?.takeIf { it.second != null }
+            // APK-proven 4.2.1 AestheticFab.onAttachedToWindow:
+            // qy0.i(a, String, de3) -> de3. The old oy0 class contains
+            // no such method and silently fell back to static red.
+            val utility = loader.loadClass("qy0")
+            val resolverResults = utility.declaredMethods
+                .filter { candidate ->
+                    val p = candidate.parameterTypes
+                    Modifier.isStatic(candidate.modifiers) &&
+                        p.size == 3 &&
+                        p[0].isInstance(theme) &&
+                        p[1] == String::class.java &&
+                        p[2].isInstance(fallback) &&
+                        p[2].isAssignableFrom(candidate.returnType)
+                }
+            val resolverMethod = resolverResults.singleOrNull()
+                ?: error(
+                    "GMMP Aesthetic dynamic resolver not unique: " +
+                        resolverResults.joinToString(",") { it.name }
+                )
+            require(resolverMethod.name == "i") {
+                "GMMP 4.2.1 native Aesthetic resolver changed"
             }
-            when {
-                resolverResults.size == 1 -> resolverResults.single()
-                resolverResults.size > 1 ->
-                    resolverResults.singleOrNull { it.first.name == "h" }
-                        ?: error(
-                            "GMMP live palette resolver is runtime-ambiguous: " +
-                                resolverResults.joinToString(",") {
-                                    it.first.name + "->" +
-                                        (it.second?.javaClass?.name ?: "null")
-                                }
-                        )
-                else -> null
-            }
+            resolverMethod.isAccessible = true
+            resolverMethod to resolverMethod.invoke(
+                null, theme, dynamicName, fallback
+            )
         }
 
         val observable = resolver?.second ?: fallback
         val verifiedDynamic = dynamicName != null && resolver != null
+        if (requireVerifiedDynamic) {
+            require(verifiedDynamic && resolver?.second != null) {
+                "Unverified GMMP dynamic palette; stale theme fallback blocked"
+            }
+        }
 
         val subscribeCandidates = observable.javaClass.methods.filter {
             it.parameterCount == 1 &&

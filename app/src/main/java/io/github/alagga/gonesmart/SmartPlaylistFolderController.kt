@@ -3178,7 +3178,8 @@ internal class SmartPlaylistFolderController(
         // same accent resolver used by accepted Smart selection BEFORE the
         // synthetic Move ActionMode adds its own (potentially red) bar/FAB.
         browser.moveChrome.fabColor =
-            browser.liveSelectionAccent
+            NativeGmmpAccent.lastObserved()
+                ?: browser.liveSelectionAccent
                 ?: multiSelect.verifiedNativeSelectionAccent()
                 ?: multiSelect.standaloneSelectionAccent(browser.list)
         browser.movePreviousDirectory = browser.current.path

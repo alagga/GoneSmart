@@ -1383,7 +1383,8 @@ internal class PlaylistFolderPreviewController(
         // selection ActionMode. Reading our later synthetic AestheticFab or
         // ActionMode would circularly certify its stale red colorAccent.
         browser.moveChrome.fabColor =
-            multiSelect.verifiedNativeSelectionAccent()
+            NativeGmmpAccent.lastObserved()
+                ?: multiSelect.verifiedNativeSelectionAccent()
                 ?: multiSelect.standaloneSelectionAccent(browser.list)
         browser.movePreviousFolder = browser.currentFolderId
         browser.moveSources = selected

@@ -1,7 +1,7 @@
 package io.github.alagga.gonesmart
 
 /**
- * Native py0.b opens a REAL confirmation. The user can leave that dialog
+ * A legacy native delete opens a REAL confirmation. The user can leave that dialog
  * open for any length of time; only native worker time AFTER dismissal may
  * count toward a cancellation or scan timeout.
  */

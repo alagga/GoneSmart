@@ -13,10 +13,11 @@ import java.lang.reflect.Modifier
 import java.util.concurrent.Executors
 
 /**
- * GMMP 4.2.0 move orchestrator: durable private stage -> ORIGINAL py0.b
- * confirmation/worker removes old indexed M3Us -> verify physical AND
- * native-index removal -> publish staged normalized M3Us -> ORIGINAL t6.f
- * scanner registers their paths -> verify native-index insertion -> cleanup.
+ * GMMP 4.2.1 move: durable private stage -> original ry0.f/ry0.a
+ * DeletePlaylistFileWorker request -> independently verify physical AND
+ * native-index removal -> publish normalized M3Us -> original t6.g scanner
+ * -> verify native-index insertion -> cleanup. On 4.2.0, retain the verified
+ * original confirmation route. Never write the native DB directly.
  *
  * No direct GMMP DB writes, no blind File.renameTo(source,target), and no
  * deletion of an original without a durable per-playlist backup.
@@ -62,7 +63,7 @@ internal class NativeGmmpPlaylistMover(
             val scanType = hostLoader.loadClass("t6")
             val scanner = runCatching {
                 scanType.getDeclaredMethod(
-                    "f", Context::class.java, Array<String>::class.java
+                    "g", Context::class.java, Array<String>::class.java
                 )
             }.getOrNull() ?: scanType.declaredMethods.filter {
                 Modifier.isStatic(it.modifiers) &&
@@ -187,30 +188,70 @@ internal class NativeGmmpPlaylistMover(
                 }
                 val task = Pending(batch, context, currentPaths, onResult)
                 pending = task
-                val native = runCatching {
-                    val files = ArrayList<Any>(batch.entries.size)
-                    val deletion = requireNotNull(nativeDelete)
-                    sourceModels.forEach {
-                        files += deletion.nativeModel(it)
+                val deletion = requireNotNull(nativeDelete)
+                if (deletion.usesVerifiedNativeWorker) {
+                    // GMMP 4.2.1 posts its confirmation asynchronously, so
+                    // the old synchronous MaterialDialog interception cannot
+                    // work here. Our destination Select is already explicit
+                    // user consent: enqueue the independently APK-proven
+                    // ry0.f -> ry0.a worker path on a BACKGROUND executor.
+                    // Never invent a deletion query or mutate native models.
+                    Log.i(TAG, "PLAYLIST MOVE | 4.2.1 native playlist worker " +
+                        "requested | staged=" + batch.entries.size)
+                    worker.execute {
+                        val submitted = runCatching {
+                            deletion.enqueueVerifiedNativeWorker(
+                                context,
+                                batch.entries.map { it.source }
+                            )
+                        }
+                        main.post {
+                            if (pending !== task) return@post
+                            if (submitted.isFailure) {
+                                Log.e(
+                                    TAG,
+                                    "PLAYLIST MOVE | original native worker " +
+                                        "request uncertain; retaining staged backup",
+                                    submitted.exceptionOrNull()
+                                )
+                            } else {
+                                Log.i(
+                                    TAG,
+                                    "PLAYLIST MOVE | original ry0 worker " +
+                                        "enqueued; native file/index verification pending"
+                                )
+                            }
+                            // Even a thrown enqueue call may have already
+                            // registered work. Verify actual old/index state
+                            // before discarding a durable backup.
+                            schedule(task)
+                        }
                     }
-                    awaitingNativeDialog = task
-                    try {
-                        deletion.deleteMethod.invoke(null, context, files)
-                    } finally {
-                        awaitingNativeDialog = null
-                    }
-                }
-                if (native.isFailure) {
-                    Log.e(TAG, "PLAYLIST MOVE | original confirmation unavailable",
-                        native.exceptionOrNull())
-                    pending = null
-                    PlaylistMoveStager.finish(batch)
-                    onResult(false, "GMMP native confirmation unavailable")
                 } else {
-                    Log.i(TAG, "PLAYLIST MOVE | durable backups ready; " +
-                        "native delete transaction requested | count=" +
-                        batch.entries.size)
-                    schedule(task)
+                    val native = runCatching {
+                        val files = ArrayList<Any>(batch.entries.size)
+                        sourceModels.forEach {
+                            files += deletion.nativeModel(it)
+                        }
+                        awaitingNativeDialog = task
+                        try {
+                            deletion.deleteMethod.invoke(null, context, files)
+                        } finally {
+                            awaitingNativeDialog = null
+                        }
+                    }
+                    if (native.isFailure) {
+                        Log.e(TAG, "PLAYLIST MOVE | original confirmation unavailable",
+                            native.exceptionOrNull())
+                        pending = null
+                        PlaylistMoveStager.finish(batch)
+                        onResult(false, "GMMP native confirmation unavailable")
+                    } else {
+                        Log.i(TAG, "PLAYLIST MOVE | durable backups ready; " +
+                            "native delete transaction requested | count=" +
+                            batch.entries.size)
+                        schedule(task)
+                    }
                 }
             }
         }
@@ -551,7 +592,7 @@ internal class NativeGmmpPlaylistMover(
                     task.phase = Phase.WAIT_INDEX
                     task.polls = 0
                     scan(task.context, task.batch.entries.map { it.target })
-                    Log.i(TAG, "PLAYLIST MOVE | original t6.f rescan requested")
+                    Log.i(TAG, "PLAYLIST MOVE | original scanner rescan requested")
                     schedule(task)
                 }
             }
