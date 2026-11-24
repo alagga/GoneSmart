@@ -29,6 +29,18 @@ class PlaylistMoveUiSafetyPolicyTest {
         }
     }
 
+    @Test fun verifiedParentlessSmartAdapterCanBeMaskedBeforeNativeAttach() {
+        // The first native Smart page sometimes calls setAdapter before
+        // its RecyclerView gets a parent. No parent evidence is needed when
+        // resource + adapter + differ have all been independently verified.
+        assertTrue(SmartFolderPrehidePolicy.mayPrehide(
+            true,true,true,true,false,false,preparedForAttach=true
+        ))
+        assertFalse(SmartFolderPrehidePolicy.mayPrehide(
+            true,false,true,true,false,false,preparedForAttach=true
+        ))
+    }
+
     @Test fun verifiedSmartAdapterCanBeMaskedBeforeNativeAttach() {
         assertTrue(SmartFolderPrehidePolicy.mayPrehide(
             true,true,true,true,false,false,preparedForAttach=true

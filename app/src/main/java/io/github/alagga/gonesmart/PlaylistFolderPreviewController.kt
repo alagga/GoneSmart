@@ -2577,10 +2577,12 @@ internal class PlaylistFolderPreviewController(
                 weakList.get()?.let { list ->
                     removeBrowser(
                         list,
-                        // Keep the native ungrouped picker list hidden as well
-                        // while GMMP replaces its fragment after creation.
-                        // The next attached browser reuses originalAlpha;
-                        // bounded attach failure restores it explicitly.
+                        // Keep BOTH the main Playlists and picker lists
+                        // masked through native fragment detach. The old
+                        // page can still draw a transition frame after its
+                        // GoneSmart sibling overlay has been removed.
+                        // The positive alpha lease is transferred to the
+                        // next attach, with bounded native fail-open.
                         preserveNativeAlpha =
                             PlaylistFolderSurfaceLifecyclePolicy
                                 .preserveNativeAlphaOnDetach(
@@ -2962,14 +2964,27 @@ internal class PlaylistFolderPreviewController(
         browser.overlay.visibility = View.GONE
         browser.overlay.isClickable = false
         browser.overlay.isFocusable = false
-        list.alpha = if (preserveNativeAlpha) 0f else
-            originalNativeAlpha(list, browser.originalAlpha)
+        if (preserveNativeAlpha) {
+            // The overlay is about to go away while the native page may
+            // still participate in a tab/fragment exit animation. Keep the
+            // independently observed positive original, not the 0f mask.
+            nativeOriginalAlphas[list] =
+                originalNativeAlpha(list, browser.originalAlpha)
+            list.alpha = 0f
+            Log.i(
+                TAG,
+                "FOLDER DETACH MASK | retained until verified reattach" +
+                    " | surface=" + surface(list)
+            )
+        } else {
+            list.alpha = originalNativeAlpha(
+                list, browser.originalAlpha
+            )
+        }
         clearPendingNativeFrontObserver(list)
         if (!preserveNativeAlpha) {
-            // A detached main Playlist RecyclerView can be reused by GMMP
-            // on Back. Clear its old alpha lease so the next native attach
-            // invokes our BEFORE-first-draw hide again. The picker keeps its
-            // special fragment-replacement lease until its handoff ends.
+            // An explicitly removed/disabled browser restores native
+            // visibility and clears the stale first-frame mask lease.
             nativeOriginalAlphas.remove(list)
         }
         list.removeOnAttachStateChangeListener(browser.detachListener)

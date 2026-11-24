@@ -1,8 +1,11 @@
 package io.github.alagga.gonesmart
 
 /**
- * Keeps the normal Playlists surface isolated from offscreen GMMP pages while
- * preserving the special Add-picker fragment-replacement handoff.
+ * Keeps the native Playlist list masked across fragment detach/reattach.
+ * While GoneSmart removes its sibling folder overlay during a tab switch,
+ * GMMP may still render the old fragment's exiting RecyclerView. Never
+ * restore raw native rows during this handoff while folders stay enabled.
+ * All alpha masks remain bounded with a native fail-open on attach failure.
  */
 internal object PlaylistFolderSurfaceLifecyclePolicy {
     fun shouldPreHideNativeRows(
@@ -26,8 +29,9 @@ internal object PlaylistFolderSurfaceLifecyclePolicy {
     ): Boolean = isPicker ||
         (frontFragment && nativeShown && hasVisibleBounds)
 
+    @Suppress("UNUSED_PARAMETER")
     fun preserveNativeAlphaOnDetach(
         foldersEnabled: Boolean,
         isPicker: Boolean
-    ): Boolean = foldersEnabled && isPicker
+    ): Boolean = foldersEnabled
 }

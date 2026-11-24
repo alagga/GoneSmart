@@ -52,21 +52,19 @@ class PlaylistFolderSurfaceLifecyclePolicyTest {
         )
     }
 
-    @Test fun onlyPickerMayKeepNativeListHiddenAcrossDetach() {
-        assertTrue(
-            PlaylistFolderSurfaceLifecyclePolicy.preserveNativeAlphaOnDetach(
-                foldersEnabled = true, isPicker = true
-            )
-        )
-        assertFalse(
-            PlaylistFolderSurfaceLifecyclePolicy.preserveNativeAlphaOnDetach(
-                foldersEnabled = true, isPicker = false
-            )
-        )
-        assertFalse(
-            PlaylistFolderSurfaceLifecyclePolicy.preserveNativeAlphaOnDetach(
-                foldersEnabled = false, isPicker = true
-            )
-        )
+    @Test fun bothFolderTabsRetainTheirNativeMaskAcrossDetach() {
+        val p = PlaylistFolderSurfaceLifecyclePolicy
+        assertTrue(p.preserveNativeAlphaOnDetach(
+            foldersEnabled = true, isPicker = true
+        ))
+        assertTrue(p.preserveNativeAlphaOnDetach(
+            foldersEnabled = true, isPicker = false
+        ))
+        assertFalse(p.preserveNativeAlphaOnDetach(
+            foldersEnabled = false, isPicker = true
+        ))
+        assertFalse(p.preserveNativeAlphaOnDetach(
+            foldersEnabled = false, isPicker = false
+        ))
     }
 }

@@ -939,19 +939,22 @@ internal class SmartPlaylistFolderController(
             pendingOriginalAlphas.containsKey(list) ||
             resourceName(list) != SMART_LIST_ID
         ) return
-        // A view without a parent is not a live or incoming tab surface.
-        val hasPageParent = list.parent is ViewGroup
+        // A parent is NOT required during first fragment construction:
+        // GMMP sometimes sets the Smart adapter before attaching its view.
         if (!SmartFolderPrehidePolicy.mayPrehide(
                 enabled = enabled,
-                namedSmartSurface = hasPageParent,
+                // Before the host attaches the new fragment its VERIFIED
+                // native Smart RecyclerView can still be parentless.
+                // The resource ID + native RecyclerView adapter +
+                // native AsyncListDiffer shape prove the surface even then.
+                namedSmartSurface = true,
                 nativeRecyclerAdapter =
                     hasNativeRecyclerAdapterSuperclass(adapter),
                 differShapeVerified = hasNativeSmartDifferShape(adapter),
                 front = isFrontFragmentView(list),
                 attachedAndShown =
                     list.isAttachedToWindow && list.isShown,
-                preparedForAttach = !list.isAttachedToWindow &&
-                    hasPageParent
+                preparedForAttach = !list.isAttachedToWindow
             )
         ) return
         val alpha = originalNativeAlpha(list, list.alpha)
@@ -1739,7 +1742,14 @@ internal class SmartPlaylistFolderController(
         val detachListener = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) {
-                if (browsers[list] === browser) removeBrowser(browser)
+                if (browsers[list] === browser) {
+                    // Do not unmask GMMP's raw Smart root during the
+                    // departing fragment's animation or tab replacement.
+                    removeBrowser(
+                        browser,
+                        preserveNativeAlpha = enabled
+                    )
+                }
             }
         }
         val originalAlpha = originalNativeAlpha(
@@ -3707,7 +3717,10 @@ internal class SmartPlaylistFolderController(
         }
     }
 
-    private fun removeBrowser(browser: Browser) {
+    private fun removeBrowser(
+        browser: Browser,
+        preserveNativeAlpha: Boolean = false
+    ) {
         if (browsers.remove(browser.list) !== browser) return
         if (nativeContextMoveAnchor?.list?.get() === browser.list) {
             nativeContextMoveAnchor = null
@@ -3720,9 +3733,36 @@ internal class SmartPlaylistFolderController(
         browser.selectionAccentSubscription = null
         clearSmartSelection(browser)
         endMoveChrome(browser)
-        browser.list.alpha = originalNativeAlpha(
+        val original = originalNativeAlpha(
             browser.list, browser.originalAlpha
         )
+        if (preserveNativeAlpha) {
+            pendingOriginalAlphas[browser.list] = original
+            browser.list.alpha = 0f
+            Log.i(
+                TAG,
+                "SMART FOLDERS DETACH MASK | preserving native opacity=" +
+                    original
+            )
+            // A detached page can be discarded forever. The positive
+            // native alpha is independently restored if this page does
+            // not obtain a new folder browser in the bounded interval.
+            val weak = WeakReference(browser.list)
+            main.postDelayed({
+                val list = weak.get() ?: return@postDelayed
+                if (browsers[list] == null &&
+                    pendingOriginalAlphas.containsKey(list)
+                ) {
+                    restorePendingNativeList(list)
+                    Log.w(
+                        TAG,
+                        "SMART FOLDERS DETACH MASK | inactive native restored"
+                    )
+                }
+            }, 2_500L)
+        } else {
+            browser.list.alpha = original
+        }
         browser.list.setPadding(
             browser.originalPaddingLeft,
             browser.originalPaddingTop,
