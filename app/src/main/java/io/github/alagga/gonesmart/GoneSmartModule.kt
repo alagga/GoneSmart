@@ -2702,6 +2702,79 @@ class GoneSmartModule : XposedModule() {
     }
 
     /**
+     * GMMP 4.2.1: native op3 is the main Playlist page, native ls4 is the
+     * Smart Playlist page. Both inherit the AndroidX Fragment's ORIGINAL
+     * performCreateView(LayoutInflater,ViewGroup,Bundle):View boundary.
+     *
+     * RecyclerView.setAdapter and onAttachedToWindow are sometimes TOO LATE
+     * to prevent the very first raw native tab frame. Observe the returned
+     * root of the independently verified native tab fragment *before*
+     * FragmentManager attaches it to the window. Only locate its exact
+     * native RecyclerView resource; never suppress drawing for other tabs
+     * or run a view-tree walk on every frame.
+     */
+    private fun installNativePlaylistFragmentFirstFrameHook(
+        param: PackageReadyParam
+    ) {
+        val loader = param.classLoader
+        val playlistFragment = loader.loadClass("op3")
+        val smartFragment = loader.loadClass("ls4")
+        val candidates = generateSequence<Class<*>>(smartFragment) {
+            it.superclass
+        }.mapNotNull { owner ->
+            runCatching {
+                owner.getDeclaredMethod(
+                    "performCreateView",
+                    android.view.LayoutInflater::class.java,
+                    android.view.ViewGroup::class.java,
+                    android.os.Bundle::class.java
+                )
+            }.getOrNull()
+        }.toList()
+        val createView = candidates.singleOrNull()
+            ?: error("GMMP native Fragment.performCreateView is ambiguous")
+        require(android.view.View::class.java.isAssignableFrom(
+            createView.returnType
+        )) {
+            "GMMP native Fragment.performCreateView return type unavailable"
+        }
+        createView.isAccessible = true
+        hook(createView).intercept { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val root = result as? android.view.View
+                    ?: return@runCatching
+                val fragment = chain.getThisObject()
+                when {
+                    playlistFragment.isInstance(fragment) -> {
+                        NativePlaylistFragmentList.find(
+                            root, "playlistListRecyclerView"
+                        )?.let(playlistFolderPreview::onNativePlaylistFragmentInflated)
+                    }
+                    smartFragment.isInstance(fragment) -> {
+                        NativePlaylistFragmentList.find(
+                            root, "smartListRecyclerView"
+                        )?.let(
+                            smartPlaylistFolderController::onNativeSmartFragmentInflated
+                        )
+                    }
+                }
+            }.onFailure {
+                Log.w(
+                    "GoneSmartPlaylist",
+                    "FOLDER FRAGMENT MASK | native pre-attach unavailable",
+                    it
+                )
+            }
+            result
+        }
+        Log.i(
+            "GoneSmartPlaylist",
+            "FOLDER FRAGMENT MASK | native Playlist/Smart before first attach ready"
+        )
+    }
+
+    /**
      * Observe the host RecyclerView lifecycle used by both folder surfaces.
      * The original native methods always run; GoneSmart only attaches its
      * already-verified folder chrome to the matching visible surface.
@@ -2709,6 +2782,15 @@ class GoneSmartModule : XposedModule() {
     private fun installPlaylistSurfaceHooks(
         param: PackageReadyParam
     ) {
+        runCatching {
+            installNativePlaylistFragmentFirstFrameHook(param)
+        }.onFailure {
+            Log.w(
+                "GoneSmartPlaylist",
+                "FOLDER FRAGMENT MASK | install unavailable; RecyclerView fallback retained",
+                it
+            )
+        }
         val recycler = param.classLoader.loadClass(
             "androidx.recyclerview.widget.RecyclerView"
         )

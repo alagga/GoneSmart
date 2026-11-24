@@ -833,6 +833,46 @@ internal class PlaylistFolderPreviewController(
     }
 
     /**
+     * Verified native op3 Fragment.performCreateView has just returned its
+     * original playlistListRecyclerView, BEFORE FragmentManager attaches it.
+     * No adapter or bound row is available yet. The caller independently
+     * proves the concrete op3 fragment + exact host RecyclerView resource.
+     *
+     * Preserve the same positive-alpha lease and bounded native fallback
+     * used by the later setAdapter/onAttach binding path. This masks the
+     * very first native frame instead of merely re-masking a drawn page.
+     */
+    fun onNativePlaylistFragmentInflated(view: View?) {
+        val list = view as? ViewGroup ?: return
+        if (!settings.enabled ||
+            resourceName(list) != "playlistListRecyclerView" ||
+            browsers.containsKey(list) ||
+            nativeOriginalAlphas.containsKey(list)
+        ) return
+        val original = originalNativeAlpha(list, list.alpha)
+        nativeOriginalAlphas[list] = original
+        list.alpha = 0f
+        Log.i(
+            TAG,
+            "FOLDER FRAGMENT MASK | before native first attach | alpha=" +
+                original
+        )
+        val weak = WeakReference(list)
+        mainHandler.postDelayed({
+            val current = weak.get() ?: return@postDelayed
+            if (!browsers.containsKey(current)) {
+                nativeOriginalAlphas.remove(current)?.let { positive ->
+                    current.alpha = positive
+                    Log.w(
+                        TAG,
+                        "FOLDER FRAGMENT MASK | native fail-open after timeout"
+                    )
+                }
+            }
+        }, 2_500L)
+    }
+
+    /**
      * Hide GMMP's ungrouped native Playlist rows before the host view is
      * attached or its adapter is set. The folder overlay needs several
      * frames to rebuild after Back. An independent bounded timeout restores

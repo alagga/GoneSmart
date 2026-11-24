@@ -957,11 +957,35 @@ internal class SmartPlaylistFolderController(
                 preparedForAttach = !list.isAttachedToWindow
             )
         ) return
+        earlyMaskSmartNativeList(list, "setAdapter/attach")
+    }
+
+    /**
+     * Verified native ls4 Fragment.performCreateView returned its exact
+     * smartListRecyclerView before AndroidX attaches the page. The adapter
+     * can be null here: the independently verified native fragment owner,
+     * resource ID and host RecyclerView type authorize a bounded early mask.
+     * Never apply this to other GMMP fragments or a generic View by ID.
+     */
+    fun onNativeSmartFragmentInflated(view: View?) {
+        val list = view as? ViewGroup ?: return
+        if (!enabled || resourceName(list) != SMART_LIST_ID ||
+            browsers.containsKey(list) ||
+            pendingOriginalAlphas.containsKey(list)
+        ) return
+        earlyMaskSmartNativeList(list, "Fragment.performCreateView")
+    }
+
+    /** A single positive-alpha lease and timeout for ALL first-frame paths. */
+    private fun earlyMaskSmartNativeList(list: ViewGroup, phase: String) {
+        if (!enabled || browsers.containsKey(list) ||
+            pendingOriginalAlphas.containsKey(list)
+        ) return
         val alpha = originalNativeAlpha(list, list.alpha)
         pendingOriginalAlphas[list] = alpha
         list.alpha = 0f
         Log.i(
-            TAG, "SMART FOLDERS EARLY MASK | before setAdapter" +
+            TAG, "SMART FOLDERS EARLY MASK | " + phase +
                 " | attached=" + list.isAttachedToWindow +
                 " | retainedAlpha=" + alpha
         )
@@ -971,9 +995,6 @@ internal class SmartPlaylistFolderController(
             if (!browsers.containsKey(current) &&
                 pendingOriginalAlphas.containsKey(current)
             ) {
-                // The masked native view is no longer needed while offscreen
-                // or detached; restore it immediately. If still foreground,
-                // fail open after the same bounded timeout as before.
                 val front = current.isAttachedToWindow &&
                     current.isShown && isFrontFragmentView(current)
                 restorePendingNativeList(current)
