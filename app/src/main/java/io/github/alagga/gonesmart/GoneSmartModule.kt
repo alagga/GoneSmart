@@ -2704,11 +2704,16 @@ class GoneSmartModule : XposedModule() {
     /**
      * GMMP 4.2.1: native op3 is the main Playlist page, native ls4 is the
      * Smart Playlist page. Both inherit the AndroidX Fragment's ORIGINAL
-     * performCreateView(LayoutInflater,ViewGroup,Bundle):View boundary.
+     * performCreateView(LayoutInflater,ViewGroup,Bundle):void boundary.
+     *
+     * IMPORTANT: performCreateView returns void on the verified GMMP 4.2.1
+     * APK. The native Fragment stores its result as mView, exposed by its
+     * concrete getView(): View method. Returning View was a real regression
+     * which prevented the first-frame hook from installing.
      *
      * RecyclerView.setAdapter and onAttachedToWindow are sometimes TOO LATE
-     * to prevent the very first raw native tab frame. Observe the returned
-     * root of the independently verified native tab fragment *before*
+     * to prevent the very first raw native tab frame. Observe the created
+     * root from getView() of the verified native tab fragment *before*
      * FragmentManager attaches it to the window. Only locate its exact
      * native RecyclerView resource; never suppress drawing for other tabs
      * or run a view-tree walk on every frame.
@@ -2733,31 +2738,63 @@ class GoneSmartModule : XposedModule() {
         }.toList()
         val createView = candidates.singleOrNull()
             ?: error("GMMP native Fragment.performCreateView is ambiguous")
-        require(android.view.View::class.java.isAssignableFrom(
-            createView.returnType
-        )) {
-            "GMMP native Fragment.performCreateView return type unavailable"
+        // Both signatures are independently verified in the actual host
+        // APK: androidx.fragment.app.f.performCreateView(...): void and
+        // androidx.fragment.app.f.getView(): android.view.View.
+        val getView = createView.declaringClass.getDeclaredMethod("getView")
+        require(
+            NativeFragmentViewLifecyclePolicy.accepts(
+                createView.returnType,
+                getView.returnType,
+                android.view.View::class.java
+            )
+        ) {
+            "GMMP native Fragment lifecycle method signature unavailable"
         }
         createView.isAccessible = true
+        getView.isAccessible = true
         hook(createView).intercept { chain ->
             val result = chain.proceed()
             runCatching {
-                val root = result as? android.view.View
-                    ?: return@runCatching
                 val fragment = chain.getThisObject()
-                when {
-                    playlistFragment.isInstance(fragment) -> {
-                        NativePlaylistFragmentList.find(
-                            root, "playlistListRecyclerView"
-                        )?.let(playlistFolderPreview::onNativePlaylistFragmentInflated)
-                    }
-                    smartFragment.isInstance(fragment) -> {
-                        NativePlaylistFragmentList.find(
-                            root, "smartListRecyclerView"
-                        )?.let(
-                            smartPlaylistFolderController::onNativeSmartFragmentInflated
-                        )
-                    }
+                val tab = when {
+                    playlistFragment.isInstance(fragment) -> "playlist"
+                    smartFragment.isInstance(fragment) -> "smart"
+                    else -> null
+                } ?: return@runCatching
+                val root = getView.invoke(fragment) as? android.view.View
+                if (root == null) {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "FOLDER FRAGMENT MASK | $tab root not created yet; " +
+                            "native RecyclerView fallback retained"
+                    )
+                    return@runCatching
+                }
+                val list = NativePlaylistFragmentList.find(
+                    root,
+                    if (tab == "playlist") "playlistListRecyclerView"
+                    else "smartListRecyclerView"
+                )
+                if (list == null) {
+                    Log.w(
+                        "GoneSmartPlaylist",
+                        "FOLDER FRAGMENT MASK | $tab native RecyclerView " +
+                            "not in fragment root; fallback retained"
+                    )
+                    return@runCatching
+                }
+                if (tab == "playlist") {
+                    playlistFolderPreview.onNativePlaylistFragmentInflated(list)
+                } else {
+                    smartPlaylistFolderController.onNativeSmartFragmentInflated(list)
+                }
+                if (BuildConfig.DEBUG) {
+                    Log.i(
+                        "GoneSmartPlaylist",
+                        "FOLDER FRAGMENT MASK | verified $tab surface " +
+                            "at native view creation | alpha=" + list.alpha
+                    )
                 }
             }.onFailure {
                 Log.w(
