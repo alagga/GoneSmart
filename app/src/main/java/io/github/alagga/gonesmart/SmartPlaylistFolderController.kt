@@ -320,6 +320,9 @@ internal class SmartPlaylistFolderController(
         Thread(task, "GoneSmartSmartFolders").apply { isDaemon = true }
     }
     private val refreshGeneration = AtomicLong(0L)
+    // Worker-only, bounded cache of unchanged native ws4 file models.
+    // Source stamps and native model type are checked on every visit.
+    private val nativeModelCache = NativeSmartModelCache()
     // Distinguish GoneSmart's own verified current-folder differ submit from
     // a later GMMP physical-root submit hitting the same live AsyncListDiffer.
     private val ownDifferSubmitDepth = ThreadLocal.withInitial { 0 }
@@ -1772,10 +1775,18 @@ internal class SmartPlaylistFolderController(
                 if (browsers[list] === browser) {
                     syncPagerOverlayVisibility(browser)
                     val front = isFrontFragmentView(list) && list.isShown
-                    if (front && !browser.nativeContentReady) {
-                        // Initial projection is allowed to complete while the
-                        // overlay is still INVISIBLE. Visibility is itself the
-                        // postcondition of revealInitialContent().
+                    if (SmartFolderNavigationCommitPolicy.mayRevealAtDraw(
+                            isFront = front,
+                            nativeContentReady = browser.nativeContentReady,
+                            scrollSettled = browser.folderScrollSyncReady,
+                            scrollResetPending = browser.pendingFolderScrollReset
+                        )
+                    ) {
+                        // Never reveal while the native list is still
+                        // resetting its scroll position. It used to produce
+                        // a partial first frame followed by a visible jump.
+                        // Readiness/holder identity remains the sole release
+                        // authority once scrolling has settled.
                         val ready = nativeProjectionReady(browser)
                         if (ready || browser.projectionFailOpenAllowed) {
                             revealInitialContent(
@@ -2019,6 +2030,9 @@ internal class SmartPlaylistFolderController(
         // An attach-only timer could fire in the middle of a later navigation
         // and reveal stale GMMP rows even while the new differ was settling.
         cancelProjectionRevealTimeout(browser)
+        // An already-visible browser stays on screen during worker scanning.
+        // An initial/failed native projection still gets its existing bounded
+        // independent fallback.
         if (!browser.nativeContentReady) {
             scheduleProjectionRevealTimeout(browser, generation)
         }
@@ -2054,13 +2068,30 @@ internal class SmartPlaylistFolderController(
                 }
                 val order = models.mapNotNull(::modelPath)
                 val signature = nativeModelSignature(models)
-                browser.nativeOrder = order
-                if (SmartNativeSubmissionPolicy.shouldSubmit(
-                        browser.nativeSubmitted,
-                        browser.nativeSignature,
-                        signature
+                val requiresSubmit = SmartNativeSubmissionPolicy.shouldSubmit(
+                    browser.nativeSubmitted,
+                    browser.nativeSignature,
+                    signature
+                )
+                // Commit the new folder as one logical UI transaction. The
+                // previous ready page was retained throughout async IO; only
+                // now hide its rows/header while native AsyncListDiffer binds
+                // the replacement. Also cover native list changes received
+                // in-place, not only directory navigation.
+                if (SmartFolderNavigationCommitPolicy.shouldMaskAtCommit(
+                        previousContentReady = browser.nativeContentReady,
+                        navigationPending = browser.pendingFolderScrollReset,
+                        nativeListChanged = requiresSubmit
                     )
                 ) {
+                    browser.nativeContentReady = false
+                    browser.projectionPrepared = false
+                    browser.projectionFailOpenAllowed = false
+                    browser.list.alpha = 0f
+                    scheduleProjectionRevealTimeout(browser, generation)
+                }
+                browser.nativeOrder = order
+                if (requiresSubmit) {
                     applyNativeModels(browser, models)
                     browser.nativeSignature = signature
                     browser.nativeSubmitted = true
@@ -2145,20 +2176,26 @@ internal class SmartPlaylistFolderController(
         for (file in scan.files.filter {
             it.isFile && it.extension.equals("spl", ignoreCase = true)
         }) {
-            val model = runCatching {
-                native.modelConstructor.newInstance(
-                    null,
-                    0,
-                    0,
-                    0,
-                    null,
-                    255
-                ).also {
-                    native.modelRead.invoke(it, file)
-                }
-            }.onFailure {
-                Log.w(TAG, "SMART FOLDERS MODEL SKIP | " + safePath(file), it)
-            }.getOrNull() ?: continue
+            val model = nativeModelCache.getOrLoad(
+                file = file,
+                modelType = native.modelClass,
+                nowMs = android.os.SystemClock.uptimeMillis()
+            ) {
+                runCatching {
+                    native.modelConstructor.newInstance(
+                        null,
+                        0,
+                        0,
+                        0,
+                        null,
+                        255
+                    ).also {
+                        native.modelRead.invoke(it, file)
+                    }
+                }.onFailure {
+                    Log.w(TAG, "SMART FOLDERS MODEL SKIP | " + safePath(file), it)
+                }.getOrNull()
+            } ?: continue
             models += model
         }
         val sorted = sortNative(models)
@@ -4068,17 +4105,17 @@ internal class SmartPlaylistFolderController(
     }
 
     private fun prepareFolderScrollForNavigation(browser: Browser) {
-        browser.folderScrollSyncReady = false
+        // Native GMMP navigation keeps its previous page painted until the
+        // destination content is ready. Do the same: the scan/parse happens on
+        // our worker, so an immediate alpha=0 here used to blank the current
+        // rows and header for 100–250ms before they could be replaced.
+        //
+        // Preserve the *complete* prior frame while the worker prepares its
+        // snapshot. Only refresh() may mask, after a valid complete snapshot
+        // has arrived on the UI thread and is about to enter the native
+        // AsyncListDiffer. All generation and identity checks stay intact.
         browser.pendingFolderScrollReset = true
-        browser.nativeContentReady = false
-        browser.projectionPrepared = false
         browser.projectionFailOpenAllowed = false
-        browser.list.alpha = 0f
-        browser.folderBand.translationY = 0f
-        resetFolderOverscroll(browser)
-        browser.nativeScrollDistancePx = 0
-        browser.scrollDeltaReported = false
-        browser.overscrollReported = false
     }
 
     private fun settleFolderScrollAfterRefresh(
@@ -4096,30 +4133,29 @@ internal class SmartPlaylistFolderController(
         browser.nativeScrollDistancePx = 0
         browser.scrollDeltaReported = false
         browser.overscrollReported = false
+        // scrollToPosition is a native GMMP RecyclerView request, not a
+        // data mutation. Request it immediately after submitting the new
+        // projection, then wait for one native layout frame instead of the
+        // previous two unconditional posted frames. Holder path verification
+        // still prevents revealing an old or unfinished AsyncListDiffer.
+        runCatching {
+            browser.list.javaClass.getMethod(
+                "scrollToPosition", Integer.TYPE
+            ).invoke(browser.list, 0)
+        }
         browser.list.postOnAnimation {
             if (browsers[browser.list] !== browser ||
                 browser.generation != generation ||
                 !browser.list.isAttachedToWindow
             ) return@postOnAnimation
-            runCatching {
-                browser.list.javaClass.getMethod(
-                    "scrollToPosition", Integer.TYPE
-                ).invoke(browser.list, 0)
-            }
-            browser.list.postOnAnimation {
-                if (browsers[browser.list] !== browser ||
-                    browser.generation != generation ||
-                    !browser.list.isAttachedToWindow
-                ) return@postOnAnimation
-                browser.pendingFolderScrollReset = false
-                browser.folderScrollSyncReady = true
-                browser.folderBand.translationY = 0f
-                resetFolderOverscroll(browser)
-                browser.nativeScrollDistancePx = 0
-                browser.scrollDeltaReported = false
-                browser.overscrollReported = false
-                awaitNativeProjectionAndReveal(browser, generation)
-            }
+            browser.pendingFolderScrollReset = false
+            browser.folderScrollSyncReady = true
+            browser.folderBand.translationY = 0f
+            resetFolderOverscroll(browser)
+            browser.nativeScrollDistancePx = 0
+            browser.scrollDeltaReported = false
+            browser.overscrollReported = false
+            awaitNativeProjectionAndReveal(browser, generation)
         }
     }
 

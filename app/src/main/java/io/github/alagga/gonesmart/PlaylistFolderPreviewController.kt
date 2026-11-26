@@ -2316,6 +2316,7 @@ internal class PlaylistFolderPreviewController(
     }
 
     private fun attachIfReady(list: ViewGroup, attempt: Int) {
+        val attachStartMs = android.os.SystemClock.uptimeMillis()
         if (!settings.enabled || browsers.containsKey(list) ||
             suspendedNativeLists.containsKey(list) ||
             failedOverlayHosts.containsKey(list) ||
@@ -2387,6 +2388,8 @@ internal class PlaylistFolderPreviewController(
         }
 
         val native = NativePlaylistSourceInspector.inspect(adapter, itemCount)
+        val nativeInspectionMs =
+            android.os.SystemClock.uptimeMillis() - attachStartMs
         if (native.paths.size != itemCount ||
             native.nativeObjects.size != itemCount ||
             native.truncated
@@ -2435,6 +2438,8 @@ internal class PlaylistFolderPreviewController(
             displayNamesByPath = titleResult.names + renderedTitles,
             otherLocationsLabel = NativeGmmpUiText.otherLocations(list.context)
         )
+        val indexReadyMs =
+            android.os.SystemClock.uptimeMillis() - attachStartMs
 
         // A GMMP Playlists tab RecyclerView is owned by
         // FragmentContainerView, which explicitly rejects arbitrary
@@ -2450,6 +2455,10 @@ internal class PlaylistFolderPreviewController(
         // resolved host can be ViewPager itself; the shared helper installs
         // the overlay as a decor child so it is not counted as another page.
         val overlay = FrameLayout(list.context).apply {
+            // A native page must never draw our overlay before all synthetic
+            // folder/playlist rows have been constructed. Keep the previous
+            // page's transition frame, then reveal one complete overlay.
+            visibility = View.INVISIBLE
             isClickable = true
             isFocusable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
@@ -2774,11 +2783,30 @@ internal class PlaylistFolderPreviewController(
             )
             return
         }
-        positionOverlay(browser)
+        // Build every visible row before showing the sibling overlay. The
+        // previous order made a newly attached, empty overlay visible first,
+        // then filled it with rows and breadcrumb in a separate UI phase.
+        val nativeUiBuiltMs =
+            android.os.SystemClock.uptimeMillis() - attachStartMs
         safeRender(browser)
+        if (browsers[list] !== browser) return
+        positionOverlay(browser)
         activeBrowser = WeakReference(list)
         updatePlaylistMenu()
         updatePickerFab(browser)
+        val finalAttachMs =
+            android.os.SystemClock.uptimeMillis() - attachStartMs
+        if (BuildConfig.DEBUG && finalAttachMs >= 80L) {
+            Log.i(
+                TAG,
+                "FOLDER INLINE FIRST FRAME PERF | totalMs=" + finalAttachMs +
+                    " | nativeInspectMs=" + nativeInspectionMs +
+                    " | indexMs=" + (indexReadyMs - nativeInspectionMs) +
+                    " | layoutBuildMs=" + (nativeUiBuiltMs - indexReadyMs) +
+                    " | renderMs=" + (finalAttachMs - nativeUiBuiltMs) +
+                    " | rows=" + itemCount
+            )
+        }
 
         Log.i(
             TAG,
