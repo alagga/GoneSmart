@@ -327,7 +327,7 @@ internal class SmartPlaylistFolderController(
     private val browsers = WeakHashMap<ViewGroup, Browser>()
     private val failedOverlayHosts = WeakHashMap<ViewGroup, Boolean>()
     private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
-    private val observedNativePositiveAlphas = WeakHashMap<ViewGroup, Float>()
+    // Shared original native-alpha cache lives in NativeFolderFirstFrameGate.
 
     /**
      * GMMP Smart uses two native fragments: an os4 page followed by the
@@ -340,87 +340,75 @@ internal class SmartPlaylistFolderController(
      * creation fails. No native list contents, adapters or model data are
      * modified by the page-level mask.
      */
-    private val pendingSmartPageAlphas = WeakHashMap<ViewGroup, Float>()
-    private val smartPageDrawGuards = WeakHashMap<
-        ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
-    >()
-    private val reportedSmartPageDrawOverrides = WeakHashMap<ViewGroup, Boolean>()
-
-    private fun clearSmartPageDrawGuard(page: ViewGroup) {
-        val guard = smartPageDrawGuards.remove(page) ?: return
-        if (page.viewTreeObserver.isAlive) {
-            page.viewTreeObserver.removeOnPreDrawListener(guard)
-        }
-    }
-
-    private fun restoreSmartPage(page: ViewGroup, reason: String) {
-        val alpha = pendingSmartPageAlphas.remove(page) ?: return
-        clearSmartPageDrawGuard(page)
-        reportedSmartPageDrawOverrides.remove(page)
-        page.alpha = alpha
-        Log.i(TAG, "SMART PAGE REVEAL | reason=" + reason +
-            " | nativeOriginalAlpha=" + alpha)
-    }
+    private val reportedSmartPageDrawOverrides = WeakHashMap<View, Boolean>()
 
     fun onNativeSmartPageInflated(view: View?) {
         val page = view as? ViewGroup ?: return
-        if (!enabled || pendingSmartPageAlphas.containsKey(page)) return
+        if (!enabled ||
+            NativeFolderFirstFrameGate.isActive(page, NativeFolderFirstFrameGate.Surface.SMART_PAGE)
+        ) return
 
-        // Only invoked for GMMP's verified outer os4 fragment. Android's
-        // default 1f is used if a retained mask was captured as 0f.
-        val original = NativeFolderAlphaLeasePolicy.original(page.alpha, null)
-        pendingSmartPageAlphas[page] = original
-        page.alpha = 0f
-
-        // Fragment enter animations may change alpha after createView.
-        // Check only the pending early frames, without reflection/scanning,
-        // and remove this guard when the native projection is revealed.
-        val weak = WeakReference(page)
-        val guard = android.view.ViewTreeObserver.OnPreDrawListener {
-            val current = weak.get()
-            if (current != null &&
-                pendingSmartPageAlphas.containsKey(current) &&
-                current.alpha != 0f
-            ) {
-                current.alpha = 0f
+        // Exact os4 fragment identity is verified by the shared native
+        // Fragment.performCreateView hook. This outer page draws separately
+        // from its later ls4 list, hence its independent scope and animation
+        // guard. Native contents and adapters are never modified.
+        val alpha = NativeFolderFirstFrameGate.mask(
+            page,
+            surface = NativeFolderFirstFrameGate.Surface.SMART_PAGE,
+            guardNativeAlpha = true,
+            onNativeAlphaOverride = { current ->
                 if (reportedSmartPageDrawOverrides.put(current, true) == null) {
-                    Log.i(TAG,
+                    Log.i(
+                        TAG,
                         "SMART PAGE MASK | native animation alpha overridden"
                     )
                 }
-            }
-            true
-        }
-        smartPageDrawGuards[page] = guard
-        page.viewTreeObserver.addOnPreDrawListener(guard)
-        Log.i(TAG, "SMART PAGE MASK | outer os4 before native first draw" +
-            " | alpha=" + original)
-
-        main.postDelayed({
-            val current = weak.get() ?: return@postDelayed
-            if (pendingSmartPageAlphas.containsKey(current)) {
-                restoreSmartPage(current, "bounded native fallback")
-                Log.w(TAG,
+            },
+            onTimeout = { current ->
+                reportedSmartPageDrawOverrides.remove(current)
+                Log.w(
+                    TAG,
                     "SMART PAGE MASK | projection not ready in 2500ms; " +
-                        "native page restored")
+                        "native page restored"
+                )
             }
-        }, 2_500L)
+        ) ?: return
+        Log.i(
+            TAG, "SMART PAGE MASK | outer os4 before native first draw" +
+                " | alpha=" + alpha
+        )
+    }
+
+    private fun restoreSmartPage(page: ViewGroup, reason: String) {
+        val alpha = NativeFolderFirstFrameGate.release(
+            page, NativeFolderFirstFrameGate.Surface.SMART_PAGE, restoreNative = true
+        ) ?: return
+        reportedSmartPageDrawOverrides.remove(page)
+        Log.i(
+            TAG,
+            "SMART PAGE REVEAL | reason=" + reason +
+                " | nativeOriginalAlpha=" + alpha
+        )
     }
 
     private fun revealSmartPageFor(list: ViewGroup) {
         var cursor: View? = list
         while (cursor != null) {
             val page = cursor as? ViewGroup
-            if (page != null && pendingSmartPageAlphas.containsKey(page)) {
-                restoreSmartPage(page, "verified nested ls4 projection")
+            if (NativeFolderFirstFrameGate.isActive(page, NativeFolderFirstFrameGate.Surface.SMART_PAGE)) {
+                if (page != null) {
+                    restoreSmartPage(page, "verified nested ls4 projection")
+                }
                 return
             }
             cursor = cursor.parent as? View
         }
-        if (pendingSmartPageAlphas.isNotEmpty()) {
-            Log.w(TAG,
+        if (NativeFolderFirstFrameGate.hasActive(NativeFolderFirstFrameGate.Surface.SMART_PAGE)) {
+            Log.w(
+                TAG,
                 "SMART PAGE REVEAL | verified ls4 projection has no " +
-                    "masked os4 ancestor; independent fallback retained")
+                    "masked os4 ancestor; independent fallback retained"
+            )
         }
     }
 
@@ -429,17 +417,8 @@ internal class SmartPlaylistFolderController(
      * GoneSmart mask is still alpha=0. Cache the native positive alpha
      * independently of the current mask lease; never restore that zero.
      */
-    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float {
-        val resolved = NativeFolderAlphaLeasePolicy.original(
-            observed, observedNativePositiveAlphas[list]
-        )
-        if (observed <= 0f && resolved > 0f) {
-            Log.i(TAG, "SMART FOLDERS ALPHA LEASE | rejected masked original=" +
-                observed + " | restoring=" + resolved)
-        }
-        observedNativePositiveAlphas[list] = resolved
-        return resolved
-    }
+    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float =
+        NativeFolderFirstFrameGate.original(list, observed)
     private data class NativeContextMoveAnchor(
         val list: WeakReference<ViewGroup>,
         val row: WeakReference<View>,
@@ -989,9 +968,8 @@ internal class SmartPlaylistFolderController(
             updateMenus()
             if (enabledChanged && !nextEnabled) {
                 pendingCreationDirectory = null
-                pendingSmartPageAlphas.keys.toList().forEach { page ->
-                    restoreSmartPage(page, "feature disabled")
-                }
+                NativeFolderFirstFrameGate.restoreAll(NativeFolderFirstFrameGate.Surface.SMART_PAGE)
+                reportedSmartPageDrawOverrides.clear()
                 pendingOriginalAlphas.keys.toList()
                     .forEach(::restorePendingNativeList)
                 browsers.values.toList().forEach(::restoreRootAndRemove)
@@ -1074,38 +1052,32 @@ internal class SmartPlaylistFolderController(
         earlyMaskSmartNativeList(list, "Fragment.performCreateView")
     }
 
-    /** A single positive-alpha lease and timeout for ALL first-frame paths. */
+    /** Both native tabs share one early alpha lease and bounded fallback. */
     private fun earlyMaskSmartNativeList(list: ViewGroup, phase: String) {
         if (!enabled || browsers.containsKey(list) ||
             pendingOriginalAlphas.containsKey(list)
         ) return
-        val alpha = originalNativeAlpha(list, list.alpha)
+        val alpha = NativeFolderFirstFrameGate.mask(
+            list,
+            surface = NativeFolderFirstFrameGate.Surface.SMART_LIST,
+            onTimeout = { current ->
+                val native = current as? ViewGroup
+                if (native != null && browsers[native] == null) {
+                    pendingOriginalAlphas.remove(native)
+                    Log.w(
+                        TAG,
+                        "SMART FOLDERS EARLY MASK | native fallback after 2500ms"
+                    )
+                }
+            }
+        ) ?: return
         pendingOriginalAlphas[list] = alpha
-        list.alpha = 0f
         Log.i(
             TAG, "SMART FOLDERS EARLY MASK | " + phase +
                 " | attached=" + list.isAttachedToWindow +
                 " | retainedAlpha=" + alpha
         )
-        val weak = WeakReference(list)
-        main.postDelayed({
-            val current = weak.get() ?: return@postDelayed
-            if (!browsers.containsKey(current) &&
-                pendingOriginalAlphas.containsKey(current)
-            ) {
-                val front = current.isAttachedToWindow &&
-                    current.isShown && isFrontFragmentView(current)
-                restorePendingNativeList(current)
-                Log.w(
-                    TAG,
-                    "SMART FOLDERS EARLY MASK | " +
-                        (if (front) "foreground native fallback"
-                        else "inactive native restored")
-                )
-            }
-        }, 2_500L)
     }
-
     /**
      * Native RecyclerView can already carry a retained adapter before its
      * onAttachedToWindow() callback. Apply the same verified early mask
@@ -1178,10 +1150,8 @@ internal class SmartPlaylistFolderController(
                 )
             ) {
                 if (!pendingOriginalAlphas.containsKey(list)) {
-                    pendingOriginalAlphas[list] =
-                        originalNativeAlpha(list, list.alpha)
+                    earlyMaskSmartNativeList(list, "verified native observation")
                 }
-                list.alpha = 0f
             }
             scheduleAttach(list, 0)
         }
@@ -1946,6 +1916,11 @@ internal class SmartPlaylistFolderController(
             }
         )
         browsers[list] = browser
+        // First-frame timer is cancelled; native rows remain hidden until
+        // the original Smart differ and holder identities are verified.
+        NativeFolderFirstFrameGate.release(
+            list, NativeFolderFirstFrameGate.Surface.SMART_LIST, restoreNative = false
+        )
         subscribeSmartSelectionAccent(browser)
         list.addOnAttachStateChangeListener(detachListener)
         list.addOnLayoutChangeListener(layoutListener)
@@ -3818,6 +3793,9 @@ internal class SmartPlaylistFolderController(
 
     private fun restorePendingNativeList(list: ViewGroup) {
         val captured = pendingOriginalAlphas.remove(list) ?: return
+        NativeFolderFirstFrameGate.release(
+            list, NativeFolderFirstFrameGate.Surface.SMART_LIST, restoreNative = false
+        )
         list.alpha = originalNativeAlpha(list, captured)
     }
 
@@ -3857,29 +3835,30 @@ internal class SmartPlaylistFolderController(
         )
         if (preserveNativeAlpha) {
             pendingOriginalAlphas[browser.list] = original
-            browser.list.alpha = 0f
+            NativeFolderFirstFrameGate.mask(
+                browser.list,
+                surface = NativeFolderFirstFrameGate.Surface.SMART_LIST,
+                onTimeout = { current ->
+                    (current as? ViewGroup)?.let { list ->
+                        if (browsers[list] == null) {
+                            pendingOriginalAlphas.remove(list)
+                            Log.w(
+                                TAG,
+                                "SMART FOLDERS DETACH MASK | inactive native restored"
+                            )
+                        }
+                    }
+                }
+            )
             Log.i(
                 TAG,
                 "SMART FOLDERS DETACH MASK | preserving native opacity=" +
                     original
             )
-            // A detached page can be discarded forever. The positive
-            // native alpha is independently restored if this page does
-            // not obtain a new folder browser in the bounded interval.
-            val weak = WeakReference(browser.list)
-            main.postDelayed({
-                val list = weak.get() ?: return@postDelayed
-                if (browsers[list] == null &&
-                    pendingOriginalAlphas.containsKey(list)
-                ) {
-                    restorePendingNativeList(list)
-                    Log.w(
-                        TAG,
-                        "SMART FOLDERS DETACH MASK | inactive native restored"
-                    )
-                }
-            }, 2_500L)
         } else {
+            NativeFolderFirstFrameGate.release(
+                browser.list, NativeFolderFirstFrameGate.Surface.SMART_LIST, restoreNative = false
+            )
             browser.list.alpha = original
         }
         browser.list.setPadding(
@@ -4389,7 +4368,7 @@ internal class SmartPlaylistFolderController(
             if (candidate.visibility == View.VISIBLE &&
                 SmartPageFirstFramePolicy.mayBeFront(
                     candidate.alpha,
-                    pendingSmartPageAlphas.containsKey(candidate as? ViewGroup)
+                    NativeFolderFirstFrameGate.isActive(candidate, NativeFolderFirstFrameGate.Surface.SMART_PAGE)
                 )
             ) {
                 return candidate === child

@@ -313,19 +313,9 @@ internal class PlaylistFolderPreviewController(
         java.util.IdentityHashMap<View, PickerOverlayTarget>()
     private val calibratedHeaderStarts = WeakHashMap<RecyclerView, Pair<String, Int>>()
     private val nativeOriginalAlphas = WeakHashMap<ViewGroup, Float>()
-    private val observedNativePositiveAlphas = WeakHashMap<ViewGroup, Float>()
-
-    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float {
-        val result = NativeFolderAlphaLeasePolicy.original(
-            observed, observedNativePositiveAlphas[list]
-        )
-        if (observed <= 0f && result > 0f) {
-            Log.i(TAG, "FOLDER ALPHA LEASE | rejected masked original=" +
-                observed + " | restoring=" + result)
-        }
-        observedNativePositiveAlphas[list] = result
-        return result
-    }
+    // One positive native-alpha cache for both Playlist folder controllers.
+    private fun originalNativeAlpha(list: ViewGroup, observed: Float): Float =
+        NativeFolderFirstFrameGate.original(list, observed)
     private val pendingNativeFrontObservers = WeakHashMap<
         ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
     >()
@@ -472,7 +462,15 @@ internal class PlaylistFolderPreviewController(
 
         if (!enabled) {
             browsers.keys.toList().forEach(::removeBrowser)
-            knownLists.keys.toList().forEach { list ->
+            // A pending fragment mask may not yet be registered in knownLists.
+            NativeFolderFirstFrameGate.restoreAll(
+                NativeFolderFirstFrameGate.Surface.PLAYLIST_LIST
+            )
+            nativeOriginalAlphas.keys.toList().forEach { list ->
+                NativeFolderFirstFrameGate.release(
+                    list, NativeFolderFirstFrameGate.Surface.PLAYLIST_LIST, restoreNative = false
+                )
+                clearPendingNativeFrontObserver(list)
                 nativeOriginalAlphas.remove(list)?.let { list.alpha = it }
             }
             pendingRetries.clear()
@@ -849,27 +847,26 @@ internal class PlaylistFolderPreviewController(
             browsers.containsKey(list) ||
             nativeOriginalAlphas.containsKey(list)
         ) return
-        val original = originalNativeAlpha(list, list.alpha)
-        nativeOriginalAlphas[list] = original
-        list.alpha = 0f
-        Log.i(
-            TAG,
-            "FOLDER FRAGMENT MASK | before native first attach | alpha=" +
-                original
-        )
-        val weak = WeakReference(list)
-        mainHandler.postDelayed({
-            val current = weak.get() ?: return@postDelayed
-            if (!browsers.containsKey(current)) {
-                nativeOriginalAlphas.remove(current)?.let { positive ->
-                    current.alpha = positive
+        val original = NativeFolderFirstFrameGate.mask(
+            list,
+            surface = NativeFolderFirstFrameGate.Surface.PLAYLIST_LIST,
+            onTimeout = { current ->
+                val native = current as? ViewGroup
+                if (native != null && browsers[native] == null) {
+                    nativeOriginalAlphas.remove(native)
                     Log.w(
                         TAG,
                         "FOLDER FRAGMENT MASK | native fail-open after timeout"
                     )
                 }
             }
-        }, 2_500L)
+        ) ?: return
+        nativeOriginalAlphas[list] = original
+        Log.i(
+            TAG,
+            "FOLDER FRAGMENT MASK | before native first attach | alpha=" +
+                original
+        )
     }
 
     /**
@@ -2728,6 +2725,10 @@ internal class PlaylistFolderPreviewController(
         )
         breadcrumbScroller.adapter = browser.breadcrumbAdapter
         browsers[list] = browser
+        // Cancel only this early lease; verified browser owns the reveal.
+        NativeFolderFirstFrameGate.release(
+            list, NativeFolderFirstFrameGate.Surface.PLAYLIST_LIST, restoreNative = false
+        )
         styles[list] = nativeStyle
         if (!isPicker(list)) {
             schedulePlaylistMenuCapture(list)
@@ -3021,6 +3022,9 @@ internal class PlaylistFolderPreviewController(
                 list, browser.originalAlpha
             )
         }
+        NativeFolderFirstFrameGate.release(
+            list, NativeFolderFirstFrameGate.Surface.PLAYLIST_LIST, restoreNative = false
+        )
         clearPendingNativeFrontObserver(list)
         if (!preserveNativeAlpha) {
             // An explicitly removed/disabled browser restores native
