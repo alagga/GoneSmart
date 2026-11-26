@@ -330,6 +330,101 @@ internal class SmartPlaylistFolderController(
     private val observedNativePositiveAlphas = WeakHashMap<ViewGroup, Float>()
 
     /**
+     * GMMP Smart uses two native fragments: an os4 page followed by the
+     * nested ls4 RecyclerView. The child's alpha=0 mask does not cover any
+     * native chrome/background drawn by the parent while the new page is
+     * entering. Keep the ORIGINAL os4 root masked until the complete ls4
+     * projection is ready, then restore both in the same main-thread frame.
+     *
+     * A distinct bounded restore keeps GMMP usable if binding or view
+     * creation fails. No native list contents, adapters or model data are
+     * modified by the page-level mask.
+     */
+    private val pendingSmartPageAlphas = WeakHashMap<ViewGroup, Float>()
+    private val smartPageDrawGuards = WeakHashMap<
+        ViewGroup, android.view.ViewTreeObserver.OnPreDrawListener
+    >()
+    private val reportedSmartPageDrawOverrides = WeakHashMap<ViewGroup, Boolean>()
+
+    private fun clearSmartPageDrawGuard(page: ViewGroup) {
+        val guard = smartPageDrawGuards.remove(page) ?: return
+        if (page.viewTreeObserver.isAlive) {
+            page.viewTreeObserver.removeOnPreDrawListener(guard)
+        }
+    }
+
+    private fun restoreSmartPage(page: ViewGroup, reason: String) {
+        val alpha = pendingSmartPageAlphas.remove(page) ?: return
+        clearSmartPageDrawGuard(page)
+        reportedSmartPageDrawOverrides.remove(page)
+        page.alpha = alpha
+        Log.i(TAG, "SMART PAGE REVEAL | reason=" + reason +
+            " | nativeOriginalAlpha=" + alpha)
+    }
+
+    fun onNativeSmartPageInflated(view: View?) {
+        val page = view as? ViewGroup ?: return
+        if (!enabled || pendingSmartPageAlphas.containsKey(page)) return
+
+        // Only invoked for GMMP's verified outer os4 fragment. Android's
+        // default 1f is used if a retained mask was captured as 0f.
+        val original = NativeFolderAlphaLeasePolicy.original(page.alpha, null)
+        pendingSmartPageAlphas[page] = original
+        page.alpha = 0f
+
+        // Fragment enter animations may change alpha after createView.
+        // Check only the pending early frames, without reflection/scanning,
+        // and remove this guard when the native projection is revealed.
+        val weak = WeakReference(page)
+        val guard = android.view.ViewTreeObserver.OnPreDrawListener {
+            val current = weak.get()
+            if (current != null &&
+                pendingSmartPageAlphas.containsKey(current) &&
+                current.alpha != 0f
+            ) {
+                current.alpha = 0f
+                if (reportedSmartPageDrawOverrides.put(current, true) == null) {
+                    Log.i(TAG,
+                        "SMART PAGE MASK | native animation alpha overridden"
+                    )
+                }
+            }
+            true
+        }
+        smartPageDrawGuards[page] = guard
+        page.viewTreeObserver.addOnPreDrawListener(guard)
+        Log.i(TAG, "SMART PAGE MASK | outer os4 before native first draw" +
+            " | alpha=" + original)
+
+        main.postDelayed({
+            val current = weak.get() ?: return@postDelayed
+            if (pendingSmartPageAlphas.containsKey(current)) {
+                restoreSmartPage(current, "bounded native fallback")
+                Log.w(TAG,
+                    "SMART PAGE MASK | projection not ready in 2500ms; " +
+                        "native page restored")
+            }
+        }, 2_500L)
+    }
+
+    private fun revealSmartPageFor(list: ViewGroup) {
+        var cursor: View? = list
+        while (cursor != null) {
+            val page = cursor as? ViewGroup
+            if (page != null && pendingSmartPageAlphas.containsKey(page)) {
+                restoreSmartPage(page, "verified nested ls4 projection")
+                return
+            }
+            cursor = cursor.parent as? View
+        }
+        if (pendingSmartPageAlphas.isNotEmpty()) {
+            Log.w(TAG,
+                "SMART PAGE REVEAL | verified ls4 projection has no " +
+                    "masked os4 ancestor; independent fallback retained")
+        }
+    }
+
+    /**
      * Fragment re-creation and setAdapter may run while the previous
      * GoneSmart mask is still alpha=0. Cache the native positive alpha
      * independently of the current mask lease; never restore that zero.
@@ -894,6 +989,9 @@ internal class SmartPlaylistFolderController(
             updateMenus()
             if (enabledChanged && !nextEnabled) {
                 pendingCreationDirectory = null
+                pendingSmartPageAlphas.keys.toList().forEach { page ->
+                    restoreSmartPage(page, "feature disabled")
+                }
                 pendingOriginalAlphas.keys.toList()
                     .forEach(::restorePendingNativeList)
                 browsers.values.toList().forEach(::restoreRootAndRemove)
@@ -4245,6 +4343,11 @@ internal class SmartPlaylistFolderController(
         browser.projectionFailOpenAllowed = false
         positionOverlay(browser)
         updateNativeInset(browser)
+        // Unmask the complete native Smart page in the SAME main-thread
+        // transaction as its verified nested list and GoneSmart overlay.
+        // The parent is not the RecyclerView: masking only list rows left
+        // GMMP's outer os4 page visible during tab entry.
+        revealSmartPageFor(browser.list)
         browser.list.alpha = originalNativeAlpha(
             browser.list, browser.originalAlpha
         )
@@ -4284,7 +4387,10 @@ internal class SmartPlaylistFolderController(
         for (index in container.childCount - 1 downTo 0) {
             val candidate = container.getChildAt(index)
             if (candidate.visibility == View.VISIBLE &&
-                candidate.alpha > 0.01f
+                SmartPageFirstFramePolicy.mayBeFront(
+                    candidate.alpha,
+                    pendingSmartPageAlphas.containsKey(candidate as? ViewGroup)
+                )
             ) {
                 return candidate === child
             }

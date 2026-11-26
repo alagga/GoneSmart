@@ -2724,6 +2724,10 @@ class GoneSmartModule : XposedModule() {
         val loader = param.classLoader
         val playlistFragment = loader.loadClass("op3")
         val smartFragment = loader.loadClass("ls4")
+        // GMMP creates the outer Smart screen BEFORE its inner ls4 list.
+        // Suppressing only ls4 rows did not suppress the outer native page
+        // during repeated Playlists <-> Smart navigation.
+        val smartPageFragment = loader.loadClass("os4")
         val candidates = generateSequence<Class<*>>(smartFragment) {
             it.superclass
         }.mapNotNull { owner ->
@@ -2760,6 +2764,7 @@ class GoneSmartModule : XposedModule() {
                 val tab = when {
                     playlistFragment.isInstance(fragment) -> "playlist"
                     smartFragment.isInstance(fragment) -> "smart"
+                    smartPageFragment.isInstance(fragment) -> "smart-page"
                     else -> null
                 } ?: return@runCatching
                 val root = getView.invoke(fragment) as? android.view.View
@@ -2769,6 +2774,12 @@ class GoneSmartModule : XposedModule() {
                         "FOLDER FRAGMENT MASK | $tab root not created yet; " +
                             "native RecyclerView fallback retained"
                     )
+                    return@runCatching
+                }
+                if (tab == "smart-page") {
+                    // Verified os4 outer page: no native list/adapter is
+                    // required here. Its ls4 child is created only later.
+                    smartPlaylistFolderController.onNativeSmartPageInflated(root)
                     return@runCatching
                 }
                 val list = NativePlaylistFragmentList.find(
