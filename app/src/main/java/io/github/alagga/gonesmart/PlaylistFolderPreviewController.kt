@@ -701,6 +701,10 @@ internal class PlaylistFolderPreviewController(
      * produced fake firstX=0/0 parity and erased the native XML start inset.
      */
     private val verifiedQuickNavAdapterTypes = WeakHashMap<Class<*>, Boolean>()
+    private val sampledQuickNavProgress = NativeQuickNavLoadingSource()
+
+    fun createNativeQuickNavLoadingIndicator(host: View):
+        android.widget.ProgressBar? = sampledQuickNavProgress.create(host)
 
     private fun captureNativeBreadcrumbStyle(list: ViewGroup): Boolean {
         if (resourceName(list) != "quickNavRecyclerView") return false
@@ -753,6 +757,7 @@ internal class PlaylistFolderPreviewController(
             if (rootItem == null || findNativeTitle(separator, 0) != null) return false
             verifiedQuickNavAdapterTypes[adapter.javaClass] = true
         }
+        sampledQuickNavProgress.observe(list)
         val paint = effectiveNativeTitlePaint(original)
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
@@ -3363,34 +3368,10 @@ internal class PlaylistFolderPreviewController(
         if (!folderChanged && !pathChanged && !(styleOnly && oldAtEnd)) {
             return
         }
-        val last = adapter.itemCount - 1
-        if (last < 0) return
-        var attempts = 0
-        val reveal = object : Runnable {
-            override fun run() {
-                if (browsers[list] !== browser ||
-                    strip.visibility != View.VISIBLE ||
-                    browser.breadcrumbRenderGeneration != generation ||
-                    !strip.isAttachedToWindow
-                ) return
-                val child = strip.layoutManager?.findViewByPosition(last)
-                if (child == null || strip.isLayoutRequested) {
-                    if (attempts++ < 12) {
-                        strip.scrollToPosition(last)
-                        strip.postOnAnimation(this)
-                    }
-                    return
-                }
-                val visibleEnd = strip.width - strip.paddingEnd
-                val delta = child.right - visibleEnd
-                if (delta > 0) {
-                    strip.smoothScrollBy(delta, 0)
-                } else if (folderChanged && strip.canScrollHorizontally(1)) {
-                    strip.smoothScrollToPosition(last)
-                }
-            }
+        PlaylistFolderUiKit.revealBreadcrumbEnd(strip) {
+            browsers[list] === browser &&
+                browser.breadcrumbRenderGeneration == generation
         }
-        strip.postOnAnimation(reveal)
     }
 
     /**

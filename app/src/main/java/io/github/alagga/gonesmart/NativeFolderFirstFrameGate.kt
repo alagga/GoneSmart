@@ -3,6 +3,7 @@ package io.github.alagga.gonesmart
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.ViewTreeObserver
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -25,7 +26,9 @@ internal object NativeFolderFirstFrameGate {
         val surface: Surface,
         val original: Float,
         val token: Any,
-        val timeout: Runnable
+        val timeout: Runnable,
+        val listener: ViewTreeObserver.OnPreDrawListener?,
+        val tree: ViewTreeObserver?
     )
     private val leases = WeakHashMap<View, Lease>()
 
@@ -44,6 +47,7 @@ internal object NativeFolderFirstFrameGate {
     fun mask(
         view: View,
         surface: Surface,
+        guardNativeAlpha: Boolean = false,
         onTimeout: ((View) -> Unit)? = null
     ): Float? {
         leases[view]?.let { prior ->
@@ -62,8 +66,23 @@ internal object NativeFolderFirstFrameGate {
             release(current, surface, restoreNative = true)
             onTimeout?.invoke(current)
         }
-        leases[view] = Lease(surface, alpha, token, timeout)
+        // This lease can guard only the two verified list surfaces.
+        // The Smart parent/toolbar is not a lease surface.
+        val listener = if (guardNativeAlpha) {
+            ViewTreeObserver.OnPreDrawListener {
+                val current = weak.get()
+                if (current != null && leases[current]?.token === token &&
+                    current.alpha != 0f
+                ) current.alpha = 0f
+                true
+            }
+        } else null
+        val tree = if (listener != null) view.viewTreeObserver else null
+        leases[view] = Lease(surface, alpha, token, timeout, listener, tree)
         view.alpha = 0f
+        if (listener != null && tree?.isAlive == true) {
+            tree.addOnPreDrawListener(listener)
+        }
         main.postDelayed(timeout, FAIL_OPEN_MS)
         return alpha
     }
@@ -83,6 +102,11 @@ internal object NativeFolderFirstFrameGate {
             ?: return null
         leases.remove(view)
         main.removeCallbacks(lease.timeout)
+        lease.listener?.let { listener ->
+            lease.tree?.takeIf { it.isAlive }?.removeOnPreDrawListener(listener)
+            val live = view.viewTreeObserver
+            if (live !== lease.tree && live.isAlive) live.removeOnPreDrawListener(listener)
+        }
         if (restoreNative) view.alpha = lease.original
         return lease.original
     }

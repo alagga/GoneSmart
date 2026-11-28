@@ -172,6 +172,58 @@ internal object PlaylistFolderUiKit {
         header.scrollToPosition(0)
     }
 
+    /**
+     * Use RecyclerView's own smooth-scrolling path after the new holder
+     * layout, without forcing an early scrollToPosition jump. Generation
+     * and detach terminate the observer; no posted retry loop.
+     */
+    fun revealBreadcrumbEnd(
+        header: RecyclerView,
+        isCurrent: () -> Boolean
+    ) {
+        if (!header.isAttachedToWindow) return
+        val tree = header.viewTreeObserver
+        if (!tree.isAlive) return
+        var attempts = 0
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detach: View.OnAttachStateChangeListener
+        fun stop() {
+            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
+            val live = header.viewTreeObserver
+            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
+            header.removeOnAttachStateChangeListener(detach)
+        }
+        detach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = Unit
+            override fun onViewDetachedFromWindow(view: View) = stop()
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            if (!isCurrent() || !header.isAttachedToWindow ||
+                header.visibility != View.VISIBLE || ++attempts > 12
+            ) {
+                stop()
+                return@OnPreDrawListener true
+            }
+            if (header.isLayoutRequested || header.isComputingLayout) {
+                return@OnPreDrawListener true
+            }
+            stop()
+            val last = (header.adapter?.itemCount ?: 0) - 1
+            if (last >= 0) {
+                val child = header.layoutManager?.findViewByPosition(last)
+                if (child == null) {
+                    header.smoothScrollToPosition(last)
+                } else {
+                    val delta = child.right - (header.width - header.paddingEnd)
+                    if (delta > 0) header.smoothScrollBy(delta, 0)
+                }
+            }
+            true
+        }
+        header.addOnAttachStateChangeListener(detach)
+        tree.addOnPreDrawListener(listener)
+    }
+
     fun alignBreadcrumbStart(
         header: RecyclerView,
         expectedTextStart: Int,
