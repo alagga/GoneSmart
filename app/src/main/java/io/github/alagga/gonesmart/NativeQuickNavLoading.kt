@@ -18,8 +18,10 @@ internal class NativeQuickNavLoading(
     private var generation: Long? = null
     private var cancelLayoutWait: (() -> Unit)? = null
     private var cancelFirstDraw: (() -> Unit)? = null
+    private var cancelHeaderWait: (() -> Unit)? = null
     private var drawn = false
     private var finishRequested = false
+    private var firstFramePending = false
     private val headerLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
         position()
     }
@@ -29,9 +31,11 @@ internal class NativeQuickNavLoading(
     fun begin(next: Long) {
         cancelLayoutWait?.invoke()
         cancelFirstDraw?.invoke()
+        cancelHeaderWait?.invoke()
         generation = next
         drawn = false
         finishRequested = false
+        firstFramePending = false
         if (indicator == null) {
             create()?.let { bar ->
                 indicator = bar
@@ -56,6 +60,7 @@ internal class NativeQuickNavLoading(
     private fun observeFirstDraw(bar: ProgressBar, expected: Long) {
         val tree = bar.viewTreeObserver
         if (!tree.isAlive) return
+        firstFramePending = true
         var attempts = 0
         lateinit var listener: ViewTreeObserver.OnPreDrawListener
         lateinit var detach: View.OnAttachStateChangeListener
@@ -80,15 +85,17 @@ internal class NativeQuickNavLoading(
                 bar.postOnAnimation {
                     if (generation == expected) {
                         drawn = true
+                        firstFramePending = false
                         if (BuildConfig.DEBUG) android.util.Log.d("GoneSmartPlaylist",
                             "FOLDER QUICKNAV LOADING | drawn | generation=" + expected +
                                 " | running=" + (bar.indeterminateDrawable as?
                                     android.graphics.drawable.Animatable)?.isRunning)
-                        if (finishRequested) clear()
+                        if (finishRequested) finishAfterHeader(expected)
                     }
                 }
             } else if (++attempts >= 12) {
                 stop()
+                firstFramePending = false
                 if (finishRequested) clear()
             }
             true
@@ -105,11 +112,67 @@ internal class NativeQuickNavLoading(
 
     fun finish(expected: Long) {
         if (generation != expected) return
-        if (!drawn && cancelFirstDraw != null && isVisible && overlay.isShown) {
-            finishRequested = true
-        } else {
+        if (!isVisible || !overlay.isShown || !overlay.isAttachedToWindow) {
             clear()
+            return
         }
+        finishRequested = true
+        // The first pre-draw listener may already have been removed but its
+        // next-frame callback has not executed. Do not clear in that gap.
+        if (!drawn && firstFramePending) return
+        finishAfterHeader(expected)
+    }
+
+    private fun finishAfterHeader(expected: Long) {
+        if (generation != expected || cancelHeaderWait != null) return
+        val tree = header.viewTreeObserver
+        if (!tree.isAlive || !header.isAttachedToWindow || !overlay.isShown) {
+            clear()
+            return
+        }
+        var attempts = 0
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detach: View.OnAttachStateChangeListener
+        val stop: () -> Unit = {
+            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
+            val live = header.viewTreeObserver
+            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
+            header.removeOnAttachStateChangeListener(detach)
+            cancelHeaderWait = null
+        }
+        fun done() {
+            if (generation == expected) clear()
+        }
+        detach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) { done() }
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            val pendingRoot = (header.adapter as? NativeFolderBreadcrumbAdapter)
+                ?.rootTransitionPending == true
+            val ready = !pendingRoot && (header.visibility != View.VISIBLE ||
+                (!header.isLayoutRequested && !header.hasPendingAdapterUpdates() &&
+                    !header.isComputingLayout))
+            if (generation != expected || !overlay.isShown) {
+                stop()
+                done()
+            } else if (ready || ++attempts >= 12) {
+                stop()
+                header.postOnAnimation {
+                    if (generation == expected) {
+                        val animator = header.itemAnimator
+                        if (animator == null) done() else animator.isRunning { done() }
+                    }
+                }
+            }
+            true
+        }
+        cancelHeaderWait = stop
+        header.addOnAttachStateChangeListener(detach)
+        tree.addOnPreDrawListener(listener)
+        // A real pending layout/animation drives subsequent frames. This
+        // single invalidation also covers already-completed empty paths.
+        overlay.invalidate()
     }
 
     fun clear() {
@@ -117,8 +180,11 @@ internal class NativeQuickNavLoading(
         cancelLayoutWait = null
         cancelFirstDraw?.invoke()
         cancelFirstDraw = null
+        cancelHeaderWait?.invoke()
+        cancelHeaderWait = null
         generation = null
         drawn = false
+        firstFramePending = false
         finishRequested = false
         indicator?.visibility = View.GONE
     }

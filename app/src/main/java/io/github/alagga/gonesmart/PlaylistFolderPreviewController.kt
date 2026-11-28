@@ -2625,7 +2625,10 @@ internal class PlaylistFolderPreviewController(
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
             clipToPadding = false
-            setHasFixedSize(true)
+            // The root/ancestor can resize with navigation. Let the
+            // adapter request a real layout instead of the fixed-size
+            // posted update path racing the parent's traversal.
+            setHasFixedSize(false)
             itemAnimator = DefaultItemAnimator().apply {
                 supportsChangeAnimations = false
             }
@@ -3418,7 +3421,7 @@ internal class PlaylistFolderPreviewController(
         applyNativeQuickNavPhysics(strip)
         if (sourceSegments.isEmpty()) {
             ++browser.breadcrumbRenderGeneration
-            PlaylistFolderUiKit.hideAndResetBreadcrumb(
+            PlaylistFolderUiKit.returnBreadcrumbToRoot(
                 strip, adapter, browser.renderedBreadcrumbSignature ?: ""
             )
             browser.breadcrumbContentSignature = null

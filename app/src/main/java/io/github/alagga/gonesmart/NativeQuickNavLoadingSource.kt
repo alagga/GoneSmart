@@ -25,7 +25,6 @@ internal class NativeQuickNavLoadingSource {
         val height: Int,
         val tint: ColorStateList?,
         val mode: PorterDuff.Mode?,
-        val viewClass: String,
         val padding: List<Int>,
         val intrinsicPadding: Boolean?
     )
@@ -70,12 +69,13 @@ internal class NativeQuickNavLoadingSource {
                     bar.javaClass.getMethod("getSupportIndeterminateTintMode")
                         .invoke(bar) as? PorterDuff.Mode
                 }.getOrNull() ?: bar.indeterminateTintMode
-                sample = Sample(height, tint, mode, bar.javaClass.name,
+                sample = Sample(height, tint, mode,
                     listOf(bar.paddingLeft, bar.paddingTop, bar.paddingRight, bar.paddingBottom),
                     runCatching {
                         drawable.javaClass.getMethod("getUseIntrinsicPadding")
                             .invoke(drawable) as? Boolean
                     }.getOrNull())
+                rememberGeometry(quickNav, sample ?: return)
                 if (BuildConfig.DEBUG) Log.i("GoneSmartPlaylist",
                     "FOLDER NATIVE QUICKNAV LOADING | source=live | height=" + height +
                         " | view=" + bar.javaClass.name +
@@ -84,6 +84,26 @@ internal class NativeQuickNavLoadingSource {
             }
             parent = scope.parent as? ViewGroup
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun geometryKey(host: View): String? = runCatching {
+        val version = host.context.packageManager.getPackageInfo(
+            host.context.packageName, 0
+        ).versionCode
+        "v" + version + "_dpi" + host.resources.displayMetrics.densityDpi + "_"
+    }.getOrNull()
+
+    private fun geometryPrefs(host: View) = host.context.getSharedPreferences(
+        "gonesmart_native_quicknav_loading", Context.MODE_PRIVATE
+    )
+
+    private fun rememberGeometry(host: View, source: Sample) {
+        val key = geometryKey(host) ?: return
+        val editor = geometryPrefs(host).edit().putInt(key + "height", source.height)
+        source.padding.forEachIndexed { i, value -> editor.putInt(key + "padding" + i, value) }
+        source.intrinsicPadding?.let { editor.putBoolean(key + "intrinsic", it) }
+        editor.apply()
     }
 
     fun create(host: View): ProgressBar? {
@@ -98,52 +118,50 @@ internal class NativeQuickNavLoadingSource {
             val drawable = (type.getConstructor(Context::class.java)
                 .newInstance(host.context) as Drawable).mutate()
             require(drawable is Animatable)
-            source?.intrinsicPadding?.let { value ->
-                runCatching {
-                    drawable.javaClass.getMethod("setUseIntrinsicPadding",
-                        java.lang.Boolean.TYPE).invoke(drawable, value)
-                }
+            val key = geometryKey(host)
+            val prefs = geometryPrefs(host)
+            val cachedHeight = key?.let { prefs.getInt(it + "height", 0) }
+                ?.takeIf { it > 0 }
+            val cachedIntrinsic = key?.let {
+                if (prefs.contains(it + "intrinsic")) prefs.getBoolean(it + "intrinsic", false)
+                else null
             }
-            val height = source?.height ?: drawable.intrinsicHeight
+            // Without a live/cached measurement use the installed library's
+            // own unpadded intrinsic geometry, not a guessed pixel height.
+            val useIntrinsicPadding = source?.intrinsicPadding ?: cachedIntrinsic ?: false
+            runCatching {
+                drawable.javaClass.getMethod("setUseIntrinsicPadding",
+                    java.lang.Boolean.TYPE).invoke(drawable, useIntrinsicPadding)
+            }
+            val height = source?.height ?: cachedHeight ?: drawable.intrinsicHeight
             require(height > 0)
-            val nativeClass = source?.viewClass
-                ?: "me.zhanghai.android.materialprogressbar.MaterialProgressBar"
-            val nativeBar = runCatching {
-                val klass = loader.loadClass(nativeClass)
-                require(ProgressBar::class.java.isAssignableFrom(klass))
-                klass.getConstructor(Context::class.java)
-                    .newInstance(host.context) as ProgressBar
-            }.getOrNull()
-            (nativeBar ?: ProgressBar(host.context, null,
-                android.R.attr.progressBarStyleHorizontal)).apply {
+            // Reuse the framework wrapper which was device-confirmed in
+            // 178e90f. The MaterialProgressBar constructor can reset the
+            // supplied indeterminate drawable's tint/padding state.
+            ProgressBar(host.context, null, android.R.attr.progressBarStyleHorizontal).apply {
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height)
                 isIndeterminate = true
                 indeterminateDrawable = drawable
                 val tint = source?.tint ?: NativeGmmpAccent.currentPrimary(host)
                     ?.let(ColorStateList::valueOf)
-                val padding = source?.padding ?: listOf(0, 0, 0, 0)
+                val padding = source?.padding ?: if (cachedHeight != null && key != null) {
+                    List(4) { prefs.getInt(key + "padding" + it, 0) }
+                } else listOf(0, 0, 0, 0)
                 setPadding(padding[0], padding[1], padding[2], padding[3])
                 minimumHeight = 0
-                if (tint != null) {
-                    val applied = runCatching {
-                        javaClass.getMethod("setSupportIndeterminateTintList",
-                            ColorStateList::class.java).invoke(this, tint)
-                    }.isSuccess
-                    if (!applied) indeterminateTintList = tint
-                }
-                source?.mode?.let { mode ->
-                    val applied = runCatching {
-                        javaClass.getMethod("setSupportIndeterminateTintMode",
-                            PorterDuff.Mode::class.java).invoke(this, mode)
-                    }.isSuccess
-                    if (!applied) indeterminateTintMode = mode
-                }
+                if (tint != null) indeterminateTintList = tint
+                source?.mode?.let { indeterminateTintMode = it }
+                // Keep ProgressBar's actual drawable bounds matched to the
+                // native thin bar even with a themed minimum/max height.
+                maxHeight = height
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 isClickable = false
                 visibility = View.GONE
                 if (BuildConfig.DEBUG) Log.i("GoneSmartPlaylist",
                     "FOLDER NATIVE QUICKNAV LOADING | created=" + javaClass.name +
-                        " | height=" + height + " | drawable=" + drawable.javaClass.simpleName)
+                        " | height=" + height + " | drawable=" + drawable.javaClass.simpleName +
+                        " | source=" + (if (source != null) "live" else if (cachedHeight != null) "cached" else "intrinsic") +
+                        " | intrinsicPadding=" + useIntrinsicPadding)
             }
         }.onFailure {
             failedLoader = WeakReference(loader)

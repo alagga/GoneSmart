@@ -158,6 +158,8 @@ internal object PlaylistFolderUiKit {
         adapter: NativeFolderBreadcrumbAdapter,
         styleSignature: String
     ) {
+        adapter.rootClosing = false
+        adapter.rootOpening = false
         header.visibility = View.GONE
         if (header.adapter !== adapter ||
             !NativeQuickNavDiff.needsHiddenReset(adapter.itemCount)
@@ -177,6 +179,83 @@ internal object PlaylistFolderUiKit {
      * layout, without forcing an early scrollToPosition jump. Generation
      * and detach terminate the observer; no posted retry loop.
      */
+    /**
+     * Files keeps Storage visible at its root. Our root hides the whole
+     * strip, but only after the same native suffix-removal transaction
+     * finishes. A new navigation cancels the retiring strip before it
+     * can expose a stale holder from the previous folder.
+     */
+    fun returnBreadcrumbToRoot(
+        header: RecyclerView,
+        adapter: NativeFolderBreadcrumbAdapter,
+        styleSignature: String,
+        onHidden: () -> Unit = {}
+    ) {
+        if (adapter.rootClosing) return
+        val root = adapter.rootSegment()
+        if (header.visibility != View.VISIBLE || root == null ||
+            !header.isAttachedToWindow || !header.isShown || adapter.itemCount <= 1
+        ) {
+            hideAndResetBreadcrumb(header, adapter, styleSignature)
+            onHidden()
+            return
+        }
+        adapter.rootOpening = false
+        adapter.rootClosing = true
+        header.stopScroll()
+        header.layoutManager?.requestSimpleAnimationsInNextLayout()
+        adapter.submit(listOf(root), styleSignature)
+        val revision = adapter.pathRevision
+        val tree = header.viewTreeObserver
+        fun valid() = adapter.rootClosing && adapter.pathRevision == revision &&
+            header.adapter === adapter && header.isAttachedToWindow
+        fun complete() {
+            if (!valid()) return
+            hideAndResetBreadcrumb(header, adapter, styleSignature)
+            onHidden()
+        }
+        if (!tree.isAlive) {
+            complete()
+            return
+        }
+        var attempts = 0
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detach: View.OnAttachStateChangeListener
+        fun stop() {
+            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
+            val live = header.viewTreeObserver
+            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
+            header.removeOnAttachStateChangeListener(detach)
+        }
+        detach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) = stop()
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            if (!valid()) {
+                stop()
+            } else if ((!header.hasPendingAdapterUpdates() &&
+                    !header.isLayoutRequested && !header.isComputingLayout) ||
+                    ++attempts >= 12
+            ) {
+                stop()
+                // RecyclerView schedules its animator runner on the next
+                // frame. Observe the actual animator after layout; never
+                // call animateRemove or invent a timeout/duration.
+                header.postOnAnimation {
+                    if (valid()) {
+                        val animator = header.itemAnimator
+                        if (animator == null) complete()
+                        else animator.isRunning { complete() }
+                    }
+                }
+            }
+            true
+        }
+        header.addOnAttachStateChangeListener(detach)
+        tree.addOnPreDrawListener(listener)
+    }
+
     fun submitBreadcrumb(
         header: RecyclerView,
         adapter: NativeFolderBreadcrumbAdapter,
@@ -186,6 +265,14 @@ internal object PlaylistFolderUiKit {
         isCurrent: () -> Boolean,
         onCommitted: (Boolean) -> Unit
     ) {
+        // A second navigation may arrive while the previous root return
+        // still owns disappearing holders. Retire them synchronously while
+        // hidden, and only then open the new path.
+        if (adapter.rootClosing) {
+            hideAndResetBreadcrumb(header, adapter, styleSignature)
+            header.visibility = View.VISIBLE
+        }
+        adapter.rootOpening = false
         val plan = adapter.plan(next)
         // Native Files always starts with the Storage holder. Establish
         // that same real layout before the first child append, without
@@ -193,13 +280,18 @@ internal object PlaylistFolderUiKit {
         if (!animateRootOpening || !plan.isForward || plan.retainedItems != 0 ||
             next.size <= 1 || !header.isAttachedToWindow
         ) {
+            if (plan.removedCount > 0 || plan.insertedCount > 0) {
+                header.layoutManager?.requestSimpleAnimationsInNextLayout()
+            }
             onCommitted(adapter.submit(next, styleSignature))
             return
         }
+        adapter.rootOpening = true
         adapter.submit(next.take(1), styleSignature)
         val revision = adapter.pathRevision
         val tree = header.viewTreeObserver
         if (!tree.isAlive) {
+            adapter.rootOpening = false
             onCommitted(adapter.submit(next, styleSignature))
             return
         }
@@ -212,8 +304,9 @@ internal object PlaylistFolderUiKit {
             if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
             header.removeOnAttachStateChangeListener(detach)
         }
-        fun valid() = isCurrent() && header.adapter === adapter &&
-            adapter.pathRevision == revision && header.visibility == View.VISIBLE
+        fun valid() = isCurrent() && adapter.rootOpening &&
+            header.adapter === adapter && adapter.pathRevision == revision &&
+            header.visibility == View.VISIBLE
         detach = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) = stop()
@@ -231,6 +324,8 @@ internal object PlaylistFolderUiKit {
                 // normal add animation, including the installed durations.
                 header.postOnAnimation {
                     if (valid() && header.isAttachedToWindow) {
+                        adapter.rootOpening = false
+                        header.layoutManager?.requestSimpleAnimationsInNextLayout()
                         onCommitted(adapter.submit(next, styleSignature))
                     }
                 }
@@ -268,7 +363,8 @@ internal object PlaylistFolderUiKit {
                 stop()
                 return@OnPreDrawListener true
             }
-            if (header.isLayoutRequested || header.isComputingLayout) {
+            if (header.isLayoutRequested || header.isComputingLayout ||
+                header.hasPendingAdapterUpdates()) {
                 return@OnPreDrawListener true
             }
             stop()
@@ -846,6 +942,11 @@ internal class NativeFolderBreadcrumbAdapter(
     val appliedStyleSignature: String get() = styleSignature
     var pathRevision = 0L
         private set
+    var rootClosing = false
+    var rootOpening = false
+    val rootTransitionPending: Boolean get() = rootClosing || rootOpening
+
+    fun rootSegment(): PlaylistFolderUiKit.BreadcrumbSegment? = segments.firstOrNull()
 
     init {
         setHasStableIds(true)

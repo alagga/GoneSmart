@@ -1640,7 +1640,7 @@ internal class SmartPlaylistFolderController(
             )
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
-            setHasFixedSize(true)
+            setHasFixedSize(false)
             itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator().apply {
                 supportsChangeAnimations = false
             }
@@ -2421,9 +2421,14 @@ internal class SmartPlaylistFolderController(
             ?: return
         val generation = ++browser.breadcrumbAlignmentGeneration
         if (next.size <= 1) {
-            PlaylistFolderUiKit.hideAndResetBreadcrumb(
+            PlaylistFolderUiKit.returnBreadcrumbToRoot(
                 browser.breadcrumb, adapter, signature
-            )
+            ) {
+                if (browsers[browser.list] === browser) {
+                    browser.quickNavLoading.position()
+                    updateNativeInset(browser)
+                }
+            }
         } else {
             val strip = browser.breadcrumb
             playlistFolderPreview.applyNativeQuickNavPhysics(strip)
