@@ -2414,7 +2414,13 @@ internal class SmartPlaylistFolderController(
                     browser.breadcrumbAlignmentGeneration == generation &&
                     isFrontFragmentView(browser.list)
             }
-        )
+        ) { result ->
+            result.appliedPaddingStart?.let { correction ->
+                playlistFolderPreview.rememberNativeQuickNavCorrection(
+                    strip, expectedBreadcrumbTextStart(browser.list), correction
+                )
+            }
+        }
     }
 
     private fun sharedRowStyle(

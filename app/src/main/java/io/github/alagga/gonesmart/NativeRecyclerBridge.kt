@@ -73,8 +73,9 @@ internal object NativeRecyclerBridge {
         val type = adapter.javaClass.getMethod("getItemViewType", Integer.TYPE)
         val first = type.invoke(adapter, 0)
         val separator = type.invoke(adapter, 1)
-        first != null && separator != null && first != separator &&
-            first == type.invoke(adapter, 2)
+        NativeQuickNavSourcePolicy.alternates(
+            count, first, separator, type.invoke(adapter, 2)
+        )
     }.getOrDefault(false)
 
     fun duration(animator: Any?, getterName: String): Long? {

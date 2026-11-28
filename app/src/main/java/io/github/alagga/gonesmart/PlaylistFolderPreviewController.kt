@@ -619,6 +619,14 @@ internal class PlaylistFolderPreviewController(
      * Before Files was first opened, AndroidX RecyclerView's own default
      * factory implements the same native stretch engine on Android 12+.
      */
+    fun rememberNativeQuickNavCorrection(
+        header: RecyclerView, expectedFirstX: Int, correction: Int
+    ) {
+        val styleKey = observedNativeBreadcrumbStyle?.signature
+            ?: "cached:" + expectedFirstX
+        calibratedHeaderStarts[header] = styleKey to correction
+    }
+
     fun applyNativeQuickNavPhysics(header: RecyclerView) {
         val source = observedNativeBreadcrumbStyle ?: return
         source.edgeEffectFactory?.let {
@@ -646,7 +654,8 @@ internal class PlaylistFolderPreviewController(
         val observedAnimator = source.nativeItemAnimator
         val currentAnimator = header.itemAnimator
         if (observedAnimator != null &&
-            (currentAnimator?.javaClass != observedAnimator.javaClass ||
+            (currentAnimator == null ||
+                currentAnimator.javaClass != observedAnimator.javaClass ||
                 currentAnimator.addDuration != observedAnimator.addDuration ||
                 currentAnimator.removeDuration != observedAnimator.removeDuration ||
                 currentAnimator.moveDuration != observedAnimator.moveDuration ||
