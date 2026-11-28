@@ -332,89 +332,8 @@ internal class SmartPlaylistFolderController(
     private val pendingOriginalAlphas = WeakHashMap<ViewGroup, Float>()
     // Shared original native-alpha cache lives in NativeFolderFirstFrameGate.
 
-    /**
-     * GMMP Smart uses two native fragments: an os4 page followed by the
-     * nested ls4 RecyclerView. The child's alpha=0 mask does not cover any
-     * native chrome/background drawn by the parent while the new page is
-     * entering. Keep the ORIGINAL os4 root masked until the complete ls4
-     * projection is ready, then restore both in the same main-thread frame.
-     *
-     * A distinct bounded restore keeps GMMP usable if binding or view
-     * creation fails. No native list contents, adapters or model data are
-     * modified by the page-level mask.
-     */
-    private val reportedSmartPageDrawOverrides = WeakHashMap<View, Boolean>()
-
-    fun onNativeSmartPageInflated(view: View?) {
-        val page = view as? ViewGroup ?: return
-        if (!enabled ||
-            NativeFolderFirstFrameGate.isActive(page, NativeFolderFirstFrameGate.Surface.SMART_PAGE)
-        ) return
-
-        // Exact os4 fragment identity is verified by the shared native
-        // Fragment.performCreateView hook. This outer page draws separately
-        // from its later ls4 list, hence its independent scope and animation
-        // guard. Native contents and adapters are never modified.
-        val alpha = NativeFolderFirstFrameGate.mask(
-            page,
-            surface = NativeFolderFirstFrameGate.Surface.SMART_PAGE,
-            guardNativeAlpha = true,
-            onNativeAlphaOverride = { current ->
-                if (reportedSmartPageDrawOverrides.put(current, true) == null) {
-                    Log.i(
-                        TAG,
-                        "SMART PAGE MASK | native animation alpha overridden"
-                    )
-                }
-            },
-            onTimeout = { current ->
-                reportedSmartPageDrawOverrides.remove(current)
-                Log.w(
-                    TAG,
-                    "SMART PAGE MASK | projection not ready in 2500ms; " +
-                        "native page restored"
-                )
-            }
-        ) ?: return
-        Log.i(
-            TAG, "SMART PAGE MASK | outer os4 before native first draw" +
-                " | alpha=" + alpha
-        )
-    }
-
-    private fun restoreSmartPage(page: ViewGroup, reason: String) {
-        val alpha = NativeFolderFirstFrameGate.release(
-            page, NativeFolderFirstFrameGate.Surface.SMART_PAGE, restoreNative = true
-        ) ?: return
-        reportedSmartPageDrawOverrides.remove(page)
-        Log.i(
-            TAG,
-            "SMART PAGE REVEAL | reason=" + reason +
-                " | nativeOriginalAlpha=" + alpha
-        )
-    }
-
-    private fun revealSmartPageFor(list: ViewGroup) {
-        var cursor: View? = list
-        while (cursor != null) {
-            val page = cursor as? ViewGroup
-            if (NativeFolderFirstFrameGate.isActive(page, NativeFolderFirstFrameGate.Surface.SMART_PAGE)) {
-                if (page != null) {
-                    restoreSmartPage(page, "verified nested ls4 projection")
-                }
-                return
-            }
-            cursor = cursor.parent as? View
-        }
-        if (NativeFolderFirstFrameGate.hasActive(NativeFolderFirstFrameGate.Surface.SMART_PAGE)) {
-            Log.w(
-                TAG,
-                "SMART PAGE REVEAL | verified ls4 projection has no " +
-                    "masked os4 ancestor; independent fallback retained"
-            )
-        }
-    }
-
+    // The native Smart parent owns its enter/exit animation and toolbar.
+    // GoneSmart's bounded opacity lease is restricted to the verified list.
     /**
      * Fragment re-creation and setAdapter may run while the previous
      * GoneSmart mask is still alpha=0. Cache the native positive alpha
@@ -971,8 +890,6 @@ internal class SmartPlaylistFolderController(
             updateMenus()
             if (enabledChanged && !nextEnabled) {
                 pendingCreationDirectory = null
-                NativeFolderFirstFrameGate.restoreAll(NativeFolderFirstFrameGate.Surface.SMART_PAGE)
-                reportedSmartPageDrawOverrides.clear()
                 pendingOriginalAlphas.keys.toList()
                     .forEach(::restorePendingNativeList)
                 browsers.values.toList().forEach(::restoreRootAndRemove)
@@ -2452,12 +2369,16 @@ internal class SmartPlaylistFolderController(
                 it.textColor + ":" +
                 it.textSizePx
         }.orEmpty()
-        (browser.breadcrumb.adapter as? NativeFolderBreadcrumbAdapter)
-            ?.submit(next, signature)
-        browser.breadcrumb.visibility =
-            if (next.size > 1) View.VISIBLE else View.GONE
+        val adapter = browser.breadcrumb.adapter as? NativeFolderBreadcrumbAdapter
+            ?: return
         val generation = ++browser.breadcrumbAlignmentGeneration
-        if (next.size > 1) {
+        if (next.size <= 1) {
+            PlaylistFolderUiKit.hideAndResetBreadcrumb(
+                browser.breadcrumb, adapter, signature
+            )
+        } else {
+            adapter.submit(next, signature)
+            browser.breadcrumb.visibility = View.VISIBLE
             scheduleBreadcrumbAlignment(browser, generation)
         }
     }
@@ -4341,11 +4262,8 @@ internal class SmartPlaylistFolderController(
         browser.projectionFailOpenAllowed = false
         positionOverlay(browser)
         updateNativeInset(browser)
-        // Unmask the complete native Smart page in the SAME main-thread
-        // transaction as its verified nested list and GoneSmart overlay.
-        // The parent is not the RecyclerView: masking only list rows left
-        // GMMP's outer os4 page visible during tab entry.
-        revealSmartPageFor(browser.list)
+        // Only the verified list is ours to reveal. Never override the
+        // original Smart fragment's native transition/toolbar alpha.
         browser.list.alpha = originalNativeAlpha(
             browser.list, browser.originalAlpha
         )
@@ -4385,10 +4303,7 @@ internal class SmartPlaylistFolderController(
         for (index in container.childCount - 1 downTo 0) {
             val candidate = container.getChildAt(index)
             if (candidate.visibility == View.VISIBLE &&
-                SmartPageFirstFramePolicy.mayBeFront(
-                    candidate.alpha,
-                    NativeFolderFirstFrameGate.isActive(candidate, NativeFolderFirstFrameGate.Surface.SMART_PAGE)
-                )
+                candidate.alpha > 0.01f
             ) {
                 return candidate === child
             }

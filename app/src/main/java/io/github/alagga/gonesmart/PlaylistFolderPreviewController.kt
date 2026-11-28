@@ -3248,10 +3248,9 @@ internal class PlaylistFolderPreviewController(
         applyNativeQuickNavPhysics(strip)
         if (sourceSegments.isEmpty()) {
             ++browser.breadcrumbRenderGeneration
-            adapter.submit(
-                emptyList(), browser.renderedBreadcrumbSignature ?: ""
+            PlaylistFolderUiKit.hideAndResetBreadcrumb(
+                strip, adapter, browser.renderedBreadcrumbSignature ?: ""
             )
-            strip.visibility = View.GONE
             browser.breadcrumbContentSignature = null
             return
         }

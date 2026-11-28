@@ -1,9 +1,25 @@
 package io.github.alagga.gonesmart
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeQuickNavDiffTest {
+    @Test fun hiddenRootRetiresPreviousFolderInsteadOfAnimatingItsRemoval() {
+        val first = listOf("root", "Festival")
+        assertTrue(NativeQuickNavDiff.needsHiddenReset(
+            NativeQuickNavDiff.itemCount(first.size)
+        ))
+        assertFalse(NativeQuickNavDiff.needsHiddenReset(0))
+        // The next visible layout begins with an empty adapter, so the
+        // previous folder cannot be retained as a common prefix or removal.
+        assertEquals(
+            NativeQuickNavDiff.Plan(0, 0, 0, 3),
+            NativeQuickNavDiff.between(emptyList(), listOf("root", "Artists"))
+        )
+    }
+
     @Test fun openingFirstFolderAddsNativeRootAndSeparator() {
         assertEquals(
             NativeQuickNavDiff.Plan(0, 0, 0, 3),

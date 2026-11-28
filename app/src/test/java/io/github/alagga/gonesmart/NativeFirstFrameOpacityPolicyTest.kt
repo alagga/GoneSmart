@@ -13,9 +13,9 @@ class NativeFirstFrameOpacityPolicyTest {
 
     @Test fun independentFirstFrameScopesRequireExactOwnership() {
         assertTrue(FirstFrameOpacityPolicy.matches("PLAYLIST_LIST", "PLAYLIST_LIST"))
-        assertTrue(FirstFrameOpacityPolicy.matches("SMART_PAGE", "SMART_PAGE"))
+        assertTrue(FirstFrameOpacityPolicy.matches("SMART_LIST", "SMART_LIST"))
         assertFalse(FirstFrameOpacityPolicy.matches("PLAYLIST_LIST", "SMART_LIST"))
-        assertFalse(FirstFrameOpacityPolicy.matches("SMART_PAGE", "SMART_LIST"))
+        assertFalse(FirstFrameOpacityPolicy.matches("SMART_LIST", "PLAYLIST_LIST"))
     }
 
     @Test fun staleTimeoutTokenMustNotRestoreNewLease() {

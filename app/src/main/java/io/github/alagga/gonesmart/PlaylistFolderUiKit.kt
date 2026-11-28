@@ -147,6 +147,31 @@ internal object PlaylistFolderUiKit {
         }
     }
 
+    /**
+     * A root-level folder header is GONE, not a visible quickNav with an
+     * animated empty dataset. Retire its old holders and pending removal
+     * animations while hidden. Reopening starts a fresh native layout;
+     * nested visible navigation keeps the ordinary native item animation.
+     */
+    fun hideAndResetBreadcrumb(
+        header: RecyclerView,
+        adapter: NativeFolderBreadcrumbAdapter,
+        styleSignature: String
+    ) {
+        header.visibility = View.GONE
+        if (header.adapter !== adapter ||
+            !NativeQuickNavDiff.needsHiddenReset(adapter.itemCount)
+        ) return
+        header.stopScroll()
+        header.itemAnimator?.endAnimations()
+        // Detach only our own adapter. RecyclerView removes/recycles its
+        // existing children and clears pending adapter updates natively.
+        header.adapter = null
+        adapter.submit(emptyList(), styleSignature)
+        header.adapter = adapter
+        header.scrollToPosition(0)
+    }
+
     fun alignBreadcrumbStart(
         header: RecyclerView,
         expectedTextStart: Int,

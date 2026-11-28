@@ -3,7 +3,6 @@ package io.github.alagga.gonesmart
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.view.ViewTreeObserver
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -16,7 +15,7 @@ import java.util.WeakHashMap
  * Native owner/resource validation MUST happen at the caller before masking.
  */
 internal object NativeFolderFirstFrameGate {
-    enum class Surface { PLAYLIST_LIST, SMART_LIST, SMART_PAGE }
+    enum class Surface { PLAYLIST_LIST, SMART_LIST }
 
     private const val FAIL_OPEN_MS = 2_500L
     private val main = Handler(Looper.getMainLooper())
@@ -26,9 +25,7 @@ internal object NativeFolderFirstFrameGate {
         val surface: Surface,
         val original: Float,
         val token: Any,
-        val timeout: Runnable,
-        val listener: ViewTreeObserver.OnPreDrawListener?,
-        val originalTree: ViewTreeObserver?
+        val timeout: Runnable
     )
     private val leases = WeakHashMap<View, Lease>()
 
@@ -40,12 +37,6 @@ internal object NativeFolderFirstFrameGate {
         return resolved
     }
 
-    fun isActive(view: View?, surface: Surface): Boolean =
-        view != null && leases[view]?.surface == surface
-
-    fun hasActive(surface: Surface): Boolean =
-        leases.values.any { it.surface == surface }
-
     /**
      * The same View/scope can never acquire a second timer. An unrelated
      * surface cannot take over an existing opacity lease.
@@ -53,8 +44,6 @@ internal object NativeFolderFirstFrameGate {
     fun mask(
         view: View,
         surface: Surface,
-        guardNativeAlpha: Boolean = false,
-        onNativeAlphaOverride: ((View) -> Unit)? = null,
         onTimeout: ((View) -> Unit)? = null
     ): Float? {
         leases[view]?.let { prior ->
@@ -65,22 +54,6 @@ internal object NativeFolderFirstFrameGate {
         val alpha = original(view)
         val token = Any()
         val weak = WeakReference(view)
-        val listener = if (guardNativeAlpha) {
-            object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    val current = weak.get() ?: return true
-                    if (leases[current]?.token?.let {
-                        FirstFrameOpacityPolicy.current(it, token)
-                    } == true &&
-                        current.alpha != 0f
-                    ) {
-                        current.alpha = 0f
-                        onNativeAlphaOverride?.invoke(current)
-                    }
-                    return true
-                }
-            }
-        } else null
         val timeout = Runnable {
             val current = weak.get() ?: return@Runnable
             if (leases[current]?.token?.let {
@@ -89,14 +62,8 @@ internal object NativeFolderFirstFrameGate {
             release(current, surface, restoreNative = true)
             onTimeout?.invoke(current)
         }
-        val observerTree = if (listener != null) view.viewTreeObserver else null
-        leases[view] = Lease(
-            surface, alpha, token, timeout, listener, observerTree
-        )
+        leases[view] = Lease(surface, alpha, token, timeout)
         view.alpha = 0f
-        if (listener != null && observerTree?.isAlive == true) {
-            observerTree.addOnPreDrawListener(listener)
-        }
         main.postDelayed(timeout, FAIL_OPEN_MS)
         return alpha
     }
@@ -116,15 +83,6 @@ internal object NativeFolderFirstFrameGate {
             ?: return null
         leases.remove(view)
         main.removeCallbacks(lease.timeout)
-        lease.listener?.let { listener ->
-            lease.originalTree?.let {
-                if (it.isAlive) it.removeOnPreDrawListener(listener)
-            }
-            val liveTree = view.viewTreeObserver
-            if (liveTree.isAlive && liveTree !== lease.originalTree) {
-                liveTree.removeOnPreDrawListener(listener)
-            }
-        }
         if (restoreNative) view.alpha = lease.original
         return lease.original
     }

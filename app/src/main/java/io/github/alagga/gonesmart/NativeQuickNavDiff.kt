@@ -13,6 +13,10 @@ internal object NativeQuickNavDiff {
         val insertedCount: Int
     )
 
+    // A hidden root has no visible removal animation to preserve.
+    fun needsHiddenReset(previousItemCount: Int): Boolean =
+        previousItemCount > 0
+
     fun itemCount(segmentCount: Int): Int =
         if (segmentCount == 0) 0 else segmentCount * 2 - 1
 
