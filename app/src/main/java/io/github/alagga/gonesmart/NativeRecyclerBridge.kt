@@ -65,6 +65,18 @@ internal object NativeRecyclerBridge {
             }
     }
 
+    /** Read-only structural validation on the exact native quickNav surface. */
+    fun hasAlternatingQuickNavItems(adapter: Any): Boolean = runCatching {
+        val count = (invokeNoArg(adapter, "getItemCount") as? Number)
+            ?.toInt() ?: return false
+        if (count < 3 || count % 2 == 0) return false
+        val type = adapter.javaClass.getMethod("getItemViewType", Integer.TYPE)
+        val first = type.invoke(adapter, 0)
+        val separator = type.invoke(adapter, 1)
+        first != null && separator != null && first != separator &&
+            first == type.invoke(adapter, 2)
+    }.getOrDefault(false)
+
     fun duration(animator: Any?, getterName: String): Long? {
         if (animator == null) return null
         return (invokeNoArg(animator, getterName) as? Number)

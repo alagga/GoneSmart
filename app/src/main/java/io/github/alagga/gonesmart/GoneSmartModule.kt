@@ -453,7 +453,7 @@ class GoneSmartModule : XposedModule() {
         PlaylistNavigationBadgeController()
 
     private val smartPlaylistFolderController =
-        SmartPlaylistFolderController(playlistController)
+        SmartPlaylistFolderController(playlistController, playlistFolderPreview)
 
     private val smartPlaylistSaveRedirectDepth =
         ThreadLocal.withInitial { 0 }

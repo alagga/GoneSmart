@@ -150,7 +150,8 @@ private class SmartFolderStretchViewport(
 }
 
 internal class SmartPlaylistFolderController(
-    private val multiSelect: PlaylistMultiSelectController
+    private val multiSelect: PlaylistMultiSelectController,
+    private val playlistFolderPreview: PlaylistFolderPreviewController
 ) {
     companion object {
         private const val TAG = "GoneSmartSmartFolders"
@@ -2377,6 +2378,7 @@ internal class SmartPlaylistFolderController(
                 browser.breadcrumb, adapter, signature
             )
         } else {
+            playlistFolderPreview.applyNativeQuickNavPhysics(browser.breadcrumb)
             adapter.submit(next, signature)
             browser.breadcrumb.visibility = View.VISIBLE
             scheduleBreadcrumbAlignment(browser, generation)

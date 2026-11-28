@@ -137,7 +137,7 @@ internal class PlaylistFolderPreviewController(
         val list: ViewGroup,
         val parent: ViewGroup,
         val overlay: FrameLayout,
-        val rows: LinearLayout,
+        val rows: ViewGroup,
         val breadcrumbScroller: RecyclerView,
         val rootPath: String,
         var index: PlaylistFolderIndex.Result,
@@ -619,7 +619,7 @@ internal class PlaylistFolderPreviewController(
      * Before Files was first opened, AndroidX RecyclerView's own default
      * factory implements the same native stretch engine on Android 12+.
      */
-    private fun applyNativeQuickNavPhysics(header: RecyclerView) {
+    fun applyNativeQuickNavPhysics(header: RecyclerView) {
         val source = observedNativeBreadcrumbStyle ?: return
         source.edgeEffectFactory?.let {
             if (header.edgeEffectFactory !== it) header.edgeEffectFactory = it
@@ -644,8 +644,13 @@ internal class PlaylistFolderPreviewController(
             )
         }
         val observedAnimator = source.nativeItemAnimator
+        val currentAnimator = header.itemAnimator
         if (observedAnimator != null &&
-            header.itemAnimator?.javaClass != observedAnimator.javaClass
+            (currentAnimator?.javaClass != observedAnimator.javaClass ||
+                currentAnimator.addDuration != observedAnimator.addDuration ||
+                currentAnimator.removeDuration != observedAnimator.removeDuration ||
+                currentAnimator.moveDuration != observedAnimator.moveDuration ||
+                currentAnimator.changeDuration != observedAnimator.changeDuration)
         ) {
             header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
                 ?: DefaultItemAnimator()
@@ -686,10 +691,19 @@ internal class PlaylistFolderPreviewController(
      * and a Kotlin RecyclerView cast failed across classloaders. That
      * produced fake firstX=0/0 parity and erased the native XML start inset.
      */
+    private val verifiedQuickNavAdapterTypes = WeakHashMap<Class<*>, Boolean>()
+
     private fun captureNativeBreadcrumbStyle(list: ViewGroup): Boolean {
+        if (resourceName(list) != "quickNavRecyclerView") return false
         val runtime = NativeRecyclerBridge.snapshot(list)
         val adapter = runtime.adapter ?: return false
-        if (adapter.javaClass.simpleName != "qg1") return false
+        // 4.2.1 logs show pg1 instead of the old qg1. Validate the
+        // alternating native metadata/separator shape, not an R8 alias.
+        val knownShape = adapter.javaClass.simpleName == "qg1" ||
+            verifiedQuickNavAdapterTypes[adapter.javaClass] == true
+        if (!knownShape &&
+            !NativeRecyclerBridge.hasAlternatingQuickNavItems(adapter)
+        ) return false
         if (list.width <= 0 || list.height <= 0 ||
             list.isLayoutRequested
         ) return false
@@ -724,6 +738,12 @@ internal class PlaylistFolderPreviewController(
             return null
         }
         val original = findNativeTitle(metadataItem, 0) ?: return false
+        if (!knownShape) {
+            val separator = visibleItems.firstOrNull { it.first == 1 }?.second
+                ?: return false
+            if (rootItem == null || findNativeTitle(separator, 0) != null) return false
+            verifiedQuickNavAdapterTypes[adapter.javaClass] = true
+        }
         val paint = effectiveNativeTitlePaint(original)
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
@@ -803,7 +823,8 @@ internal class PlaylistFolderPreviewController(
         )
         Log.i(
             TAG,
-            "FOLDER NATIVE BREADCRUMB | bound qg1" +
+            "FOLDER NATIVE BREADCRUMB | bound native adapter=" +
+                adapter.javaClass.simpleName +
                 " | sizePx=" + paint.textSize +
                 " | height=" + list.height +
                 " | insetStart=" + nativeHeaderStart +
@@ -2465,20 +2486,36 @@ internal class PlaylistFolderPreviewController(
             background = nativeContentBackground(list, parent, nativeStyle)
             elevation = 0f
         }
-        val scroller = ScrollView(list.context).apply {
-            isFillViewport = true
-            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        // Main folders use a viewport-bound RecyclerView like GMMP Files.
+        // Keep the accepted picker stack untouched: its dialog click-target
+        // mapping and FAB lifecycle do not need to change for this fix.
+        val rows: ViewGroup
+        val scroller: View
+        if (isPicker(list)) {
+            val column = LinearLayout(list.context).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            rows = column
+            scroller = ScrollView(list.context).apply {
+                isFillViewport = true
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                addView(column, ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+            }
+        } else {
+            val recycler = RecyclerView(list.context).apply {
+                layoutManager = LinearLayoutManager(context)
+                setHasFixedSize(true)
+                overScrollMode = list.overScrollMode
+                itemAnimator = cloneNativeItemAnimator(
+                    NativeRecyclerBridge.snapshot(list).animator
+                )?.apply { supportsChangeAnimations = false }
+            }
+            rows = recycler
+            scroller = recycler
         }
-        val rows = LinearLayout(list.context).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        scroller.addView(
-            rows,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
         // Match GMMP's Files tab: a fixed horizontal navigation strip
         // above the scrollable contents, not a fake Back playlist row.
         // The strip is GONE in root, preserving its original height.
@@ -2733,6 +2770,32 @@ internal class PlaylistFolderPreviewController(
             }
         )
         breadcrumbScroller.adapter = browser.breadcrumbAdapter
+        (rows as? RecyclerView)?.adapter = NativeFolderViewportAdapter(
+            onDiscard = { key, item ->
+                if (key.startsWith("playlist:")) {
+                    val path = key.removePrefix("playlist:")
+                    if (browser.mainRenderedPlaylistRows[path] === item) {
+                        browser.mainRenderedPlaylistRows.remove(path)
+                    }
+                    browser.mainSelectionOverlays.remove(item)?.let {
+                        item.overlay.remove(it)
+                    }
+                }
+            },
+            onAttached = { key, item ->
+                if (key.startsWith("playlist:") && browsers[list] === browser) {
+                    val path = key.removePrefix("playlist:")
+                    browser.mainRenderedPlaylistRows[path] = item
+                    applyMainSelectionVisual(browser, path, item)
+                }
+            },
+            onFailure = { error ->
+                Log.e(TAG, "FOLDER INLINE ERROR | visible row bind", error)
+                mainHandler.post {
+                    if (browsers[list] === browser) removeBrowser(list)
+                }
+            }
+        )
         browsers[list] = browser
         // Cancel only this early lease; verified browser owns the reveal.
         NativeFolderFirstFrameGate.release(
@@ -3360,7 +3423,7 @@ internal class PlaylistFolderPreviewController(
                             " | measuredX=" + result.measuredTextStart +
                             " | paddingStart=" + correction +
                             " | source=" +
-                            if (source != null) "live-qg1"
+                            if (source != null) "live-quicknav"
                             else "verified/fallback"
                     )
                 }
@@ -3461,13 +3524,26 @@ internal class PlaylistFolderPreviewController(
             row.overlay.remove(overlay)
         }
         browser.mainSelectionOverlays.clear()
-        browser.rows.removeAllViews()
+        val recycler = browser.rows as? RecyclerView
+        val viewportAdapter = recycler?.adapter as? NativeFolderViewportAdapter
+        if (recycler == null) browser.rows.removeAllViews()
         browser.mainRenderedPlaylistRows.clear()
         renderBreadcrumb(browser)
         updatePickerFab(browser)
         val renderedRows = arrayListOf<View>()
+        val entries = arrayListOf<NativeFolderViewportAdapter.Entry>()
+        fun append(key: String, create: () -> View) {
+            if (viewportAdapter != null) {
+                entries.add(NativeFolderViewportAdapter.Entry(key, create))
+            } else {
+                val item = create()
+                browser.rows.addView(item)
+                renderedRows.add(item)
+            }
+        }
 
         for (child in folders) {
+            append("folder:" + child.id) {
             lateinit var item: View
             item = row(
                 list,
@@ -3508,11 +3584,12 @@ internal class PlaylistFolderPreviewController(
                         )
                     }
                 }
-            browser.rows.addView(item)
-            renderedRows.add(item)
+            item
+            }
         }
 
         for (playlist in playlists) {
+            append("playlist:" + playlist.path) {
             val model = browser.modelsByPath[playlist.path]
             val selected = if (browser.moveSources != null) {
                 false
@@ -3598,15 +3675,28 @@ internal class PlaylistFolderPreviewController(
             } else if (!isPicker(list)) {
                 browser.mainRenderedPlaylistRows[playlist.path] = item
                 applyMainSelectionVisual(browser, playlist.path, item)
+                item.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    if (browsers[list] === browser &&
+                        browser.mainRenderedPlaylistRows[playlist.path] === item
+                    ) applyMainSelectionVisual(browser, playlist.path, item)
+                }
             }
-            browser.rows.addView(item)
-            renderedRows.add(item)
+            item
+            }
         }
 
         // Empty folders deliberately have zero rows, just like GMMP Files.
+        val folderChanged = browser.lastRenderedFolderId != browser.currentFolderId
         browser.lastRenderedFolderId = browser.currentFolderId
         browser.lastRenderedOrder = nextOrder
-        if (insertions != null) {
+        if (recycler != null && viewportAdapter != null) {
+            if (folderChanged) {
+                recycler.stopScroll()
+                recycler.itemAnimator?.endAnimations()
+            }
+            viewportAdapter.submit(entries, animateInsertions = insertions != null)
+            if (folderChanged) recycler.scrollToPosition(0)
+        } else if (insertions != null) {
             animateNativePlaylistInsertion(browser, insertions, renderedRows)
         }
     }
@@ -3864,18 +3954,22 @@ internal class PlaylistFolderPreviewController(
         row.invalidate()
     }
 
+    private fun isRenderedMainRow(browser: Browser, row: View): Boolean =
+        row.parent === browser.rows ||
+            (row.parent as? View)?.parent === browser.rows
+
     private fun syncMainSelectionPath(
         browser: Browser,
         path: String
     ) {
         browser.mainRenderedPlaylistRows[path]
-            ?.takeIf { it.parent === browser.rows }
+            ?.takeIf { isRenderedMainRow(browser, it) }
             ?.let { applyMainSelectionVisual(browser, path, it) }
     }
 
     private fun syncMainSelectionVisuals(browser: Browser) {
         browser.mainRenderedPlaylistRows.forEach { (path, row) ->
-            if (row.parent === browser.rows) {
+            if (isRenderedMainRow(browser, row)) {
                 applyMainSelectionVisual(browser, path, row)
             }
         }
@@ -3894,7 +3988,7 @@ internal class PlaylistFolderPreviewController(
 
         fun restoreRows() {
             browser.mainRenderedPlaylistRows.forEach { (_, row) ->
-                if (row.parent !== browser.rows) return@forEach
+                if (!isRenderedMainRow(browser, row)) return@forEach
                 clearPressedState(row)
                 row.isSelected = false
                 row.isActivated = false
