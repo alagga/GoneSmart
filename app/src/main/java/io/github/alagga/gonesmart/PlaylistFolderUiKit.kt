@@ -177,6 +177,31 @@ internal object PlaylistFolderUiKit {
      * layout, without forcing an early scrollToPosition jump. Generation
      * and detach terminate the observer; no posted retry loop.
      */
+    fun submitBreadcrumb(
+        header: RecyclerView,
+        adapter: NativeFolderBreadcrumbAdapter,
+        next: List<BreadcrumbSegment>,
+        styleSignature: String,
+        animateForward: Boolean
+    ): Boolean {
+        val plan = adapter.plan(next)
+        val animator = header.itemAnimator as? NativeQuickNavItemAnimator
+        val token = if (animateForward && plan.isForward && animator != null) {
+            animator.beginForward()
+        } else null
+        val changed = adapter.submit(next, styleSignature)
+        if (token != null && animator != null) {
+            val revision = adapter.pathRevision
+            animator.completeForward(
+                header, token, plan.retainedItems,
+                plan.retainedItems + plan.insertedCount
+            ) {
+                header.adapter === adapter && adapter.pathRevision == revision
+            }
+        }
+        return changed
+    }
+
     fun revealBreadcrumbEnd(
         header: RecyclerView,
         isCurrent: () -> Boolean
@@ -775,6 +800,8 @@ internal class NativeFolderBreadcrumbAdapter(
     private val segments =
         arrayListOf<PlaylistFolderUiKit.BreadcrumbSegment>()
     private var styleSignature = ""
+    var pathRevision = 0L
+        private set
 
     init {
         setHasStableIds(true)
@@ -851,6 +878,12 @@ internal class NativeFolderBreadcrumbAdapter(
         }
     }
 
+    fun plan(next: List<PlaylistFolderUiKit.BreadcrumbSegment>): NativeQuickNavDiff.Plan =
+        NativeQuickNavDiff.between(
+            segments.map { it.key + "\u0000" + it.label },
+            next.map { it.key + "\u0000" + it.label }
+        )
+
     fun submit(
         next: List<PlaylistFolderUiKit.BreadcrumbSegment>,
         nextStyleSignature: String
@@ -860,6 +893,7 @@ internal class NativeFolderBreadcrumbAdapter(
         val diff = NativeQuickNavDiff.between(oldIds, newIds)
         val styleChanged = nextStyleSignature != styleSignature
         val pathChanged = oldIds != newIds
+        if (pathChanged) ++pathRevision
         styleSignature = nextStyleSignature
 
         if (diff.removedCount > 0) {

@@ -256,6 +256,7 @@ internal class SmartPlaylistFolderController(
         val folderBand: FrameLayout,
         val folderViewport: SmartFolderStretchViewport,
         val breadcrumb: RecyclerView,
+        val quickNavLoading: NativeQuickNavLoading,
         val originalAlpha: Float,
         val originalPaddingLeft: Int,
         val originalPaddingTop: Int,
@@ -301,8 +302,6 @@ internal class SmartPlaylistFolderController(
         val rowInteractionPaths: WeakHashMap<View, String> = WeakHashMap(),
         val selectionOverlays: WeakHashMap<View, ColorDrawable> = WeakHashMap(),
         var breadcrumbAlignmentGeneration: Long = 0L,
-        var loadingIndicator: android.widget.ProgressBar? = null,
-        var loadingGeneration: Long? = null,
         var initialHeaderReady: Boolean = false,
         var nativeContentReady: Boolean = false,
         var projectionRevealTimeout: Runnable? = null,
@@ -1639,6 +1638,7 @@ internal class SmartPlaylistFolderController(
             )
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
+            itemAnimator = NativeQuickNavItemAnimator()
             visibility = View.GONE
             background = headerSurface()
             elevation = dp(list, 2).toFloat()
@@ -1817,6 +1817,9 @@ internal class SmartPlaylistFolderController(
             folderBand = folderBand,
             folderViewport = folderViewport,
             breadcrumb = breadcrumb,
+            quickNavLoading = NativeQuickNavLoading(overlay, breadcrumb) {
+                playlistFolderPreview.createNativeQuickNavLoadingIndicator(list)
+            },
             originalAlpha = originalAlpha,
             originalPaddingLeft = list.paddingLeft,
             originalPaddingTop = list.paddingTop,
@@ -2418,8 +2421,11 @@ internal class SmartPlaylistFolderController(
             )
         } else {
             playlistFolderPreview.applyNativeQuickNavPhysics(browser.breadcrumb)
-            val changed = adapter.submit(next, signature)
             browser.breadcrumb.visibility = View.VISIBLE
+            val changed = PlaylistFolderUiKit.submitBreadcrumb(
+                browser.breadcrumb, adapter, next, signature,
+                animateForward = browser.initialHeaderReady
+            )
             scheduleBreadcrumbAlignment(browser, generation)
             if (changed) {
                 PlaylistFolderUiKit.revealBreadcrumbEnd(browser.breadcrumb) {
@@ -3817,8 +3823,7 @@ internal class SmartPlaylistFolderController(
             nativeContextMoveAnchor = null
         }
         cancelProjectionRevealTimeout(browser)
-        browser.loadingGeneration = null
-        browser.loadingIndicator?.visibility = View.GONE
+        browser.quickNavLoading.clear()
         browser.observer?.stopWatching()
         browser.folderGestureDownEvent?.recycle()
         browser.folderGestureDownEvent = null
@@ -4207,41 +4212,14 @@ internal class SmartPlaylistFolderController(
      * reload the Smart snapshot from this per-frame check.
      */
     private fun setQuickNavLoading(browser: Browser, generation: Long) {
-        browser.loadingGeneration = generation
-        if (browser.loadingIndicator == null) {
-            val indicator = playlistFolderPreview.createNativeQuickNavLoadingIndicator(
-                browser.list
-            )
-            if (indicator != null) {
-                browser.loadingIndicator = indicator
-                browser.overlay.addView(indicator, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    indicator.layoutParams.height,
-                    Gravity.TOP
-                ))
-                browser.breadcrumb.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                    positionQuickNavLoading(browser)
-                }
-            }
-        }
-        browser.loadingIndicator?.visibility = View.VISIBLE
-        positionQuickNavLoading(browser)
+        browser.quickNavLoading.begin(generation)
         positionOverlay(browser)
     }
 
-    private fun positionQuickNavLoading(browser: Browser) {
-        browser.loadingIndicator?.translationY =
-            (if (browser.breadcrumb.visibility == View.VISIBLE) {
-                browser.breadcrumb.height
-            } else 0).toFloat()
-    }
-
     private fun finishQuickNavLoading(browser: Browser, generation: Long) {
-        if (browsers[browser.list] !== browser ||
-            browser.loadingGeneration != generation
-        ) return
-        browser.loadingGeneration = null
-        browser.loadingIndicator?.visibility = View.GONE
+        if (browsers[browser.list] === browser) {
+            browser.quickNavLoading.finish(generation)
+        }
     }
 
     private fun syncPagerOverlayVisibility(browser: Browser) {
@@ -4252,7 +4230,7 @@ internal class SmartPlaylistFolderController(
         val rect = Rect()
         val visible = SmartQuickNavPresentationPolicy.chromeReady(
                 browser.initialHeaderReady,
-                browser.loadingIndicator?.visibility == View.VISIBLE
+                browser.quickNavLoading.isVisible
             ) && isFrontFragmentView(list) &&
             list.isShown &&
             list.getGlobalVisibleRect(rect) &&
@@ -4308,10 +4286,10 @@ internal class SmartPlaylistFolderController(
             rect.height() > dp(list, 30)
         browser.folderViewport.visibility =
             if (browser.nativeContentReady) View.VISIBLE else View.INVISIBLE
-        positionQuickNavLoading(browser)
+        browser.quickNavLoading.position()
         val nextVisibility = if (!SmartQuickNavPresentationPolicy.chromeReady(
                 browser.initialHeaderReady,
-                browser.loadingIndicator?.visibility == View.VISIBLE
+                browser.quickNavLoading.isVisible
             )
         ) {
             View.INVISIBLE

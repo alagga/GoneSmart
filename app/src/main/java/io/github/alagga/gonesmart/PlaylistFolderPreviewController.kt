@@ -139,6 +139,7 @@ internal class PlaylistFolderPreviewController(
         val overlay: FrameLayout,
         val rows: ViewGroup,
         val breadcrumbScroller: RecyclerView,
+        val quickNavLoading: NativeQuickNavLoading,
         val rootPath: String,
         var index: PlaylistFolderIndex.Result,
         var modelsByPath: Map<String, Any>,
@@ -159,6 +160,7 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbRenderGeneration: Long = 0L,
         var lastRenderedFolderId: String? = null,
         var lastRenderedOrder: List<String>? = null,
+        var loadingGeneration: Long = 0L,
         var breadcrumbAdapter: NativeFolderBreadcrumbAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
             NativeMainPlaylistSelectionMirror(),
@@ -653,16 +655,22 @@ internal class PlaylistFolderPreviewController(
         }
         val observedAnimator = source.nativeItemAnimator
         val currentAnimator = header.itemAnimator
-        if (observedAnimator != null &&
-            (currentAnimator == null ||
-                currentAnimator.javaClass != observedAnimator.javaClass ||
-                currentAnimator.addDuration != observedAnimator.addDuration ||
-                currentAnimator.removeDuration != observedAnimator.removeDuration ||
-                currentAnimator.moveDuration != observedAnimator.moveDuration ||
-                currentAnimator.changeDuration != observedAnimator.changeDuration)
-        ) {
-            header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
-                ?: DefaultItemAnimator()
+        if (observedAnimator != null) {
+            // Same installed AndroidX implementation, with a small observer
+            // for adds RecyclerView omits on its first visible layout.
+            if (observedAnimator.javaClass == DefaultItemAnimator::class.java) {
+                val target = currentAnimator as? NativeQuickNavItemAnimator
+                    ?: NativeQuickNavItemAnimator().also { header.itemAnimator = it }
+                target.addDuration = observedAnimator.addDuration
+                target.removeDuration = observedAnimator.removeDuration
+                target.moveDuration = observedAnimator.moveDuration
+                target.changeDuration = observedAnimator.changeDuration
+                target.supportsChangeAnimations = observedAnimator.supportsChangeAnimations
+            } else if (currentAnimator?.javaClass != observedAnimator.javaClass) {
+                // Unrecognized/custom native implementations are never
+                // forced through the standard DefaultItemAnimator fallback.
+                header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
+            }
         }
     }
 
@@ -2543,7 +2551,7 @@ internal class PlaylistFolderPreviewController(
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
             clipToPadding = false
-            itemAnimator = DefaultItemAnimator().apply {
+            itemAnimator = NativeQuickNavItemAnimator().apply {
                 supportsChangeAnimations = false
             }
             visibility = View.GONE
@@ -2719,6 +2727,9 @@ internal class PlaylistFolderPreviewController(
             overlay = overlay,
             rows = rows,
             breadcrumbScroller = breadcrumbScroller,
+            quickNavLoading = NativeQuickNavLoading(
+                overlay, breadcrumbScroller
+            ) { createNativeQuickNavLoadingIndicator(list) },
             rootPath = root,
             index = index,
             modelsByPath = native.nativeObjects,
@@ -3096,6 +3107,7 @@ internal class PlaylistFolderPreviewController(
         preserveNativeAlpha: Boolean = false
     ) {
         val browser = browsers.remove(list) ?: return
+        browser.quickNavLoading.clear()
         clearPickerOverlayTargets(list)
         browser.moveSources = null
         endMoveChrome(browser)
@@ -3362,7 +3374,10 @@ internal class PlaylistFolderPreviewController(
             !folderChanged
         val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = appearance
-        val pathChanged = adapter.submit(sharedSegments, appearance)
+        val pathChanged = PlaylistFolderUiKit.submitBreadcrumb(
+            strip, adapter, sharedSegments, appearance,
+            animateForward = folderChanged && browser.lastRenderedOrder != null
+        )
         scheduleQuickNavParityCheck(browser, generation)
 
         if (!folderChanged && !pathChanged && !(styleOnly && oldAtEnd)) {
@@ -3474,6 +3489,11 @@ internal class PlaylistFolderPreviewController(
     private fun render(browser: Browser) {
         val list = browser.list
         if (!list.isAttachedToWindow) return
+        val navigation = browser.lastRenderedOrder == null ||
+            browser.lastRenderedFolderId != browser.currentFolderId
+        if (navigation && !isPicker(list)) {
+            browser.quickNavLoading.begin(++browser.loadingGeneration)
+        }
         val folder = findFolder(browser.index, browser.currentFolderId)
         val allFolders = folder?.children ?: browser.index.topLevelFolders
         val folders = if (browser.moveSources == null) allFolders else {
@@ -3688,6 +3708,13 @@ internal class PlaylistFolderPreviewController(
             if (folderChanged) recycler.scrollToPosition(0)
         } else if (insertions != null) {
             animateNativePlaylistInsertion(browser, insertions, renderedRows)
+        }
+        // A normal Playlist's work completes with the new viewport layout,
+        // not with a synthetic delay or the synchronous model submission.
+        if (navigation && !isPicker(list)) {
+            browser.quickNavLoading.finishAfterLayout(
+                browser.loadingGeneration, browser.rows
+            ) { browsers[list] === browser }
         }
     }
 

@@ -11,7 +11,9 @@ internal object NativeQuickNavDiff {
         val retainedItems: Int,
         val removedCount: Int,
         val insertedCount: Int
-    )
+    ) {
+        val isForward: Boolean get() = removedCount == 0 && insertedCount > 0
+    }
 
     // A hidden root has no visible removal animation to preserve.
     fun needsHiddenReset(previousItemCount: Int): Boolean =
