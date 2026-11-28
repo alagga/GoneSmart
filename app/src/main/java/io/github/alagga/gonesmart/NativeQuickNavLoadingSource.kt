@@ -1,7 +1,6 @@
 package io.github.alagga.gonesmart
 
 import android.content.Context
-import android.content.res.ColorStateList
 import android.content.res.XmlResourceParser
 import android.graphics.drawable.Animatable
 import android.util.AttributeSet
@@ -25,6 +24,7 @@ internal class NativeQuickNavLoadingSource {
     companion object {
         private const val ANDROID = "http://schemas.android.com/apk/res/android"
         private const val BAR = "me.zhanghai.android.materialprogressbar.MaterialProgressBar"
+        private const val AESTHETIC_BAR = "com.afollestad.aesthetic.views.AestheticProgressBar"
         private const val DRAWABLE =
             "me.zhanghai.android.materialprogressbar.IndeterminateHorizontalProgressDrawable"
 
@@ -52,18 +52,6 @@ internal class NativeQuickNavLoadingSource {
                 parser.close()
             }
             return null
-        }
-
-        /** Native XML gmDynamicColor=!mainColorAccent, not colorPrimary. */
-        fun bindAccent(bar: ProgressBar): NativeGmmpAccent.Subscription? {
-            val setter = runCatching {
-                bar.javaClass.getMethod("setSupportIndeterminateTintList", ColorStateList::class.java)
-            }.getOrNull() ?: return null
-            fun apply(color: Int) {
-                runCatching { setter.invoke(bar, ColorStateList.valueOf(color)) }
-            }
-            NativeGmmpAccent.lastObserved()?.let(::apply)
-            return NativeGmmpAccent.observeVerifiedDynamicAccent(bar, ::apply)
         }
 
         fun applyHeaderXml(header: RecyclerView) {
@@ -96,8 +84,14 @@ internal class NativeQuickNavLoadingSource {
         if (failed[loader] == true) return null
         return runCatching {
             withElement(host, "mainProgressBar", BAR) { _, attrs ->
-                val klass = loader.loadClass(BAR)
-                require(ProgressBar::class.java.isAssignableFrom(klass))
+                // GMMP's h52 LayoutInflater factory maps the declared
+                // MaterialProgressBar tag to AestheticProgressBar. Use the
+                // same independently constructed native class; its own
+                // attach/detach lifecycle applies !mainColorAccent.
+                val declared = loader.loadClass(BAR)
+                val klass = loader.loadClass(AESTHETIC_BAR)
+                require(ProgressBar::class.java.isAssignableFrom(declared) &&
+                    declared.isAssignableFrom(klass))
                 val params = FrameLayout.LayoutParams(host.context, attrs)
                 require(params.height > 0 && params.width == -1 &&
                     (params.gravity and Gravity.VERTICAL_GRAVITY_MASK) == Gravity.BOTTOM)
@@ -117,6 +111,7 @@ internal class NativeQuickNavLoadingSource {
                 if (BuildConfig.DEBUG) Log.i("GoneSmartPlaylist",
                     "FOLDER NATIVE QUICKNAV LOADING | source=installed-xml | height=" +
                         params.height + " | gravity=" + params.gravity +
+                        " | view=" + bar.javaClass.name +
                         " | drawable=" + bar.indeterminateDrawable.javaClass.simpleName)
                 bar
             } ?: error("Verified Files progress element not found")

@@ -21,7 +21,6 @@ internal class NativeQuickNavLoading(
     private var drawn = false
     private var finishRequested = false
     private var firstFramePending = false
-    private var accentSubscription: NativeGmmpAccent.Subscription? = null
 
     val isVisible: Boolean get() = indicator?.visibility == View.VISIBLE
 
@@ -46,9 +45,6 @@ internal class NativeQuickNavLoading(
             // Original mg1.u0(true): setIndeterminate then VISIBLE.
             bar.isIndeterminate = true
             bar.visibility = View.VISIBLE
-            if (accentSubscription == null) {
-                accentSubscription = NativeQuickNavLoadingSource.bindAccent(bar)
-            }
             observeFirstDraw(bar, next)
         }
     }
@@ -178,8 +174,6 @@ internal class NativeQuickNavLoading(
         finishRequested = false
         // Original mg1.z1(): GONE. No forced drawable restart.
         indicator?.visibility = View.GONE
-        accentSubscription?.dispose()
-        accentSubscription = null
     }
 
     /**
