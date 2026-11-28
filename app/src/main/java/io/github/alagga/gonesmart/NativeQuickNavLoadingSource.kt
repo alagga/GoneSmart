@@ -25,7 +25,8 @@ internal class NativeQuickNavLoadingSource {
         val height: Int,
         val tint: ColorStateList?,
         val mode: PorterDuff.Mode?,
-        val constantState: Drawable.ConstantState?,
+        val viewClass: String,
+        val padding: List<Int>,
         val intrinsicPadding: Boolean?
     )
     private var sample: Sample? = null
@@ -61,14 +62,24 @@ internal class NativeQuickNavLoadingSource {
                     ?: bar.layoutParams?.height?.takeIf { it > 0 }
                     ?: drawable.intrinsicHeight.takeIf { it > 0 }
                     ?: return
-                sample = Sample(height, bar.indeterminateTintList,
-                    bar.indeterminateTintMode, drawable.constantState,
+                val tint = runCatching {
+                    bar.javaClass.getMethod("getSupportIndeterminateTintList")
+                        .invoke(bar) as? ColorStateList
+                }.getOrNull() ?: bar.indeterminateTintList
+                val mode = runCatching {
+                    bar.javaClass.getMethod("getSupportIndeterminateTintMode")
+                        .invoke(bar) as? PorterDuff.Mode
+                }.getOrNull() ?: bar.indeterminateTintMode
+                sample = Sample(height, tint, mode, bar.javaClass.name,
+                    listOf(bar.paddingLeft, bar.paddingTop, bar.paddingRight, bar.paddingBottom),
                     runCatching {
                         drawable.javaClass.getMethod("getUseIntrinsicPadding")
                             .invoke(drawable) as? Boolean
                     }.getOrNull())
                 if (BuildConfig.DEBUG) Log.i("GoneSmartPlaylist",
-                    "FOLDER NATIVE QUICKNAV LOADING | source=live | height=" + height)
+                    "FOLDER NATIVE QUICKNAV LOADING | source=live | height=" + height +
+                        " | view=" + bar.javaClass.name +
+                        " | padding=" + sample?.padding)
                 return
             }
             parent = scope.parent as? ViewGroup
@@ -82,9 +93,9 @@ internal class NativeQuickNavLoadingSource {
         return runCatching {
             val type = loader.loadClass(DRAWABLE)
             require(Drawable::class.java.isAssignableFrom(type))
-            val fromState = source?.constantState?.newDrawable(host.resources)
-                ?.takeIf { type.isInstance(it) }
-            val drawable = (fromState ?: type.getConstructor(Context::class.java)
+            // Construct a fresh native animation instance. A copied
+            // ConstantState can retain the wrong animator/target state.
+            val drawable = (type.getConstructor(Context::class.java)
                 .newInstance(host.context) as Drawable).mutate()
             require(drawable is Animatable)
             source?.intrinsicPadding?.let { value ->
@@ -95,17 +106,44 @@ internal class NativeQuickNavLoadingSource {
             }
             val height = source?.height ?: drawable.intrinsicHeight
             require(height > 0)
-            ProgressBar(host.context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            val nativeClass = source?.viewClass
+                ?: "me.zhanghai.android.materialprogressbar.MaterialProgressBar"
+            val nativeBar = runCatching {
+                val klass = loader.loadClass(nativeClass)
+                require(ProgressBar::class.java.isAssignableFrom(klass))
+                klass.getConstructor(Context::class.java)
+                    .newInstance(host.context) as ProgressBar
+            }.getOrNull()
+            (nativeBar ?: ProgressBar(host.context, null,
+                android.R.attr.progressBarStyleHorizontal)).apply {
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height)
                 isIndeterminate = true
                 indeterminateDrawable = drawable
                 val tint = source?.tint ?: NativeGmmpAccent.currentPrimary(host)
                     ?.let(ColorStateList::valueOf)
-                if (tint != null) indeterminateTintList = tint
-                source?.mode?.let { indeterminateTintMode = it }
+                val padding = source?.padding ?: listOf(0, 0, 0, 0)
+                setPadding(padding[0], padding[1], padding[2], padding[3])
+                minimumHeight = 0
+                if (tint != null) {
+                    val applied = runCatching {
+                        javaClass.getMethod("setSupportIndeterminateTintList",
+                            ColorStateList::class.java).invoke(this, tint)
+                    }.isSuccess
+                    if (!applied) indeterminateTintList = tint
+                }
+                source?.mode?.let { mode ->
+                    val applied = runCatching {
+                        javaClass.getMethod("setSupportIndeterminateTintMode",
+                            PorterDuff.Mode::class.java).invoke(this, mode)
+                    }.isSuccess
+                    if (!applied) indeterminateTintMode = mode
+                }
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 isClickable = false
                 visibility = View.GONE
+                if (BuildConfig.DEBUG) Log.i("GoneSmartPlaylist",
+                    "FOLDER NATIVE QUICKNAV LOADING | created=" + javaClass.name +
+                        " | height=" + height + " | drawable=" + drawable.javaClass.simpleName)
             }
         }.onFailure {
             failedLoader = WeakReference(loader)

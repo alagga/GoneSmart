@@ -3073,6 +3073,18 @@ class GoneSmartModule : XposedModule() {
                             it
                         )
                     }
+                } else if (BuildConfig.DEBUG &&
+                    (instance.javaClass.simpleName == "pg1" ||
+                        instance.javaClass.simpleName == "qg1")
+                ) {
+                    runCatching {
+                        playlistFolderPreview.onNativeQuickNavAdapterEvent(
+                            instance, name,
+                            if (argCount >= 1) chain.getArg(0) as? Int else null,
+                            if (argCount >= 2) chain.getArg(1) as? Int else
+                                if (argCount == 1) 1 else null
+                        )
+                    }
                 }
                 result
             }

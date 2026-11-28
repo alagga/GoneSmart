@@ -1638,7 +1638,10 @@ internal class SmartPlaylistFolderController(
             )
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
-            itemAnimator = NativeQuickNavItemAnimator()
+            setHasFixedSize(true)
+            itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator().apply {
+                supportsChangeAnimations = false
+            }
             visibility = View.GONE
             background = headerSurface()
             elevation = dp(list, 2).toFloat()
@@ -1840,7 +1843,7 @@ internal class SmartPlaylistFolderController(
             tag = TAG,
             host = list,
             onStyleLabel = { label ->
-                browser.style?.let { style ->
+                if (!playlistFolderPreview.applyObservedQuickNavLabel(label)) browser.style?.let { style ->
                     label.paint.set(style.paint)
                     label.setTextSize(
                         TypedValue.COMPLEX_UNIT_PX,
@@ -2405,13 +2408,14 @@ internal class SmartPlaylistFolderController(
                     )
                 }
         }
-        val signature = browser.style?.let {
-            it.rowLayoutId.toString() + ":" +
-                it.titleViewId + ":" +
-                it.rowHeight + ":" +
-                it.textColor + ":" +
-                it.textSizePx
-        }.orEmpty()
+        val signature = playlistFolderPreview.nativeQuickNavStyleSignature()
+            ?: browser.style?.let {
+                it.rowLayoutId.toString() + ":" +
+                    it.titleViewId + ":" +
+                    it.rowHeight + ":" +
+                    it.textColor + ":" +
+                    it.textSizePx
+            }.orEmpty()
         val adapter = browser.breadcrumb.adapter as? NativeFolderBreadcrumbAdapter
             ?: return
         val generation = ++browser.breadcrumbAlignmentGeneration
@@ -2420,18 +2424,28 @@ internal class SmartPlaylistFolderController(
                 browser.breadcrumb, adapter, signature
             )
         } else {
-            playlistFolderPreview.applyNativeQuickNavPhysics(browser.breadcrumb)
-            browser.breadcrumb.visibility = View.VISIBLE
-            val changed = PlaylistFolderUiKit.submitBreadcrumb(
-                browser.breadcrumb, adapter, next, signature,
-                animateForward = browser.initialHeaderReady
-            )
-            scheduleBreadcrumbAlignment(browser, generation)
-            if (changed) {
-                PlaylistFolderUiKit.revealBreadcrumbEnd(browser.breadcrumb) {
-                    browsers[browser.list] === browser &&
-                        browser.breadcrumbAlignmentGeneration == generation
-                }
+            val strip = browser.breadcrumb
+            playlistFolderPreview.applyNativeQuickNavPhysics(strip)
+            val height = playlistFolderPreview.nativeQuickNavHeight()
+                ?: browser.style?.rowHeight ?: dp(strip, 48)
+            if (strip.layoutParams.height != height) {
+                strip.layoutParams = strip.layoutParams.apply { this.height = height }
+            }
+            strip.visibility = View.VISIBLE
+            val plan = adapter.plan(next)
+            if (plan.retainedItems == 0 || adapter.appliedStyleSignature != signature) {
+                scheduleBreadcrumbAlignment(browser, generation)
+            }
+            val isCurrent = {
+                browsers[browser.list] === browser &&
+                    browser.breadcrumbAlignmentGeneration == generation
+            }
+            PlaylistFolderUiKit.submitBreadcrumb(
+                strip, adapter, next, signature,
+                animateRootOpening = browser.initialHeaderReady,
+                isCurrent = isCurrent
+            ) { changed ->
+                if (changed) PlaylistFolderUiKit.revealBreadcrumbEnd(strip, isCurrent)
             }
         }
     }

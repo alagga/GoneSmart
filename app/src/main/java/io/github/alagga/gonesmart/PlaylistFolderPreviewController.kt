@@ -630,7 +630,11 @@ internal class PlaylistFolderPreviewController(
     }
 
     fun applyNativeQuickNavPhysics(header: RecyclerView) {
-        val source = observedNativeBreadcrumbStyle ?: return
+        val source = observedNativeBreadcrumbStyle
+        if (source == null) {
+            applyRememberedQuickNavAnimator(header)
+            return
+        }
         source.edgeEffectFactory?.let {
             if (header.edgeEffectFactory !== it) header.edgeEffectFactory = it
         }
@@ -656,20 +660,18 @@ internal class PlaylistFolderPreviewController(
         val observedAnimator = source.nativeItemAnimator
         val currentAnimator = header.itemAnimator
         if (observedAnimator != null) {
-            // Same installed AndroidX implementation, with a small observer
-            // for adds RecyclerView omits on its first visible layout.
-            if (observedAnimator.javaClass == DefaultItemAnimator::class.java) {
-                val target = currentAnimator as? NativeQuickNavItemAnimator
-                    ?: NativeQuickNavItemAnimator().also { header.itemAnimator = it }
-                target.addDuration = observedAnimator.addDuration
-                target.removeDuration = observedAnimator.removeDuration
-                target.moveDuration = observedAnimator.moveDuration
-                target.changeDuration = observedAnimator.changeDuration
-                target.supportsChangeAnimations = observedAnimator.supportsChangeAnimations
-            } else if (currentAnimator?.javaClass != observedAnimator.javaClass) {
-                // Unrecognized/custom native implementations are never
-                // forced through the standard DefaultItemAnimator fallback.
-                header.itemAnimator = cloneNativeItemAnimator(observedAnimator)
+            // Preserve the actual RecyclerView animation transaction.
+            val target = if (currentAnimator?.javaClass == observedAnimator.javaClass) {
+                currentAnimator as? SimpleItemAnimator
+            } else {
+                cloneNativeItemAnimator(observedAnimator)?.also { header.itemAnimator = it }
+            }
+            target?.let {
+                it.addDuration = observedAnimator.addDuration
+                it.removeDuration = observedAnimator.removeDuration
+                it.moveDuration = observedAnimator.moveDuration
+                it.changeDuration = observedAnimator.changeDuration
+                it.supportsChangeAnimations = observedAnimator.supportsChangeAnimations
             }
         }
     }
@@ -680,6 +682,63 @@ internal class PlaylistFolderPreviewController(
      * XML must never be mistaken for verified horizontal geometry.
      * The physical pixel value is scoped to the device display density.
      */
+    private val quickNavAnimatorPrefsApplied = WeakHashMap<RecyclerView, Boolean>()
+
+    @Suppress("DEPRECATION")
+    private fun nativeQuickNavAnimatorKey(view: View): String? = runCatching {
+        val version = view.context.packageManager.getPackageInfo(
+            view.context.packageName, 0
+        ).versionCode
+        "verified_animator_" + version + "_"
+    }.getOrNull()
+
+    private fun applyRememberedQuickNavAnimator(header: RecyclerView) {
+        if (quickNavAnimatorPrefsApplied.put(header, true) != null) return
+        val key = nativeQuickNavAnimatorKey(header) ?: return
+        val prefs = header.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+        )
+        val animator = header.itemAnimator as? DefaultItemAnimator ?: return
+        if (!prefs.getBoolean(key + "verified_default", false)) return
+        animator.addDuration = prefs.getLong(key + "add", animator.addDuration)
+        animator.removeDuration = prefs.getLong(key + "remove", animator.removeDuration)
+        animator.moveDuration = prefs.getLong(key + "move", animator.moveDuration)
+        animator.changeDuration = prefs.getLong(key + "change", animator.changeDuration)
+        animator.supportsChangeAnimations = prefs.getBoolean(
+            key + "change_enabled", animator.supportsChangeAnimations
+        )
+    }
+
+    private fun rememberQuickNavAnimator(list: View, animator: SimpleItemAnimator?) {
+        if (animator == null || animator.javaClass != DefaultItemAnimator::class.java) return
+        val key = nativeQuickNavAnimatorKey(list) ?: return
+        list.context.getSharedPreferences(
+            QUICK_NAV_METRICS_PREFS, android.content.Context.MODE_PRIVATE
+        ).edit()
+            .putBoolean(key + "verified_default", true)
+            .putLong(key + "add", animator.addDuration)
+            .putLong(key + "remove", animator.removeDuration)
+            .putLong(key + "move", animator.moveDuration)
+            .putLong(key + "change", animator.changeDuration)
+            .putBoolean(key + "change_enabled", animator.supportsChangeAnimations)
+            .apply()
+    }
+
+    fun nativeQuickNavStyleSignature(): String? = observedNativeBreadcrumbStyle?.signature
+
+    fun nativeQuickNavHeight(): Int? = observedNativeBreadcrumbStyle?.rowHeightPx
+
+    fun applyObservedQuickNavLabel(label: TextView): Boolean {
+        val style = observedNativeBreadcrumbStyle ?: return false
+        label.paint.set(style.effectivePaint)
+        label.setTextSize(TypedValue.COMPLEX_UNIT_PX, style.effectivePaint.textSize)
+        label.typeface = style.effectivePaint.typeface
+        label.setTextColor(style.effectivePaint.color)
+        label.letterSpacing = style.letterSpacing
+        label.includeFontPadding = style.includeFontPadding
+        return true
+    }
+
     private fun verifiedNativeFirstTextX(list: View): Int? {
         val key = QUICK_NAV_VERIFIED_FIRST_X_KEY +
             list.resources.displayMetrics.densityDpi
@@ -769,8 +828,9 @@ internal class PlaylistFolderPreviewController(
         val paint = effectiveNativeTitlePaint(original)
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
-        val firstTextStart = if (rootItem != null &&
-            !list.canScrollHorizontally(-1)
+        val measuredFirstTextStart = if (rootItem != null &&
+            !list.canScrollHorizontally(-1) &&
+            rootItem.translationX == 0f && original.translationX == 0f
         ) {
             // Measured relative to the *native* quickNav viewport, not
             // child.left alone (which ignores parent margins/nested views).
@@ -780,8 +840,12 @@ internal class PlaylistFolderPreviewController(
             original.getLocationOnScreen(titleScreen)
             titleScreen[0] - sourceScreen[0] +
                 original.compoundPaddingStart
-        } else previous?.nativeFirstTextStartPx ?: return false
-        if (rootItem != null && firstTextStart in 0..dp(list, 96)) {
+        } else null
+        val firstTextStart = NativeQuickNavInsetPolicy.verifiedNativeStart(
+            measuredFirstTextStart, previous?.nativeFirstTextStartPx
+                ?: verifiedNativeFirstTextX(list), dp(list, 96)
+        ) ?: return false
+        if (measuredFirstTextStart == firstTextStart) {
             val key = QUICK_NAV_VERIFIED_FIRST_X_KEY +
                 list.resources.displayMetrics.densityDpi
             list.context.getSharedPreferences(
@@ -810,7 +874,9 @@ internal class PlaylistFolderPreviewController(
             original.paddingBottom, firstTextStart,
             separatorWidth, nativeAnimator?.javaClass?.name,
             NativeRecyclerBridge.duration(nativeAnimator, "getAddDuration"),
-            NativeRecyclerBridge.duration(nativeAnimator, "getMoveDuration")
+            NativeRecyclerBridge.duration(nativeAnimator, "getMoveDuration"),
+            NativeRecyclerBridge.duration(nativeAnimator, "getRemoveDuration"),
+            NativeRecyclerBridge.duration(nativeAnimator, "getChangeDuration")
         ).joinToString(":")
         if (previous?.signature == signature) return true
         lastNativePlaylistTitlePx?.takeIf { it > 0f }?.let { titlePx ->
@@ -822,6 +888,8 @@ internal class PlaylistFolderPreviewController(
                 ).edit().putFloat(QUICK_NAV_TITLE_RATIO_KEY, ratio).apply()
             }
         }
+        val verifiedAnimator = cloneNativeItemAnimator(nativeAnimator)
+        rememberQuickNavAnimator(list, verifiedAnimator)
         observedNativeBreadcrumbStyle = NativeBreadcrumbStyle(
             effectivePaint = paint,
             letterSpacing = original.letterSpacing,
@@ -840,7 +908,7 @@ internal class PlaylistFolderPreviewController(
             nativeNestedScrolling = list.isNestedScrollingEnabled,
             nativeHeaderStartPx = nativeHeaderStart,
             nativeHeaderEndPx = nativeHeaderEnd,
-            nativeItemAnimator = cloneNativeItemAnimator(nativeAnimator),
+            nativeItemAnimator = verifiedAnimator,
             signature = signature
         )
         Log.i(
@@ -855,7 +923,11 @@ internal class PlaylistFolderPreviewController(
                 (separatorWidth?.toString() ?: "pending") +
                 " | classloaderMatch=" + runtime.moduleClassMatch +
                 " | nativeAnimator=" +
-                (nativeAnimator?.javaClass?.name ?: "none")
+                (nativeAnimator?.javaClass?.name ?: "none") +
+                " | addMs=" + verifiedAnimator?.addDuration +
+                " | removeMs=" + verifiedAnimator?.removeDuration +
+                " | moveMs=" + verifiedAnimator?.moveDuration +
+                " | changeMs=" + verifiedAnimator?.changeDuration
         )
         // qg1 is NEVER mutated by this observation.
         mainHandler.post {
@@ -866,7 +938,7 @@ internal class PlaylistFolderPreviewController(
                     isFrontFragmentView(browser.list)
                 ) {
                     applyNativeQuickNavPhysics(browser.breadcrumbScroller)
-                    safeRender(browser)
+                    renderBreadcrumb(browser)
                 }
             }
         }
@@ -2551,7 +2623,8 @@ internal class PlaylistFolderPreviewController(
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_ALWAYS
             clipToPadding = false
-            itemAnimator = NativeQuickNavItemAnimator().apply {
+            setHasFixedSize(true)
+            itemAnimator = DefaultItemAnimator().apply {
                 supportsChangeAnimations = false
             }
             visibility = View.GONE
@@ -3187,6 +3260,24 @@ internal class PlaylistFolderPreviewController(
      * These events are delivered even when an idle Playlists tab does not
      * redraw. Never notify or mutate the native adapter ourselves.
      */
+    private val nativeQuickNavEventCounts = WeakHashMap<Any, Int>()
+
+    fun onNativeQuickNavAdapterEvent(adapter: Any, reason: String, start: Int?, count: Int?) {
+        if (!BuildConfig.DEBUG || !settings.enabled) return
+        if (nativeQuickNavEventCounts[adapter]?.let { it >= 24 } == true) return
+        val list = observedNativeNavLists.keys.firstOrNull {
+            it.isAttachedToWindow && nativeAdapter(it) === adapter
+        } ?: return
+        if (adapter.javaClass.simpleName != "qg1" &&
+            verifiedQuickNavAdapterTypes[adapter.javaClass] != true
+        ) return
+        val events = nativeQuickNavEventCounts[adapter] ?: 0
+        nativeQuickNavEventCounts[adapter] = events + 1
+        Log.i(TAG, "FOLDER NATIVE QUICKNAV EVENT | kind=" + reason +
+            " | start=" + start + " | count=" + count +
+            " | adapter=" + adapter.javaClass.simpleName)
+    }
+
     fun onNativePlaylistAdapterEvent(adapter: Any, reason: String) {
         if (!settings.enabled) return
         mainHandler.post {
@@ -3374,18 +3465,26 @@ internal class PlaylistFolderPreviewController(
             !folderChanged
         val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = appearance
-        val pathChanged = PlaylistFolderUiKit.submitBreadcrumb(
-            strip, adapter, sharedSegments, appearance,
-            animateForward = folderChanged && browser.lastRenderedOrder != null
-        )
-        scheduleQuickNavParityCheck(browser, generation)
-
-        if (!folderChanged && !pathChanged && !(styleOnly && oldAtEnd)) {
-            return
-        }
-        PlaylistFolderUiKit.revealBreadcrumbEnd(strip) {
+        val previousStyle = adapter.appliedStyleSignature
+        // A path change is not a style change.
+        val styleSignature = listOf(browser.renderedBreadcrumbSignature,
+            native?.signature ?: "-", storageLabel).joinToString("::")
+        val plan = adapter.plan(sharedSegments)
+        val isCurrent = {
             browsers[list] === browser &&
                 browser.breadcrumbRenderGeneration == generation
+        }
+        if (plan.retainedItems == 0 || previousStyle != styleSignature) {
+            scheduleQuickNavParityCheck(browser, generation)
+        }
+        PlaylistFolderUiKit.submitBreadcrumb(
+            strip, adapter, sharedSegments, styleSignature,
+            animateRootOpening = folderChanged && browser.lastRenderedOrder != null,
+            isCurrent = isCurrent
+        ) { changed ->
+            if (changed || (styleOnly && oldAtEnd)) {
+                PlaylistFolderUiKit.revealBreadcrumbEnd(strip, isCurrent)
+            }
         }
     }
 

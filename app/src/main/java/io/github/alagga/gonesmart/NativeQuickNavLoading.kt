@@ -17,6 +17,9 @@ internal class NativeQuickNavLoading(
     private var indicator: ProgressBar? = null
     private var generation: Long? = null
     private var cancelLayoutWait: (() -> Unit)? = null
+    private var cancelFirstDraw: (() -> Unit)? = null
+    private var drawn = false
+    private var finishRequested = false
     private val headerLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
         position()
     }
@@ -25,7 +28,10 @@ internal class NativeQuickNavLoading(
 
     fun begin(next: Long) {
         cancelLayoutWait?.invoke()
+        cancelFirstDraw?.invoke()
         generation = next
+        drawn = false
+        finishRequested = false
         if (indicator == null) {
             create()?.let { bar ->
                 indicator = bar
@@ -39,8 +45,57 @@ internal class NativeQuickNavLoading(
                 header.addOnLayoutChangeListener(headerLayout)
             }
         }
-        indicator?.visibility = View.VISIBLE
-        position()
+        indicator?.let { bar ->
+            bar.visibility = View.VISIBLE
+            bar.bringToFront()
+            position()
+            observeFirstDraw(bar, next)
+        }
+    }
+
+    private fun observeFirstDraw(bar: ProgressBar, expected: Long) {
+        val tree = bar.viewTreeObserver
+        if (!tree.isAlive) return
+        var attempts = 0
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detach: View.OnAttachStateChangeListener
+        val stop: () -> Unit = {
+            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
+            val live = bar.viewTreeObserver
+            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
+            bar.removeOnAttachStateChangeListener(detach)
+            cancelFirstDraw = null
+        }
+        detach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) { clear() }
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            if (generation != expected) stop()
+            else if (bar.isShown && bar.width > 0 && bar.height > 0) {
+                position()
+                stop()
+                // A frame may still be deferred by another pre-draw
+                // listener. Retire only on the next animation frame.
+                bar.postOnAnimation {
+                    if (generation == expected) {
+                        drawn = true
+                        if (BuildConfig.DEBUG) android.util.Log.d("GoneSmartPlaylist",
+                            "FOLDER QUICKNAV LOADING | drawn | generation=" + expected +
+                                " | running=" + (bar.indeterminateDrawable as?
+                                    android.graphics.drawable.Animatable)?.isRunning)
+                        if (finishRequested) clear()
+                    }
+                }
+            } else if (++attempts >= 12) {
+                stop()
+                if (finishRequested) clear()
+            }
+            true
+        }
+        cancelFirstDraw = stop
+        bar.addOnAttachStateChangeListener(detach)
+        tree.addOnPreDrawListener(listener)
     }
 
     fun position() {
@@ -50,13 +105,21 @@ internal class NativeQuickNavLoading(
 
     fun finish(expected: Long) {
         if (generation != expected) return
-        clear()
+        if (!drawn && cancelFirstDraw != null && isVisible && overlay.isShown) {
+            finishRequested = true
+        } else {
+            clear()
+        }
     }
 
     fun clear() {
         cancelLayoutWait?.invoke()
         cancelLayoutWait = null
+        cancelFirstDraw?.invoke()
+        cancelFirstDraw = null
         generation = null
+        drawn = false
+        finishRequested = false
         indicator?.visibility = View.GONE
     }
 
@@ -98,7 +161,9 @@ internal class NativeQuickNavLoading(
                 val recycler = rows as? RecyclerView
                 val ready = !rows.isLayoutRequested &&
                     (recycler == null || !recycler.hasPendingAdapterUpdates())
-                if (ready || ++attempts >= 12) {
+                if ((ready && header.adapter?.let {
+                        !header.isLayoutRequested && !header.hasPendingAdapterUpdates()
+                    } != false) || ++attempts >= 12) {
                     stop()
                     // Let the actual completed layout draw; the next
                     // animation frame retires this generation only.

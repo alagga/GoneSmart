@@ -182,24 +182,63 @@ internal object PlaylistFolderUiKit {
         adapter: NativeFolderBreadcrumbAdapter,
         next: List<BreadcrumbSegment>,
         styleSignature: String,
-        animateForward: Boolean
-    ): Boolean {
+        animateRootOpening: Boolean,
+        isCurrent: () -> Boolean,
+        onCommitted: (Boolean) -> Unit
+    ) {
         val plan = adapter.plan(next)
-        val animator = header.itemAnimator as? NativeQuickNavItemAnimator
-        val token = if (animateForward && plan.isForward && animator != null) {
-            animator.beginForward()
-        } else null
-        val changed = adapter.submit(next, styleSignature)
-        if (token != null && animator != null) {
-            val revision = adapter.pathRevision
-            animator.completeForward(
-                header, token, plan.retainedItems,
-                plan.retainedItems + plan.insertedCount
-            ) {
-                header.adapter === adapter && adapter.pathRevision == revision
-            }
+        // Native Files always starts with the Storage holder. Establish
+        // that same real layout before the first child append, without
+        // replaying ItemAnimator callbacks or retaining an old folder.
+        if (!animateRootOpening || !plan.isForward || plan.retainedItems != 0 ||
+            next.size <= 1 || !header.isAttachedToWindow
+        ) {
+            onCommitted(adapter.submit(next, styleSignature))
+            return
         }
-        return changed
+        adapter.submit(next.take(1), styleSignature)
+        val revision = adapter.pathRevision
+        val tree = header.viewTreeObserver
+        if (!tree.isAlive) {
+            onCommitted(adapter.submit(next, styleSignature))
+            return
+        }
+        var attempts = 0
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detach: View.OnAttachStateChangeListener
+        fun stop() {
+            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
+            val live = header.viewTreeObserver
+            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
+            header.removeOnAttachStateChangeListener(detach)
+        }
+        fun valid() = isCurrent() && header.adapter === adapter &&
+            adapter.pathRevision == revision && header.visibility == View.VISIBLE
+        detach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) = stop()
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            if (!valid()) {
+                stop()
+            } else if ((!header.isLayoutRequested && !header.isComputingLayout &&
+                    header.findViewHolderForAdapterPosition(0) != null) ||
+                    ++attempts >= 12
+            ) {
+                stop()
+                // The Storage-only native layout draws first. The following
+                // ordinary adapter append is eligible for RecyclerView's
+                // normal add animation, including the installed durations.
+                header.postOnAnimation {
+                    if (valid() && header.isAttachedToWindow) {
+                        onCommitted(adapter.submit(next, styleSignature))
+                    }
+                }
+            }
+            true
+        }
+        header.addOnAttachStateChangeListener(detach)
+        tree.addOnPreDrawListener(listener)
     }
 
     fun revealBreadcrumbEnd(
@@ -260,7 +299,10 @@ internal object PlaylistFolderUiKit {
         ) return null
         val first = header.layoutManager?.findViewByPosition(0) ?: return null
         val label = findFirstTextView(first) ?: return null
-        if (first.width <= 0 || label.width <= 0 || header.isLayoutRequested) {
+        if (first.width <= 0 || label.width <= 0 || header.isLayoutRequested ||
+            first.translationX != 0f || label.translationX != 0f ||
+            header.itemAnimator?.isRunning == true
+        ) {
             return null
         }
         val headerLocation = IntArray(2)
@@ -269,6 +311,7 @@ internal object PlaylistFolderUiKit {
         label.getLocationOnScreen(labelLocation)
         val measured = labelLocation[0] - headerLocation[0] +
             label.compoundPaddingStart
+        if (measured < 0 || expectedTextStart < 0) return null
         val correction = if (allowCorrection) {
             NativeQuickNavInsetPolicy.correctedPadding(
                 currentPadding = header.paddingStart,
@@ -800,6 +843,7 @@ internal class NativeFolderBreadcrumbAdapter(
     private val segments =
         arrayListOf<PlaylistFolderUiKit.BreadcrumbSegment>()
     private var styleSignature = ""
+    val appliedStyleSignature: String get() = styleSignature
     var pathRevision = 0L
         private set
 

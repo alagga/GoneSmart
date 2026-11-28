@@ -36,6 +36,9 @@ internal object NativeQuickNavInsetPolicy {
         }
     }
 
+    fun verifiedNativeStart(measured: Int?, previous: Int?, max: Int): Int? =
+        measured?.takeIf { it in 0..max } ?: previous?.takeIf { it in 0..max }
+
     fun correctedPadding(
         currentPadding: Int,
         measuredTextStart: Int,
