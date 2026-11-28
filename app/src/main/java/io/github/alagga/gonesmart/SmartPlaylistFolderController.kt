@@ -1632,22 +1632,11 @@ internal class SmartPlaylistFolderController(
             visibility = View.INVISIBLE
             background = ColorDrawable(Color.TRANSPARENT)
         }
-        val breadcrumb = RecyclerView(list.context).apply {
-            layoutManager = LinearLayoutManager(
-                context,
-                RecyclerView.HORIZONTAL,
-                false
-            )
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_ALWAYS
-            setHasFixedSize(false)
-            itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator().apply {
-                supportsChangeAnimations = false
-            }
-            visibility = View.GONE
+        val breadcrumb = PlaylistFolderUiKit.newQuickNav(list).apply {
             background = headerSurface()
             elevation = dp(list, 2).toFloat()
         }
+        val quickNavFrame = PlaylistFolderUiKit.wrapQuickNav(breadcrumb)
         val rows = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -1677,7 +1666,7 @@ internal class SmartPlaylistFolderController(
             orientation = LinearLayout.VERTICAL
             clipChildren = true
             addView(
-                breadcrumb,
+                quickNavFrame,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1877,6 +1866,15 @@ internal class SmartPlaylistFolderController(
             }
         )
         browsers[list] = browser
+        // Real frame includes the native 2dp loader at hidden Storage.
+        // Keep the native list inset in sync with its measured height.
+        quickNavFrame.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) {
+                list.post {
+                    if (browsers[list] === browser) updateNativeInset(browser)
+                }
+            }
+        }
         // First-frame timer is cancelled; native rows remain hidden until
         // the original Smart differ and holder identities are verified.
         NativeFolderFirstFrameGate.release(
@@ -2425,7 +2423,6 @@ internal class SmartPlaylistFolderController(
                 browser.breadcrumb, adapter, signature
             ) {
                 if (browsers[browser.list] === browser) {
-                    browser.quickNavLoading.position()
                     updateNativeInset(browser)
                 }
             }
@@ -2450,9 +2447,7 @@ internal class SmartPlaylistFolderController(
                 strip, adapter, next, signature,
                 animateRootOpening = browser.initialHeaderReady,
                 isCurrent = isCurrent
-            ) { changed ->
-                if (changed) PlaylistFolderUiKit.revealBreadcrumbEnd(strip, isCurrent)
-            }
+            ) { }
         }
     }
 
@@ -3915,9 +3910,8 @@ internal class SmartPlaylistFolderController(
         val headerHeight = if (
             browser.overlay.visibility == View.VISIBLE
         ) {
-            val breadcrumbHeight = if (
-                browser.breadcrumb.visibility == View.VISIBLE
-            ) browser.breadcrumb.height.coerceAtLeast(0) else 0
+            val breadcrumbHeight = (browser.breadcrumb.parent as? FrameLayout)
+                ?.height?.coerceAtLeast(0) ?: 0
             breadcrumbHeight + browser.folderBand.height.coerceAtLeast(0)
         } else {
             0
@@ -4268,7 +4262,6 @@ internal class SmartPlaylistFolderController(
             rect.height() > dp(list, 30)
         browser.folderViewport.visibility =
             if (browser.nativeContentReady) View.VISIBLE else View.INVISIBLE
-        browser.quickNavLoading.position()
         val nextVisibility = if (!SmartQuickNavPresentationPolicy.chromeReady(
                 browser.initialHeaderReady,
                 browser.quickNavLoading.isVisible

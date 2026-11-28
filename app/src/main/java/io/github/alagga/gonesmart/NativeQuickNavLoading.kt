@@ -1,6 +1,5 @@
 package io.github.alagga.gonesmart
 
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -22,9 +21,7 @@ internal class NativeQuickNavLoading(
     private var drawn = false
     private var finishRequested = false
     private var firstFramePending = false
-    private val headerLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-        position()
-    }
+    private var accentSubscription: NativeGmmpAccent.Subscription? = null
 
     val isVisible: Boolean get() = indicator?.visibility == View.VISIBLE
 
@@ -38,21 +35,20 @@ internal class NativeQuickNavLoading(
         firstFramePending = false
         if (indicator == null) {
             create()?.let { bar ->
+                val frame = header.parent as? FrameLayout ?: return@let
                 indicator = bar
-                overlay.addView(bar, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, bar.layoutParams.height,
-                    Gravity.TOP
-                ))
-                // Smart's header has elevation; keep the thin indicator
-                // above adjacent content using the actual header elevation.
-                bar.elevation = header.elevation
-                header.addOnLayoutChangeListener(headerLayout)
+                // Preserve FrameLayout.LayoutParams read from the original
+                // resource, including BOTTOM gravity. No translation overlay.
+                frame.addView(bar, bar.layoutParams)
             }
         }
         indicator?.let { bar ->
+            // Original mg1.u0(true): setIndeterminate then VISIBLE.
+            bar.isIndeterminate = true
             bar.visibility = View.VISIBLE
-            bar.bringToFront()
-            position()
+            if (accentSubscription == null) {
+                accentSubscription = NativeQuickNavLoadingSource().bindAccent(bar)
+            }
             observeFirstDraw(bar, next)
         }
     }
@@ -78,7 +74,6 @@ internal class NativeQuickNavLoading(
         listener = ViewTreeObserver.OnPreDrawListener {
             if (generation != expected) stop()
             else if (bar.isShown && bar.width > 0 && bar.height > 0) {
-                position()
                 stop()
                 // A frame may still be deferred by another pre-draw
                 // listener. Retire only on the next animation frame.
@@ -103,11 +98,6 @@ internal class NativeQuickNavLoading(
         cancelFirstDraw = stop
         bar.addOnAttachStateChangeListener(detach)
         tree.addOnPreDrawListener(listener)
-    }
-
-    fun position() {
-        indicator?.translationY =
-            (if (header.visibility == View.VISIBLE) header.height else 0).toFloat()
     }
 
     fun finish(expected: Long) {
@@ -186,7 +176,10 @@ internal class NativeQuickNavLoading(
         drawn = false
         firstFramePending = false
         finishRequested = false
+        // Original mg1.z1(): GONE. No forced drawable restart.
         indicator?.visibility = View.GONE
+        accentSubscription?.dispose()
+        accentSubscription = null
     }
 
     /**

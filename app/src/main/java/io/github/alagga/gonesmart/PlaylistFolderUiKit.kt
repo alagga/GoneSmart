@@ -24,6 +24,9 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.DefaultItemAnimator
 
 /**
  * Shared native-looking folder chrome for both Playlist and Smart-Playlist
@@ -58,6 +61,28 @@ internal object PlaylistFolderUiKit {
         val key: String,
         val label: String
     )
+
+    /**
+     * The installed Files fragment uses a one-span horizontal GridLayoutManager.
+     * Its SafeGridLayoutManager merely catches layout exceptions; do not
+     * silently swallow an inconsistent module adapter transaction.
+     */
+    fun newQuickNav(host: View): RecyclerView = RecyclerView(host.context).apply {
+        layoutManager = GridLayoutManager(context, 1, RecyclerView.HORIZONTAL, false)
+        itemAnimator = DefaultItemAnimator()
+        isHorizontalScrollBarEnabled = false
+        visibility = View.GONE
+        NativeQuickNavLoadingSource.applyHeaderXml(this)
+    }
+
+    /** Files XML places progress at BOTTOM in the same wrap-content frame. */
+    fun wrapQuickNav(header: RecyclerView): FrameLayout = FrameLayout(header.context).apply {
+        elevation = header.elevation
+        header.elevation = 0f
+        addView(header, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+    }
 
     data class BreadcrumbAlignment(
         val measuredTextStart: Int,
@@ -203,8 +228,8 @@ internal object PlaylistFolderUiKit {
         adapter.rootOpening = false
         adapter.rootClosing = true
         header.stopScroll()
-        header.layoutManager?.requestSimpleAnimationsInNextLayout()
         adapter.submit(listOf(root), styleSignature)
+        header.scrollToPosition(0)
         val revision = adapter.pathRevision
         val tree = header.viewTreeObserver
         fun valid() = adapter.rootClosing && adapter.pathRevision == revision &&
@@ -280,10 +305,9 @@ internal object PlaylistFolderUiKit {
         if (!animateRootOpening || !plan.isForward || plan.retainedItems != 0 ||
             next.size <= 1 || !header.isAttachedToWindow
         ) {
-            if (plan.removedCount > 0 || plan.insertedCount > 0) {
-                header.layoutManager?.requestSimpleAnimationsInNextLayout()
-            }
-            onCommitted(adapter.submit(next, styleSignature))
+            val changed = adapter.submit(next, styleSignature)
+            if (changed) scrollBreadcrumbToNativeEnd(header)
+            onCommitted(changed)
             return
         }
         adapter.rootOpening = true
@@ -292,7 +316,9 @@ internal object PlaylistFolderUiKit {
         val tree = header.viewTreeObserver
         if (!tree.isAlive) {
             adapter.rootOpening = false
-            onCommitted(adapter.submit(next, styleSignature))
+            val changed = adapter.submit(next, styleSignature)
+            if (changed) scrollBreadcrumbToNativeEnd(header)
+            onCommitted(changed)
             return
         }
         var attempts = 0
@@ -325,8 +351,9 @@ internal object PlaylistFolderUiKit {
                 header.postOnAnimation {
                     if (valid() && header.isAttachedToWindow) {
                         adapter.rootOpening = false
-                        header.layoutManager?.requestSimpleAnimationsInNextLayout()
-                        onCommitted(adapter.submit(next, styleSignature))
+                        val changed = adapter.submit(next, styleSignature)
+                        if (changed) scrollBreadcrumbToNativeEnd(header)
+                        onCommitted(changed)
                     }
                 }
             }
@@ -336,52 +363,14 @@ internal object PlaylistFolderUiKit {
         tree.addOnPreDrawListener(listener)
     }
 
-    fun revealBreadcrumbEnd(
-        header: RecyclerView,
-        isCurrent: () -> Boolean
-    ) {
-        if (!header.isAttachedToWindow) return
-        val tree = header.viewTreeObserver
-        if (!tree.isAlive) return
-        var attempts = 0
-        lateinit var listener: ViewTreeObserver.OnPreDrawListener
-        lateinit var detach: View.OnAttachStateChangeListener
-        fun stop() {
-            if (tree.isAlive) tree.removeOnPreDrawListener(listener)
-            val live = header.viewTreeObserver
-            if (live !== tree && live.isAlive) live.removeOnPreDrawListener(listener)
-            header.removeOnAttachStateChangeListener(detach)
-        }
-        detach = object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(view: View) = Unit
-            override fun onViewDetachedFromWindow(view: View) = stop()
-        }
-        listener = ViewTreeObserver.OnPreDrawListener {
-            if (!isCurrent() || !header.isAttachedToWindow ||
-                header.visibility != View.VISIBLE || ++attempts > 12
-            ) {
-                stop()
-                return@OnPreDrawListener true
-            }
-            if (header.isLayoutRequested || header.isComputingLayout ||
-                header.hasPendingAdapterUpdates()) {
-                return@OnPreDrawListener true
-            }
-            stop()
-            val last = (header.adapter?.itemCount ?: 0) - 1
-            if (last >= 0) {
-                val child = header.layoutManager?.findViewByPosition(last)
-                if (child == null) {
-                    header.smoothScrollToPosition(last)
-                } else {
-                    val delta = child.right - (header.width - header.paddingEnd)
-                    if (delta > 0) header.smoothScrollBy(delta, 0)
-                }
-            }
-            true
-        }
-        header.addOnAttachStateChangeListener(detach)
-        tree.addOnPreDrawListener(listener)
+    /**
+     * Verified GMMP 4.2.1 mg1.t3 publishes the new list, dispatches DiffUtil
+     * updates, then calls scrollToPosition(last) in the SAME UI transaction.
+     * It does not post a smooth scroll or force manual add callbacks.
+     */
+    private fun scrollBreadcrumbToNativeEnd(header: RecyclerView) {
+        val last = (header.adapter?.itemCount ?: 0) - 1
+        if (last >= 0) header.scrollToPosition(last)
     }
 
     fun alignBreadcrumbStart(
@@ -958,9 +947,11 @@ internal class NativeFolderBreadcrumbAdapter(
     override fun getItemViewType(position: Int): Int = position % 2
 
     override fun getItemId(position: Int): Long {
-        val segment = segments[position / 2]
-        return (segment.key.hashCode().toLong() shl 1) xor
-            (position % 2).toLong()
+        // Native pg1 uses position for the separator and path hash for
+        // metadata. Separate namespaces avoid a numeric collision while
+        // retaining the exact position/key identity semantics.
+        if (position % 2 != 0) return Long.MIN_VALUE + position
+        return segments[position / 2].key.hashCode().toLong()
     }
 
     override fun onCreateViewHolder(
@@ -1035,22 +1026,33 @@ internal class NativeFolderBreadcrumbAdapter(
     ): Boolean {
         val oldIds = segments.map { it.key + "\u0000" + it.label }
         val newIds = next.map { it.key + "\u0000" + it.label }
-        val diff = NativeQuickNavDiff.between(oldIds, newIds)
         val styleChanged = nextStyleSignature != styleSignature
         val pathChanged = oldIds != newIds
-        if (pathChanged) ++pathRevision
-        styleSignature = nextStyleSignature
-
-        if (diff.removedCount > 0) {
-            segments.subList(diff.sharedSegments, segments.size).clear()
-            notifyItemRangeRemoved(diff.retainedItems, diff.removedCount)
-        }
-        if (diff.insertedCount > 0) {
-            segments.addAll(next.drop(diff.sharedSegments))
-            notifyItemRangeInserted(diff.retainedItems, diff.insertedCount)
-        }
-        if (styleChanged && itemCount > 0 && !pathChanged) {
-            notifyItemRangeChanged(0, itemCount, "native-style")
+        if (pathChanged) {
+            val oldItems = NativeQuickNavTransaction.items(oldIds)
+            val newItems = NativeQuickNavTransaction.items(newIds)
+            // wg1$f computes DiffUtil with detectMoves=false and qg1
+            // compares each actual item by equality for both callbacks.
+            val result = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                override fun getOldListSize() = oldItems.size
+                override fun getNewListSize() = newItems.size
+                override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                    oldItems[oldItemPosition] == newItems[newItemPosition]
+                override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                    areItemsTheSame(oldItemPosition, newItemPosition)
+            }, false)
+            // Publish the COMPLETE new snapshot before dispatch, as mg1.t3
+            // does. Never mutate the backing list between notifications.
+            ++pathRevision
+            segments.clear()
+            segments.addAll(next)
+            styleSignature = nextStyleSignature
+            result.dispatchUpdatesTo(this)
+        } else {
+            styleSignature = nextStyleSignature
+            if (styleChanged && itemCount > 0) {
+                notifyItemRangeChanged(0, itemCount, "native-style")
+            }
         }
         return pathChanged
     }

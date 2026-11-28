@@ -826,7 +826,6 @@ internal class PlaylistFolderPreviewController(
             if (rootItem == null || findNativeTitle(separator, 0) != null) return false
             verifiedQuickNavAdapterTypes[adapter.javaClass] = true
         }
-        sampledQuickNavProgress.observe(list)
         val paint = effectiveNativeTitlePaint(original)
         val nativeTouch = original.background?.constantState
             ?: (original.parent as? View)?.background?.constantState
@@ -2618,28 +2617,14 @@ internal class PlaylistFolderPreviewController(
         // qg1 is NOT one wide holder: its real alternating metadata and
         // separator layouts determine exactly the first left inset, arrow
         // size, padding, typography bounds and native clickable/ripple area.
-        val breadcrumbScroller = RecyclerView(list.context).apply {
-            layoutManager = LinearLayoutManager(
-                context, RecyclerView.HORIZONTAL, false
-            )
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_ALWAYS
-            clipToPadding = false
-            // The root/ancestor can resize with navigation. Let the
-            // adapter request a real layout instead of the fixed-size
-            // posted update path racing the parent's traversal.
-            setHasFixedSize(false)
-            itemAnimator = DefaultItemAnimator().apply {
-                supportsChangeAnimations = false
-            }
-            visibility = View.GONE
-        }
+        val breadcrumbScroller = PlaylistFolderUiKit.newQuickNav(list)
+        val quickNavFrame = PlaylistFolderUiKit.wrapQuickNav(breadcrumbScroller)
         applyNativeQuickNavPhysics(breadcrumbScroller)
         val contentColumn = LinearLayout(list.context).apply {
             orientation = LinearLayout.VERTICAL
         }
         contentColumn.addView(
-            breadcrumbScroller,
+            quickNavFrame,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -3407,7 +3392,6 @@ internal class PlaylistFolderPreviewController(
         val list = browser.list
         val strip = browser.breadcrumbScroller
         val adapter = browser.breadcrumbAdapter ?: return
-        val oldAtEnd = !strip.canScrollHorizontally(1)
         val folderChanged =
             browser.lastBreadcrumbFolderId != browser.currentFolderId
         browser.lastBreadcrumbFolderId = browser.currentFolderId
@@ -3454,8 +3438,6 @@ internal class PlaylistFolderPreviewController(
             }
         ).joinToString("::")
         if (browser.breadcrumbContentSignature == appearance) return
-        val styleOnly = browser.breadcrumbContentSignature != null &&
-            !folderChanged
         val generation = ++browser.breadcrumbRenderGeneration
         browser.breadcrumbContentSignature = appearance
         val previousStyle = adapter.appliedStyleSignature
@@ -3474,11 +3456,7 @@ internal class PlaylistFolderPreviewController(
             strip, adapter, sharedSegments, styleSignature,
             animateRootOpening = folderChanged && browser.lastRenderedOrder != null,
             isCurrent = isCurrent
-        ) { changed ->
-            if (changed || (styleOnly && oldAtEnd)) {
-                PlaylistFolderUiKit.revealBreadcrumbEnd(strip, isCurrent)
-            }
-        }
+        ) { }
     }
 
     /**
