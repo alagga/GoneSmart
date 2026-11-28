@@ -24,7 +24,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
-import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.DefaultItemAnimator
 
@@ -1029,18 +1028,7 @@ internal class NativeFolderBreadcrumbAdapter(
         val styleChanged = nextStyleSignature != styleSignature
         val pathChanged = oldIds != newIds
         if (pathChanged) {
-            val oldItems = NativeQuickNavTransaction.items(oldIds)
-            val newItems = NativeQuickNavTransaction.items(newIds)
-            // wg1$f computes DiffUtil with detectMoves=false and qg1
-            // compares each actual item by equality for both callbacks.
-            val result = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-                override fun getOldListSize() = oldItems.size
-                override fun getNewListSize() = newItems.size
-                override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int) =
-                    oldItems[oldItemPosition] == newItems[newItemPosition]
-                override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int) =
-                    areItemsTheSame(oldItemPosition, newItemPosition)
-            }, false)
+            val result = NativeQuickNavTransaction.calculate(oldIds, newIds)
             // Publish the COMPLETE new snapshot before dispatch, as mg1.t3
             // does. Never mutate the backing list between notifications.
             ++pathRevision

@@ -47,7 +47,7 @@ internal class NativeQuickNavLoading(
             bar.isIndeterminate = true
             bar.visibility = View.VISIBLE
             if (accentSubscription == null) {
-                accentSubscription = NativeQuickNavLoadingSource().bindAccent(bar)
+                accentSubscription = NativeQuickNavLoadingSource.bindAccent(bar)
             }
             observeFirstDraw(bar, next)
         }

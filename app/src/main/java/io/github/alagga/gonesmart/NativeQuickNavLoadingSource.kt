@@ -54,6 +54,18 @@ internal class NativeQuickNavLoadingSource {
             return null
         }
 
+        /** Native XML gmDynamicColor=!mainColorAccent, not colorPrimary. */
+        fun bindAccent(bar: ProgressBar): NativeGmmpAccent.Subscription? {
+            val setter = runCatching {
+                bar.javaClass.getMethod("setSupportIndeterminateTintList", ColorStateList::class.java)
+            }.getOrNull() ?: return null
+            fun apply(color: Int) {
+                runCatching { setter.invoke(bar, ColorStateList.valueOf(color)) }
+            }
+            NativeGmmpAccent.lastObserved()?.let(::apply)
+            return NativeGmmpAccent.observeVerifiedDynamicAccent(bar, ::apply)
+        }
+
         fun applyHeaderXml(header: RecyclerView) {
             runCatching {
                 withElement(header, "quickNavRecyclerView", "androidx.recyclerview.widget.RecyclerView") { _, attrs ->
@@ -96,6 +108,9 @@ internal class NativeQuickNavLoadingSource {
                 require(bar.indeterminateDrawable?.javaClass?.name == DRAWABLE &&
                     bar.indeterminateDrawable is Animatable)
                 bar.layoutParams = params
+                // Resource attributes initialize the independent native
+                // view, but the actual Files fragment owns its resource ID.
+                bar.id = View.NO_ID
                 bar.visibility = View.GONE
                 bar.isClickable = false
                 bar.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
@@ -112,15 +127,4 @@ internal class NativeQuickNavLoadingSource {
         }.getOrNull()
     }
 
-    /** Native XML gmDynamicColor=!mainColorAccent, not colorPrimary. */
-    fun bindAccent(bar: ProgressBar): NativeGmmpAccent.Subscription? {
-        val setter = runCatching {
-            bar.javaClass.getMethod("setSupportIndeterminateTintList", ColorStateList::class.java)
-        }.getOrNull() ?: return null
-        fun apply(color: Int) {
-            runCatching { setter.invoke(bar, ColorStateList.valueOf(color)) }
-        }
-        NativeGmmpAccent.lastObserved()?.let(::apply)
-        return NativeGmmpAccent.observeVerifiedDynamicAccent(bar, ::apply)
-    }
 }
