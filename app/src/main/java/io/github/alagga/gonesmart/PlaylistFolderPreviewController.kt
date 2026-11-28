@@ -3247,6 +3247,7 @@ internal class PlaylistFolderPreviewController(
             nav?.signature ?: "native-playlist-fallback"
         applyNativeQuickNavPhysics(strip)
         if (sourceSegments.isEmpty()) {
+            ++browser.breadcrumbRenderGeneration
             adapter.submit(
                 emptyList(), browser.renderedBreadcrumbSignature ?: ""
             )
@@ -3330,8 +3331,7 @@ internal class PlaylistFolderPreviewController(
      */
     private fun scheduleQuickNavParityCheck(
         browser: Browser,
-        generation: Long,
-        attempt: Int = 0
+        generation: Long
     ) {
         val source = observedNativeBreadcrumbStyle
         val expectedFirstX = source?.nativeFirstTextStartPx
@@ -3340,24 +3340,16 @@ internal class PlaylistFolderPreviewController(
             ?: return
         val styleKey = source?.signature ?: "cached:" + expectedFirstX
         val strip = browser.breadcrumbScroller
-        strip.postOnAnimation {
-            if (browsers[browser.list] !== browser ||
-                browser.breadcrumbRenderGeneration != generation ||
-                !strip.isAttachedToWindow
-            ) return@postOnAnimation
-            val result = PlaylistFolderUiKit.alignBreadcrumbStart(
-                strip,
-                expectedTextStart = expectedFirstX,
-                maxCorrectionPx = dp(strip, 24)
-            )
-            if (result == null) {
-                if (attempt < 12) {
-                    scheduleQuickNavParityCheck(
-                        browser, generation, attempt + 1
-                    )
-                }
-                return@postOnAnimation
+        PlaylistFolderUiKit.alignBreadcrumbBeforeDraw(
+            header = strip,
+            expectedTextStart = expectedFirstX,
+            maxCorrectionPx = dp(strip, 24),
+            isCurrent = {
+                browsers[browser.list] === browser &&
+                    browser.breadcrumbRenderGeneration == generation &&
+                    isFrontFragmentView(browser.list)
             }
+        ) { result ->
             result.appliedPaddingStart?.let { correction ->
                 calibratedHeaderStarts[strip] = styleKey to correction
                 if (BuildConfig.DEBUG) {
@@ -3373,15 +3365,11 @@ internal class PlaylistFolderPreviewController(
                             else "verified/fallback"
                     )
                 }
-                if (attempt < 12) {
-                    scheduleQuickNavParityCheck(
-                        browser, generation, attempt + 1
-                    )
-                }
-                return@postOnAnimation
+                return@alignBreadcrumbBeforeDraw
             }
-            if (!BuildConfig.DEBUG || source == null) return@postOnAnimation
-            val first = strip.layoutManager?.findViewByPosition(0) ?: return@postOnAnimation
+            if (!BuildConfig.DEBUG || source == null) return@alignBreadcrumbBeforeDraw
+            val first = strip.layoutManager?.findViewByPosition(0)
+                ?: return@alignBreadcrumbBeforeDraw
             val separator = strip.layoutManager?.findViewByPosition(1)
             val actual = NativeQuickNavParity.Metrics(
                 firstTextStartPx = result.measuredTextStart,

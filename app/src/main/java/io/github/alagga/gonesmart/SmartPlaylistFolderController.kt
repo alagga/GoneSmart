@@ -2456,8 +2456,8 @@ internal class SmartPlaylistFolderController(
             ?.submit(next, signature)
         browser.breadcrumb.visibility =
             if (next.size > 1) View.VISIBLE else View.GONE
+        val generation = ++browser.breadcrumbAlignmentGeneration
         if (next.size > 1) {
-            val generation = ++browser.breadcrumbAlignmentGeneration
             scheduleBreadcrumbAlignment(browser, generation)
         }
     }
@@ -2479,36 +2479,19 @@ internal class SmartPlaylistFolderController(
 
     private fun scheduleBreadcrumbAlignment(
         browser: Browser,
-        generation: Long,
-        attempt: Int = 0
+        generation: Long
     ) {
         val strip = browser.breadcrumb
-        strip.postOnAnimation {
-            if (browsers[browser.list] !== browser ||
-                browser.breadcrumbAlignmentGeneration != generation ||
-                strip.visibility != View.VISIBLE ||
-                !strip.isAttachedToWindow
-            ) return@postOnAnimation
-            val target = expectedBreadcrumbTextStart(browser.list)
-            val result = PlaylistFolderUiKit.alignBreadcrumbStart(
-                strip,
-                expectedTextStart = target,
-                maxCorrectionPx = dp(strip, 24)
-            )
-            if (result == null) {
-                if (attempt < 12) {
-                    scheduleBreadcrumbAlignment(
-                        browser, generation, attempt + 1
-                    )
-                }
-                return@postOnAnimation
+        PlaylistFolderUiKit.alignBreadcrumbBeforeDraw(
+            header = strip,
+            expectedTextStart = expectedBreadcrumbTextStart(browser.list),
+            maxCorrectionPx = dp(strip, 24),
+            isCurrent = {
+                browsers[browser.list] === browser &&
+                    browser.breadcrumbAlignmentGeneration == generation &&
+                    isFrontFragmentView(browser.list)
             }
-            if (result.appliedPaddingStart != null && attempt < 12) {
-                scheduleBreadcrumbAlignment(
-                    browser, generation, attempt + 1
-                )
-            }
-        }
+        )
     }
 
     private fun sharedRowStyle(

@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -149,7 +150,8 @@ internal object PlaylistFolderUiKit {
     fun alignBreadcrumbStart(
         header: RecyclerView,
         expectedTextStart: Int,
-        maxCorrectionPx: Int
+        maxCorrectionPx: Int,
+        allowCorrection: Boolean = true
     ): BreadcrumbAlignment? {
         if (!header.isAttachedToWindow || header.width <= 0 ||
             header.canScrollHorizontally(-1)
@@ -165,12 +167,14 @@ internal object PlaylistFolderUiKit {
         label.getLocationOnScreen(labelLocation)
         val measured = labelLocation[0] - headerLocation[0] +
             label.compoundPaddingStart
-        val correction = NativeQuickNavInsetPolicy.correctedPadding(
-            currentPadding = header.paddingStart,
-            measuredTextStart = measured,
-            expectedTextStart = expectedTextStart,
-            maxCorrection = maxCorrectionPx
-        )
+        val correction = if (allowCorrection) {
+            NativeQuickNavInsetPolicy.correctedPadding(
+                currentPadding = header.paddingStart,
+                measuredTextStart = measured,
+                expectedTextStart = expectedTextStart,
+                maxCorrection = maxCorrectionPx
+            )
+        } else null
         if (correction != null) {
             header.setPaddingRelative(
                 correction,
@@ -184,6 +188,65 @@ internal object PlaylistFolderUiKit {
             appliedPaddingStart = correction,
             aligned = correction == null
         )
+    }
+
+    /**
+     * Calibrate the real laid-out native metadata holder before its first
+     * corrected frame is drawn, not in a later animation callback. Only an
+     * actual padding change cancels one draw; RecyclerView/GMMP still owns
+     * layout, item animation and scrolling. No timer or forced redraw loop.
+     */
+    fun alignBreadcrumbBeforeDraw(
+        header: RecyclerView,
+        expectedTextStart: Int,
+        maxCorrectionPx: Int,
+        isCurrent: () -> Boolean,
+        onAlignment: (BreadcrumbAlignment) -> Unit = {}
+    ) {
+        if (!header.isAttachedToWindow) return
+        val originalTree = header.viewTreeObserver
+        if (!originalTree.isAlive) return
+        val alignment = NativeQuickNavInsetPolicy.DrawAlignment()
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        lateinit var detachListener: View.OnAttachStateChangeListener
+        fun stop() {
+            if (originalTree.isAlive) originalTree.removeOnPreDrawListener(listener)
+            val liveTree = header.viewTreeObserver
+            if (liveTree !== originalTree && liveTree.isAlive) {
+                liveTree.removeOnPreDrawListener(listener)
+            }
+            header.removeOnAttachStateChangeListener(detachListener)
+        }
+        detachListener = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = Unit
+            override fun onViewDetachedFromWindow(view: View) = stop()
+        }
+        listener = ViewTreeObserver.OnPreDrawListener {
+            if (!isCurrent() || !header.isAttachedToWindow ||
+                header.visibility != View.VISIBLE ||
+                header.canScrollHorizontally(-1)
+            ) {
+                stop()
+                return@OnPreDrawListener true
+            }
+            val result = alignBreadcrumbStart(
+                header,
+                expectedTextStart,
+                maxCorrectionPx,
+                allowCorrection = alignment.mayCorrect
+            )
+            val step = alignment.onMeasurement(
+                measurementAvailable = result != null,
+                paddingApplied = result?.appliedPaddingStart != null
+            )
+            if (!step.keepPending) stop()
+            result?.let(onAlignment)
+            // setPaddingRelative requested native layout. Do not paint the
+            // now obsolete holder geometry for a single transitional frame.
+            step.draw
+        }
+        header.addOnAttachStateChangeListener(detachListener)
+        originalTree.addOnPreDrawListener(listener)
     }
 
     fun menuButtonId(host: View): Int =
