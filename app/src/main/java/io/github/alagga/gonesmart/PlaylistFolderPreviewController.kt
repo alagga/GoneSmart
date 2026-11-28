@@ -160,6 +160,8 @@ internal class PlaylistFolderPreviewController(
         var breadcrumbRenderGeneration: Long = 0L,
         var lastRenderedFolderId: String? = null,
         var lastRenderedOrder: List<String>? = null,
+        val overlayPosition: PlaylistNavigationSurfaceHost.OverlayPosition =
+            PlaylistNavigationSurfaceHost.OverlayPosition(),
         var loadingGeneration: Long = 0L,
         var breadcrumbAdapter: NativeFolderBreadcrumbAdapter? = null,
         val mainSelection: NativeMainPlaylistSelectionMirror =
@@ -2687,6 +2689,12 @@ internal class PlaylistFolderPreviewController(
                             current.isShown &&
                             isFrontFragmentView(current)
                     if (foreground) {
+                        // CoordinatorLayout can move the native content
+                        // without changing layout bounds. Follow its actual
+                        // position before this very frame is drawn.
+                        if (!isPicker(current)) {
+                            browser.overlayPosition.sync(current, browser.parent, browser.overlay)
+                        }
                         // 4.2.1 renamed the native playlist ActionMode
                         // callback, so visible native chrome remains the
                         // semantic postcondition while selection is active.
@@ -3041,14 +3049,7 @@ internal class PlaylistFolderPreviewController(
         if (browser.overlay.visibility == next) return
 
         if (visible) {
-            val listLocation = IntArray(2)
-            val hostLocation = IntArray(2)
-            list.getLocationOnScreen(listLocation)
-            browser.parent.getLocationOnScreen(hostLocation)
-            browser.overlay.x =
-                (listLocation[0] - hostLocation[0]).toFloat()
-            browser.overlay.y =
-                (listLocation[1] - hostLocation[1]).toFloat()
+            browser.overlayPosition.sync(list, browser.parent, browser.overlay)
         }
         browser.overlay.visibility = next
         if (visible) updatePlaylistMenu()
@@ -3080,18 +3081,7 @@ internal class PlaylistFolderPreviewController(
                 height = availableHeight
             }
         }
-        val listLocation = IntArray(2)
-        val hostLocation = IntArray(2)
-        list.getLocationOnScreen(listLocation)
-        browser.parent.getLocationOnScreen(hostLocation)
-        val targetX = (listLocation[0] - hostLocation[0]).toFloat()
-        val targetY = (listLocation[1] - hostLocation[1]).toFloat()
-        if (kotlin.math.abs(overlay.x - targetX) >= 0.5f) {
-            overlay.x = targetX
-        }
-        if (kotlin.math.abs(overlay.y - targetY) >= 0.5f) {
-            overlay.y = targetY
-        }
+        browser.overlayPosition.sync(list, browser.parent, overlay)
         // Offscreen ViewPager pages may remain attached: they must not
         // intercept input on Now Playing or other library tabs.
         val visibleBounds = Rect()

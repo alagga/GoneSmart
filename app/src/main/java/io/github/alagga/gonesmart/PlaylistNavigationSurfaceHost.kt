@@ -147,6 +147,36 @@ internal object PlaylistNavigationSurfaceHost {
     }
 
     /**
+     * The host CoordinatorLayout can offset the native content child as its
+     * AppBar consumes nested scroll WITHOUT dispatching a layout change.
+     * Use live window coordinates at the existing foreground pre-draw
+     * boundary. No new observer, guessed toolbar height, animation, layout
+     * requests or toolbar mutations. Reuse coordinate buffers per browser.
+     */
+    class OverlayPosition {
+        private val nativeLocation = IntArray(2)
+        private val hostLocation = IntArray(2)
+
+        fun sync(list: View, host: ViewGroup, overlay: View): Boolean {
+            if (!list.isAttachedToWindow || overlay.parent !== host ||
+                list.width <= 0 || list.height <= 0
+            ) return false
+            list.getLocationInWindow(nativeLocation)
+            host.getLocationInWindow(hostLocation)
+            val targetX = (nativeLocation[0] - hostLocation[0] + host.scrollX).toFloat()
+            val targetY = (nativeLocation[1] - hostLocation[1] + host.scrollY).toFloat()
+            val moveX = needsPositionUpdate(overlay.x, targetX)
+            val moveY = needsPositionUpdate(overlay.y, targetY)
+            if (moveX) overlay.x = targetX
+            if (moveY) overlay.y = targetY
+            return moveX || moveY
+        }
+    }
+
+    internal fun needsPositionUpdate(actual: Float, target: Float): Boolean =
+        kotlin.math.abs(actual - target) >= 0.5f
+
+    /**
      * Returns null outside ViewPager. Inside tabs, require the fragment page
      * containing this list to occupy most of the pager viewport.
      */

@@ -311,7 +311,9 @@ internal class SmartPlaylistFolderController(
         var scrollDeltaReported: Boolean = false,
         var touchGuardReported: Boolean = false,
         var overscrollReported: Boolean = false,
-        var visibleRowSyncPending: Boolean = false
+        var visibleRowSyncPending: Boolean = false,
+        val overlayPosition: PlaylistNavigationSurfaceHost.OverlayPosition =
+            PlaylistNavigationSurfaceHost.OverlayPosition()
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -1720,6 +1722,9 @@ internal class SmartPlaylistFolderController(
                     }
                     syncPagerOverlayVisibility(browser)
                     val front = isFrontFragmentView(list) && list.isShown
+                    if (front && browser.overlay.visibility == View.VISIBLE) {
+                        browser.overlayPosition.sync(list, browser.host, browser.overlay)
+                    }
                     if (SmartFolderNavigationCommitPolicy.mayRevealAtDraw(
                             isFront = front,
                             nativeContentReady = browser.nativeContentReady,
@@ -1803,14 +1808,10 @@ internal class SmartPlaylistFolderController(
         )
         val originalNativeNestedScrollingEnabled =
             nativeNestedScrollingEnabled(list)
-        // GMMP and GoneSmart package the same AndroidX RecyclerView through
-        // different classloaders on the tested build. Never use an
-        // "as? RecyclerView" cast for the host list: that silently returned
-        // null in the previous build, so neither scroll listeners nor the
-        // nested-scrolling change were ever installed.
-        if (originalNativeNestedScrollingEnabled == true) {
-            setNativeNestedScrollingEnabled(list, false)
-        }
+        // Preserve GMMP's original nested-scrolling contract. Its native
+        // CoordinatorLayout/AppBar consumes pre-scroll before the native
+        // list, and onScrolled reports only the list's consumed distance.
+        // The folder-band mirror must not suppress that parent dispatch.
         browser = Browser(
             list = list,
             nativeAdapter = adapter,
@@ -3889,9 +3890,6 @@ internal class SmartPlaylistFolderController(
         browser.list.removeOnLayoutChangeListener(browser.layoutListener)
         browser.list.parent?.requestDisallowInterceptTouchEvent(false)
         resetFolderOverscroll(browser)
-        browser.originalNativeNestedScrollingEnabled?.let {
-            setNativeNestedScrollingEnabled(browser.list, it)
-        }
         if (browser.list.viewTreeObserver.isAlive) {
             browser.list.viewTreeObserver.removeOnPreDrawListener(
                 browser.scrollDrawListener
@@ -3940,23 +3938,6 @@ internal class SmartPlaylistFolderController(
             list.javaClass.getMethod("isNestedScrollingEnabled")
                 .invoke(list) as? Boolean
         }.getOrNull()
-
-    private fun setNativeNestedScrollingEnabled(
-        list: ViewGroup,
-        enabled: Boolean
-    ): Boolean = runCatching {
-        list.javaClass.getMethod(
-            "setNestedScrollingEnabled",
-            java.lang.Boolean.TYPE
-        ).invoke(list, enabled)
-        true
-    }.onFailure {
-        Log.w(
-            TAG,
-            "SMART FOLDERS NESTED | host method unavailable",
-            it
-        )
-    }.getOrDefault(false)
 
     private fun syncNativeVerticalOverscroll(browser: Browser) {
         if (android.os.Build.VERSION.SDK_INT < 31 ||
@@ -4075,7 +4056,7 @@ internal class SmartPlaylistFolderController(
                 "SMART FOLDERS SCROLL | firstConsumedDy=" + dy +
                     " | folderHeight=" + folderHeight +
                     " | distance=" + distance +
-                    " | nestedScroll=false"
+                    " | nestedScroll=" + nativeNestedScrollingEnabled(list)
             )
         }
         browser.nativeScrollDistancePx = distance
@@ -4254,14 +4235,7 @@ internal class SmartPlaylistFolderController(
         if (browser.overlay.visibility == next) return
 
         if (visible) {
-            val listLocation = IntArray(2)
-            val hostLocation = IntArray(2)
-            list.getLocationOnScreen(listLocation)
-            browser.host.getLocationOnScreen(hostLocation)
-            browser.overlay.x =
-                (listLocation[0] - hostLocation[0]).toFloat()
-            browser.overlay.y =
-                (listLocation[1] - hostLocation[1]).toFloat()
+            browser.overlayPosition.sync(list, browser.host, browser.overlay)
         }
         browser.overlay.visibility = next
         updateMenus()
@@ -4272,18 +4246,7 @@ internal class SmartPlaylistFolderController(
         if (!list.isAttachedToWindow || list.width <= 0 || list.height <= 0) {
             return
         }
-        val listLocation = IntArray(2)
-        val hostLocation = IntArray(2)
-        list.getLocationOnScreen(listLocation)
-        browser.host.getLocationOnScreen(hostLocation)
-        val targetX = (listLocation[0] - hostLocation[0]).toFloat()
-        val targetY = (listLocation[1] - hostLocation[1]).toFloat()
-        if (kotlin.math.abs(browser.overlay.x - targetX) >= 0.5f) {
-            browser.overlay.x = targetX
-        }
-        if (kotlin.math.abs(browser.overlay.y - targetY) >= 0.5f) {
-            browser.overlay.y = targetY
-        }
+        browser.overlayPosition.sync(list, browser.host, browser.overlay)
         val params = browser.overlay.layoutParams
         if (params.width != list.width ||
             params.height != list.height
